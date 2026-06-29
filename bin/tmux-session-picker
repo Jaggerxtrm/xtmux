@@ -273,6 +273,25 @@ build_list() {
   declare -A sess_attn=()
   declare -A pane_block=()
 
+  # Persistent git cache (path -> root, root -> status). The expensive, near-static
+  # half of the list. Agent state (@agent_state) and the attention sort derived
+  # from it are NEVER cached — they're read fresh every call (see xtmux-rib.17).
+  local _gcd _gcf _gnow _gmt _ghit=0 _gp _gr _gs
+  _gcd="${TMPDIR:-/tmp}/tmux-picker-cache-${UID:-$(id -u)}"
+  _gcf="$_gcd/git-table"
+  if [ "${TMUX_PICKER_NO_CACHE:-0}" != '1' ] && [ -f "$_gcf" ]; then
+    _gnow=$(date +%s)
+    _gmt=$(stat -c %Y "$_gcf" 2>/dev/null || echo 0)
+    if [ "$_gmt" -gt 0 ] && (( _gnow - _gmt < ${TMUX_PICKER_GIT_CACHE_TTL:-30} )); then
+      while IFS=$'\t' read -r _gp _gr _gs; do
+        [ -n "$_gp" ] || continue
+        root_cache["$_gp"]="$_gr"
+        [ -n "$_gr" ] && root_status_cache["$_gr"]="$_gs"
+      done < "$_gcf"
+      _ghit=1
+    fi
+  fi
+
   tmp_sessions="$(mktemp)"
   tmp_panes="$(mktemp)"
   trap 'rm -f "${tmp_sessions:-}" "${tmp_panes:-}"' RETURN EXIT INT TERM
@@ -332,6 +351,21 @@ build_list() {
       [ -n "$psid" ] || continue
       pane_block["$psid"]+="$(printf 'pane\t%s\t%s\t%s\t%s' "$psid" "${sess_name[$psid]:-}" "$ppid" "$pcol")"$'\n'
     done < <(sort -t $'\t' -k1,1 -k2,2n -k3,3n "$tmp_panes")
+  fi
+
+  # Persist the git cache if this call was a miss. Agent state is deliberately
+  # excluded — only path/root/status (near-static, expensive) is stored.
+  if [ "$_ghit" = '0' ] && [ "${TMUX_PICKER_NO_CACHE:-0}" != '1' ]; then
+    mkdir -p "$_gcd"
+    local _gtmp="$_gcf.tmp.$$"
+    {
+      for _gp in "${!root_cache[@]}"; do
+        _gr="${root_cache[$_gp]}"
+        _gs=""
+        [ -n "$_gr" ] && _gs="${root_status_cache[$_gr]:-}"
+        printf '%s\t%s\t%s\n' "$_gp" "$_gr" "$_gs"
+      done
+    } > "$_gtmp" 2>/dev/null && mv -f "$_gtmp" "$_gcf"
   fi
 
   [ "$name_width" -gt 22 ] && name_width=22
@@ -544,23 +578,11 @@ kill_target() {
 
 case "${1:-}" in
   list)
+    # Output cache removed (xtmux-rib.17): it froze agent-derived sort/badges
+    # for the whole TTL. Only the git half is cached (in build_list); the list
+    # is always rendered fresh so @agent_state changes are immediate.
     shift
-    lf="${1:-all}"
-    cache_dir="${TMPDIR:-/tmp}/tmux-picker-cache-${UID:-$(id -u)}"
-    cache_file="$cache_dir/list-${lf}"
-    if [ "${TMUX_PICKER_NO_CACHE:-0}" != "1" ] && [ -f "$cache_file" ]; then
-      now=$(date +%s)
-      mtime=$(stat -c %Y "$cache_file" 2>/dev/null || echo 0)
-      if [ "$mtime" -gt 0 ] && (( now - mtime < ${TMUX_PICKER_CACHE_TTL:-3} )); then
-        cat "$cache_file"
-        exit 0
-      fi
-    fi
-    mkdir -p "$cache_dir"
-    tmpf="$cache_file.tmp.$$"
-    build_list "$lf" > "$tmpf" 2>/dev/null || rm -f "$tmpf"
-    [ -f "$tmpf" ] && mv -f "$tmpf" "$cache_file"
-    cat "$cache_file" 2>/dev/null || true
+    build_list "${1:-all}"
     exit 0
     ;;
   preview)

@@ -68,3 +68,64 @@ cwd and never triggered. Now resolved against the toplevel — op detection work
 - Cache staleness window = `TMUX_PICKER_CACHE_TTL` (3 s default); `Ctrl-r` always
   force-rebuilds. Planned: invalidate via `session-created`/`session-closed`
   set-hooks so new sessions appear instantly without shrinking the TTL.
+
+## Cache correctness fix (xtmux-rib.17) — 2026-06-30
+
+### The regression
+
+The TTL cache shipped in the initial import (`list)` cached the entire rendered
+`build_list` output, default 3 s) **froze agent-derived state**:
+
+- `sess_attn` — the sort rank computed from `@agent_state` (line ~340) → ordering was stale for the TTL window.
+- `state_badge` — the `[WAIT]/[RUN]/[DONE]` badges (line ~254) → badges were stale.
+- `list waiting` / `list running` — used the **same** cache file pattern → the attention filters could show "no waiting" right after a pane flipped to `needs-input`.
+
+Wiring accurate `@agent_state` hooks (xtmux-rib.2) would have been pointless while the cache hid the effect.
+
+### Rule (from operator review)
+
+> Aggressive caching on git-root/status (expensive, near-static). **Never** on
+> agent state — always fresh, or TTL ≤ ~1s.
+
+tmux 3.5a has **no** `option-changed` hook, so invalidation on `set -p @agent_state`
+isn't possible — the fix had to be structural.
+
+### The fix: split the cache along the cost axis
+
+- **Cached (TTL `TMUX_PICKER_GIT_CACHE_TTL`, default 30 s):** a persistent git
+  table `path→root, root→status` under `${TMPDIR:-/tmp}/tmux-picker-cache-<uid>/git-table`.
+  These dominate cold build time (~0.5 s+ of `git status` + `rev-parse`) and change rarely.
+- **Always fresh:** one `tmux list-panes -a -F ... #{@agent_state}` query per call
+  (~5 ms) drives `normalize_agent_state`, `state_badge`, `sess_attn` rank, the
+  final sort, and the `waiting`/`running` filters.
+
+`Ctrl-r` (`TMUX_PICKER_NO_CACHE=1`) now bypasses the **git** cache (forces full
+re-resolve) rather than refreshing a list snapshot. `attn-jump`/`attn_list` were
+already cache-immune (direct `tmux list-panes`) and remain so.
+
+### Results
+
+| Path | Stale-cache (regression) | After split (correct) |
+|---|---|---|
+| `list` cold (git-table miss) | ~0.65 s | ~0.85 s |
+| `list` warm (git-table hit, **state fresh**) | ~20 ms (stale) | **~0.5 s (correct)** |
+| `ctrl-r` (no cache) | ~0.65 s | ~0.85 s |
+| `@agent_state` → badge lag | up to 3 s | **immediate** |
+| `waiting`/`running` filter freshness | up to 3 s stale | **always fresh** |
+| git calls in warm `list` | 0 (cached output) | **0** (git-table hit) |
+| tmux calls in `list` | 2 | 2 |
+
+### Honest comparison vs the pre-audit baseline
+
+The pre-audit picker rebuilt everything every call (~1.0–1.4 s always). The
+stale-cache version delivered ~20 ms warm but at the cost of correctness. This
+fix keeps the cold-path git caching (real win) and makes the warm path correct
+at ~0.5 s — still a ~2× improvement over the original, with accurate state.
+
+### Why not a faster warm path?
+
+The ~0.5 s warm cost is pure bash overhead (21 panes × `paint()` subshells +
+`render_pane_line`/`render_list_status` per row). A future task could cache the
+rendered row *structure* (without badges) and stamp agent state at render time,
+targeting warm ~50 ms — but that's a separate refactor (not in scope for the
+correctness fix).

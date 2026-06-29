@@ -73,8 +73,8 @@ tmux-session-picker jump-back
 
 | Env | Default | Effect |
 |---|---|---|
-| `TMUX_PICKER_CACHE_TTL` | `3` | Seconds the rendered `list` is reused (warm reloads) |
-| `TMUX_PICKER_NO_CACHE` | `0` | `1` bypasses the cache (used by `Ctrl-r`) |
+| `TMUX_PICKER_GIT_CACHE_TTL` | `30` | Seconds the git table (path→root, root→status) is reused |
+| `TMUX_PICKER_NO_CACHE` | `0` | `1` bypasses the git cache (forces full git re-resolve; used by `Ctrl-r`) |
 | `TMUX_PICKER_AGENT` | `0` | `1` enables capture-pane agent-state inference |
 | `TMUX_PICKER_MODE` | `default` | `default` / `compact-wrap` / `compact-nowrap` |
 | `TMUX_ASCII_ICONS` | `0` | `1` uses ASCII `br`/`path` instead of Nerd Font glyphs |
@@ -82,8 +82,13 @@ tmux-session-picker jump-back
 
 ## Performance
 
-See [`docs/perf-audit.md`](docs/perf-audit.md). Headline: warm list/reload ~20 ms,
-cold build ~0.65 s (was ~1.0–1.4 s), preview ~95 ms (was ~300 ms).
+See [`docs/perf-audit.md`](docs/perf-audit.md). Headline: warm list ~0.5 s
+(fresh — agent state read live), cold build ~0.85 s, preview ~95 ms.
+
+The list output is **never** cached as a whole — only the expensive, near-static
+git half (path→root, root→status) is cached. Agent state (`@agent_state`) and the
+attention sort/badges derived from it are always fresh, so a pane flipping to
+`needs-input` is reflected immediately.
 
 ## Roadmap
 
