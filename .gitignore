@@ -1,0 +1,4 @@
+*.backup.*
+*.pre-xtmux
+*.tmp
+.DS_Store

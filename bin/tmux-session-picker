@@ -1,0 +1,655 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# bash >= 4.2 per associative arrays e [[ -v arr[key] ]]
+if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2))); then
+  if command -v tmux >/dev/null 2>&1; then
+    tmux display-message 'tmux-picker: serve bash >= 4.2'
+  else
+    printf 'tmux-picker: serve bash >= 4.2\n' >&2
+  fi
+  exit 1
+fi
+
+self="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
+mode="${TMUX_PICKER_MODE:-default}"
+git_status_script="$HOME/.tmux/scripts/git-pane-status.sh"
+
+c_reset=$'\033[0m'
+c_dim=$'\033[38;5;244m'
+c_session=$'\033[38;5;255m'
+c_repo=$'\033[38;5;81m'
+c_pane=$'\033[38;5;246m'
+
+run_git() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 0.7 git "$@" 2>/dev/null
+  else
+    git "$@" 2>/dev/null
+  fi
+}
+
+paint() {
+  local color="$1"
+  shift
+  printf '%s%s%s' "$color" "$*" "$c_reset"
+}
+
+sanitize_osc() {
+  sed -E $'s/\x1b\][^\x1b\x07]*(\x07|\x1b\\\\)//g'
+}
+
+capture_pane_safe() {
+  local target="$1"
+  local start="$2"
+  local out
+  out="$(tmux capture-pane -p -e -t "$target" -S "$start" 2>/dev/null)" || {
+    printf '(pane non leggibile)\n'
+    return 0
+  }
+  printf '%s\n' "$out" | sanitize_osc
+}
+
+# Stati normalizzati: needs-input | done | running | idle | ""
+# Sorgente primaria: @agent_state scritto dagli hook agent. Questo include anche pi.
+normalize_agent_state() {
+  local pane_id="$1"
+  local opt="$2"
+  local cmd="$3"
+  local tail
+
+  case "$opt" in
+    needs-input|permission|waiting|input) printf 'needs-input'; return 0 ;;
+    done|finished|stop|complete)          printf 'done';        return 0 ;;
+    running|thinking|busy|tool)           printf 'running';     return 0 ;;
+    ''|off|idle|none) ;;
+    *) printf '%s' "$opt"; return 0 ;;
+  esac
+
+  [ "${TMUX_PICKER_AGENT:-0}" = '1' ] || { printf ''; return 0; }
+
+  case "$cmd" in
+    claude|codex|aider|cursor|node|python|python3|ollama|llm|opencode|pi) ;;
+    *) printf ''; return 0 ;;
+  esac
+
+  tail="$(tmux capture-pane -p -t "$pane_id" -S -3 2>/dev/null | tr -d '\r')"
+  [ -n "$tail" ] || { printf 'idle'; return 0; }
+
+  if printf '%s' "$tail" | grep -qiE 'do you want|allow|approve|\(y/n\)|permission|press enter|waiting for|\? '; then
+    printf 'needs-input'
+  elif printf '%s' "$tail" | grep -qiE 'esc to interrupt|thinking|working|running|generating|compiling|[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]'; then
+    printf 'running'
+  else
+    printf 'idle'
+  fi
+}
+
+agent_rank() {
+  case "$1" in
+    needs-input) printf 0 ;;
+    done)        printf 1 ;;
+    running)     printf 2 ;;
+    *)           printf 3 ;;
+  esac
+}
+
+state_badge() {
+  case "$1" in
+    needs-input) printf '%s[WAIT]%s' $'\033[38;5;214m' "$c_reset" ;;
+    done)        printf '%s[DONE]%s' $'\033[38;5;78m'  "$c_reset" ;;
+    running)     printf '%s[RUN]%s'  $'\033[38;5;81m'  "$c_reset" ;;
+    idle)        printf '%s[idle]%s' "$c_dim"          "$c_reset" ;;
+    *) ;;
+  esac
+}
+
+short_path() {
+  local p="${1:-}"
+  [ -n "$p" ] || return 0
+  if [[ "$p" == "$HOME"* ]]; then
+    p="~${p#$HOME}"
+  fi
+
+  IFS='/' read -r -a parts <<< "$p"
+  local n=${#parts[@]}
+  if [ "$n" -le 4 ]; then
+    printf '%s' "$p"
+    return
+  fi
+
+  printf '…/%s/%s/%s' "${parts[$((n-3))]}" "${parts[$((n-2))]}" "${parts[$((n-1))]}"
+}
+
+short_rel_path() {
+  local rel="${1:-}"
+  [ -n "$rel" ] || return 0
+
+  IFS='/' read -r -a parts <<< "$rel"
+  local n=${#parts[@]}
+  if [ "$n" -le 2 ]; then
+    printf '%s' "$rel"
+    return
+  fi
+
+  printf '…/%s/%s' "${parts[$((n-2))]}" "${parts[$((n-1))]}"
+}
+
+relative_hint() {
+  local pane_path="${1:-}"
+  local root="${2:-}"
+  [ -n "$pane_path" ] || return 0
+  [ -n "$root" ] || return 0
+  [ "$pane_path" != "$root" ] || return 0
+
+  local rel="${pane_path#"$root"/}"
+  [ "$rel" != "$pane_path" ] || return 0
+  short_rel_path "$rel"
+}
+
+git_root_for_path() {
+  local p="${1:-}"
+  [ -n "$p" ] || return 0
+  run_git -C "$p" rev-parse --show-toplevel || true
+}
+
+status_for_path() {
+  local pane_id="${1:-}"
+  local pane_path="${2:-}"
+
+  if [ -x "$git_status_script" ]; then
+    if [ -z "$pane_id" ] && [ -n "$pane_path" ]; then
+      # path is already the resolved repo toplevel (build_list resolves it
+      # first); tell the status script so it skips a redundant rev-parse.
+      TMUX_GIT_TOPLEVEL="$pane_path" "$git_status_script" "" "$pane_path" || short_path "$pane_path"
+    else
+      "$git_status_script" "$pane_id" "$pane_path" || short_path "$pane_path"
+    fi
+  else
+    short_path "$pane_path"
+  fi
+}
+
+status_meta_from_root_status() {
+  local raw="${1:-}"
+  local rest meta
+
+  [ -n "$raw" ] || return 0
+  rest="${raw#* }"
+  if [ "$rest" = "$raw" ]; then
+    printf '%s' "$raw"
+    return 0
+  fi
+
+  case "$rest" in
+    *'  '*) meta="${rest%%  *}" ;;
+    *' path '*) meta="${rest%% path *}" ;;
+    *) meta="$rest" ;;
+  esac
+
+  printf '%s' "$meta"
+}
+
+render_list_status() {
+  local pane_path="${1:-}"
+  local root="${2:-}"
+  local root_status="${3:-}"
+  local repo meta rel out
+
+  if [ -z "$root" ]; then
+    paint "$c_dim" "$(short_path "$pane_path")"
+    return 0
+  fi
+
+  repo="$(basename "$root")"
+  meta="$(status_meta_from_root_status "$root_status")"
+  rel="$(relative_hint "$pane_path" "$root")"
+
+  out="$(paint "$c_repo" "$repo")"
+  [ -n "$meta" ] && out+=" $meta"
+  [ -n "$rel" ] && out+=" $(paint "$c_dim" "· $rel")"
+  printf '%s' "$out"
+}
+
+pane_location_hint() {
+  local pane_path="${1:-}"
+  local root="${2:-}"
+  local repo rel out
+
+  if [ -z "$root" ]; then
+    paint "$c_dim" "$(short_path "$pane_path")"
+    return 0
+  fi
+
+  repo="$(basename "$root")"
+  rel="$(relative_hint "$pane_path" "$root")"
+
+  out="$(paint "$c_repo" "$repo")"
+  [ -n "$rel" ] && out+=" $(paint "$c_dim" "· $rel")"
+  printf '%s' "$out"
+}
+
+session_meta() {
+  tmux list-sessions -F $'#{session_id}\t#{session_name}\t#{pane_id}\t#{pane_current_path}'
+}
+
+pane_meta() {
+  tmux list-panes -a -F $'#{session_id}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{@agent_state}'
+}
+
+render_pane_line() {
+  local window_index="$1"
+  local window_name="$2"
+  local pane_id="$3"
+  local pane_active="$4"
+  local pane_cmd="$5"
+  local pane_path="$6"
+  local root="$7"
+  local state="${8:-}"
+  local marker cmd badge loc out
+
+  marker=' '
+  [ "$pane_active" = '1' ] && marker='*'
+  cmd="${pane_cmd:-shell}"
+  badge="$(state_badge "$state")"
+  loc="$(pane_location_hint "$pane_path" "$root")"
+
+  out="$(paint "$c_pane" "    ↳ $marker $window_index:$window_name $pane_id")"
+  [ -n "$badge" ] && out+=" $badge"
+  out+=" $(paint "$c_dim" "$cmd")"
+  [ -n "$loc" ] && out+="  $loc"
+  printf '%s' "$out"
+}
+
+# build_list [all|waiting|running]
+build_list() {
+  local filter="${1:-all}"
+  local tmp_sessions tmp_panes sid sname pane_id pane_path root sort_key display root_status name_width=12 session_col
+  local window_index window_name pane_index pane_active pane_cmd pane_row_path pane_col pane_state pane_rank cur_rank
+  local psid pwi ppi ppid pcol attn
+  declare -A root_cache=()
+  declare -A root_status_cache=()
+  declare -A sess_name=()
+  declare -A sess_attn=()
+  declare -A pane_block=()
+
+  tmp_sessions="$(mktemp)"
+  tmp_panes="$(mktemp)"
+  trap 'rm -f "${tmp_sessions:-}" "${tmp_panes:-}"' RETURN EXIT INT TERM
+
+  while IFS=$'\t' read -r sid sname pane_id pane_path; do
+    [ -n "$sid" ] || continue
+    pane_path="${pane_path:-$HOME}"
+
+    if [[ -v root_cache["$pane_path"] ]]; then
+      root="${root_cache[$pane_path]}"
+    else
+      root="$(git_root_for_path "$pane_path")"
+      root_cache["$pane_path"]="$root"
+    fi
+
+    if [ -n "$root" ]; then
+      if [[ -v root_status_cache["$root"] ]]; then
+        root_status="${root_status_cache[$root]}"
+      else
+        root_status="$(status_for_path "" "$root")"
+        root_status_cache["$root"]="$root_status"
+      fi
+    else
+      root_status=''
+    fi
+
+    sort_key="${root:-$pane_path}"
+    display="$(render_list_status "$pane_path" "$root" "$root_status")"
+    sess_name["$sid"]="$sname"
+    [ "${#sname}" -gt "$name_width" ] && name_width="${#sname}"
+
+    printf '%s\t%s\t%s\t%s\n' "$sort_key" "$sid" "$sname" "$display" >> "$tmp_sessions"
+  done < <(session_meta)
+
+  while IFS=$'\t' read -r sid window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_state; do
+    [ -n "$sid" ] || continue
+    pane_row_path="${pane_row_path:-$HOME}"
+
+    if [[ -v root_cache["$pane_row_path"] ]]; then
+      root="${root_cache[$pane_row_path]}"
+    else
+      root="$(git_root_for_path "$pane_row_path")"
+      root_cache["$pane_row_path"]="$root"
+    fi
+
+    pane_state="$(normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd")"
+    pane_rank="$(agent_rank "$pane_state")"
+    cur_rank="${sess_attn[$sid]:-3}"
+    [ "$pane_rank" -lt "$cur_rank" ] && sess_attn["$sid"]="$pane_rank"
+
+    pane_col="$(render_pane_line "$window_index" "$window_name" "$pane_id" "$pane_active" "$pane_cmd" "$pane_row_path" "$root" "$pane_state")"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$sid" "$window_index" "$pane_index" "$pane_id" "$pane_col" >> "$tmp_panes"
+  done < <(pane_meta)
+
+  if [ -s "$tmp_panes" ]; then
+    while IFS=$'\t' read -r psid pwi ppi ppid pcol; do
+      [ -n "$psid" ] || continue
+      pane_block["$psid"]+="$(printf 'pane\t%s\t%s\t%s\t%s' "$psid" "${sess_name[$psid]:-}" "$ppid" "$pcol")"$'\n'
+    done < <(sort -t $'\t' -k1,1 -k2,2n -k3,3n "$tmp_panes")
+  fi
+
+  [ "$name_width" -gt 22 ] && name_width=22
+
+  while IFS=$'\t' read -r sort_key sid sname display; do
+    printf '%s\t%s\t%s\t%s\t%s\n' "${sess_attn[$sid]:-3}" "$sort_key" "$sid" "$sname" "$display"
+  done < "$tmp_sessions" |
+    sort -t $'\t' -k1,1n -k2,2 -k4,4 |
+    while IFS=$'\t' read -r attn _ sid sname display; do
+      case "$filter" in
+        waiting) [ "$attn" -eq 0 ] || continue ;;
+        running) [ "$attn" -le 2 ] || continue ;;
+      esac
+      session_col="$(printf '%-*s' "$name_width" "$sname")"
+      session_col="$(paint "$c_session" "$session_col")"
+      printf 'session\t%s\t%s\t%s\t  %s  %s\n' "$sid" "$sname" "$sid" "$session_col" "$display"
+      printf '%s' "${pane_block[$sid]:-}"
+    done
+}
+
+attn_list() {
+  local sid pane_id pane_cmd activity pane_state rank
+  while IFS=$'\t' read -r sid pane_id pane_cmd activity pane_state; do
+    [ -n "$pane_id" ] || continue
+    pane_state="$(normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd")"
+    rank="$(agent_rank "$pane_state")"
+    [ "$rank" -le 1 ] || continue
+    printf '%s\t%s\t%s\t%s\n' "$rank" "${activity:-0}" "$sid" "$pane_id"
+  done < <(tmux list-panes -a -F $'#{session_id}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{@agent_state}') |
+    sort -t $'\t' -k1,1n -k2,2nr
+}
+
+record_prev() {
+  local cur_pane cur_sid
+  cur_pane="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
+  cur_sid="$(tmux display-message -p '#{session_id}' 2>/dev/null || true)"
+  [ -n "$cur_pane" ] && tmux set -g @picker_prev "$cur_sid:$cur_pane" 2>/dev/null || true
+}
+
+attn_jump() {
+  local n="${1:-1}" line sid pane
+  line="$(attn_list | sed -n "${n}p")"
+  if [ -z "$line" ]; then
+    tmux display-message "tmux-picker: nessun agente in attesa #$n"
+    return 0
+  fi
+  IFS=$'\t' read -r _ _ sid pane <<< "$line"
+  jump_to_target pane "$sid" "$pane"
+}
+
+jump_back() {
+  local prev sid pane
+  prev="$(tmux show -gv @picker_prev 2>/dev/null || true)"
+  if [ -z "$prev" ]; then
+    tmux display-message 'tmux-picker: nessun pane precedente'
+    return 0
+  fi
+  sid="${prev%%:*}"
+  pane="${prev#*:}"
+  jump_to_target pane "$sid" "$pane"
+}
+
+preview_session_row() {
+  local sid="$1"
+  local name="$2"
+  local pane_path root root_name rel attached window_count pane_count
+  local window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state
+  local pane_root pane_loc active_mark hdr panes_raw
+  declare -A root_cache=()
+
+  pane_path="$(tmux display-message -p -t "$sid" '#{pane_current_path}' 2>/dev/null || true)"
+  pane_path="${pane_path:-$HOME}"
+  hdr="$(tmux display-message -p -t "$sid" $'#{session_attached}\t#{session_windows}' 2>/dev/null || true)"
+  attached="${hdr%%$'\t'*}"
+  window_count="${hdr#*$'\t'}"
+  [ "$attached" = "$hdr" ] && attached='0'
+  [ "$window_count" = "$hdr" ] && window_count='?'
+
+  root="$(git_root_for_path "$pane_path")"
+  root_name="${root:+$(basename "$root")}"
+
+  if [ -n "$root" ] && [ "$pane_path" != "$root" ]; then
+    rel="$(relative_hint "$pane_path" "$root")"
+  else
+    rel=''
+  fi
+
+  # Single scoped call: only this session's panes (was list-panes -a | awk, twice).
+  panes_raw="$(tmux list-panes -s -t "$sid" -F $'#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{@agent_state}' 2>/dev/null || true)"
+  if [ -n "$panes_raw" ]; then
+    pane_count="$(printf '%s\n' "$panes_raw" | grep -c .)"
+  else
+    pane_count=0
+  fi
+
+  if [ -n "$root_name" ]; then
+    printf 'session=%s  root=%s\n' "$name" "$root_name"
+  else
+    printf 'session=%s\n' "$name"
+  fi
+  [ -n "$rel" ] && printf 'cwd=%s\n' "$rel"
+  printf 'windows=%s  panes=%s  attached=%s\n\n' "${window_count:-?}" "${pane_count:-0}" "${attached:-0}"
+
+  while IFS=$'\t' read -r window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state; do
+    pane_row_path="${pane_row_path:-$pane_path}"
+    if [[ -v root_cache["$pane_row_path"] ]]; then
+      pane_root="${root_cache[$pane_row_path]}"
+    else
+      pane_root="$(git_root_for_path "$pane_row_path")"
+      root_cache["$pane_row_path"]="$pane_root"
+    fi
+    pane_loc="$(pane_location_hint "$pane_row_path" "$pane_root")"
+    pane_state="$(normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd")"
+    active_mark=' '
+    [ "$pane_active" = '1' ] && active_mark='*'
+
+    printf '[%s:%s.%s%s] %s' "$window_index" "$window_name" "$pane_index" "$active_mark" "${pane_cmd:-shell}"
+    [ -n "$pane_state" ] && printf ' <%s>' "$pane_state"
+    printf '  %sx%s +%s+%s' "$pane_width" "$pane_height" "$pane_left" "$pane_top"
+    [ -n "$pane_loc" ] && printf '  %s' "$pane_loc"
+    printf '\n'
+    capture_pane_safe "$pane_id" -8
+    printf '\n'
+  done < <(printf '%s\n' "$panes_raw")
+}
+
+preview_pane_row() {
+  local sid="$1"
+  local name="$2"
+  local target_pane="$3"
+  local pane_path root root_name rel attached window_line pane_cmd pane_state
+
+  local pinfo
+  pinfo="$(tmux display-message -p -t "$target_pane" $'#{pane_current_path}\t#{pane_current_command}\t#I:#W\t#{@agent_state}' 2>/dev/null || true)"
+  IFS=$'\t' read -r pane_path pane_cmd window_line pane_state <<< "$pinfo"
+  pane_path="${pane_path:-$HOME}"
+  root="$(git_root_for_path "$pane_path")"
+  root_name="${root:+$(basename "$root")}"
+  attached="$(tmux display-message -p -t "$sid" '#{session_attached}' 2>/dev/null || true)"
+  pane_state="$(normalize_agent_state "$target_pane" "$pane_state" "$pane_cmd")"
+
+  if [ -n "$root" ] && [ "$pane_path" != "$root" ]; then
+    rel="$(relative_hint "$pane_path" "$root")"
+  else
+    rel=''
+  fi
+
+  if [ -n "$root_name" ]; then
+    printf 'session=%s  root=%s\n' "$name" "$root_name"
+  else
+    printf 'session=%s\n' "$name"
+  fi
+  [ -n "$rel" ] && printf 'cwd=%s\n' "$rel"
+  printf 'win=%s  pane=%s  cmd=%s' "${window_line:-?}" "$target_pane" "${pane_cmd:-shell}"
+  [ -n "$pane_state" ] && printf '  agent=%s' "$pane_state"
+  printf '  attached=%s\n\n' "${attached:-0}"
+
+  capture_pane_safe "$target_pane" -48
+}
+
+preview_row() {
+  local type="${1:-}"
+  local sid="${2:-}"
+  local name="${3:-}"
+  local target="${4:-}"
+
+  [ -n "$sid" ] || return 0
+  case "$type" in
+    pane) preview_pane_row "$sid" "$name" "$target" ;;
+    *) preview_session_row "$sid" "$name" ;;
+  esac
+}
+
+open_popup_client() {
+  local type="$1"
+  local sid="$2"
+  local target="$3"
+
+  if [ "$type" = 'pane' ] && [ -n "$target" ]; then
+    exec env -u TMUX tmux attach-session -t "$sid" \; select-window -t "$target" \; select-pane -t "$target"
+  fi
+
+  exec env -u TMUX tmux attach-session -t "$sid"
+}
+
+jump_to_target() {
+  local type="$1"
+  local sid="$2"
+  local target="$3"
+
+  if [ "$type" = 'pane' ] && [ -n "$target" ]; then
+    exec tmux switch-client -t "$sid" \; select-window -t "$target" \; select-pane -t "$target"
+  fi
+
+  exec tmux switch-client -t "$sid"
+}
+
+kill_target() {
+  local type="$1"
+  local sid="$2"
+  local target="$3"
+
+  if [ "$type" = 'pane' ] && [ -n "$target" ]; then
+    tmux kill-pane -t "$target"
+    return 0
+  fi
+
+  tmux kill-session -t "$sid"
+}
+
+case "${1:-}" in
+  list)
+    shift
+    lf="${1:-all}"
+    cache_dir="${TMPDIR:-/tmp}/tmux-picker-cache-${UID:-$(id -u)}"
+    cache_file="$cache_dir/list-${lf}"
+    if [ "${TMUX_PICKER_NO_CACHE:-0}" != "1" ] && [ -f "$cache_file" ]; then
+      now=$(date +%s)
+      mtime=$(stat -c %Y "$cache_file" 2>/dev/null || echo 0)
+      if [ "$mtime" -gt 0 ] && (( now - mtime < ${TMUX_PICKER_CACHE_TTL:-3} )); then
+        cat "$cache_file"
+        exit 0
+      fi
+    fi
+    mkdir -p "$cache_dir"
+    tmpf="$cache_file.tmp.$$"
+    build_list "$lf" > "$tmpf" 2>/dev/null || rm -f "$tmpf"
+    [ -f "$tmpf" ] && mv -f "$tmpf" "$cache_file"
+    cat "$cache_file" 2>/dev/null || true
+    exit 0
+    ;;
+  preview)
+    shift
+    preview_row "$@"
+    exit 0
+    ;;
+  popup)
+    shift
+    open_popup_client "$@"
+    ;;
+  jump)
+    shift
+    jump_to_target "$@"
+    ;;
+  kill)
+    shift
+    kill_target "$@"
+    ;;
+  attn-jump)
+    shift
+    record_prev
+    attn_jump "${1:-1}"
+    exit 0
+    ;;
+  jump-back)
+    jump_back
+    exit 0
+    ;;
+  "")
+    ;;
+  *)
+    printf 'usage: %s [list [all|waiting|running]|preview <type> <sid> <name> <target>|popup <type> <sid> <target>|jump <type> <sid> <target>|kill <type> <sid> <target>|attn-jump <n>|jump-back]\n' "$0" >&2
+    exit 2
+    ;;
+esac
+
+if ! command -v fzf >/dev/null 2>&1; then
+  tmux display-message 'fzf non trovato'
+  exit 1
+fi
+
+preview_window='right,62%,border-left,wrap,follow'
+preview_window_max='right,94%,border-left,wrap,follow'
+border_label=' Enter switch · Alt-Enter popup · Alt-x kill · ^A all ^W wait ^E run · Ctrl-r refresh · Ctrl-/ preview '
+case "$mode" in
+  compact-wrap)
+    preview_window='right,68%,border-left,wrap,follow'
+    preview_window_max='right,94%,border-left,wrap,follow'
+    border_label=' compact wrap · Enter switch · Alt-Enter popup · Alt-x kill · ^A/^W/^E filtri · Ctrl-r refresh '
+    ;;
+  compact-nowrap)
+    preview_window='right,68%,border-left,follow'
+    preview_window_max='right,94%,border-left,follow'
+    border_label=' compact no-wrap · Enter switch · Alt-Enter popup · Alt-x kill · ^A/^W/^E filtri · Ctrl-r refresh '
+    ;;
+esac
+
+choice="$({
+  "$self" list all
+} | fzf \
+  --ansi \
+  --delimiter=$'\t' \
+  --with-nth=5 \
+  --layout=reverse-list \
+  --height=100% \
+  --border=sharp \
+  --border-label "$border_label" \
+  --border-label-pos='3:bottom' \
+  --no-scrollbar \
+  --cycle \
+  --no-bold \
+  --prompt='all> ' \
+  --pointer='>' \
+  --marker='' \
+  --info=inline-right \
+  --color='fg:#b8bcc0,bg:-1,hl:#ffffff,fg+:#ffffff,bg+:#222222,hl+:#ffffff,info:#8a8f94,prompt:#8a8f94,pointer:#c6cacf,marker:#c6cacf,label:#8a8f94,border:#303030,gutter:-1' \
+  --preview-window="$preview_window" \
+  --bind="ctrl-/:toggle-preview" \
+  --bind="ctrl-r:reload(TMUX_PICKER_NO_CACHE=1 $self list all)" \
+  --bind="ctrl-a:change-prompt(all> )+reload($self list all)" \
+  --bind="ctrl-w:change-prompt(wait> )+reload($self list waiting)" \
+  --bind="ctrl-e:change-prompt(run> )+reload($self list running)" \
+  --bind="alt-p:change-preview-window($preview_window_max|$preview_window)" \
+  --bind="alt-x:execute-silent($self kill {1} {2} {4})+reload($self list all)" \
+  --bind="alt-enter:become($self popup {1} {2} {4})" \
+  --preview "$self preview {1} {2} {3} {4}"
+)" || true
+
+[ -n "${choice:-}" ] || exit 0
+IFS=$'\t' read -r type sid name target _ <<< "$choice"
+jump_to_target "$type" "$sid" "$target"
