@@ -94,9 +94,9 @@ agent_rank() {
 
 state_badge() {
   case "$1" in
-    needs-input) REPLY=$'\033[38;5;214m[WAIT]'"$c_reset" ;;
-    done)        REPLY=$'\033[38;5;78m[DONE]'"$c_reset" ;;
-    running)     REPLY=$'\033[38;5;81m[RUN]'"$c_reset" ;;
+    needs-input) REPLY=$'\033[38;5;214m[wait]'"$c_reset" ;;
+    done)        REPLY=$'\033[38;5;78m[done]'"$c_reset" ;;
+    running)     REPLY=$'\033[38;5;81m[run]'"$c_reset" ;;
     idle)        REPLY="${c_dim}[idle]${c_reset}" ;;
     *) REPLY='' ;;
   esac

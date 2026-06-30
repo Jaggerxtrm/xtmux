@@ -1,7 +1,7 @@
 # agent state hooks
 
-xtmux reads a tmux pane option named `@agent_state` to render `[WAIT]`, `[RUN]`,
-`[DONE]`, and `[idle]` badges and to rank attention targets.
+xtmux reads a tmux pane option named `@agent_state` to render `[wait]`, `[run]`,
+`[done]`, and `[idle]` badges and to rank attention targets.
 
 the contract is deliberately tiny:
 
@@ -42,7 +42,7 @@ tmux display-message -p '#{@agent_state}'   # needs-input
 
 when wiring hooks for an orchestrator, set this env to record every transition
 to a log so you can confirm the ordering (e.g. that `PostToolUse` clears a stale
-`[WAIT]`) on real agent runs:
+`[wait]`) on real agent runs:
 
 ```sh
 export XTMUX_AGENT_STATE_LOG=1
@@ -62,7 +62,7 @@ column. off by default.
 claude code supports JSON command hooks. merge the following into your claude
 settings (global `~/.claude/settings.json` or project-local `.claude/settings.json`).
 don't replace existing hooks; append these entries alongside them. the
-`PreToolUse`/`PostToolUse` -> `running` entries are what keep `[WAIT]` honest for
+`PreToolUse`/`PostToolUse` -> `running` entries are what keep `[wait]` honest for
 orchestrators (see the state mapping below).
 
 ```json
@@ -157,15 +157,15 @@ the full set (with `CLAUDE_HOOK_EVENT` tags for the audit log) lives at
 this is what keeps the WAIT badge honest for orchestrators / multiplexing:
 
 - `Notification` fires when claude needs permission (or otherwise needs a human).
-  that sets `needs-input` -> `[WAIT]`.
+  that sets `needs-input` -> `[wait]`.
 - if the user **approves**, claude resumes and the tool executes. `PostToolUse`
-  fires and resets the pane to `running`, so `[WAIT]` is cleared the instant the
+  fires and resets the pane to `running`, so `[wait]` is cleared the instant the
   blockage is gone — not stuck until the next prompt or `Stop`.
 - `PreToolUse` reinforces the busy signal at the start of every tool.
 
-**invariant:** `[WAIT]` <=> the agent is blocked right now and no tool is
-completing. an orchestrator that jumps to `[WAIT]` panes will never land on a
-pane that is actively working. without `PostToolUse`, a stale `[WAIT]` could
+**invariant:** `[wait]` <=> the agent is blocked right now and no tool is
+completing. an orchestrator that jumps to `[wait]` panes will never land on a
+pane that is actively working. without `PostToolUse`, a stale `[wait]` could
 persist while claude is busy again, which is exactly the multiplexing failure
 mode to avoid.
 

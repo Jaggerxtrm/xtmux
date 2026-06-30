@@ -77,7 +77,7 @@ the TTL cache shipped in the initial import (`list)` cached the entire rendered
 `build_list` output, default 3 s) **froze agent-derived state**:
 
 - `sess_attn` — the sort rank computed from `@agent_state` (line ~340) → ordering was stale for the TTL window.
-- `state_badge` — the `[WAIT]/[RUN]/[DONE]` badges (line ~254) → badges were stale.
+- `state_badge` — the `[wait]/[run]/[done]` badges (line ~254) → badges were stale.
 - `list waiting` / `list running` — used the **same** cache file pattern → the attention filters could show "no waiting" right after a pane flipped to `needs-input`.
 
 wiring accurate `@agent_state` hooks (xtmux-rib.2) would have been pointless while the cache hid the effect.
