@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# xtmux contract tests. Run: ./test/contract.sh  (regen: --regen)
+# xtmux contract tests. run: ./test/contract.sh  (regen: --regen)
 set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

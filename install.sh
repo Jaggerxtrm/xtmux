@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Idempotently symlink xtmux files into their live locations.
-# Any pre-existing real file is moved aside to <path>.pre-xtmux.
+# idempotently symlink xtmux files into their live locations.
+# any pre-existing real file is moved aside to <path>.pre-xtmux.
 set -euo pipefail
 
 repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,4 +24,4 @@ link "$repo/scripts/agent-state.sh"       "$HOME/.tmux/scripts/agent-state.sh"
 chmod +x "$repo/bin/tmux-session-picker" "$repo/scripts/git-pane-status.sh" "$repo/scripts/agent-state.sh"
 
 echo
-echo "Done. Reload tmux config if needed:  tmux source-file ~/.tmux.conf"
+echo "done. reload tmux config if needed:  tmux source-file ~/.tmux.conf"

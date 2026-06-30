@@ -6,7 +6,7 @@
           {
             "type": "command",
             "command": "~/.tmux/scripts/agent-state.sh running",
-            "statusMessage": "Marking pane running"
+            "statusMessage": "marking pane running"
           }
         ]
       }
@@ -18,7 +18,7 @@
           {
             "type": "command",
             "command": "~/.tmux/scripts/agent-state.sh idle",
-            "statusMessage": "Marking pane idle"
+            "statusMessage": "marking pane idle"
           }
         ]
       }
