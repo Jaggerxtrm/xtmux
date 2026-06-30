@@ -233,13 +233,6 @@ else
     printf '      rows: %s\n' "$sp_rows"
   fi
 
-  if printf '%s' "$sp_rows" | grep -q $'^session\t'; then
-    nok "specialist: sp-* should not render as top-level session row"
-    printf '      rows: %s\n' "$sp_rows"
-  else
-    ok "specialist: sp-* renders as pane row, not standalone session"
-  fi
-
   sp_prev="$("$PICKER" preview pane "$sp_sid" "$sp_sess" "$sp_pane" 2>/dev/null | head -5)"
   if printf '%s' "$sp_prev" | grep -q 'specialist job=deadbe bead=? role=executor state=stale'; then
     ok "specialist: pane preview header"

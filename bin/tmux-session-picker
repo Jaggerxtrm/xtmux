@@ -111,8 +111,8 @@ state_badge() {
 # hot list path never calls sp/jq/ps/pgrep: it only checks session name + pane
 # pid. preview may inspect the pane process tree to extract --bead, but the picker
 # does not call `sp ps` or read specialists job db in normal operation.
-# hot list shows sp-* as pane rows only; stale/running process state is preview-only
-# unless an explicit @agent_state is present (e.g. needs-input -> [wait]).
+# a live sp-* pane is treated as [stale] unless an explicit @agent_state says
+# otherwise (e.g. needs-input -> [wait]).
 
 # sp_role_from_name <session_name> -> REPLY=role (or empty)
 sp_role_from_name() {
@@ -409,12 +409,11 @@ build_list() {
   local filter="${1:-all}"
   local tmp_sessions tmp_panes sid sname pane_id pane_path root sort_key group_key display root_status name_width=12 session_col
   local window_index window_name pane_index pane_active pane_cmd pane_row_path pane_col pane_state pane_rank cur_rank
-  local psid pwi ppi ppid pcol attn sp_role_for_session
+  local psid pwi ppi ppid pcol attn
   declare -A root_cache=()
   declare -A root_status_cache=()
   declare -A sess_name=()
   declare -A sess_attn=()
-  declare -A sess_is_sp=()
   declare -A pane_block=()
 
   # Persistent git cache (path -> root, root -> status). The expensive, near-static
@@ -466,11 +465,7 @@ build_list() {
     sort_key="$group_key"
     render_list_status "$pane_path" "$root" "$root_status"; display="$REPLY"
     sess_name["$sid"]="$sname"
-    sp_role_from_name "$sname"; sp_role_for_session="$REPLY"
-    [ -n "$sp_role_for_session" ] && sess_is_sp["$sid"]=1
-    if [ -z "$sp_role_for_session" ]; then
-      [ "${#sname}" -gt "$name_width" ] && name_width="${#sname}"
-    fi
+    [ "${#sname}" -gt "$name_width" ] && name_width="${#sname}"
 
     printf '%s\t%s\t%s\t%s\n' "$sort_key" "$sid" "$sname" "$display" >> "$tmp_sessions"
   done < <(session_meta)
@@ -535,12 +530,6 @@ build_list() {
         waiting) [ "$attn" -eq 0 ] || continue ;;
         running) [ "$attn" -le 2 ] || continue ;;
       esac
-      if [ "${sess_is_sp[$sid]:-0}" = '1' ]; then
-        # sp-* tmux sessions are implementation detail: show their panes directly
-        # in the repo bucket instead of as standalone top-level session rows.
-        printf '%s' "${pane_block[$sid]:-}"
-        continue
-      fi
       printf -v session_col '%-*s' "$name_width" "$sname"
       paint "$c_session" "$session_col"; session_col="$REPLY"
       printf 'session\t%s\t%s\t%s\t  %s  %s\n' "$sid" "$sname" "$sid" "$session_col" "$display"
