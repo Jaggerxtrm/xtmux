@@ -30,9 +30,7 @@ run_git() {
 }
 
 paint() {
-  local color="$1"
-  shift
-  printf '%s%s%s' "$color" "$*" "$c_reset"
+  REPLY="$1${*:2}$c_reset"
 }
 
 sanitize_osc() {
@@ -59,98 +57,100 @@ normalize_agent_state() {
   local tail
 
   case "$opt" in
-    needs-input|permission|waiting|input) printf 'needs-input'; return 0 ;;
-    done|finished|stop|complete)          printf 'done';        return 0 ;;
-    running|thinking|busy|tool)           printf 'running';     return 0 ;;
+    needs-input|permission|waiting|input) REPLY='needs-input'; return 0 ;;
+    done|finished|stop|complete)          REPLY='done';        return 0 ;;
+    running|thinking|busy|tool)           REPLY='running';     return 0 ;;
     ''|off|idle|none) ;;
-    *) printf '%s' "$opt"; return 0 ;;
+    *) REPLY="$opt"; return 0 ;;
   esac
 
-  [ "${TMUX_PICKER_AGENT:-0}" = '1' ] || { printf ''; return 0; }
+  [ "${TMUX_PICKER_AGENT:-0}" = '1' ] || { REPLY=''; return 0; }
 
   case "$cmd" in
     claude|codex|aider|cursor|node|python|python3|ollama|llm|opencode|pi) ;;
-    *) printf ''; return 0 ;;
+    *) REPLY=''; return 0 ;;
   esac
 
   tail="$(tmux capture-pane -p -t "$pane_id" -S -3 2>/dev/null | tr -d '\r')"
-  [ -n "$tail" ] || { printf 'idle'; return 0; }
+  [ -n "$tail" ] || { REPLY='idle'; return 0; }
 
   if printf '%s' "$tail" | grep -qiE 'do you want|allow|approve|\(y/n\)|permission|press enter|waiting for|\? '; then
-    printf 'needs-input'
+    REPLY='needs-input'
   elif printf '%s' "$tail" | grep -qiE 'esc to interrupt|thinking|working|running|generating|compiling|[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]'; then
-    printf 'running'
+    REPLY='running'
   else
-    printf 'idle'
+    REPLY='idle'
   fi
 }
 
 agent_rank() {
   case "$1" in
-    needs-input) printf 0 ;;
-    done)        printf 1 ;;
-    running)     printf 2 ;;
-    *)           printf 3 ;;
+    needs-input) REPLY=0 ;;
+    done)        REPLY=1 ;;
+    running)     REPLY=2 ;;
+    *)           REPLY=3 ;;
   esac
 }
 
 state_badge() {
   case "$1" in
-    needs-input) printf '%s[WAIT]%s' $'\033[38;5;214m' "$c_reset" ;;
-    done)        printf '%s[DONE]%s' $'\033[38;5;78m'  "$c_reset" ;;
-    running)     printf '%s[RUN]%s'  $'\033[38;5;81m'  "$c_reset" ;;
-    idle)        printf '%s[idle]%s' "$c_dim"          "$c_reset" ;;
-    *) ;;
+    needs-input) REPLY=$'\033[38;5;214m[WAIT]'"$c_reset" ;;
+    done)        REPLY=$'\033[38;5;78m[DONE]'"$c_reset" ;;
+    running)     REPLY=$'\033[38;5;81m[RUN]'"$c_reset" ;;
+    idle)        REPLY="${c_dim}[idle]${c_reset}" ;;
+    *) REPLY='' ;;
   esac
 }
 
 short_path() {
   local p="${1:-}"
-  [ -n "$p" ] || return 0
+  [ -n "$p" ] || { REPLY=''; return 0; }
   if [[ "$p" == "$HOME"* ]]; then
     p="~${p#$HOME}"
   fi
 
+  local parts
   IFS='/' read -r -a parts <<< "$p"
   local n=${#parts[@]}
   if [ "$n" -le 4 ]; then
-    printf '%s' "$p"
+    REPLY="$p"
     return
   fi
 
-  printf '…/%s/%s/%s' "${parts[$((n-3))]}" "${parts[$((n-2))]}" "${parts[$((n-1))]}"
+  REPLY="…/${parts[$((n-3))]}/${parts[$((n-2))]}/${parts[$((n-1))]}"
 }
 
 short_rel_path() {
   local rel="${1:-}"
-  [ -n "$rel" ] || return 0
+  [ -n "$rel" ] || { REPLY=''; return 0; }
 
+  local parts
   IFS='/' read -r -a parts <<< "$rel"
   local n=${#parts[@]}
   if [ "$n" -le 2 ]; then
-    printf '%s' "$rel"
+    REPLY="$rel"
     return
   fi
 
-  printf '…/%s/%s' "${parts[$((n-2))]}" "${parts[$((n-1))]}"
+  REPLY="…/${parts[$((n-2))]}/${parts[$((n-1))]}"
 }
 
 relative_hint() {
   local pane_path="${1:-}"
   local root="${2:-}"
-  [ -n "$pane_path" ] || return 0
-  [ -n "$root" ] || return 0
-  [ "$pane_path" != "$root" ] || return 0
+  [ -n "$pane_path" ] || { REPLY=''; return 0; }
+  [ -n "$root" ] || { REPLY=''; return 0; }
+  [ "$pane_path" != "$root" ] || { REPLY=''; return 0; }
 
   local rel="${pane_path#"$root"/}"
-  [ "$rel" != "$pane_path" ] || return 0
-  short_rel_path "$rel"
+  [ "$rel" != "$pane_path" ] || { REPLY=''; return 0; }
+  short_rel_path "$rel"   # sets REPLY
 }
 
 git_root_for_path() {
   local p="${1:-}"
-  [ -n "$p" ] || return 0
-  run_git -C "$p" rev-parse --show-toplevel || true
+  [ -n "$p" ] || { REPLY=''; return 0; }
+  REPLY="$(run_git -C "$p" rev-parse --show-toplevel 2>/dev/null || true)"
 }
 
 status_for_path() {
@@ -161,9 +161,9 @@ status_for_path() {
     if [ -z "$pane_id" ] && [ -n "$pane_path" ]; then
       # path is already the resolved repo toplevel (build_list resolves it
       # first); tell the status script so it skips a redundant rev-parse.
-      TMUX_GIT_TOPLEVEL="$pane_path" "$git_status_script" "" "$pane_path" || short_path "$pane_path"
+      REPLY="$(TMUX_GIT_TOPLEVEL="$pane_path" "$git_status_script" "" "$pane_path" 2>/dev/null)" || short_path "$pane_path"
     else
-      "$git_status_script" "$pane_id" "$pane_path" || short_path "$pane_path"
+      REPLY="$("$git_status_script" "$pane_id" "$pane_path" 2>/dev/null)" || short_path "$pane_path"
     fi
   else
     short_path "$pane_path"
@@ -174,10 +174,10 @@ status_meta_from_root_status() {
   local raw="${1:-}"
   local rest meta
 
-  [ -n "$raw" ] || return 0
+  [ -n "$raw" ] || { REPLY=''; return 0; }
   rest="${raw#* }"
   if [ "$rest" = "$raw" ]; then
-    printf '%s' "$raw"
+    REPLY="$raw"
     return 0
   fi
 
@@ -187,7 +187,7 @@ status_meta_from_root_status() {
     *) meta="$rest" ;;
   esac
 
-  printf '%s' "$meta"
+  REPLY="$meta"
 }
 
 render_list_status() {
@@ -197,18 +197,19 @@ render_list_status() {
   local repo meta rel out
 
   if [ -z "$root" ]; then
-    paint "$c_dim" "$(short_path "$pane_path")"
+    short_path "$pane_path"
+    paint "$c_dim" "$REPLY"   # sets REPLY
     return 0
   fi
 
-  repo="$(basename "$root")"
-  meta="$(status_meta_from_root_status "$root_status")"
-  rel="$(relative_hint "$pane_path" "$root")"
+  repo="${root##*/}"
+  status_meta_from_root_status "$root_status"; meta="$REPLY"
+  relative_hint "$pane_path" "$root"; rel="$REPLY"
 
-  out="$(paint "$c_repo" "$repo")"
+  paint "$c_repo" "$repo"; out="$REPLY"
   [ -n "$meta" ] && out+=" $meta"
-  [ -n "$rel" ] && out+=" $(paint "$c_dim" "· $rel")"
-  printf '%s' "$out"
+  if [ -n "$rel" ]; then paint "$c_dim" "· $rel"; out+=" $REPLY"; fi
+  REPLY="$out"
 }
 
 pane_location_hint() {
@@ -217,16 +218,17 @@ pane_location_hint() {
   local repo rel out
 
   if [ -z "$root" ]; then
-    paint "$c_dim" "$(short_path "$pane_path")"
+    short_path "$pane_path"
+    paint "$c_dim" "$REPLY"   # sets REPLY
     return 0
   fi
 
-  repo="$(basename "$root")"
-  rel="$(relative_hint "$pane_path" "$root")"
+  repo="${root##*/}"
+  relative_hint "$pane_path" "$root"; rel="$REPLY"
 
-  out="$(paint "$c_repo" "$repo")"
-  [ -n "$rel" ] && out+=" $(paint "$c_dim" "· $rel")"
-  printf '%s' "$out"
+  paint "$c_repo" "$repo"; out="$REPLY"
+  if [ -n "$rel" ]; then paint "$c_dim" "· $rel"; out+=" $REPLY"; fi
+  REPLY="$out"
 }
 
 session_meta() {
@@ -251,14 +253,14 @@ render_pane_line() {
   marker=' '
   [ "$pane_active" = '1' ] && marker='*'
   cmd="${pane_cmd:-shell}"
-  badge="$(state_badge "$state")"
-  loc="$(pane_location_hint "$pane_path" "$root")"
+  state_badge "$state"; badge="$REPLY"
+  pane_location_hint "$pane_path" "$root"; loc="$REPLY"
 
-  out="$(paint "$c_pane" "    ↳ $marker $window_index:$window_name $pane_id")"
+  paint "$c_pane" "    ↳ $marker $window_index:$window_name $pane_id"; out="$REPLY"
   [ -n "$badge" ] && out+=" $badge"
-  out+=" $(paint "$c_dim" "$cmd")"
+  paint "$c_dim" "$cmd"; out+=" $REPLY"
   [ -n "$loc" ] && out+="  $loc"
-  printf '%s' "$out"
+  REPLY="$out"
 }
 
 # build_list [all|waiting|running]
@@ -303,7 +305,7 @@ build_list() {
     if [[ -v root_cache["$pane_path"] ]]; then
       root="${root_cache[$pane_path]}"
     else
-      root="$(git_root_for_path "$pane_path")"
+      git_root_for_path "$pane_path"; root="$REPLY"
       root_cache["$pane_path"]="$root"
     fi
 
@@ -311,7 +313,7 @@ build_list() {
       if [[ -v root_status_cache["$root"] ]]; then
         root_status="${root_status_cache[$root]}"
       else
-        root_status="$(status_for_path "" "$root")"
+        status_for_path "" "$root"; root_status="$REPLY"
         root_status_cache["$root"]="$root_status"
       fi
     else
@@ -319,7 +321,7 @@ build_list() {
     fi
 
     sort_key="${root:-$pane_path}"
-    display="$(render_list_status "$pane_path" "$root" "$root_status")"
+    render_list_status "$pane_path" "$root" "$root_status"; display="$REPLY"
     sess_name["$sid"]="$sname"
     [ "${#sname}" -gt "$name_width" ] && name_width="${#sname}"
 
@@ -333,16 +335,16 @@ build_list() {
     if [[ -v root_cache["$pane_row_path"] ]]; then
       root="${root_cache[$pane_row_path]}"
     else
-      root="$(git_root_for_path "$pane_row_path")"
+      git_root_for_path "$pane_row_path"; root="$REPLY"
       root_cache["$pane_row_path"]="$root"
     fi
 
-    pane_state="$(normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd")"
-    pane_rank="$(agent_rank "$pane_state")"
+    normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd"; pane_state="$REPLY"
+    agent_rank "$pane_state"; pane_rank="$REPLY"
     cur_rank="${sess_attn[$sid]:-3}"
     [ "$pane_rank" -lt "$cur_rank" ] && sess_attn["$sid"]="$pane_rank"
 
-    pane_col="$(render_pane_line "$window_index" "$window_name" "$pane_id" "$pane_active" "$pane_cmd" "$pane_row_path" "$root" "$pane_state")"
+    render_pane_line "$window_index" "$window_name" "$pane_id" "$pane_active" "$pane_cmd" "$pane_row_path" "$root" "$pane_state"; pane_col="$REPLY"
     printf '%s\t%s\t%s\t%s\t%s\n' "$sid" "$window_index" "$pane_index" "$pane_id" "$pane_col" >> "$tmp_panes"
   done < <(pane_meta)
 
@@ -379,8 +381,8 @@ build_list() {
         waiting) [ "$attn" -eq 0 ] || continue ;;
         running) [ "$attn" -le 2 ] || continue ;;
       esac
-      session_col="$(printf '%-*s' "$name_width" "$sname")"
-      session_col="$(paint "$c_session" "$session_col")"
+      printf -v session_col '%-*s' "$name_width" "$sname"
+      paint "$c_session" "$session_col"; session_col="$REPLY"
       printf 'session\t%s\t%s\t%s\t  %s  %s\n' "$sid" "$sname" "$sid" "$session_col" "$display"
       printf '%s' "${pane_block[$sid]:-}"
     done
@@ -390,8 +392,8 @@ attn_list() {
   local sid pane_id pane_cmd activity pane_state rank
   while IFS=$'\t' read -r sid pane_id pane_cmd activity pane_state; do
     [ -n "$pane_id" ] || continue
-    pane_state="$(normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd")"
-    rank="$(agent_rank "$pane_state")"
+    normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd"; pane_state="$REPLY"
+    agent_rank "$pane_state"; rank="$REPLY"
     [ "$rank" -le 1 ] || continue
     printf '%s\t%s\t%s\t%s\n' "$rank" "${activity:-0}" "$sid" "$pane_id"
   done < <(tmux list-panes -a -F $'#{session_id}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{@agent_state}') |
@@ -444,11 +446,11 @@ preview_session_row() {
   [ "$attached" = "$hdr" ] && attached='0'
   [ "$window_count" = "$hdr" ] && window_count='?'
 
-  root="$(git_root_for_path "$pane_path")"
-  root_name="${root:+$(basename "$root")}"
+  git_root_for_path "$pane_path"; root="$REPLY"
+  root_name="${root:+${root##*/}}"
 
   if [ -n "$root" ] && [ "$pane_path" != "$root" ]; then
-    rel="$(relative_hint "$pane_path" "$root")"
+    relative_hint "$pane_path" "$root"; rel="$REPLY"
   else
     rel=''
   fi
@@ -474,11 +476,11 @@ preview_session_row() {
     if [[ -v root_cache["$pane_row_path"] ]]; then
       pane_root="${root_cache[$pane_row_path]}"
     else
-      pane_root="$(git_root_for_path "$pane_row_path")"
+      git_root_for_path "$pane_row_path"; pane_root="$REPLY"
       root_cache["$pane_row_path"]="$pane_root"
     fi
-    pane_loc="$(pane_location_hint "$pane_row_path" "$pane_root")"
-    pane_state="$(normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd")"
+    pane_location_hint "$pane_row_path" "$pane_root"; pane_loc="$REPLY"
+    normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd"; pane_state="$REPLY"
     active_mark=' '
     [ "$pane_active" = '1' ] && active_mark='*'
 
@@ -502,13 +504,13 @@ preview_pane_row() {
   pinfo="$(tmux display-message -p -t "$target_pane" $'#{pane_current_path}\t#{pane_current_command}\t#I:#W\t#{@agent_state}' 2>/dev/null || true)"
   IFS=$'\t' read -r pane_path pane_cmd window_line pane_state <<< "$pinfo"
   pane_path="${pane_path:-$HOME}"
-  root="$(git_root_for_path "$pane_path")"
-  root_name="${root:+$(basename "$root")}"
+  git_root_for_path "$pane_path"; root="$REPLY"
+  root_name="${root:+${root##*/}}"
   attached="$(tmux display-message -p -t "$sid" '#{session_attached}' 2>/dev/null || true)"
-  pane_state="$(normalize_agent_state "$target_pane" "$pane_state" "$pane_cmd")"
+  normalize_agent_state "$target_pane" "$pane_state" "$pane_cmd"; pane_state="$REPLY"
 
   if [ -n "$root" ] && [ "$pane_path" != "$root" ]; then
-    rel="$(relative_hint "$pane_path" "$root")"
+    relative_hint "$pane_path" "$root"; rel="$REPLY"
   else
     rel=''
   fi
