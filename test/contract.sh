@@ -43,6 +43,22 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$GOLDEN"
 
+echo "== grouping helper contract =="
+fn_file="$WORK/picker-functions.sh"
+awk '/^case "\$\{1:-\}" in/{exit} {print}' "$PICKER" > "$fn_file"
+# shellcheck source=/dev/null
+. "$fn_file"
+# sourcing the picker imports its strict mode; contract.sh intentionally uses
+# only set -u so pipeline probes don't fail on benign SIGPIPE from head/grep.
+set +e
+set +o pipefail
+set -u
+mkdir -p "$WORK/repo/.git" "$WORK/repo/.xtrm/worktrees/wt/sub" "$WORK/repo/.worktrees/wt"
+group_root_for_path "$WORK/repo/.xtrm/worktrees/wt/sub" "$WORK/repo/.xtrm/worktrees/wt"; assert_eq "group: .xtrm worktree under parent repo" "$WORK/repo" "$REPLY"
+group_root_for_path "$WORK/repo/.worktrees/wt" "$WORK/repo/.worktrees/wt"; assert_eq "group: .worktrees worktree under parent repo" "$WORK/repo" "$REPLY"
+group_root_for_path "$WORK/other" "$WORK/other"; assert_eq "group: normal root unchanged" "$WORK/other" "$REPLY"
+
+echo
 echo "== git-pane-status.sh contract =="
 
 # clean repo on main

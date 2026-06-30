@@ -252,6 +252,28 @@ git_root_for_path() {
   REPLY="$(run_git -C "$p" rev-parse --show-toplevel 2>/dev/null || true)"
 }
 
+# group_root_for_path <pane_path> <git_root> -> REPLY=sort/group key
+# keep git status/display tied to the actual worktree, but group known xtrm/tmux
+# worktree layouts under their parent repo so sp-* jobs don't float as separate
+# top-level repos in the picker.
+group_root_for_path() {
+  local pane_path="${1:-}"
+  local root="${2:-}"
+  local base=''
+
+  case "$pane_path" in
+    */.xtrm/worktrees/*) base="${pane_path%%/.xtrm/worktrees/*}" ;;
+    */.worktrees/*)      base="${pane_path%%/.worktrees/*}" ;;
+  esac
+
+  if [ -n "$base" ] && { [ -d "$base/.git" ] || [ -f "$base/.git" ]; }; then
+    REPLY="$base"
+    return 0
+  fi
+
+  REPLY="${root:-$pane_path}"
+}
+
 status_for_path() {
   local pane_id="${1:-}"
   local pane_path="${2:-}"
@@ -385,7 +407,7 @@ render_pane_line() {
 # build_list [all|waiting|running]
 build_list() {
   local filter="${1:-all}"
-  local tmp_sessions tmp_panes sid sname pane_id pane_path root sort_key display root_status name_width=12 session_col
+  local tmp_sessions tmp_panes sid sname pane_id pane_path root sort_key group_key display root_status name_width=12 session_col
   local window_index window_name pane_index pane_active pane_cmd pane_row_path pane_col pane_state pane_rank cur_rank
   local psid pwi ppi ppid pcol attn
   declare -A root_cache=()
@@ -439,7 +461,8 @@ build_list() {
       root_status=''
     fi
 
-    sort_key="${root:-$pane_path}"
+    group_root_for_path "$pane_path" "$root"; group_key="$REPLY"
+    sort_key="$group_key"
     render_list_status "$pane_path" "$root" "$root_status"; display="$REPLY"
     sess_name["$sid"]="$sname"
     [ "${#sname}" -gt "$name_width" ] && name_width="${#sname}"
