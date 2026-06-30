@@ -578,6 +578,51 @@ kill_target() {
   tmux kill-session -t "$sid"
 }
 
+# act_on_target <type> <sid> <target> <action>
+# act on a pane from the list without attaching. no-op on session rows (only
+# pane rows carry a usable target). cross-session safe: send-keys -t <pane>.
+# actions:
+#   approve   -> send 'y Enter'         (yes to a waiting agent permission)
+#   interrupt -> send 'C-c'             (cancel the current turn)
+#   message   -> prompt the operator for a one-line message, send it + Enter
+act_on_target() {
+  local type="$1"
+  local sid="$2"
+  local target="$3"
+  local action="$4"
+  local toast
+
+  # session rows have no pane target to act on. this guard keeps the binds safe
+  # when the highlight lands on a session line.
+  if [ "$type" != 'pane' ] || [ -z "$target" ]; then
+    tmux display-message "tmux-picker: nessun pane su cui agire (riga sessione)"
+    return 0
+  fi
+
+  case "$action" in
+    approve)
+      tmux send-keys -t "$target" 'y' Enter
+      toast="approvato $target"
+      ;;
+    interrupt)
+      tmux send-keys -t "$target" C-c
+      toast="interrotto $target"
+      ;;
+    message)
+      # command-prompt runs in the picker client; the typed line is then sent
+      # to the target pane via send-keys. %1 is command-prompt substitution.
+      tmux command-prompt -p 'invia:' "run-shell 'tmux send-keys -t \"$target\" \"%1\" Enter'"
+      return 0
+      ;;
+    *)
+      tmux display-message "tmux-picker: azione sconosciuta: $action"
+      return 1
+      ;;
+  esac
+
+  [ -n "$toast" ] && tmux display-message "tmux-picker: $toast"
+}
+
 case "${1:-}" in
   list)
     # Output cache removed (xtmux-rib.17): it froze agent-derived sort/badges
@@ -604,6 +649,14 @@ case "${1:-}" in
     shift
     kill_target "$@"
     ;;
+  act)
+    # act-on-preview (xtmux-rib.3): act on the highlighted pane without
+    # attaching. actions: approve | interrupt | message. invoked by the fzf
+    # binds ctrl-y / alt-i / ctrl-o.
+    shift
+    act_on_target "$@"
+    exit 0
+    ;;
   attn-jump)
     shift
     record_prev
@@ -617,7 +670,7 @@ case "${1:-}" in
   "")
     ;;
   *)
-    printf 'usage: %s [list [all|waiting|running]|preview <type> <sid> <name> <target>|popup <type> <sid> <target>|jump <type> <sid> <target>|kill <type> <sid> <target>|attn-jump <n>|jump-back]\n' "$0" >&2
+    printf 'usage: %s [list [all|waiting|running]|preview <type> <sid> <name> <target>|popup <type> <sid> <target>|jump <type> <sid> <target>|kill <type> <sid> <target>|act <type> <sid> <target> <approve|interrupt|message>|attn-jump <n>|jump-back]\n' "$0" >&2
     exit 2
     ;;
 esac
@@ -629,17 +682,17 @@ fi
 
 preview_window='right,62%,border-left,wrap,follow'
 preview_window_max='right,94%,border-left,wrap,follow'
-border_label=' Enter switch · Alt-Enter popup · Alt-x kill · ^A all ^W wait ^E run · Ctrl-r refresh · Ctrl-/ preview '
+border_label=' Enter switch · Alt-Enter popup · Alt-x kill · ^Y ok · Alt-I int · ^O msg · ^A all ^W wait ^E run · Ctrl-r refresh · Ctrl-/ preview '
 case "$mode" in
   compact-wrap)
     preview_window='right,68%,border-left,wrap,follow'
     preview_window_max='right,94%,border-left,wrap,follow'
-    border_label=' compact wrap · Enter switch · Alt-Enter popup · Alt-x kill · ^A/^W/^E filtri · Ctrl-r refresh '
+    border_label=' compact wrap · Enter switch · Alt-Enter popup · Alt-x kill · ^Y approve · Alt-I interrupt · ^O msg · ^A/^W/^E filtri · Ctrl-r refresh '
     ;;
   compact-nowrap)
     preview_window='right,68%,border-left,follow'
     preview_window_max='right,94%,border-left,follow'
-    border_label=' compact no-wrap · Enter switch · Alt-Enter popup · Alt-x kill · ^A/^W/^E filtri · Ctrl-r refresh '
+    border_label=' compact no-wrap · Enter switch · Alt-Enter popup · Alt-x kill · ^Y approve · Alt-I interrupt · ^O msg · ^A/^W/^E filtri · Ctrl-r refresh '
     ;;
 esac
 
@@ -670,6 +723,9 @@ choice="$({
   --bind="ctrl-e:change-prompt(run> )+reload($self list running)" \
   --bind="alt-p:change-preview-window($preview_window_max|$preview_window)" \
   --bind="alt-x:execute-silent($self kill {1} {2} {4})+reload($self list all)" \
+  --bind="ctrl-y:execute-silent($self act {1} {2} {4} approve)+reload($self list all)" \
+  --bind="alt-i:execute-silent($self act {1} {2} {4} interrupt)+reload($self list all)" \
+  --bind="ctrl-o:execute($self act {1} {2} {4} message)+reload($self list all)" \
   --bind="alt-enter:become($self popup {1} {2} {4})" \
   --preview "$self preview {1} {2} {3} {4}"
 )" || true

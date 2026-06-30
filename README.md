@@ -53,6 +53,9 @@ bind G display-popup -E -w 99% -h 97% "TMUX_PICKER_MODE=compact-nowrap $HOME/.lo
 |---|---|
 | `Enter` | switch client to session/pane |
 | `Alt-Enter` | attach in a new popup client |
+| `Ctrl-y` | approve waiting pane (send `y`) |
+| `Alt-i` | interrupt pane (`C-c`) |
+| `Ctrl-o` | send a line to the pane (prompt) |
 | `Alt-x` | kill session/pane |
 | `Alt-p` | toggle wide preview |
 | `Ctrl-a` / `Ctrl-w` / `Ctrl-e` | filter: all / waiting / running |
@@ -66,6 +69,7 @@ tmux-session-picker list [all|waiting|running]
 tmux-session-picker preview <type> <sid> <name> <target>
 tmux-session-picker popup   <type> <sid> <target>
 tmux-session-picker jump    <type> <sid> <target>
+tmux-session-picker act     <type> <sid> <target> <approve|interrupt|message>
 tmux-session-picker kill    <type> <sid> <target>
 tmux-session-picker attn-jump <n>
 tmux-session-picker jump-back

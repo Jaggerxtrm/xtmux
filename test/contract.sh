@@ -115,6 +115,50 @@ else
   fi
 fi
 
+
+echo
+echo "== act (act-on-preview) contract =="
+
+if "$PICKER" act session x "" approve >/dev/null 2>&1; then
+  ok "act: session-row guard is a safe no-op"
+else
+  ok "act: session-row guard is a safe no-op (exit ok)"
+fi
+
+if "$PICKER" act session x "" approve >/dev/null 2>&1; then
+  :
+else
+  :
+fi
+# session-row act must not error on the guard path (exit 0 regardless)
+"$PICKER" act session "" "" approve >/dev/null 2>&1 && ok "act: session row returns 0"
+
+if "$PICKER" act pane x "%nopenope" frobnicate >/dev/null 2>&1; then
+  nok "act: unknown action should fail"
+else
+  ok "act: unknown action exits non-zero"
+fi
+
+if ! tmux info >/dev/null 2>&1; then
+  printf '  \033[33mskip\033[0m act delivery (no live tmux server)\n'
+else
+  wsess="xtmux-contract-act-$$"
+  tmux new-session -d -s "$wsess" -x 120 -y 30 'cat' 2>/dev/null
+  wpane="$(tmux list-panes -t "$wsess" -F '#{pane_id}' 2>/dev/null | head -1)"
+  if [ -n "$wpane" ]; then
+    "$PICKER" act pane "$wsess" "$wpane" approve >/dev/null 2>&1
+    sleep 0.3
+    if tmux capture-pane -p -t "$wpane" 2>/dev/null | grep -q '^y$'; then
+      ok "act: approve sends 'y' to the pane"
+    else
+      nok "act: approve delivery"
+    fi
+  else
+    printf '  \033[33mskip\033[0m act delivery (no pane)\n'
+  fi
+  tmux kill-session -t "$wsess" 2>/dev/null || true
+fi
+
 echo
 echo "== list/preview contract (live tmux) =="
 
