@@ -648,6 +648,7 @@ case "${1:-}" in
   kill)
     shift
     kill_target "$@"
+    exit 0
     ;;
   act)
     # act-on-preview (xtmux-rib.3): act on the highlighted pane without
