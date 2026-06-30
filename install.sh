@@ -20,7 +20,8 @@ link() {
 
 link "$repo/bin/tmux-session-picker"      "$HOME/.local/bin/tmux-session-picker"
 link "$repo/scripts/git-pane-status.sh"   "$HOME/.tmux/scripts/git-pane-status.sh"
-chmod +x "$repo/bin/tmux-session-picker" "$repo/scripts/git-pane-status.sh"
+link "$repo/scripts/agent-state.sh"       "$HOME/.tmux/scripts/agent-state.sh"
+chmod +x "$repo/bin/tmux-session-picker" "$repo/scripts/git-pane-status.sh" "$repo/scripts/agent-state.sh"
 
 echo
 echo "Done. Reload tmux config if needed:  tmux source-file ~/.tmux.conf"

@@ -10,13 +10,14 @@ attention ranking, and live preview. Bash, no dependencies beyond `tmux` + `fzf`
 |---|---|
 | `bin/tmux-session-picker` | The picker: list / preview / jump / kill / attention flows |
 | `scripts/git-pane-status.sh` | Per-path git status line (also used by the tmux status bar) |
+| `scripts/agent-state.sh` | Shared hook target that writes pane `@agent_state` |
 
 `git-pane-status.sh` is shared: the picker calls it for repo rows, and the tmux
 status line calls it directly. Its CLI/output contract is stable.
 
 ## Install
 
-Symlinks the two files into their live locations (idempotent; backs up any
+Symlinks the three files into their live locations (idempotent; backs up any
 existing real file first):
 
 ```sh
@@ -27,6 +28,7 @@ Live paths:
 
 - `~/.local/bin/tmux-session-picker`  →  `bin/tmux-session-picker`
 - `~/.tmux/scripts/git-pane-status.sh`  →  `scripts/git-pane-status.sh`
+- `~/.tmux/scripts/agent-state.sh`  →  `scripts/agent-state.sh`
 
 Then bind in `~/.tmux.conf`:
 
@@ -69,6 +71,10 @@ tmux-session-picker attn-jump <n>
 tmux-session-picker jump-back
 ```
 
+## Agent state hooks
+
+See [`docs/agent-state-hooks.md`](docs/agent-state-hooks.md). Claude Code can emit `running`, `needs-input`, `done`, and `off`; pi is supported via `extensions/pi-agent-state.ts` for `running`, `done`, `idle`, and `off` (pi has no documented `needs-input` extension event yet).
+
 ## Tuning
 
 | Env | Default | Effect |
@@ -92,6 +98,7 @@ make test-regen
 
 - deterministic `scripts/git-pane-status.sh` golden snapshots for clean, dirty,
   stash, ahead, non-repo, and `TMUX_GIT_TOPLEVEL` fast-path cases
+- `scripts/agent-state.sh` no-op/validation/live pane-option write
 - live `tmux-session-picker list` TSV shape (`type sid name target display`)
 - live preview smoke and bad-argument exit behavior
 

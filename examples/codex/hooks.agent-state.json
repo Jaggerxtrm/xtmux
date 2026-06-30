@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.tmux/scripts/agent-state.sh running",
+            "statusMessage": "Marking pane running"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.tmux/scripts/agent-state.sh idle",
+            "statusMessage": "Marking pane idle"
+          }
+        ]
+      }
+    ]
+  }
+}

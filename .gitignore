@@ -8,3 +8,6 @@
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Local Serena project metadata
+.serena/

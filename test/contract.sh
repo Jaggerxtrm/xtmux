@@ -7,6 +7,7 @@ ROOT="$(cd "$HERE/.." && pwd)"
 GOLDEN="$HERE/golden"
 STATUS="$ROOT/scripts/git-pane-status.sh"
 PICKER="$ROOT/bin/tmux-session-picker"
+AGENT_STATE="$ROOT/scripts/agent-state.sh"
 . "$HERE/lib/fixtures.sh"
 
 pass=0
@@ -83,6 +84,36 @@ if [ "$REGEN" = 1 ]; then snapshot status-notrepo "$WORK/notrepo.act"; else asse
 fast="$(TMUX_GIT_TOPLEVEL="$WORK/clean" "$STATUS" "" "$WORK/clean" 2>/dev/null)"
 standalone="$("$STATUS" "" "$WORK/clean" 2>/dev/null)"
 if [ "$REGEN" = 0 ]; then assert_eq "TMUX_GIT_TOPLEVEL fast path == standalone" "$standalone" "$fast"; fi
+
+
+echo
+echo "== agent-state.sh contract =="
+
+if env -u TMUX_PANE "$AGENT_STATE" running >/dev/null 2>&1; then
+  ok "agent-state: no-op outside tmux"
+else
+  nok "agent-state: no-op outside tmux"
+fi
+
+if "$AGENT_STATE" nope >/dev/null 2>&1; then
+  nok "agent-state: invalid state exits non-zero"
+else
+  ok "agent-state: invalid state exits non-zero"
+fi
+
+if ! tmux info >/dev/null 2>&1; then
+  printf '  \033[33mskip\033[0m agent-state pane write (no live tmux server)\n'
+else
+  target="$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null | head -1)"
+  if [ -n "$target" ]; then
+    TMUX_PANE="$target" "$AGENT_STATE" needs-input >/dev/null 2>&1
+    got="$(tmux display-message -p -t "$target" '#{@agent_state}' 2>/dev/null || true)"
+    if [ "$got" = "needs-input" ]; then ok "agent-state: writes pane option"; else nok "agent-state: writes pane option (got '$got')"; fi
+    TMUX_PANE="$target" "$AGENT_STATE" off >/dev/null 2>&1 || true
+  else
+    printf '  \033[33mskip\033[0m agent-state pane write (no panes)\n'
+  fi
+fi
 
 echo
 echo "== list/preview contract (live tmux) =="
