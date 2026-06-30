@@ -80,10 +80,26 @@ tmux-session-picker jump-back
 | `TMUX_ASCII_ICONS` | `0` | `1` uses ASCII `br`/`path` instead of Nerd Font glyphs |
 | `TMUX_GIT_TOPLEVEL` | — | Caller-supplied repo root; skips a `rev-parse` in the status script |
 
+## Testing
+
+```sh
+make test
+# or regenerate status-line goldens after an intentional output-contract change:
+make test-regen
+```
+
+`test/contract.sh` checks:
+
+- deterministic `scripts/git-pane-status.sh` golden snapshots for clean, dirty,
+  stash, ahead, non-repo, and `TMUX_GIT_TOPLEVEL` fast-path cases
+- live `tmux-session-picker list` TSV shape (`type sid name target display`)
+- live preview smoke and bad-argument exit behavior
+
 ## Performance
 
-See [`docs/perf-audit.md`](docs/perf-audit.md). Headline: warm list ~0.5 s
-(fresh — agent state read live), cold build ~0.85 s, preview ~95 ms.
+See [`docs/perf-audit.md`](docs/perf-audit.md). Current measured headline:
+warm list ~122 ms (fresh — agent state read live), cold build ~484 ms,
+preview ~95 ms.
 
 The list output is **never** cached as a whole — only the expensive, near-static
 git half (path→root, root→status) is cached. Agent state (`@agent_state`) and the

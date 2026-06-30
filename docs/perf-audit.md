@@ -105,27 +105,28 @@ already cache-immune (direct `tmux list-panes`) and remain so.
 
 ### Results
 
-| Path | Stale-cache (regression) | After split (correct) |
-|---|---|---|
-| `list` cold (git-table miss) | ~0.65 s | ~0.85 s |
-| `list` warm (git-table hit, **state fresh**) | ~20 ms (stale) | **~0.5 s (correct)** |
-| `ctrl-r` (no cache) | ~0.65 s | ~0.85 s |
-| `@agent_state` → badge lag | up to 3 s | **immediate** |
-| `waiting`/`running` filter freshness | up to 3 s stale | **always fresh** |
-| git calls in warm `list` | 0 (cached output) | **0** (git-table hit) |
-| tmux calls in `list` | 2 | 2 |
+| Path | Stale-cache (regression) | After split (correct) | After REPLY refactor |
+|---|---|---|---|
+| `list` cold (git-table miss) | ~0.65 s | ~0.85 s | **~0.48 s** |
+| `list` warm (git-table hit, **state fresh**) | ~20 ms (stale) | ~0.5 s (correct) | **~0.12 s (correct)** |
+| `ctrl-r` (no cache) | ~0.65 s | ~0.85 s | ~0.88 s (git-bound) |
+| `@agent_state` → badge lag | up to 3 s | **immediate** | **immediate** |
+| `waiting`/`running` filter freshness | up to 3 s stale | **always fresh** | **always fresh** |
+| git calls in warm `list` | 0 (cached output) | **0** (git-table hit) | **0** |
+| tmux calls in `list` | 2 | 2 | 2 |
 
 ### Honest comparison vs the pre-audit baseline
 
 The pre-audit picker rebuilt everything every call (~1.0–1.4 s always). The
-stale-cache version delivered ~20 ms warm but at the cost of correctness. This
-fix keeps the cold-path git caching (real win) and makes the warm path correct
-at ~0.5 s — still a ~2× improvement over the original, with accurate state.
+stale-cache version delivered ~20 ms warm but at the cost of correctness. The
+split-cache fix restored correctness and kept cold-path git caching. The later
+REPLY refactor removed hot-loop subshell overhead, bringing the correct warm
+path to ~122 ms without caching agent-derived output.
 
-### Why not a faster warm path?
+### Why no rendered-output cache?
 
-The ~0.5 s warm cost is pure bash overhead (21 panes × `paint()` subshells +
-`render_pane_line`/`render_list_status` per row). A future task could cache the
-rendered row *structure* (without badges) and stamp agent state at render time,
-targeting warm ~50 ms — but that's a separate refactor (not in scope for the
-correctness fix).
+Rendered-output caching freezes badges, attention sort, and the `waiting` / `running`
+filters. The correct invariant is: cache git/static data only; read and render
+agent state live. With the REPLY refactor the correct warm path is already below
+the usual perception threshold (~200 ms), so a staleness-prone rendered cache is
+not worth it.
