@@ -210,8 +210,8 @@ else
   sp_sid="$(tmux display-message -p -t "$sp_sess" '#{session_id}' 2>/dev/null)"
 
   sp_rows="$("$PICKER" list all 2>/dev/null | grep "$sp_sess" || true)"
-  if printf '%s' "$sp_rows" | grep -q '\[sp\]' && printf '%s' "$sp_rows" | grep -q '\[stale\]' && printf '%s' "$sp_rows" | grep -q 'executor'; then
-    ok "specialist: sp-* pane gets [sp] [stale] role badge"
+  if printf '%s' "$sp_rows" | grep -q '\[sp\]' && printf '%s' "$sp_rows" | grep -q 'executor' && ! printf '%s' "$sp_rows" | grep -q '\[stale\]'; then
+    ok "specialist: sp-* pane gets [sp] role badge without false [stale]"
   else
     nok "specialist: sp-* list badge"
     printf '      rows: %s\n' "$sp_rows"

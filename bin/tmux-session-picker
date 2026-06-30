@@ -156,6 +156,24 @@ sp_bead_from_pane() {
   done
 }
 
+# sp_proc_state_from_pane <pane_pid> -> REPLY=running|'' via process tree.
+# preview-only. detects a live specialists runner/feed process without calling sp.
+sp_proc_state_from_pane() {
+  local pid="$1" proc cmdline
+  REPLY=''
+  [ -n "$pid" ] || return 0
+  for proc in "$pid" $(pgrep -P "$pid" 2>/dev/null || true); do
+    [ -n "$proc" ] || continue
+    cmdline="$(ps -o args= -p "$proc" 2>/dev/null | head -1 || true)"
+    case "$cmdline" in
+      *'/specialists/dist/index.js run '*|*'/specialists/dist/index.js feed '*|*' specialists/dist/index.js run '*|*' specialists/dist/index.js feed '*)
+        REPLY='running'
+        return 0
+        ;;
+    esac
+  done
+}
+
 # sp_meta <session_name> <pane_pid> -> sets globals sp_role sp_bead sp_state sp_stale
 # one-stop resolution for a specialist pane. sp_stale=1 means the pane is alive
 # but there is no explicit live specialist state, so it is a cleanup target.
@@ -166,11 +184,10 @@ sp_meta() {
   sp_role="$REPLY"
   [ -n "$sp_role" ] || return 0
   sp_bead_from_pane "$2"; sp_bead="$REPLY"
+  sp_proc_state_from_pane "$2"; sp_state="$REPLY"
   # no `sp ps` integration by design: it was too slow/unreliable for the picker.
-  # explicit @agent_state still wins elsewhere; otherwise a live sp-* pane is a
-  # stale/orphan cleanup target.
-  sp_state=''
-  sp_stale=1
+  # preview can inspect process tree: if no runner/feed is alive, mark stale.
+  [ -z "$sp_state" ] && sp_stale=1 || sp_stale='' 
 }
 
 # sp_badge -> REPLY = colored [sp] + optional [stale]. used in render_pane_line.
@@ -343,8 +360,7 @@ render_pane_line() {
   # specialist awareness (xtmux-rib.4): fast list path uses session name + live
   # pane pid only. bead/job details are resolved in preview to keep list warm fast.
   sp_is_specialist "$session_name" "$pane_pid"; sp_role="$REPLY"
-  sp_bead=''; sp_state=''; sp_stale=''
-  [ -n "$sp_role" ] && [ -z "$state" -o "$state" = 'done' ] && sp_stale=1
+  sp_bead=''; sp_state=''; sp_stale='' 
 
   paint "$c_pane" "    ↳ $marker $window_index:$window_name $pane_id"; out="$REPLY"
   if [ -n "$sp_role" ]; then
@@ -446,12 +462,10 @@ build_list() {
     # specialist state takes precedence when tracked: a waiting specialist should
     # rank for attention like a waiting agent pane (xtmux-rib.4).
     # fast specialist detection for list hot path: session name + live pane pid.
-    # no pgrep/ps/sp here; bead/details are resolved in preview only.
+    # no pgrep/ps/sp here; bead/details are resolved in preview only. do not
+    # synthesize stale/running state without process-tree evidence; explicit
+    # @agent_state is the only state source in the hot list path.
     sp_is_specialist "${sess_name[$sid]:-}" "$pane_pid"; sp_role="$REPLY"
-    if [ -n "$sp_role" ] && [ -z "$pane_state" ]; then
-      # untracked sp-* pane: stale cleanup target. explicit @agent_state still wins.
-      pane_state='done'
-    fi
     agent_rank "$pane_state"; pane_rank="$REPLY"
     cur_rank="${sess_attn[$sid]:-3}"
     [ "$pane_rank" -lt "$cur_rank" ] && sess_attn["$sid"]="$pane_rank"
@@ -506,9 +520,8 @@ attn_list() {
     [ -n "$pane_id" ] || continue
     normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd"; pane_state="$REPLY"
     sp_is_specialist "$sname" "$pane_pid"; sp_role="$REPLY"
-    if [ -n "$sp_role" ] && [ -z "$pane_state" ]; then
-      pane_state='done'
-    fi
+    # no synthetic specialist state here: attn-jump/waiting use explicit
+    # @agent_state only for sp panes, keeping the hot path truthful.
     agent_rank "$pane_state"; rank="$REPLY"
     [ "$rank" -le 1 ] || continue
     printf '%s	%s	%s	%s

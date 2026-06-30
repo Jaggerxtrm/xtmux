@@ -83,16 +83,17 @@ see [`docs/agent-state-hooks.md`](docs/agent-state-hooks.md). claude code can em
 ## specialist awareness
 
 `sp-*` specialist sessions are detected by session name + live pane pid only.
-panes show `[sp]` plus the specialist role; without an explicit `@agent_state`
-they are marked `[stale]` and ranked as cleanup targets. specialist pane preview
-adds a header like:
+panes show `[sp]` plus the specialist role in the hot list path. the list does
+not call `sp ps`, `pgrep`, or `ps`, so it does not invent `[stale]` without
+process evidence. specialist pane/session preview may inspect the process tree
+and adds a header like:
 
 ```text
 specialist job=<session-hash> bead=<bead-id> role=<role> state=<state>
 bead <bd show one-line summary>
 ```
 
-no capture-pane guessing and no `sp ps` call is used for list detection.
+no capture-pane guessing and no `sp ps` call is used for list detection; stale/running specialist state is preview-only unless `@agent_state` is explicitly set.
 
 ## tuning
 
