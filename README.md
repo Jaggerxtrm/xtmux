@@ -83,10 +83,12 @@ see [`docs/agent-state-hooks.md`](docs/agent-state-hooks.md). claude code can em
 ## specialist awareness
 
 `sp-*` specialist sessions are detected by session name + live pane pid only.
-panes show `[sp]` plus the specialist role in the hot list path. the list does
-not call `sp ps`, `pgrep`, or `ps`, so it does not invent `[stale]` without
-process evidence. specialist pane/session preview may inspect the process tree
-and adds a header like:
+they render as pane rows, not standalone top-level session rows, so specialist
+jobs sit in the repo bucket instead of looking like independent repos. panes show
+`[sp]` plus the specialist role in the hot list path. the list does not call
+`sp ps`, `pgrep`, or `ps`, so it does not invent `[stale]` without process
+evidence. specialist pane/session preview may inspect the process tree and adds
+a header like:
 
 ```text
 specialist job=<session-hash> bead=<bead-id> role=<role> state=<state>
