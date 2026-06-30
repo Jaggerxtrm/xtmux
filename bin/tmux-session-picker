@@ -20,6 +20,8 @@ c_dim=$'\033[38;5;244m'
 c_session=$'\033[38;5;255m'
 c_repo=$'\033[38;5;81m'
 c_pane=$'\033[38;5;246m'
+c_sp=$'\033[38;5;141m'      # specialist (sp-*) badge: violet
+c_stale=$'\033[38;5;130m'   # orphan/finished-but-open specialist: dark amber
 
 run_git() {
   if command -v timeout >/dev/null 2>&1; then
@@ -60,7 +62,7 @@ normalize_agent_state() {
     needs-input|permission|waiting|input) REPLY='needs-input'; return 0 ;;
     done|finished|stop|complete)          REPLY='done';        return 0 ;;
     running|thinking|busy|tool)           REPLY='running';     return 0 ;;
-    ''|off|idle|none) ;;
+    ''|-|off|idle|none) ;;
     *) REPLY="$opt"; return 0 ;;
   esac
 
@@ -100,6 +102,86 @@ state_badge() {
     idle)        REPLY="${c_dim}[idle]${c_reset}" ;;
     *) REPLY='' ;;
   esac
+}
+
+# --- specialist (sp-*) awareness (xtmux-rib.4) -----------------------------
+# detection is name + pane_pid based (no capture-pane cost). a pane is specialist
+# if its session name matches ^sp-<role>-<hex>$ and the pane_pid is alive.
+#
+# hot list path never calls sp/jq/ps/pgrep: it only checks session name + pane
+# pid. preview may inspect the pane process tree to extract --bead, but the picker
+# does not call `sp ps` or read specialists job db in normal operation.
+# a live sp-* pane is treated as [stale] unless an explicit @agent_state says
+# otherwise (e.g. needs-input -> [wait]).
+
+# sp_role_from_name <session_name> -> REPLY=role (or empty)
+sp_role_from_name() {
+  local name="$1"
+  REPLY=''
+  [[ "$name" =~ ^sp-([a-z][a-z0-9-]*)-[0-9a-f]+$ ]] || return 0
+  REPLY="${BASH_REMATCH[1]}"
+}
+
+# sp_hash_from_name <session_name> -> REPLY=6-ish suffix hash (or empty)
+sp_hash_from_name() {
+  local name="$1"
+  REPLY=''
+  [[ "$name" =~ ^sp-[a-z][a-z0-9-]*-([0-9a-f]+)$ ]] || return 0
+  REPLY="${BASH_REMATCH[1]}"
+}
+
+# sp_is_specialist <session_name> <pane_pid> -> REPLY=role if specialist else empty
+sp_is_specialist() {
+  local name="$1" pid="$2"
+  sp_role_from_name "$name"
+  [ -n "$REPLY" ] || return 0
+  # pane must be alive. -0 kills with signal 0 (no-op test).
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || REPLY=''
+}
+
+# sp_bead_from_pane <pane_pid> -> REPLY=bead id (or empty), via child cmdline.
+# the specialists bun process is a child of the pane shell; its cmdline carries
+# --bead <id>. tolerant: returns empty if not found.
+sp_bead_from_pane() {
+  local pid="$1" proc cmdline
+  REPLY=''
+  [ -n "$pid" ] || return 0
+  for proc in "$pid" $(pgrep -P "$pid" 2>/dev/null || true); do
+    [ -n "$proc" ] || continue
+    cmdline="$(ps -o args= -p "$proc" 2>/dev/null | head -1 || true)"
+    if [[ "$cmdline" =~ --bead[[:space:]]+([^[:space:]]+) ]]; then
+      REPLY="${BASH_REMATCH[1]}"
+      return 0
+    fi
+  done
+}
+
+# sp_meta <session_name> <pane_pid> -> sets globals sp_role sp_bead sp_state sp_stale
+# one-stop resolution for a specialist pane. sp_stale=1 means the pane is alive
+# but there is no explicit live specialist state, so it is a cleanup target.
+sp_role=''; sp_bead=''; sp_state=''; sp_stale=''
+sp_meta() {
+  sp_role=''; sp_bead=''; sp_state=''; sp_stale=''
+  sp_is_specialist "$1" "$2"
+  sp_role="$REPLY"
+  [ -n "$sp_role" ] || return 0
+  sp_bead_from_pane "$2"; sp_bead="$REPLY"
+  # no `sp ps` integration by design: it was too slow/unreliable for the picker.
+  # explicit @agent_state still wins elsewhere; otherwise a live sp-* pane is a
+  # stale/orphan cleanup target.
+  sp_state=''
+  sp_stale=1
+}
+
+# sp_badge -> REPLY = colored [sp] + optional [stale]. used in render_pane_line.
+sp_badge() {
+  local out
+  paint "$c_sp" '[sp]'; out="$REPLY"
+  if [ "${sp_stale:-0}" = 1 ]; then
+    out+=" "
+    paint "$c_stale" '[stale]'; out+="$REPLY"
+  fi
+  REPLY="$out"
 }
 
 short_path() {
@@ -236,7 +318,7 @@ session_meta() {
 }
 
 pane_meta() {
-  tmux list-panes -a -F $'#{session_id}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{@agent_state}'
+  tmux list-panes -a -F $'#{session_id}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}'
 }
 
 render_pane_line() {
@@ -248,7 +330,9 @@ render_pane_line() {
   local pane_path="$6"
   local root="$7"
   local state="${8:-}"
-  local marker cmd badge loc out
+  local session_name="${9:-}"
+  local pane_pid="${10:-}"
+  local marker cmd badge loc out sp_badge_str role_str
 
   marker=' '
   [ "$pane_active" = '1' ] && marker='*'
@@ -256,9 +340,28 @@ render_pane_line() {
   state_badge "$state"; badge="$REPLY"
   pane_location_hint "$pane_path" "$root"; loc="$REPLY"
 
+  # specialist awareness (xtmux-rib.4): fast list path uses session name + live
+  # pane pid only. bead/job details are resolved in preview to keep list warm fast.
+  sp_is_specialist "$session_name" "$pane_pid"; sp_role="$REPLY"
+  sp_bead=''; sp_state=''; sp_stale=''
+  [ -n "$sp_role" ] && [ -z "$state" -o "$state" = 'done' ] && sp_stale=1
+
   paint "$c_pane" "    ↳ $marker $window_index:$window_name $pane_id"; out="$REPLY"
-  [ -n "$badge" ] && out+=" $badge"
-  paint "$c_dim" "$cmd"; out+=" $REPLY"
+  if [ -n "$sp_role" ]; then
+    sp_badge; sp_badge_str="$REPLY"
+    out+=" $sp_badge_str"
+    # show real state badges for specialists too (e.g. [wait] in the waiting
+    # filter). do not show the synthetic [done] used only to rank stale cleanup.
+    if [ -n "$badge" ] && ! { [ "${sp_stale:-0}" = 1 ] && [ -z "$sp_state" ] && [ "$state" = 'done' ]; }; then
+      out+=" $badge"
+    fi
+    paint "$c_sp" "$sp_role"; role_str="$REPLY"
+    [ -n "$sp_bead" ] && role_str+=" $c_dim· $sp_bead$c_reset"
+    out+=" $role_str"
+  else
+    [ -n "$badge" ] && out+=" $badge"
+    paint "$c_dim" "$cmd"; out+=" $REPLY"
+  fi
   [ -n "$loc" ] && out+="  $loc"
   REPLY="$out"
 }
@@ -328,7 +431,7 @@ build_list() {
     printf '%s\t%s\t%s\t%s\n' "$sort_key" "$sid" "$sname" "$display" >> "$tmp_sessions"
   done < <(session_meta)
 
-  while IFS=$'\t' read -r sid window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_state; do
+  while IFS=$'\t' read -r sid window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_state pane_pid; do
     [ -n "$sid" ] || continue
     pane_row_path="${pane_row_path:-$HOME}"
 
@@ -340,11 +443,20 @@ build_list() {
     fi
 
     normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd"; pane_state="$REPLY"
+    # specialist state takes precedence when tracked: a waiting specialist should
+    # rank for attention like a waiting agent pane (xtmux-rib.4).
+    # fast specialist detection for list hot path: session name + live pane pid.
+    # no pgrep/ps/sp here; bead/details are resolved in preview only.
+    sp_is_specialist "${sess_name[$sid]:-}" "$pane_pid"; sp_role="$REPLY"
+    if [ -n "$sp_role" ] && [ -z "$pane_state" ]; then
+      # untracked sp-* pane: stale cleanup target. explicit @agent_state still wins.
+      pane_state='done'
+    fi
     agent_rank "$pane_state"; pane_rank="$REPLY"
     cur_rank="${sess_attn[$sid]:-3}"
     [ "$pane_rank" -lt "$cur_rank" ] && sess_attn["$sid"]="$pane_rank"
 
-    render_pane_line "$window_index" "$window_name" "$pane_id" "$pane_active" "$pane_cmd" "$pane_row_path" "$root" "$pane_state"; pane_col="$REPLY"
+    render_pane_line "$window_index" "$window_name" "$pane_id" "$pane_active" "$pane_cmd" "$pane_row_path" "$root" "$pane_state" "${sess_name[$sid]:-}" "$pane_pid"; pane_col="$REPLY"
     printf '%s\t%s\t%s\t%s\t%s\n' "$sid" "$window_index" "$pane_index" "$pane_id" "$pane_col" >> "$tmp_panes"
   done < <(pane_meta)
 
@@ -389,15 +501,20 @@ build_list() {
 }
 
 attn_list() {
-  local sid pane_id pane_cmd activity pane_state rank
-  while IFS=$'\t' read -r sid pane_id pane_cmd activity pane_state; do
+  local sid sname pane_id pane_cmd activity pane_state pane_pid rank
+  while IFS=$'	' read -r sid sname pane_id pane_cmd activity pane_state pane_pid; do
     [ -n "$pane_id" ] || continue
     normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd"; pane_state="$REPLY"
+    sp_is_specialist "$sname" "$pane_pid"; sp_role="$REPLY"
+    if [ -n "$sp_role" ] && [ -z "$pane_state" ]; then
+      pane_state='done'
+    fi
     agent_rank "$pane_state"; rank="$REPLY"
     [ "$rank" -le 1 ] || continue
-    printf '%s\t%s\t%s\t%s\n' "$rank" "${activity:-0}" "$sid" "$pane_id"
-  done < <(tmux list-panes -a -F $'#{session_id}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{@agent_state}') |
-    sort -t $'\t' -k1,1n -k2,2nr
+    printf '%s	%s	%s	%s
+' "$rank" "${activity:-0}" "$sid" "$pane_id"
+  done < <(tmux list-panes -a -F $'#{session_id}	#{session_name}	#{pane_id}	#{pane_current_command}	#{window_activity}	#{?@agent_state,#{@agent_state},-}	#{pane_pid}') |
+    sort -t $'	' -k1,1n -k2,2nr
 }
 
 record_prev() {
@@ -434,8 +551,8 @@ preview_session_row() {
   local sid="$1"
   local name="$2"
   local pane_path root root_name rel attached window_count pane_count
-  local window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state
-  local pane_root pane_loc active_mark hdr panes_raw
+  local window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state pane_pid
+  local pane_root pane_loc active_mark hdr panes_raw first_pane_pid sp_hash sp_view_state bd_line
   declare -A root_cache=()
 
   pane_path="$(tmux display-message -p -t "$sid" '#{pane_current_path}' 2>/dev/null || true)"
@@ -456,7 +573,7 @@ preview_session_row() {
   fi
 
   # Single scoped call: only this session's panes (was list-panes -a | awk, twice).
-  panes_raw="$(tmux list-panes -s -t "$sid" -F $'#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{@agent_state}' 2>/dev/null || true)"
+  panes_raw="$(tmux list-panes -s -t "$sid" -F $'#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}' 2>/dev/null || true)"
   if [ -n "$panes_raw" ]; then
     pane_count="$(printf '%s\n' "$panes_raw" | grep -c .)"
   else
@@ -469,9 +586,22 @@ preview_session_row() {
     printf 'session=%s\n' "$name"
   fi
   [ -n "$rel" ] && printf 'cwd=%s\n' "$rel"
+  first_pane_pid="$(printf '%s\n' "$panes_raw" | awk -F'\t' 'NF{print $13; exit}')"
+  sp_meta "$name" "$first_pane_pid"
+  if [ -n "$sp_role" ]; then
+    sp_hash_from_name "$name"; sp_hash="$REPLY"
+    sp_view_state="${sp_state:-}"
+    [ -z "$sp_view_state" ] && [ "${sp_stale:-0}" = 1 ] && sp_view_state='stale'
+    [ -z "$sp_view_state" ] && sp_view_state='unknown'
+    printf 'specialist job=%s bead=%s role=%s state=%s\n' "${sp_hash:-?}" "${sp_bead:-?}" "$sp_role" "$sp_view_state"
+    if [ -n "$sp_bead" ] && command -v bd >/dev/null 2>&1; then
+      bd_line="$(cd "$pane_path" 2>/dev/null && bd show "$sp_bead" 2>/dev/null | head -1 || true)"
+      [ -n "$bd_line" ] && printf 'bead %s\n' "$bd_line"
+    fi
+  fi
   printf 'windows=%s  panes=%s  attached=%s\n\n' "${window_count:-?}" "${pane_count:-0}" "${attached:-0}"
 
-  while IFS=$'\t' read -r window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state; do
+  while IFS=$'\t' read -r window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state pane_pid; do
     pane_row_path="${pane_row_path:-$pane_path}"
     if [[ -v root_cache["$pane_row_path"] ]]; then
       pane_root="${root_cache[$pane_row_path]}"
@@ -485,7 +615,7 @@ preview_session_row() {
     [ "$pane_active" = '1' ] && active_mark='*'
 
     printf '[%s:%s.%s%s] %s' "$window_index" "$window_name" "$pane_index" "$active_mark" "${pane_cmd:-shell}"
-    [ -n "$pane_state" ] && printf ' <%s>' "$pane_state"
+    [ -n "$pane_state" ] && [ "$pane_state" != '-' ] && printf ' <%s>' "$pane_state"
     printf '  %sx%s +%s+%s' "$pane_width" "$pane_height" "$pane_left" "$pane_top"
     [ -n "$pane_loc" ] && printf '  %s' "$pane_loc"
     printf '\n'
@@ -498,11 +628,11 @@ preview_pane_row() {
   local sid="$1"
   local name="$2"
   local target_pane="$3"
-  local pane_path root root_name rel attached window_line pane_cmd pane_state
+  local pane_path root root_name rel attached window_line pane_cmd pane_state pane_pid sp_hash sp_view_state bd_line
 
   local pinfo
-  pinfo="$(tmux display-message -p -t "$target_pane" $'#{pane_current_path}\t#{pane_current_command}\t#I:#W\t#{@agent_state}' 2>/dev/null || true)"
-  IFS=$'\t' read -r pane_path pane_cmd window_line pane_state <<< "$pinfo"
+  pinfo="$(tmux display-message -p -t "$target_pane" $'#{pane_current_path}	#{pane_current_command}	#I:#W	#{?@agent_state,#{@agent_state},-}	#{pane_pid}' 2>/dev/null || true)"
+  IFS=$'	' read -r pane_path pane_cmd window_line pane_state pane_pid <<< "$pinfo"
   pane_path="${pane_path:-$HOME}"
   git_root_for_path "$pane_path"; root="$REPLY"
   root_name="${root:+${root##*/}}"
@@ -516,14 +646,35 @@ preview_pane_row() {
   fi
 
   if [ -n "$root_name" ]; then
-    printf 'session=%s  root=%s\n' "$name" "$root_name"
+    printf 'session=%s  root=%s
+' "$name" "$root_name"
   else
-    printf 'session=%s\n' "$name"
+    printf 'session=%s
+' "$name"
   fi
-  [ -n "$rel" ] && printf 'cwd=%s\n' "$rel"
+  [ -n "$rel" ] && printf 'cwd=%s
+' "$rel"
+
+  sp_meta "$name" "$pane_pid"
+  if [ -n "$sp_role" ]; then
+    sp_hash_from_name "$name"; sp_hash="$REPLY"
+    sp_view_state="${sp_state:-}"
+    [ -z "$sp_view_state" ] && [ "${sp_stale:-0}" = 1 ] && sp_view_state='stale'
+    [ -z "$sp_view_state" ] && sp_view_state='unknown'
+    printf 'specialist job=%s bead=%s role=%s state=%s
+' "${sp_hash:-?}" "${sp_bead:-?}" "$sp_role" "$sp_view_state"
+    if [ -n "$sp_bead" ] && command -v bd >/dev/null 2>&1; then
+      bd_line="$(cd "$pane_path" 2>/dev/null && bd show "$sp_bead" 2>/dev/null | head -1 || true)"
+      [ -n "$bd_line" ] && printf 'bead %s
+' "$bd_line"
+    fi
+  fi
+
   printf 'win=%s  pane=%s  cmd=%s' "${window_line:-?}" "$target_pane" "${pane_cmd:-shell}"
-  [ -n "$pane_state" ] && printf '  agent=%s' "$pane_state"
-  printf '  attached=%s\n\n' "${attached:-0}"
+  [ -n "$pane_state" ] && [ "$pane_state" != '-' ] && printf '  agent=%s' "$pane_state"
+  printf '  attached=%s
+
+' "${attached:-0}"
 
   capture_pane_safe "$target_pane" -48
 }

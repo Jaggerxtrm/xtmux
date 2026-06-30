@@ -79,6 +79,21 @@ tmux-session-picker jump-back
 
 see [`docs/agent-state-hooks.md`](docs/agent-state-hooks.md). claude code can emit `running`, `needs-input`, `done`, and `off`; pi is supported via `extensions/pi-agent-state.ts` for `running`, `done`, `idle`, and `off` (pi has no documented `needs-input` extension event yet).
 
+
+## specialist awareness
+
+`sp-*` specialist sessions are detected by session name + live pane pid only.
+panes show `[sp]` plus the specialist role; without an explicit `@agent_state`
+they are marked `[stale]` and ranked as cleanup targets. specialist pane preview
+adds a header like:
+
+```text
+specialist job=<session-hash> bead=<bead-id> role=<role> state=<state>
+bead <bd show one-line summary>
+```
+
+no capture-pane guessing and no `sp ps` call is used for list detection.
+
 ## tuning
 
 | env | default | effect |

@@ -195,6 +195,59 @@ else
   if "$PICKER" __bad__ >/dev/null 2>&1; then nok "bad-arg exit code"; else ok "bad-arg exits non-zero"; fi
 fi
 
+
+
+echo
+echo "== specialist sp-* contract =="
+
+if ! tmux info >/dev/null 2>&1; then
+  printf '  \033[33mskip\033[0m specialist tests (no live tmux server)\n'
+else
+  sp_sess="sp-executor-deadbe"
+  tmux kill-session -t "$sp_sess" 2>/dev/null || true
+  tmux new-session -d -s "$sp_sess" -x 120 -y 30 'cat' 2>/dev/null
+  sp_pane="$(tmux list-panes -t "$sp_sess" -F '#{pane_id}' 2>/dev/null | head -1)"
+  sp_sid="$(tmux display-message -p -t "$sp_sess" '#{session_id}' 2>/dev/null)"
+
+  sp_rows="$("$PICKER" list all 2>/dev/null | grep "$sp_sess" || true)"
+  if printf '%s' "$sp_rows" | grep -q '\[sp\]' && printf '%s' "$sp_rows" | grep -q '\[stale\]' && printf '%s' "$sp_rows" | grep -q 'executor'; then
+    ok "specialist: sp-* pane gets [sp] [stale] role badge"
+  else
+    nok "specialist: sp-* list badge"
+    printf '      rows: %s\n' "$sp_rows"
+  fi
+
+  sp_prev="$("$PICKER" preview pane "$sp_sid" "$sp_sess" "$sp_pane" 2>/dev/null | head -5)"
+  if printf '%s' "$sp_prev" | grep -q 'specialist job=deadbe bead=? role=executor state=stale'; then
+    ok "specialist: pane preview header"
+  else
+    nok "specialist: pane preview header"
+    printf '      preview: %s
+' "$sp_prev"
+  fi
+
+  sp_sess_prev="$("$PICKER" preview session "$sp_sid" "$sp_sess" 2>/dev/null | head -5)"
+  if printf '%s' "$sp_sess_prev" | grep -q 'specialist job=deadbe bead=? role=executor state=stale'; then
+    ok "specialist: session preview header"
+  else
+    nok "specialist: session preview header"
+    printf '      preview: %s
+' "$sp_sess_prev"
+  fi
+
+  TMUX_PANE="$sp_pane" "$AGENT_STATE" needs-input >/dev/null 2>&1
+  sp_wait_rows="$("$PICKER" list waiting 2>/dev/null | grep "$sp_sess" || true)"
+  if printf '%s' "$sp_wait_rows" | grep -q '\[sp\]' && printf '%s' "$sp_wait_rows" | grep -q '\[wait\]'; then
+    ok "specialist: explicit waiting state appears in waiting filter"
+  else
+    nok "specialist: waiting filter"
+    printf '      rows: %s
+' "$sp_wait_rows"
+  fi
+  TMUX_PANE="$sp_pane" "$AGENT_STATE" off >/dev/null 2>&1 || true
+
+  tmux kill-session -t "$sp_sess" 2>/dev/null || true
+fi
 echo
 printf '== %s pass, %s fail ==\n' "$pass" "$fail"
 [ "$fail" -gt 0 ] && { printf 'FAILED:%s\n' "$failed"; exit 1; }
