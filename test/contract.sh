@@ -188,7 +188,7 @@ else
     tabs="$(printf '%s' "$line" | tr -cd '\t' | wc -c)"
     if [ "$tabs" -ne 4 ]; then nok "TSV shape (got $tabs tabs)"; shape_ok=0; break; fi
     t="${line%%$'\t'*}"
-    case "$t" in session|pane|repo) ;; *) nok "row type '$t'"; shape_ok=0; break;; esac
+    case "$t" in session|pane) ;; *) nok "row type '$t'"; shape_ok=0; break;; esac
   done <<< "$rows"
   [ "$shape_ok" = 1 ] && ok "TSV 5-col shape"
 
@@ -205,14 +205,6 @@ else
   if [ -n "$sid" ]; then
     lines="$("$PICKER" preview session "$sid" "$name" 2>/dev/null | wc -l)"
     [ "$lines" -gt 0 ] && ok "preview session $name (${lines}L)" || nok "preview empty"
-  fi
-
-
-  first_repo="$(printf '%s
-' "$rows" | awk -F'	' '$1=="repo"{print $3; exit}')"
-  if [ -n "$first_repo" ]; then
-    repo_prev="$($PICKER preview repo - "$first_repo" - 2>/dev/null | head -2)"
-    printf '%s' "$repo_prev" | grep -q "repo=$first_repo" && ok "preview repo header" || nok "preview repo header"
   fi
 
   # bad arg exits non-zero

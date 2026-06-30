@@ -352,25 +352,6 @@ pane_location_hint() {
   REPLY="$out"
 }
 
-
-repo_header_display() {
-  local group_key="${1:-}"
-  local repo path out
-
-  if [ -z "$group_key" ]; then
-    paint "$c_repo" 'repo ?'; REPLY="$REPLY"
-    return 0
-  fi
-
-  repo="${group_key##*/}"
-  paint "$c_repo" "repo $repo"; out="$REPLY"
-  short_path "$group_key"; path="$REPLY"
-  if [ -n "$path" ]; then
-    paint "$c_dim" "$path"; out+="  $REPLY"
-  fi
-  REPLY="$out"
-}
-
 session_meta() {
   tmux list-sessions -F $'#{session_id}\t#{session_name}\t#{pane_id}\t#{pane_current_path}'
 }
@@ -428,7 +409,7 @@ build_list() {
   local filter="${1:-all}"
   local tmp_sessions tmp_panes sid sname pane_id pane_path root sort_key group_key display root_status name_width=12 session_col
   local window_index window_name pane_index pane_active pane_cmd pane_row_path pane_col pane_state pane_rank cur_rank
-  local psid pwi ppi ppid pcol attn sp_role_for_session last_group_key group_label group_display
+  local psid pwi ppi ppid pcol attn sp_role_for_session
   declare -A root_cache=()
   declare -A root_status_cache=()
   declare -A sess_name=()
@@ -549,18 +530,11 @@ build_list() {
     printf '%s\t%s\t%s\t%s\t%s\n' "${sess_attn[$sid]:-3}" "$sort_key" "$sid" "$sname" "$display"
   done < "$tmp_sessions" |
     sort -t $'\t' -k1,1n -k2,2 -k4,4 |
-    while IFS=$'	' read -r attn sort_key sid sname display; do
+    while IFS=$'\t' read -r attn _ sid sname display; do
       case "$filter" in
         waiting) [ "$attn" -eq 0 ] || continue ;;
         running) [ "$attn" -le 2 ] || continue ;;
       esac
-      if [ "${last_group_key:-}" != "$attn:$sort_key" ]; then
-        repo_header_display "$sort_key"; group_display="$REPLY"
-        group_label="${sort_key##*/}"
-        printf 'repo	-	%s	-	%s
-' "$group_label" "$group_display"
-        last_group_key="$attn:$sort_key"
-      fi
       if [ "${sess_is_sp[$sid]:-0}" = '1' ]; then
         # sp-* tmux sessions are implementation detail: show their panes directly
         # in the repo bucket instead of as standalone top-level session rows.
@@ -569,8 +543,7 @@ build_list() {
       fi
       printf -v session_col '%-*s' "$name_width" "$sname"
       paint "$c_session" "$session_col"; session_col="$REPLY"
-      printf 'session	%s	%s	%s	  %s  %s
-' "$sid" "$sname" "$sid" "$session_col" "$display"
+      printf 'session\t%s\t%s\t%s\t  %s  %s\n' "$sid" "$sname" "$sid" "$session_col" "$display"
       printf '%s' "${pane_block[$sid]:-}"
     done
 }
@@ -761,12 +734,6 @@ preview_row() {
 
   [ -n "$sid" ] || return 0
   case "$type" in
-    repo)
-      printf 'repo=%s
-
-seleziona una sessione o un pane sotto questo gruppo.
-' "${name:-?}"
-      ;;
     pane) preview_pane_row "$sid" "$name" "$target" ;;
     *) preview_session_row "$sid" "$name" ;;
   esac
@@ -776,8 +743,6 @@ open_popup_client() {
   local type="$1"
   local sid="$2"
   local target="$3"
-
-  [ "$type" = 'repo' ] && return 0
 
   if [ "$type" = 'pane' ] && [ -n "$target" ]; then
     exec env -u TMUX tmux attach-session -t "$sid" \; select-window -t "$target" \; select-pane -t "$target"
@@ -791,8 +756,6 @@ jump_to_target() {
   local sid="$2"
   local target="$3"
 
-  [ "$type" = 'repo' ] && return 0
-
   if [ "$type" = 'pane' ] && [ -n "$target" ]; then
     exec tmux switch-client -t "$sid" \; select-window -t "$target" \; select-pane -t "$target"
   fi
@@ -804,8 +767,6 @@ kill_target() {
   local type="$1"
   local sid="$2"
   local target="$3"
-
-  [ "$type" = 'repo' ] && return 0
 
   if [ "$type" = 'pane' ] && [ -n "$target" ]; then
     tmux kill-pane -t "$target"
