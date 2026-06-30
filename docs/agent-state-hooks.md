@@ -38,20 +38,57 @@ tmux display-message -p '#{@agent_state}'   # needs-input
 ~/.tmux/scripts/agent-state.sh off
 ```
 
+### Auditing hook firing order
+
+When wiring hooks for an orchestrator, set this env to record every transition
+to a log so you can confirm the ordering (e.g. that `PostToolUse` clears a stale
+`[WAIT]`) on real agent runs:
+
+```sh
+export XTMUX_AGENT_STATE_LOG=1
+export XTMUX_AGENT_STATE_LOG_FILE=/tmp/agent-state.log
+claude   # then in another shell:
+tail -f /tmp/agent-state.log
+# 2026-06-30T15:25:...+02:00	%559	UserPromptSubmit	running
+# 2026-06-30T15:25:...+02:00	%559	Notification	needs-input
+# 2026-06-30T15:25:...+02:00	%559	PostToolUse	running
+```
+
+The `CLAUDE_HOOK_EVENT=...` prefix in the example commands populates the third
+column. Off by default.
+
 ## Claude Code
 
 Claude Code supports JSON command hooks. Merge the following into your Claude
 settings (global `~/.claude/settings.json` or project-local `.claude/settings.json`).
-Do not replace existing hooks; append these entries alongside them.
+Do not replace existing hooks; append these entries alongside them. The
+`PreToolUse`/`PostToolUse` -> `running` entries are what keep `[WAIT]` honest for
+orchestrators (see the state mapping below).
 
 ```json
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "CLAUDE_HOOK_EVENT=SessionStart ~/.tmux/scripts/agent-state.sh idle" }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "~/.tmux/scripts/agent-state.sh running" }
+          { "type": "command", "command": "CLAUDE_HOOK_EVENT=UserPromptSubmit ~/.tmux/scripts/agent-state.sh running" }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "CLAUDE_HOOK_EVENT=PreToolUse ~/.tmux/scripts/agent-state.sh running" }
         ]
       }
     ],
@@ -59,7 +96,15 @@ Do not replace existing hooks; append these entries alongside them.
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "~/.tmux/scripts/agent-state.sh needs-input" }
+          { "type": "command", "command": "CLAUDE_HOOK_EVENT=Notification ~/.tmux/scripts/agent-state.sh needs-input" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "CLAUDE_HOOK_EVENT=PostToolUse ~/.tmux/scripts/agent-state.sh running" }
         ]
       }
     ],
@@ -67,7 +112,7 @@ Do not replace existing hooks; append these entries alongside them.
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "~/.tmux/scripts/agent-state.sh done" }
+          { "type": "command", "command": "CLAUDE_HOOK_EVENT=Stop ~/.tmux/scripts/agent-state.sh done" }
         ]
       }
     ],
@@ -75,7 +120,7 @@ Do not replace existing hooks; append these entries alongside them.
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "~/.tmux/scripts/agent-state.sh done" }
+          { "type": "command", "command": "CLAUDE_HOOK_EVENT=SubagentStop ~/.tmux/scripts/agent-state.sh done" }
         ]
       }
     ],
@@ -83,7 +128,7 @@ Do not replace existing hooks; append these entries alongside them.
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "~/.tmux/scripts/agent-state.sh off" }
+          { "type": "command", "command": "CLAUDE_HOOK_EVENT=SessionEnd ~/.tmux/scripts/agent-state.sh off" }
         ]
       }
     ]
@@ -91,20 +136,41 @@ Do not replace existing hooks; append these entries alongside them.
 }
 ```
 
-A complete example lives at `examples/claude/settings.agent-state.json`.
+The full set (with `CLAUDE_HOOK_EVENT` tags for the audit log) lives at
+`examples/claude/settings.agent-state.json`.
 
 ### Claude state mapping
 
 | Claude event | `@agent_state` |
 |---|---|
+| `SessionStart` | `idle` |
 | `UserPromptSubmit` | `running` |
+| `PreToolUse` | `running` |
 | `Notification` | `needs-input` |
+| `PostToolUse` | `running` |
 | `Stop` | `done` |
 | `SubagentStop` | `done` |
 | `SessionEnd` | `off` |
 
-`Notification` is broader than only permission/input waits, but it is the useful
-Claude Code signal for “this pane needs user attention”.
+### Why both `PreToolUse` and `PostToolUse` map to `running`
+
+This is what keeps the WAIT badge honest for orchestrators / multiplexing:
+
+- `Notification` fires when Claude needs permission (or otherwise needs a human).
+  That sets `needs-input` -> `[WAIT]`.
+- If the user **approves**, Claude resumes and the tool executes. `PostToolUse`
+  fires and resets the pane to `running`, so `[WAIT]` is cleared the instant the
+  blockage is gone — not stuck until the next prompt or `Stop`.
+- `PreToolUse` reinforces the busy signal at the start of every tool.
+
+**Invariant:** `[WAIT]` ⟺ the agent is blocked right now and no tool is
+completing. An orchestrator that jumps to `[WAIT]` panes will never land on a
+pane that is actively working. Without `PostToolUse`, a stale `[WAIT]` could
+persist while Claude is busy again, which is exactly the multiplexing failure
+mode to avoid.
+
+`Notification` is broader than only permission waits, but combined with the
+`PostToolUse` reset it is a safe "this pane needs user attention" signal.
 
 ## pi
 
@@ -131,8 +197,8 @@ Or reference it from pi `settings.json` via the documented `extensions` array:
 }
 ```
 
-The extension is self-contained TypeScript (no npm install needed) and calls the shared script with `pi.exec(...)`. Override the script
-path if needed:
+The extension is self-contained TypeScript (no npm install needed) and calls the
+shared script with `pi.exec(...)`. Override the script path if needed:
 
 ```sh
 XTMUX_AGENT_STATE_SCRIPT=/custom/path/agent-state.sh pi
@@ -154,8 +220,8 @@ XTMUX_AGENT_STATE_SCRIPT=/custom/path/agent-state.sh pi
 ### Known pi limitation: no documented `needs-input` event
 
 pi v0.80.1 extension docs expose lifecycle, agent, message, tool, user bash, and
-input events, but they do not document an event for “awaiting permission” or
-“awaiting user input”. That means the shipped pi extension can accurately write
+input events, but they do not document an event for "awaiting permission" or
+"awaiting user input". That means the shipped pi extension can accurately write
 `running`, `done`, `idle`, and `off`, but cannot currently emit `needs-input`
 without relying on undocumented internals or polling UI state.
 

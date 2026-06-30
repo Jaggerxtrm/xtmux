@@ -1,10 +1,26 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "CLAUDE_HOOK_EVENT=SessionStart ~/.tmux/scripts/agent-state.sh idle" }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "~/.tmux/scripts/agent-state.sh running" }
+          { "type": "command", "command": "CLAUDE_HOOK_EVENT=UserPromptSubmit ~/.tmux/scripts/agent-state.sh running" }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "CLAUDE_HOOK_EVENT=PreToolUse ~/.tmux/scripts/agent-state.sh running" }
         ]
       }
     ],
@@ -12,7 +28,15 @@
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "~/.tmux/scripts/agent-state.sh needs-input" }
+          { "type": "command", "command": "CLAUDE_HOOK_EVENT=Notification ~/.tmux/scripts/agent-state.sh needs-input" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "CLAUDE_HOOK_EVENT=PostToolUse ~/.tmux/scripts/agent-state.sh running" }
         ]
       }
     ],
@@ -20,7 +44,7 @@
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "~/.tmux/scripts/agent-state.sh done" }
+          { "type": "command", "command": "CLAUDE_HOOK_EVENT=Stop ~/.tmux/scripts/agent-state.sh done" }
         ]
       }
     ],
@@ -28,7 +52,7 @@
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "~/.tmux/scripts/agent-state.sh done" }
+          { "type": "command", "command": "CLAUDE_HOOK_EVENT=SubagentStop ~/.tmux/scripts/agent-state.sh done" }
         ]
       }
     ],
@@ -36,7 +60,7 @@
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "~/.tmux/scripts/agent-state.sh off" }
+          { "type": "command", "command": "CLAUDE_HOOK_EVENT=SessionEnd ~/.tmux/scripts/agent-state.sh off" }
         ]
       }
     ]
