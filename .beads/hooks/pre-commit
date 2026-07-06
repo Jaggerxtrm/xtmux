@@ -31,3 +31,10 @@ if command -v bd >/dev/null 2>&1; then
   if [ $_bd_exit -ne 0 ]; then exit $_bd_exit; fi
 fi
 # --- END BEADS INTEGRATION v1.0.5 ---
+
+# --- BEGIN XTRM bd auto-stage snapshot ---
+# Keep bd export.git-add=false for quiet mid-work bd ops, then stage the
+# freshly exported JSONL snapshot at commit time. This block lives outside
+# bd-managed hook markers so bd hooks install/upgrade will not clobber it.
+git add -f .beads/issues.jsonl 2>/dev/null || true
+# --- END XTRM bd auto-stage snapshot ---

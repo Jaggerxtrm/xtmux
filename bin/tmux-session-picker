@@ -15,6 +15,30 @@ self="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_
 mode="${TMUX_PICKER_MODE:-default}"
 git_status_script="$HOME/.tmux/scripts/git-pane-status.sh"
 
+cache_dir() {
+  REPLY="${TMPDIR:-/tmp}/tmux-picker-cache-${UID:-$(id -u)}"
+}
+
+clear_cache() {
+  cache_dir
+  rm -rf -- "$REPLY"
+}
+
+install_tmux_hooks() {
+  local picker="${1:-$HOME/.local/bin/tmux-session-picker}"
+  local cmd
+
+  command -v tmux >/dev/null 2>&1 || { printf 'tmux-picker: tmux non trovato\n' >&2; return 1; }
+  cmd="$picker clear-cache"
+
+  # Use fixed hook array indexes so repeated installs replace xtmux's hooks
+  # without clobbering unrelated user hooks on the same events.
+  tmux set-hook -g 'session-created[90]' "run-shell '$cmd'"
+  tmux set-hook -g 'session-closed[90]' "run-shell '$cmd'"
+  tmux set-hook -g 'window-linked[90]' "run-shell '$cmd'"
+  tmux set-hook -g 'window-unlinked[90]' "run-shell '$cmd'"
+}
+
 c_reset=$'\033[0m'
 c_dim=$'\033[38;5;244m'
 c_session=$'\033[38;5;255m'
@@ -61,8 +85,9 @@ normalize_agent_state() {
   case "$opt" in
     needs-input|permission|waiting|input) REPLY='needs-input'; return 0 ;;
     done|finished|stop|complete)          REPLY='done';        return 0 ;;
-    running|thinking|busy|tool)           REPLY='running';     return 0 ;;
-    ''|-|off|idle|none) ;;
+    running|working|thinking|busy|tool)   REPLY='running';     return 0 ;;
+    idle)                                  REPLY='idle';        return 0 ;;
+    ''|-|off|none) ;;
     *) REPLY="$opt"; return 0 ;;
   esac
 
@@ -94,6 +119,13 @@ agent_rank() {
   esac
 }
 
+agent_state_is_working() {
+  case "${1:-}" in
+    running|working|busy|thinking|tool) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 state_badge() {
   case "$1" in
     needs-input) REPLY=$'\033[38;5;214m[wait]'"$c_reset" ;;
@@ -104,11 +136,42 @@ state_badge() {
   esac
 }
 
+idle_badge() {
+  local activity="${1:-}" now="${2:-}" threshold_mins="${TMUX_PICKER_STALE_MINS:-60}"
+  local age mins label color
+  IDLE_STALE=0
+
+  [[ "$activity" =~ ^[0-9]+$ ]] || { REPLY=''; return 0; }
+  [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
+  [[ "$threshold_mins" =~ ^[0-9]+$ ]] || threshold_mins=60
+
+  age=$(( now - activity ))
+  [ "$age" -lt 0 ] && age=0
+  mins=$(( age / 60 ))
+
+  if [ "$age" -lt 60 ]; then
+    label='idle <1m'
+  elif [ "$age" -lt 3600 ]; then
+    label="idle ${mins}m"
+  elif [ "$age" -lt 86400 ]; then
+    label="idle $(( age / 3600 ))h"
+  else
+    label="idle $(( age / 86400 ))d"
+  fi
+
+  color="$c_dim"
+  if [ "$mins" -ge "$threshold_mins" ]; then
+    IDLE_STALE=1
+    color="$c_stale"
+  fi
+  REPLY="${color}[$label]${c_reset}"
+}
+
 # --- specialist (sp-*) + role (role-*) awareness (xtmux-rib.4, xtmux-2i5) ----
 # detection is name + pane_pid based (no capture-pane cost). a pane is a
 # specialist / interactive role if its session name matches one of:
 #   ^sp-<role>-<hex>$        managed sp job
-#   ^role-<role>[-<hex>]$    interactive role session (xt pi --role)
+#   ^role-<role>[-<slug>]$   interactive role session (xt pi --role)
 # and the pane_pid is alive.
 #
 # hot list path never calls sp/jq/ps/pgrep: it only checks session name + pane
@@ -364,11 +427,651 @@ pane_location_hint() {
 }
 
 session_meta() {
-  tmux list-sessions -F $'#{session_id}\t#{session_name}\t#{pane_id}\t#{pane_current_path}'
+  tmux list-sessions -F $'#{session_id}\t#{session_name}\t#{pane_id}\t#{pane_current_path}\t#{session_activity}'
 }
 
 pane_meta() {
-  tmux list-panes -a -F $'#{session_id}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}'
+  tmux list-panes -a -F $'#{session_id}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}'
+}
+
+agent_meta_value() {
+  case "${1:-}" in ''|-) REPLY='' ;; *) REPLY="${1//$'\t'/ }"; REPLY="${REPLY//$'\n'/ }" ;; esac
+}
+
+agent_meta_label() {
+  local bead task parent out=''
+  agent_meta_value "${1:-}"; bead="$REPLY"
+  agent_meta_value "${2:-}"; task="$REPLY"
+  agent_meta_value "${3:-}"; parent="$REPLY"
+  [ "${#task}" -gt 36 ] && task="${task:0:33}..."
+  [ -n "$bead" ] && out+=" bead:$bead"
+  [ -n "$task" ] && out+=" task:$task"
+  [ -n "$parent" ] && out+=" from:$parent"
+  if [ -n "$out" ]; then
+    paint "$c_dim" "$out"; REPLY="$REPLY"
+  else
+    REPLY=''
+  fi
+}
+
+bead_preview_summary() {
+  local cwd="${1:-$PWD}" bead="${2:-}" out
+  agent_meta_value "$bead"; bead="$REPLY"
+  [ -n "$bead" ] || return 0
+  command -v bd >/dev/null 2>&1 || { printf 'bead-context %s (bd unavailable)\n' "$bead"; return 0; }
+  out="$(cd "$cwd" 2>/dev/null && bd show "$bead" 2>/dev/null | sed -n '1,18p' || true)"
+  if [ -n "$out" ]; then
+    printf '\nbead-context %s\n' "$bead"
+    printf '%s\n' "$out"
+  else
+    printf '\nbead-context %s (not found from %s)\n' "$bead" "$cwd"
+  fi
+}
+
+extract_bead_id() {
+  local text="${1:-}" line
+  # Conservative: require a dot-number child id (e.g. xtmux-rib.16). This avoids
+  # treating arbitrary worktree slugs such as feature-123 as bead ids.
+  line="$(printf '%s\n' "$text" | grep -Eo '[A-Za-z][A-Za-z0-9-]*\.[0-9]+' | head -1 || true)"
+  REPLY="$line"
+}
+
+refine_derived_bead_id() {
+  local candidate="${1:-}" cur
+  [ -n "$candidate" ] || { REPLY=''; return 0; }
+  if command -v bd >/dev/null 2>&1; then
+    cur="$candidate"
+    while [ -n "$cur" ]; do
+      if bd show "$cur" >/dev/null 2>&1; then REPLY="$cur"; return 0; fi
+      case "$cur" in *-*) cur="${cur#*-}" ;; *) break ;; esac
+    done
+    REPLY=''
+  else
+    REPLY="$candidate"
+  fi
+}
+
+derive_bead_id() {
+  local session_name="${1:-}" pane_path="${2:-}" root="${3:-}" rel candidate
+  extract_bead_id "$session_name"; candidate="$REPLY"
+  refine_derived_bead_id "$candidate"; [ -n "$REPLY" ] && return 0
+  extract_bead_id "$pane_path"; candidate="$REPLY"
+  refine_derived_bead_id "$candidate"; [ -n "$REPLY" ] && return 0
+  if [ -n "$root" ] && [ -n "$pane_path" ] && [ "$pane_path" != "$root" ]; then
+    rel="${pane_path#"$root"/}"
+    extract_bead_id "$rel"; candidate="$REPLY"
+    refine_derived_bead_id "$candidate"; [ -n "$REPLY" ] && return 0
+  fi
+  REPLY=''
+}
+
+git_worktree_preview() {
+  local root="${1:-}" branch dirty stat
+  [ -n "$root" ] || return 0
+  [ -d "$root/.git" ] || git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  branch="$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  dirty="$(git -C "$root" status --short 2>/dev/null | wc -l | tr -d ' ')"
+  [ -n "$dirty" ] || dirty=0
+  printf '\ngit-worktree'
+  [ -n "$branch" ] && printf ' branch=%s' "$branch"
+  printf ' dirty=%s\n' "$dirty"
+  if [ "$dirty" -gt 0 ]; then
+    stat="$( { git -C "$root" diff --stat 2>/dev/null; git -C "$root" diff --cached --stat 2>/dev/null; } | sed -n '1,12p' || true)"
+    [ -n "$stat" ] && { printf 'diff-stat\n'; printf '%s\n' "$stat"; }
+  fi
+}
+
+preview_enrichment() {
+  local cwd="${1:-$PWD}" root="${2:-}" session_name="${3:-}" explicit_bead="${4:-}" bead
+  agent_meta_value "$explicit_bead"; bead="$REPLY"
+  if [ -z "$bead" ]; then
+    derive_bead_id "$session_name" "$cwd" "$root"; bead="$REPLY"
+    [ -n "$bead" ] && printf 'derived-bead=%s\n' "$bead"
+  fi
+  bead_preview_summary "$cwd" "$bead"
+  git_worktree_preview "$root"
+}
+
+worktree_collisions() {
+  local sid sname pane_id path root key sessions panes n names pair
+  declare -A root_sessions=()
+  declare -A root_panes=()
+  while IFS=$'\t' read -r sid sname pane_id path; do
+    [ -n "$sid" ] || continue
+    path="${path:-$HOME}"
+    git_root_for_path "$path"; root="$REPLY"
+    [ -n "$root" ] || continue
+    key="$sid:$sname"
+    case "|${root_sessions[$root]:-}|" in *"|$key|"*) ;; *) root_sessions[$root]+="${root_sessions[$root]:+|}$key" ;; esac
+    root_panes[$root]="$(( ${root_panes[$root]:-0} + 1 ))"
+  done < <(tmux list-panes -a -F $'#{session_id}\t#{session_name}\t#{pane_id}\t#{pane_current_path}' 2>/dev/null || true)
+
+  for root in "${!root_sessions[@]}"; do
+    sessions="${root_sessions[$root]}"
+    IFS='|' read -ra _pairs <<< "$sessions"
+    n="${#_pairs[@]}"
+    [ "$n" -gt 1 ] || continue
+    names=''
+    for pair in "${_pairs[@]}"; do
+      names+="${names:+,}${pair#*:}"
+    done
+    printf 'shared-worktree\t%s\t%s\t%s\t%s\n' "$root" "$n" "${root_panes[$root]:-0}" "$names"
+  done | sort -t $'\t' -k2,2nr -k1,1
+}
+
+tsv_clean() {
+  local value="${1:-}"
+  value="${value//$'\t'/ }"
+  value="${value//$'\r'/ }"
+  value="${value//$'\n'/ }"
+  printf '%s' "$value"
+}
+
+
+xtmux_state_dir() {
+  REPLY="${XDG_STATE_HOME:-$HOME/.local/state}/xtmux"
+}
+
+event_log_file() {
+  if [ -n "${XTMUX_EVENT_LOG_FILE:-}" ]; then
+    REPLY="$XTMUX_EVENT_LOG_FILE"
+  else
+    xtmux_state_dir
+    REPLY="$REPLY/events.jsonl"
+  fi
+}
+
+json_escape() {
+  local s="${1:-}"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\t'/\\t}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\n'/\\n}"
+  printf '%s' "$s"
+}
+
+current_tmux_session() {
+  REPLY="$(tmux display-message -p '#S' 2>/dev/null || true)"
+}
+
+current_tmux_pane() {
+  REPLY="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
+}
+
+log_event() {
+  local type="${1:-}" file dir ts epoch first=1 kv key val
+  [ -n "$type" ] || return 0
+  event_log_file; file="$REPLY"; dir="${file%/*}"
+  mkdir -p "$dir" 2>/dev/null || true
+  ts="$(date -Is 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z')"
+  epoch="$(date +%s 2>/dev/null || printf '0')"
+  {
+    printf '{"ts":"%s","ts_epoch":%s,"type":"%s"' "$(json_escape "$ts")" "$epoch" "$(json_escape "$type")"
+    for kv in "$@"; do
+      [ "$first" = 1 ] && { first=0; continue; }
+      key="${kv%%=*}"; val="${kv#*=}"
+      [ -n "$key" ] || continue
+      case "$key" in *[!A-Za-z0-9_.-]* ) key="field" ;; esac
+      printf ',"%s":"%s"' "$key" "$(json_escape "$val")"
+    done
+    printf '}\n'
+  } >> "$file" 2>/dev/null || true
+}
+
+log_cli_emit() {
+  local type="${1:-}"; shift || true
+  [ -n "$type" ] || { printf 'usage: log emit <type> [key=value...]\n' >&2; return 2; }
+  log_event "$type" "$@"
+}
+
+log_cli_tail() {
+  local n="${1:-50}" file
+  event_log_file; file="$REPLY"
+  [ -f "$file" ] || return 0
+  tail -n "$n" "$file"
+}
+
+_log_json_field_match() {
+  local field="$1" value="$2"
+  printf '"%s":"%s"' "$field" "$(json_escape "$value")"
+}
+
+log_cli_query() {
+  local type='' pane='' session='' bead='' since='' limit=100 arg file now since_epoch
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --type) [ "$#" -gt 0 ] || return 2; type="$1"; shift ;;
+      --type=*) type="${arg#--type=}" ;;
+      --pane) [ "$#" -gt 0 ] || return 2; pane="$1"; shift ;;
+      --pane=*) pane="${arg#--pane=}" ;;
+      --session|--for) [ "$#" -gt 0 ] || return 2; session="$1"; shift ;;
+      --session=*|--for=*) session="${arg#*=}" ;;
+      --bead) [ "$#" -gt 0 ] || return 2; bead="$1"; shift ;;
+      --bead=*) bead="${arg#--bead=}" ;;
+      --since) [ "$#" -gt 0 ] || return 2; parse_wait_duration "$1" || return 2; since="$REPLY"; shift ;;
+      --since=*) parse_wait_duration "${arg#--since=}" || return 2; since="$REPLY" ;;
+      --limit) [ "$#" -gt 0 ] || return 2; limit="$1"; shift ;;
+      --limit=*) limit="${arg#--limit=}" ;;
+      *) printf 'log query: unknown arg: %s\n' "$arg" >&2; return 2 ;;
+    esac
+  done
+  event_log_file; file="$REPLY"
+  [ -f "$file" ] || return 0
+  now="$(date +%s)"; since_epoch=0
+  [ -n "$since" ] && since_epoch=$(( now - since ))
+  awk -v since="$since_epoch" 'since<=0 {print; next} { if (match($0, /"ts_epoch":[0-9]+/)) { v=substr($0, RSTART+11, RLENGTH-11); if (v >= since) print } }' "$file" |
+    { [ -n "$type" ] && grep -F -- "$(_log_json_field_match type "$type")" || cat; } |
+    { [ -n "$pane" ] && grep -F -- "$(_log_json_field_match pane "$pane")" || cat; } |
+    { [ -n "$session" ] && grep -F -- "$(_log_json_field_match session "$session")" || cat; } |
+    { [ -n "$bead" ] && grep -F -- "$(_log_json_field_match bead "$bead")" || cat; } |
+    tail -n "$limit"
+}
+
+log_cli() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    emit) log_cli_emit "$@" ;;
+    tail) log_cli_tail "${1:-50}" ;;
+    query) log_cli_query "$@" ;;
+    *) printf 'usage: log <emit|tail|query> ...\n' >&2; return 2 ;;
+  esac
+}
+
+message_send() {
+  local to='' from='' bead='' text='' id='' arg
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --to) [ "$#" -gt 0 ] || return 2; to="$1"; shift ;;
+      --to=*) to="${arg#--to=}" ;;
+      --from) [ "$#" -gt 0 ] || return 2; from="$1"; shift ;;
+      --from=*) from="${arg#--from=}" ;;
+      --bead) [ "$#" -gt 0 ] || return 2; bead="$1"; shift ;;
+      --bead=*) bead="${arg#--bead=}" ;;
+      --text) [ "$#" -gt 0 ] || return 2; text="$1"; shift ;;
+      --text=*) text="${arg#--text=}" ;;
+      --id) [ "$#" -gt 0 ] || return 2; id="$1"; shift ;;
+      --id=*) id="${arg#--id=}" ;;
+      *) text+="${text:+ }$arg" ;;
+    esac
+  done
+  [ -n "$to" ] && [ -n "$text" ] || { printf 'usage: message-send --to <session|pane> [--from x] [--bead id] --text <text>\n' >&2; return 2; }
+  if [ -z "$from" ]; then current_tmux_session; from="$REPLY"; fi
+  [ -n "$from" ] || from='unknown'
+  [ -n "$id" ] || id="msg-$(date +%s)-$$"
+  log_event message.sent id="$id" from="$from" to="$to" bead="$bead" text="$text"
+  printf 'message\t%s\t%s\t%s\t%s\t%s\n' "$id" "$from" "$to" "$bead" "$text"
+}
+
+message_ack() {
+  local id="${1:-}" by=''
+  shift || true
+  while [ "$#" -gt 0 ]; do
+    case "$1" in --by) shift; by="${1:-}" ;; --by=*) by="${1#--by=}" ;; esac
+    shift || true
+  done
+  [ -n "$id" ] || { printf 'usage: message-ack <message-id> [--by session]\n' >&2; return 2; }
+  [ -n "$by" ] || { current_tmux_session; by="$REPLY"; }
+  [ -n "$by" ] || by='unknown'
+  log_event message.ack id="$id" by="$by"
+  printf 'ack\t%s\t%s\n' "$id" "$by"
+}
+
+message_json_field() {
+  local name="$1" line="$2"
+  printf '%s\n' "$line" | sed -n "s/.*\"$name\":\"\([^\"\\]*\)\".*/\1/p"
+}
+
+message_list() {
+  local to='' since='' limit=100 unacked=0 arg file now since_epoch ack_tmp line ts_epoch id from target bead text ts
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --for|--to) [ "$#" -gt 0 ] || return 2; to="$1"; shift ;;
+      --for=*|--to=*) to="${arg#*=}" ;;
+      --since) [ "$#" -gt 0 ] || return 2; parse_wait_duration "$1" || return 2; since="$REPLY"; shift ;;
+      --since=*) parse_wait_duration "${arg#--since=}" || return 2; since="$REPLY" ;;
+      --limit) [ "$#" -gt 0 ] || return 2; limit="$1"; shift ;;
+      --limit=*) limit="${arg#--limit=}" ;;
+      --unacked) unacked=1 ;;
+      *) printf 'message-list: unknown arg: %s\n' "$arg" >&2; return 2 ;;
+    esac
+  done
+  event_log_file; file="$REPLY"
+  [ -f "$file" ] || return 0
+  now="$(date +%s)"; since_epoch=0
+  [ -n "$since" ] && since_epoch=$(( now - since ))
+  ack_tmp="$(mktemp)"
+  trap 'rm -f "${ack_tmp:-}"' RETURN EXIT INT TERM
+  grep -F '"type":"message.ack"' "$file" | sed -n 's/.*"id":"\([^"\\]*\)".*/\1/p' > "$ack_tmp" || true
+  while IFS= read -r line; do
+    case "$line" in *'"type":"message.sent"'*) ;; *) continue ;; esac
+    if [ "$since_epoch" -gt 0 ]; then
+      ts_epoch="$(printf '%s\n' "$line" | sed -n 's/.*"ts_epoch":\([0-9][0-9]*\).*/\1/p')"
+      [ -n "$ts_epoch" ] && [ "$ts_epoch" -lt "$since_epoch" ] && continue
+    fi
+    id="$(message_json_field id "$line")"
+    from="$(message_json_field from "$line")"
+    target="$(message_json_field to "$line")"
+    bead="$(message_json_field bead "$line")"
+    text="$(message_json_field text "$line")"
+    ts="$(message_json_field ts "$line")"
+    [ -n "$to" ] && [ "$target" != "$to" ] && continue
+    if [ "$unacked" = 1 ] && grep -Fx -- "$id" "$ack_tmp" >/dev/null 2>&1; then continue; fi
+    printf 'message\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$ts" "$from" "$target" "$bead" "$text"
+  done < "$file" | tail -n "$limit"
+}
+
+
+join_args_for_log() {
+  local out='' arg
+  for arg in "$@"; do
+    out+="${out:+ }$arg"
+  done
+  printf '%s' "$out"
+}
+
+git_repo_root() {
+  REPLY="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+}
+
+git_current_branch() {
+  REPLY="$(git branch --show-current 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+}
+
+git_head_hash() {
+  REPLY="$(git rev-parse --short HEAD 2>/dev/null || true)"
+}
+
+telemetry_run() {
+  local tool="${1:-}"; shift || true
+  [ -n "$tool" ] || { printf 'usage: telemetry <git|bd|gh> -- <args...>\n' >&2; return 2; }
+  [ "${1:-}" = -- ] && shift
+  [ "$#" -gt 0 ] || { printf 'usage: telemetry %s -- <args...>\n' "$tool" >&2; return 2; }
+  local event args pane session bead cwd rc repo branch head sub
+  args="$(join_args_for_log "$@")"
+  current_tmux_pane; pane="$REPLY"
+  current_tmux_session; session="$REPLY"
+  cwd="$(pwd -P 2>/dev/null || pwd)"
+  bead=''
+  [ -n "$pane" ] && bead="$(tmux show-options -p -t "$pane" -qv @agent_bead 2>/dev/null || true)"
+  case "$tool" in
+    git)
+      case "${1:-}" in
+        commit) event='git.commit' ;;
+        push) event='git.push' ;;
+        merge) event='git.merge' ;;
+        *) event='git.command' ;;
+      esac
+      git_repo_root; repo="$REPLY"; git_current_branch; branch="$REPLY"; git_head_hash; head="$REPLY"
+      log_event telemetry.command.started tool=git event="$event" pane="$pane" session="$session" bead="$bead" cwd="$cwd" repo="$repo" branch="$branch" head="$head" argv="$args"
+      set +e
+      git "$@"
+      rc=$?
+      set -e
+      git_head_hash; head="$REPLY"; git_current_branch; branch="$REPLY"
+      log_event "$event" tool=git exit="$rc" pane="$pane" session="$session" bead="$bead" cwd="$cwd" repo="$repo" branch="$branch" head="$head" argv="$args"
+      return "$rc"
+      ;;
+    bd)
+      sub="${1:-}"
+      case "$sub" in
+        create) event='bd.create' ;;
+        close) event='bd.close' ;;
+        remember) event='bd.remember' ;;
+        update)
+          if printf '%s
+' "$@" | grep -Eq '^--claim$|^--claim='; then event='bd.claim'; else event='bd.update'; fi
+          ;;
+        *) event='bd.command' ;;
+      esac
+      log_event telemetry.command.started tool=bd event="$event" pane="$pane" session="$session" bead="$bead" cwd="$cwd" argv="$args"
+      set +e
+      bd "$@"
+      rc=$?
+      set -e
+      log_event "$event" tool=bd exit="$rc" pane="$pane" session="$session" bead="$bead" cwd="$cwd" argv="$args"
+      return "$rc"
+      ;;
+    gh)
+      if [ "${1:-}" = pr ] && [ "${2:-}" = create ]; then
+        event='git.pr.create'
+      elif [ "${1:-}" = pr ] && [ "${2:-}" = merge ]; then
+        event='git.pr.merge'
+      else
+        event='gh.command'
+      fi
+      git_repo_root; repo="$REPLY"; git_current_branch; branch="$REPLY"; git_head_hash; head="$REPLY"
+      log_event telemetry.command.started tool=gh event="$event" pane="$pane" session="$session" bead="$bead" cwd="$cwd" repo="$repo" branch="$branch" head="$head" argv="$args"
+      set +e
+      gh "$@"
+      rc=$?
+      set -e
+      log_event "$event" tool=gh exit="$rc" pane="$pane" session="$session" bead="$bead" cwd="$cwd" repo="$repo" branch="$branch" head="$head" argv="$args"
+      return "$rc"
+      ;;
+    *) printf 'telemetry: unknown tool: %s\n' "$tool" >&2; return 2 ;;
+  esac
+}
+
+
+git_branch_name() {
+  local root="${1:-}"
+  [ -n "$root" ] || { REPLY=''; return 0; }
+  REPLY="$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+}
+
+git_dirty_count() {
+  local root="${1:-}"
+  [ -n "$root" ] || { REPLY=0; return 0; }
+  REPLY="$(git -C "$root" status --short 2>/dev/null | wc -l | tr -d ' ' || true)"
+  [ -n "$REPLY" ] || REPLY=0
+}
+
+idle_label_plain() {
+  local activity="${1:-}" now="${2:-}" age mins
+  [[ "$activity" =~ ^[0-9]+$ ]] || { REPLY=''; return 0; }
+  [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
+  age=$(( now - activity )); [ "$age" -lt 0 ] && age=0
+  mins=$(( age / 60 ))
+  if [ "$age" -lt 60 ]; then REPLY='<1m'
+  elif [ "$age" -lt 3600 ]; then REPLY="${mins}m"
+  elif [ "$age" -lt 86400 ]; then REPLY="$(( age / 3600 ))h"
+  else REPLY="$(( age / 86400 ))d"; fi
+}
+
+dashboard_state_rank() {
+  case "${1:-}" in
+    needs-input) REPLY=0 ;;
+    running) REPLY=1 ;;
+    done) REPLY=2 ;;
+    idle) REPLY=3 ;;
+    *) REPLY=4 ;;
+  esac
+}
+
+dashboard_choose_state() {
+  local current="${1:-}" candidate="${2:-}" cr nr
+  [ -n "$candidate" ] || { REPLY="$current"; return 0; }
+  [ -n "$current" ] || { REPLY="$candidate"; return 0; }
+  dashboard_state_rank "$current"; cr="$REPLY"
+  dashboard_state_rank "$candidate"; nr="$REPLY"
+  if [ "$nr" -lt "$cr" ]; then REPLY="$candidate"; else REPLY="$current"; fi
+}
+
+dashboard() {
+  local mode="${1:-sessions-only}" now sid sname pane_id path activity root repo branch dirty idle shared state bead task
+  local pane_sid pane_sname pane_cmd pane_path pane_state pane_bead pane_task pane_parent pane_pid pane_root pane_state_norm
+  local tmp_panes _sid_list _sid
+  case "$mode" in expanded|sessions-only) ;; *) mode='sessions-only' ;; esac
+  now="$(date +%s)"
+  tmp_panes="$(mktemp)"
+  trap 'rm -f "${tmp_panes:-}"' RETURN EXIT INT TERM
+  declare -A sess_name=()
+  declare -A sess_path=()
+  declare -A sess_activity=()
+  declare -A sess_root=()
+  declare -A sess_state=()
+  declare -A sess_bead=()
+  declare -A sess_task=()
+  declare -A root_sids=()
+  declare -A sess_shared=()
+
+  while IFS=$'\t' read -r sid sname pane_id path activity; do
+    [ -n "$sid" ] || continue
+    path="${path:-$HOME}"
+    git_root_for_path "$path"; root="$REPLY"
+    sess_name["$sid"]="$sname"
+    sess_path["$sid"]="$path"
+    sess_activity["$sid"]="${activity:-0}"
+    sess_root["$sid"]="$root"
+    if [ -n "$root" ]; then
+      case " ${root_sids[$root]:-} " in *" $sid "*) ;; *) root_sids[$root]+=" $sid" ;; esac
+    fi
+  done < <(session_meta)
+
+  while IFS=$'\t' read -r pane_sid pane_sname pane_id pane_cmd pane_path pane_state pane_pid pane_bead pane_task pane_parent; do
+    [ -n "$pane_sid" ] || continue
+    normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd"; pane_state_norm="$REPLY"
+    dashboard_choose_state "${sess_state[$pane_sid]:-}" "$pane_state_norm"; sess_state["$pane_sid"]="$REPLY"
+    agent_meta_value "$pane_bead"; pane_bead="$REPLY"
+    agent_meta_value "$pane_task"; pane_task="$REPLY"
+    [ -z "${sess_bead[$pane_sid]:-}" ] && [ -n "$pane_bead" ] && sess_bead["$pane_sid"]="$pane_bead"
+    [ -z "${sess_task[$pane_sid]:-}" ] && [ -n "$pane_task" ] && sess_task["$pane_sid"]="$pane_task"
+    if [ "$mode" = expanded ]; then
+      printf 'pane\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$pane_sid" "$(tsv_clean "$pane_sname")" "$pane_id" "${pane_state_norm:-}" "$(tsv_clean "$pane_bead")" "$(tsv_clean "$pane_task")" "$(tsv_clean "$pane_cmd")" "$(tsv_clean "$pane_path")" >> "$tmp_panes"
+    fi
+  done < <(tmux list-panes -a -F $'#{session_id}\t#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}' 2>/dev/null || true)
+
+  for root in "${!root_sids[@]}"; do
+    _sid_list="${root_sids[$root]}"; set -- $_sid_list
+    if [ "$#" -gt 1 ]; then for _sid in "$@"; do sess_shared["$_sid"]=1; done; fi
+  done
+
+  printf 'dashboard\tmode\t%s\n' "$mode"
+  for sid in "${!sess_name[@]}"; do
+    sname="${sess_name[$sid]}"; path="${sess_path[$sid]:-$HOME}"; root="${sess_root[$sid]:-}"
+    repo="${root##*/}"; [ -n "$root" ] || repo=''
+    git_branch_name "$root"; branch="$REPLY"
+    git_dirty_count "$root"; dirty="$REPLY"
+    idle_label_plain "${sess_activity[$sid]:-}" "$now"; idle="$REPLY"
+    state="${sess_state[$sid]:-}"
+    bead="${sess_bead[$sid]:-}"
+    if [ -z "$bead" ]; then derive_bead_id "$sname" "$path" "$root"; bead="$REPLY"; fi
+    task="${sess_task[$sid]:-}"
+    shared="${sess_shared[$sid]:-0}"
+    printf 'session\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$sid" "$(tsv_clean "$sname")" "${state:-}" "$(tsv_clean "$bead")" "$(tsv_clean "$task")" "$(tsv_clean "$repo")" "$(tsv_clean "$branch")" "$dirty" "$shared" "$idle" "$(tsv_clean "$path")"
+    if [ "$mode" = expanded ]; then
+      awk -F '\t' -v s="$sid" '$1=="pane" && $2==s {print}' "$tmp_panes"
+    fi
+  done | sort -t $'\t' -k1,1 -k2,2
+}
+
+audit_tsv_field() {
+  local line="$1" n="$2"
+  awk -F '\t' -v n="$n" '{print $n}' <<< "$line"
+}
+
+mux_help() {
+  cat <<'EOF'
+multiplexing-safe delegation
+
+communication contract
+  1. beads first: durable task contract (`bd show <id>`)
+  2. /tmp prompt-file second: ephemeral constraints/meta-protocol
+  3. send-keys third: single-line pointer only
+
+never send while working
+  wait-agent <pane> --timeout 30m --interval 30s
+  monitor-agent <pane> --timeout 30m --interval 30s
+  monitor-list / monitor-kill <id>
+
+safe handoff
+  handoff --target <pane> --bead <id> --note 'NO push'
+  safe-send-pointer <pane> 'leggi /tmp/file.txt e seguilo'
+  add --yes only after inspecting the printed command
+
+inventory / dashboard
+  dashboard sessions-only    compact orchestrator TSV
+  dashboard expanded         pane-level detail
+  audit                      read-only hygiene report
+  worktree-collisions        shared checkout warnings
+
+picker keys
+  Tab      toggle nesting (expanded / sessions-only)
+  Space    mark row for Alt-X bulk kill
+  Ctrl-f   filters: repo / branch / cmd:agent / grep
+  Ctrl-r   refresh active filter/mode
+  Alt-I    interrupt pane micro-action
+  Ctrl-Y   approve/waiting-agent micro-action
+  Ctrl-O   one-line message micro-action
+  ?        show this cheatsheet
+
+cleanup rule of thumb
+  cleanup rows are candidates; warning rows need operator judgment.
+  dirty, shared, or working sessions are not safe to kill blindly.
+EOF
+}
+
+audit() {
+  local line type sid name state bead task repo branch dirty shared idle path pane cmd
+  current_tmux_session; log_event audit.run session="${REPLY:-unknown}"
+  dashboard expanded | while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    type="$(audit_tsv_field "$line" 1)"
+    case "$type" in
+      dashboard) printf 'audit\tread-only\twarnings-and-cleanup-candidates\n' ;;
+      session)
+        sid="$(audit_tsv_field "$line" 2)"
+        name="$(audit_tsv_field "$line" 3)"
+        state="$(audit_tsv_field "$line" 4)"
+        bead="$(audit_tsv_field "$line" 5)"
+        task="$(audit_tsv_field "$line" 6)"
+        repo="$(audit_tsv_field "$line" 7)"
+        branch="$(audit_tsv_field "$line" 8)"
+        dirty="$(audit_tsv_field "$line" 9)"
+        shared="$(audit_tsv_field "$line" 10)"
+        idle="$(audit_tsv_field "$line" 11)"
+        path="$(audit_tsv_field "$line" 12)"
+        [ -n "$sid" ] || continue
+        if [ -n "$path" ] && [ ! -d "$path" ]; then
+          printf 'cleanup\tmissing-path\t%s\t%s\t%s\n' "$sid" "$(tsv_clean "$name")" "$(tsv_clean "$path")"
+        fi
+        if [[ "$name" == sp-* ]] && { [ "$state" = done ] || [ -z "$state" ]; }; then
+          printf 'cleanup\tstale-specialist\t%s\t%s\tstate=%s\n' "$sid" "$(tsv_clean "$name")" "$(tsv_clean "$state")"
+        fi
+        if [ "${dirty:-0}" -gt 0 ] 2>/dev/null; then
+          printf 'warning\tdirty-worktree\t%s\t%s\tdirty=%s\trepo=%s\tpath=%s\n' "$sid" "$(tsv_clean "$name")" "$dirty" "$(tsv_clean "$repo")" "$(tsv_clean "$path")"
+        fi
+        if [ "${shared:-0}" = 1 ]; then
+          printf 'warning\tshared-worktree\t%s\t%s\trepo=%s\tpath=%s\n' "$sid" "$(tsv_clean "$name")" "$(tsv_clean "$repo")" "$(tsv_clean "$path")"
+        fi
+        if agent_state_is_working "$state"; then
+          printf 'warning\tworking-do-not-kill\t%s\t%s\tstate=%s\n' "$sid" "$(tsv_clean "$name")" "$state"
+        fi
+        case "$name" in
+          tmp-*|test-*|*-tmp|*-test|*' '*) printf 'warning\tnaming-convention\t%s\t%s\n' "$sid" "$(tsv_clean "$name")" ;;
+        esac
+        ;;
+      pane)
+        sid="$(audit_tsv_field "$line" 2)"
+        name="$(audit_tsv_field "$line" 3)"
+        pane="$(audit_tsv_field "$line" 4)"
+        state="$(audit_tsv_field "$line" 5)"
+        bead="$(audit_tsv_field "$line" 6)"
+        task="$(audit_tsv_field "$line" 7)"
+        cmd="$(audit_tsv_field "$line" 8)"
+        path="$(audit_tsv_field "$line" 9)"
+        if [ -n "$state" ] && [ -z "$bead" ]; then
+          printf 'warning\tagent-pane-without-bead\t%s\t%s\t%s\tstate=%s\tcmd=%s\n' "$sid" "$(tsv_clean "$name")" "$(tsv_clean "$pane")" "$state" "$(tsv_clean "$cmd")"
+        fi
+        ;;
+    esac
+  done
 }
 
 render_pane_line() {
@@ -382,7 +1085,10 @@ render_pane_line() {
   local state="${8:-}"
   local session_name="${9:-}"
   local pane_pid="${10:-}"
-  local marker cmd badge loc out sp_badge_str role_str
+  local meta_bead="${11:-}"
+  local meta_task="${12:-}"
+  local meta_parent="${13:-}"
+  local marker cmd badge loc out sp_badge_str role_str meta_label
 
   marker=' '
   [ "$pane_active" = '1' ] && marker='*'
@@ -411,27 +1117,198 @@ render_pane_line() {
     [ -n "$badge" ] && out+=" $badge"
     paint "$c_dim" "$cmd"; out+=" $REPLY"
   fi
+  agent_meta_label "$meta_bead" "$meta_task" "$meta_parent"; meta_label="$REPLY"
+  [ -n "$meta_label" ] && out+="$meta_label"
   [ -n "$loc" ] && out+="  $loc"
   REPLY="$out"
 }
 
-# build_list [all|waiting|running]
+# ── richer filters: ctrl-f submenu + spec language (xtmux-rib.11) ────────────
+# one active filter at a time, carried in a state file so the ctrl-f submenu
+# can hand the chosen spec to the main fzf's reload. ctrl-a/w/e reset the slot
+# (they stay pure attention filters); ctrl-f sets a content filter.
+filter_state_file() {
+  # UI state, NOT a cache: kept outside the cache dir so clear-cache (fired by
+  # session lifecycle hooks) does not reset the active content filter.
+  REPLY="${TMPDIR:-/tmp}/tmux-picker-state-${UID:-$(id -u)}/filter"
+}
+
+list_mode_file() {
+  REPLY="${TMPDIR:-/tmp}/tmux-picker-state-${UID:-$(id -u)}/list-mode"
+}
+
+read_list_mode() {
+  local f
+  list_mode_file; f="$REPLY"
+  if [ -f "$f" ]; then
+    REPLY="$(cat "$f" 2>/dev/null || true)"
+    case "$REPLY" in sessions-only) ;; *) REPLY='expanded' ;; esac
+  else
+    REPLY='expanded'
+  fi
+}
+
+write_list_mode() {
+  local mode="${1:-expanded}"
+  list_mode_file
+  mkdir -p "$(dirname "$REPLY")" 2>/dev/null || true
+  printf '%s' "$mode" > "$REPLY"
+}
+
+toggle_list_mode() {
+  read_list_mode
+  case "$REPLY" in
+    sessions-only) write_list_mode 'expanded' ;;
+    *) write_list_mode 'sessions-only' ;;
+  esac
+}
+
+# parse_filter <spec> -> sets FF_ATTN FF_REPO FF_BRANCH FF_CMD FF_GREP
+# grammar (comma-separated clauses, ANDed):
+#   all | waiting | running          attention presets
+#   repo:<substr>                    substring match on repo basename
+#   branch:<name>                    exact branch match
+#   cmd:<agent|shell|bun>            session has a pane of that class
+#   grep:<text>                      case-insensitive fixed text in pane capture
+parse_filter() {
+  FF_ATTN='all'; FF_REPO=''; FF_BRANCH=''; FF_CMD=''; FF_GREP=''
+  local spec="${1:-}" clause
+  [ -n "$spec" ] || return 0
+  local _clauses=()
+  IFS=',' read -ra _clauses <<< "$spec"
+  for clause in "${_clauses[@]}"; do
+    clause="${clause## }"; clause="${clause%% }"
+    [ -n "$clause" ] || continue
+    case "$clause" in
+      all|waiting|running) FF_ATTN="$clause" ;;
+      repo:*)   FF_REPO="${clause#repo:}" ;;
+      branch:*) FF_BRANCH="${clause#branch:}" ;;
+      cmd:*)    FF_CMD="${clause#cmd:}" ;;
+      grep:*)   FF_GREP="${clause#grep:}" ;;
+      *) ;;  # unknown clause ignored (defensive: never break the list)
+    esac
+  done
+}
+
+# classify_pane_cmd <pane_cmd> <normalized_state> -> REPLY=agent|shell|bun|other
+# truthful source for "agent" is @agent_state (xtmux-rib.2); specialists run bun.
+classify_pane_cmd() {
+  local cmd="${1:-}" state="${2:-}"
+  case "$cmd" in
+    bun) REPLY='bun'; return 0 ;;
+  esac
+  if [ -n "$state" ] && [ "$state" != '-' ]; then REPLY='agent'; return 0; fi
+  case "$cmd" in
+    bash|zsh|sh|fish|dash|ksh|tcsh|csh|osh) REPLY='shell' ;;
+    *) REPLY='other' ;;
+  esac
+}
+
+# __repo_matches <root> <name-substr> -> return 0 if root basename contains name
+__repo_matches() {
+  local root="${1:-}" name="${2:-}" base lbase lname
+  [ -n "$root" ] && [ -n "$name" ] || return 1
+  base="${root##*/}"; lbase="${base,,}"; lname="${name,,}"
+  case "$lbase" in *"$lname"*) return 0 ;; esac
+  lbase="${root,,}"
+  case "$lbase" in *"$lname"*) return 0 ;; esac
+  return 1
+}
+
+# branch_from_root_status <root_status> -> REPLY=branch ('' if unparseable)
+# root_status format: "REPO <icon> BRANCH [flags] <icon> <path>"
+branch_from_root_status() {
+  local raw="${1:-}" rest
+  [ -n "$raw" ] || { REPLY=''; return 0; }
+  rest="${raw#* }"            # drop REPO token
+  [ "$rest" = "$raw" ] && { REPLY=''; return 0; }
+  rest="${rest#* }"           # drop icon token
+  REPLY="${rest%% *}"         # first token of remainder == BRANCH
+}
+
+# __filter_distinct <repo|branch> -> print distinct values across live sessions
+__filter_distinct() {
+  local kind="$1" p root val
+  local -A seen=()
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    git_root_for_path "$p"; root="$REPLY"
+    [ -n "$root" ] || continue
+    if [ "$kind" = repo ]; then
+      val="${root##*/}"
+    else
+      val="$(run_git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    fi
+    [ -n "$val" ] || continue
+    [[ -v seen["$val"] ]] && continue
+    seen["$val"]=1
+    printf '%s\n' "$val"
+  done < <(tmux list-sessions -F '#{pane_current_path}' 2>/dev/null)
+  return 0
+}
+
+# cmd_filter_menu: the ctrl-f submenu. picks dimension+value, writes spec to the
+# state file. two-level for repo/branch (live sessions), one-level for cmd,
+# free text for grep.
+cmd_filter_menu() {
+  command -v fzf >/dev/null 2>&1 || return 0
+  filter_state_file; local ffile="$REPLY"
+  local dim spec=''
+  dim="$(printf '%s\n' 'repo' 'branch' 'cmd' 'grep' '' 'clear' \
+    | fzf --prompt='filter by> ' --height=40% --no-sort --tiebreak=index --cycle 2>/dev/null)" || return 0
+  case "$dim" in
+    repo)
+      spec="$(__filter_distinct repo | fzf --prompt='repo> ' --height=50% --no-sort 2>/dev/null)" || spec=''
+      [ -n "$spec" ] && spec="repo:$spec"
+      ;;
+    branch)
+      spec="$(__filter_distinct branch | fzf --prompt='branch> ' --height=50% --no-sort 2>/dev/null)" || spec=''
+      [ -n "$spec" ] && spec="branch:$spec"
+      ;;
+    cmd)
+      spec="$(printf '%s\n' agent shell bun | fzf --prompt='cmd> ' --height=30% --no-sort 2>/dev/null)" || spec=''
+      [ -n "$spec" ] && spec="cmd:$spec"
+      ;;
+    grep)
+      local _q
+      _q="$(printf '%s\n' 'type text, then Enter' | fzf --prompt='grep> ' --print-query --height=30% --no-sort 2>/dev/null)" \
+        && spec="grep:$(printf '%s\n' "$_q" | head -1)" || spec=''
+      ;;
+    clear) spec='' ;;
+    *) spec='' ;;
+  esac
+  mkdir -p "$(dirname "$ffile")"
+  printf '%s' "$spec" > "$ffile"
+}
+
+# build_list <spec> [<mode>]
+# spec: all|waiting|running, or comma clauses repo:/branch:/cmd:/grep:
+# mode: expanded (default) | sessions-only (suppress pane rows)
 build_list() {
-  local filter="${1:-all}"
-  local tmp_sessions tmp_panes sid sname pane_id pane_path root sort_key group_key display root_status name_width=12 session_col
-  local window_index window_name pane_index pane_active pane_cmd pane_row_path pane_col pane_state pane_rank cur_rank
-  local psid pwi ppi ppid pcol attn
+  local filter="${1:-all}" list_mode="${2:-expanded}"
+  local tmp_sessions tmp_panes sid sname pane_id pane_path session_activity root sort_key group_key display root_status name_width=12 session_col
+  local window_index window_name pane_index pane_active pane_cmd pane_row_path pane_col pane_state pane_pid pane_bead pane_task pane_parent pane_rank cur_rank _cls
+  local psid pwi ppi ppid pcol attn idle stale_bucket section last_section=0 header_label now
   declare -A root_cache=()
   declare -A root_status_cache=()
   declare -A sess_name=()
   declare -A sess_attn=()
+  declare -A sess_stale=()
+  declare -A sess_section=()
   declare -A pane_block=()
+  declare -A sess_root=()
+  declare -A sess_root_status=()
+  declare -A sess_classes=()
+  declare -A sess_grep_hit=()
+  declare -A root_sids=()
+  declare -A sess_shared_wt=()
+  parse_filter "$filter"
 
   # Persistent git cache (path -> root, root -> status). The expensive, near-static
   # half of the list. Agent state (@agent_state) and the attention sort derived
   # from it are NEVER cached — they're read fresh every call (see xtmux-rib.17).
   local _gcd _gcf _gnow _gmt _ghit=0 _gp _gr _gs
-  _gcd="${TMPDIR:-/tmp}/tmux-picker-cache-${UID:-$(id -u)}"
+  cache_dir; _gcd="$REPLY"
   _gcf="$_gcd/git-table"
   if [ "${TMUX_PICKER_NO_CACHE:-0}" != '1' ] && [ -f "$_gcf" ]; then
     _gnow=$(date +%s)
@@ -448,9 +1325,10 @@ build_list() {
 
   tmp_sessions="$(mktemp)"
   tmp_panes="$(mktemp)"
+  now="$(date +%s)"
   trap 'rm -f "${tmp_sessions:-}" "${tmp_panes:-}"' RETURN EXIT INT TERM
 
-  while IFS=$'\t' read -r sid sname pane_id pane_path; do
+  while IFS=$'\t' read -r sid sname pane_id pane_path session_activity; do
     [ -n "$sid" ] || continue
     pane_path="${pane_path:-$HOME}"
 
@@ -475,13 +1353,21 @@ build_list() {
     group_root_for_path "$pane_path" "$root"; group_key="$REPLY"
     sort_key="$group_key"
     render_list_status "$pane_path" "$root" "$root_status"; display="$REPLY"
+    idle_badge "$session_activity" "$now"; idle="$REPLY"; stale_bucket="$IDLE_STALE"
+    [ -n "$idle" ] && display+=" $idle"
+    section=0
+    [[ "$sname" == sp-* ]] && section=1
     sess_name["$sid"]="$sname"
+    sess_stale["$sid"]="$stale_bucket"
+    sess_section["$sid"]="$section"
+    sess_root["$sid"]="$root"
+    sess_root_status["$sid"]="$root_status"
     [ "${#sname}" -gt "$name_width" ] && name_width="${#sname}"
 
-    printf '%s\t%s\t%s\t%s\n' "$sort_key" "$sid" "$sname" "$display" >> "$tmp_sessions"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$section" "$sort_key" "$stale_bucket" "$sid" "$sname" "$display" >> "$tmp_sessions"
   done < <(session_meta)
 
-  while IFS=$'\t' read -r sid window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_state pane_pid; do
+  while IFS=$'\t' read -r sid window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_state pane_pid pane_bead pane_task pane_parent; do
     [ -n "$sid" ] || continue
     pane_row_path="${pane_row_path:-$HOME}"
 
@@ -490,6 +1376,10 @@ build_list() {
     else
       git_root_for_path "$pane_row_path"; root="$REPLY"
       root_cache["$pane_row_path"]="$root"
+    fi
+
+    if [ -n "$root" ]; then
+      case " ${root_sids[$root]:-} " in *" $sid "*) ;; *) root_sids[$root]+=" $sid" ;; esac
     fi
 
     normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd"; pane_state="$REPLY"
@@ -504,7 +1394,19 @@ build_list() {
     cur_rank="${sess_attn[$sid]:-3}"
     [ "$pane_rank" -lt "$cur_rank" ] && sess_attn["$sid"]="$pane_rank"
 
-    render_pane_line "$window_index" "$window_name" "$pane_id" "$pane_active" "$pane_cmd" "$pane_row_path" "$root" "$pane_state" "${sess_name[$sid]:-}" "$pane_pid"; pane_col="$REPLY"
+    # richer filters (xtmux-rib.11): collect per-session cmd classes + grep hits.
+    # only the work for an active clause is done (free-text grep is lazy here).
+    if [ -n "$FF_CMD" ]; then
+      classify_pane_cmd "$pane_cmd" "$pane_state"; _cls="$REPLY"
+      case " ${sess_classes[$sid]:-} " in *" $_cls "*) ;; *) sess_classes["$sid"]+=" $_cls";; esac
+    fi
+    if [ -n "$FF_GREP" ] && [ "${sess_grep_hit[$sid]:-0}" != 1 ]; then
+      if capture_pane_safe "$pane_id" -50 | sed -E $'s/\x1b\\[[0-9;]*m//g' | grep -qiF -- "$FF_GREP"; then
+        sess_grep_hit["$sid"]=1
+      fi
+    fi
+
+    render_pane_line "$window_index" "$window_name" "$pane_id" "$pane_active" "$pane_cmd" "$pane_row_path" "$root" "$pane_state" "${sess_name[$sid]:-}" "$pane_pid" "$pane_bead" "$pane_task" "$pane_parent"; pane_col="$REPLY"
     printf '%s\t%s\t%s\t%s\t%s\n' "$sid" "$window_index" "$pane_index" "$pane_id" "$pane_col" >> "$tmp_panes"
   done < <(pane_meta)
 
@@ -514,6 +1416,16 @@ build_list() {
       pane_block["$psid"]+="$(printf 'pane\t%s\t%s\t%s\t%s' "$psid" "${sess_name[$psid]:-}" "$ppid" "$pcol")"$'\n'
     done < <(sort -t $'\t' -k1,1 -k2,2n -k3,3n "$tmp_panes")
   fi
+
+  for root in "${!root_sids[@]}"; do
+    _sid_list="${root_sids[$root]}"
+    # Count words in the sid list; more than one session in the same git
+    # worktree is a multiplexing collision warning, not a hard error.
+    set -- $_sid_list
+    if [ "$#" -gt 1 ]; then
+      for _sid in "$@"; do sess_shared_wt["$_sid"]=1; done
+    fi
+  done
 
   # Persist the git cache if this call was a miss. Agent state is deliberately
   # excluded — only path/root/status (near-static, expensive) is stored.
@@ -532,19 +1444,49 @@ build_list() {
 
   [ "$name_width" -gt 22 ] && name_width=22
 
-  while IFS=$'\t' read -r sort_key sid sname display; do
-    printf '%s\t%s\t%s\t%s\t%s\n' "${sess_attn[$sid]:-3}" "$sort_key" "$sid" "$sname" "$display"
+  while IFS=$'\t' read -r section sort_key stale_bucket sid sname display; do
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${sess_section[$sid]:-$section}" "${sess_attn[$sid]:-3}" "${sess_stale[$sid]:-$stale_bucket}" "$sort_key" "$sid" "$sname" "$display"
   done < "$tmp_sessions" |
-    sort -t $'\t' -k1,1n -k2,2 -k4,4 |
-    while IFS=$'\t' read -r attn _ sid sname display; do
-      case "$filter" in
+    sort -t $'\t' -k1,1n -k2,2n -k3,3n -k4,4 -k6,6 |
+    while IFS=$'\t' read -r section attn stale_bucket _ sid sname display; do
+      # attention preset (unchanged semantics for all|waiting|running)
+      case "$FF_ATTN" in
         waiting) [ "$attn" -eq 0 ] || continue ;;
         running) [ "$attn" -le 2 ] || continue ;;
       esac
+      # content filters (xtmux-rib.11): AND of repo/branch/cmd/grep clauses
+      if [ -n "$FF_REPO" ]; then
+        __repo_matches "${sess_root[$sid]:-}" "$FF_REPO" || continue
+      fi
+      if [ -n "$FF_BRANCH" ]; then
+        branch_from_root_status "${sess_root_status[$sid]:-}"
+        [ "$REPLY" = "$FF_BRANCH" ] || continue
+      fi
+      if [ -n "$FF_CMD" ]; then
+        case " ${sess_classes[$sid]:-} " in *" $FF_CMD "*) ;; *) continue ;; esac
+      fi
+      if [ -n "$FF_GREP" ]; then
+        [ "${sess_grep_hit[$sid]:-0}" = 1 ] || continue
+      fi
+      if [ "${section:-0}" = 1 ] && [ "$last_section" != 1 ]; then
+        paint "$c_sp" "── specialists (sp-*) ──"; header_label="$REPLY"
+        printf 'header\t\tspecialists\t\t  %s\n' "$header_label"
+        last_section=1
+      fi
       printf -v session_col '%-*s' "$name_width" "$sname"
-      paint "$c_session" "$session_col"; session_col="$REPLY"
+      if [ "${stale_bucket:-0}" = 1 ] && [ "$attn" -gt 1 ]; then
+        paint "$c_dim" "$session_col"
+      else
+        paint "$c_session" "$session_col"
+      fi
+      session_col="$REPLY"
+      if [ "${sess_shared_wt[$sid]:-0}" = 1 ]; then
+        paint "$c_stale" "[shared-wt]"; display+=" $REPLY"
+      fi
       printf 'session\t%s\t%s\t%s\t  %s  %s\n' "$sid" "$sname" "$sid" "$session_col" "$display"
-      printf '%s' "${pane_block[$sid]:-}"
+      if [ "$list_mode" != 'sessions-only' ]; then
+        printf '%s' "${pane_block[$sid]:-}"
+      fi
     done
 }
 
@@ -594,11 +1536,360 @@ jump_back() {
   jump_to_target pane "$sid" "$pane"
 }
 
+parse_wait_duration() {
+  local raw="${1:-}" n unit
+  [ -n "$raw" ] || { REPLY=0; return 0; }
+  if [[ "$raw" =~ ^([0-9]+)([smhd]?)$ ]]; then
+    n="${BASH_REMATCH[1]}"; unit="${BASH_REMATCH[2]}"
+    case "$unit" in
+      h) REPLY=$(( n * 3600 )) ;;
+      m) REPLY=$(( n * 60 )) ;;
+      d) REPLY=$(( n * 86400 )) ;;
+      *) REPLY="$n" ;;
+    esac
+    return 0
+  fi
+  return 1
+}
+
+resolve_tmux_pane() {
+  local target="${1:-}"
+  [ -n "$target" ] || return 1
+  REPLY="$(tmux display-message -p -t "$target" '#{pane_id}' 2>/dev/null || true)"
+  [ -n "$REPLY" ]
+}
+
+observe_agent_state() {
+  local pane="$1" raw cmd state
+  raw="$(tmux show-options -p -t "$pane" -qv @agent_state 2>/dev/null || true)"
+  if [ -n "$raw" ]; then
+    normalize_agent_state "$pane" "$raw" ""; REPLY="$REPLY"; return 0
+  fi
+  # Fallback for panes without @agent_state: use the same opt-in inference as the
+  # picker, scoped to this call. This is intentionally secondary because UI
+  # markers are brittle across agent harnesses.
+  cmd="$(tmux display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null || true)"
+  if [ -n "$cmd" ]; then
+    TMUX_PICKER_AGENT=1 normalize_agent_state "$pane" "" "$cmd"
+    state="$REPLY"
+    [ -n "$state" ] || state='unknown'
+    REPLY="$state"
+  else
+    REPLY='unknown'
+  fi
+}
+
+wait_agent() {
+  local target='' timeout=0 interval=30 arg pane state start now elapsed
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --timeout=*) parse_wait_duration "${arg#--timeout=}" || return 2; timeout="$REPLY" ;;
+      --timeout) [ "$#" -gt 0 ] || return 2; parse_wait_duration "$1" || return 2; timeout="$REPLY"; shift ;;
+      --interval=*) parse_wait_duration "${arg#--interval=}" || return 2; interval="$REPLY" ;;
+      --interval) [ "$#" -gt 0 ] || return 2; parse_wait_duration "$1" || return 2; interval="$REPLY"; shift ;;
+      -h|--help) return 2 ;;
+      *) [ -z "$target" ] || return 2; target="$arg" ;;
+    esac
+  done
+  [ -n "$target" ] || return 2
+  resolve_tmux_pane "$target" || { printf 'wait-agent: target not found: %s\n' "$target" >&2; return 1; }
+  pane="$REPLY"
+  start="$(date +%s)"
+  while :; do
+    observe_agent_state "$pane"; state="$REPLY"
+    if ! agent_state_is_working "$state"; then
+      printf 'target=%s pane=%s state=%s\n' "$target" "$pane" "$state"
+      return 0
+    fi
+    if [ "$timeout" -gt 0 ]; then
+      now="$(date +%s)"; elapsed=$(( now - start ))
+      if [ "$elapsed" -ge "$timeout" ]; then
+        printf 'wait-agent: timeout target=%s pane=%s state=%s elapsed=%ss\n' "$target" "$pane" "$state" "$elapsed" >&2
+        return 124
+      fi
+    fi
+    sleep "$interval"
+  done
+}
+
+monitor_dir() {
+  REPLY="${TMPDIR:-/tmp}/tmux-picker-state-${UID:-$(id -u)}/monitors"
+}
+
+monitor_file() {
+  local id="${1:-}"
+  monitor_dir
+  REPLY="$REPLY/$id.tsv"
+}
+
+monitor_write_record() {
+  local id="$1" pid="$2" target="$3" pane="$4" state="$5" start="$6" timeout="$7" interval="$8" updated="$9"
+  local file tmp dir
+  monitor_file "$id"; file="$REPLY"; dir="${file%/*}"
+  mkdir -p "$dir" 2>/dev/null || true
+  tmp="$file.tmp.$$"
+  printf 'monitor\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(tsv_clean "$id")" "$(tsv_clean "$pid")" "$(tsv_clean "$target")" "$(tsv_clean "$pane")" \
+    "$(tsv_clean "$state")" "$(tsv_clean "$start")" "$(tsv_clean "$timeout")" "$(tsv_clean "$interval")" "$(tsv_clean "$updated")" \
+    > "$tmp" && mv -f "$tmp" "$file"
+}
+
+monitor_run() {
+  local id="$1" target="$2" pane="$3" timeout="$4" interval="$5" start="$6"
+  local state now elapsed
+  cleanup_monitor() { monitor_file "$id"; rm -f "$REPLY" 2>/dev/null || true; }
+  trap cleanup_monitor EXIT INT TERM
+  while :; do
+    observe_agent_state "$pane"; state="$REPLY"
+    now="$(date +%s)"
+    monitor_write_record "$id" "$$" "$target" "$pane" "$state" "$start" "$timeout" "$interval" "$now"
+    if ! agent_state_is_working "$state"; then
+      log_event monitor.done id="$id" target="$target" pane="$pane" state="$state"
+      return 0
+    fi
+    if [ "$timeout" -gt 0 ]; then
+      elapsed=$(( now - start ))
+      if [ "$elapsed" -ge "$timeout" ]; then
+        log_event monitor.timeout id="$id" target="$target" pane="$pane" state="$state" elapsed="$elapsed"
+        return 124
+      fi
+    fi
+    sleep "$interval"
+  done
+}
+
+monitor_agent() {
+  local target='' timeout=0 interval=30 arg pane state start id pid
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --timeout=*) parse_wait_duration "${arg#--timeout=}" || return 2; timeout="$REPLY" ;;
+      --timeout) [ "$#" -gt 0 ] || return 2; parse_wait_duration "$1" || return 2; timeout="$REPLY"; shift ;;
+      --interval=*) parse_wait_duration "${arg#--interval=}" || return 2; interval="$REPLY" ;;
+      --interval) [ "$#" -gt 0 ] || return 2; parse_wait_duration "$1" || return 2; interval="$REPLY"; shift ;;
+      -h|--help) return 2 ;;
+      *) [ -z "$target" ] || return 2; target="$arg" ;;
+    esac
+  done
+  [ -n "$target" ] || { printf 'usage: monitor-agent <target> [--timeout 30m] [--interval 30s]\n' >&2; return 2; }
+  resolve_tmux_pane "$target" || { printf 'monitor-agent: target not found: %s\n' "$target" >&2; return 1; }
+  pane="$REPLY"
+  observe_agent_state "$pane"; state="$REPLY"
+  start="$(date +%s)"
+  id="m${start}-$(printf '%s' "$pane" | tr -cd '0-9A-Za-z')-$$"
+  monitor_write_record "$id" "starting" "$target" "$pane" "$state" "$start" "$timeout" "$interval" "$start"
+  "$self" monitor-run "$id" "$target" "$pane" "$timeout" "$interval" "$start" >/dev/null 2>&1 &
+  pid="$!"
+  monitor_write_record "$id" "$pid" "$target" "$pane" "$state" "$start" "$timeout" "$interval" "$start"
+  log_event monitor.started id="$id" pid="$pid" target="$target" pane="$pane" state="$state" timeout="$timeout" interval="$interval"
+  printf 'monitor\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$pid" "$target" "$pane" "$state" "$start" "$timeout" "$interval" "$start"
+}
+
+monitor_list() {
+  local dir file line type id pid target pane state start timeout interval updated now
+  monitor_dir; dir="$REPLY"
+  [ -d "$dir" ] || return 0
+  now="$(date +%s)"
+  for file in "$dir"/*.tsv; do
+    [ -e "$file" ] || continue
+    IFS=$'\t' read -r type id pid target pane state start timeout interval updated < "$file" || continue
+    if [ -n "$pid" ] && [ "$pid" != starting ] && ! kill -0 "$pid" 2>/dev/null; then
+      rm -f "$file" 2>/dev/null || true
+      continue
+    fi
+    if [ -n "$pane" ]; then
+      observe_agent_state "$pane"; state="$REPLY"
+      monitor_write_record "$id" "$pid" "$target" "$pane" "$state" "$start" "$timeout" "$interval" "$now"
+    fi
+    printf 'monitor\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$pid" "$target" "$pane" "$state" "$start" "$timeout" "$interval" "$now"
+  done | sort -t $'\t' -k6,6 -k2,2
+}
+
+monitor_kill() {
+  local id="${1:-}" file type rid pid rest
+  [ -n "$id" ] || { printf 'usage: monitor-kill <id>\n' >&2; return 2; }
+  monitor_file "$id"; file="$REPLY"
+  [ -f "$file" ] || { printf 'monitor-kill: not found: %s\n' "$id" >&2; return 1; }
+  IFS=$'\t' read -r type rid pid rest < "$file" || true
+  if [ -n "${pid:-}" ] && [ "$pid" != starting ]; then kill "$pid" 2>/dev/null || true; fi
+  rm -f "$file" 2>/dev/null || true
+  log_event monitor.killed id="$id" pid="${pid:-}"
+  printf 'killed\t%s\n' "$id"
+}
+
+handoff_default_file() {
+  local target="${1:-target}" bead="${2:-bead}" safe
+  safe="$(printf '%s-%s' "$target" "$bead" | tr -cs 'A-Za-z0-9._-' '-')"
+  REPLY="${TMPDIR:-/tmp}/xtmux-handoff-${safe}.txt"
+}
+
+handoff() {
+  local execute=0 target='' bead='' note='' file='' parent='' arg pane state bead_line pointer qtarget qpointer
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --yes|--send) execute=1 ;;
+      --dry-run) execute=0 ;;
+      --target) [ "$#" -gt 0 ] || return 2; target="$1"; shift ;;
+      --target=*) target="${arg#--target=}" ;;
+      --bead) [ "$#" -gt 0 ] || return 2; bead="$1"; shift ;;
+      --bead=*) bead="${arg#--bead=}" ;;
+      --note) [ "$#" -gt 0 ] || return 2; note="$1"; shift ;;
+      --note=*) note="${arg#--note=}" ;;
+      --file) [ "$#" -gt 0 ] || return 2; file="$1"; shift ;;
+      --file=*) file="${arg#--file=}" ;;
+      --parent) [ "$#" -gt 0 ] || return 2; parent="$1"; shift ;;
+      --parent=*) parent="${arg#--parent=}" ;;
+      -h|--help) return 2 ;;
+      *) printf 'handoff: unknown arg: %s\n' "$arg" >&2; return 2 ;;
+    esac
+  done
+  [ -n "$target" ] && [ -n "$bead" ] || { printf 'usage: handoff --target <pane/session> --bead <id> [--note text] [--file /tmp/x] [--yes]\n' >&2; return 2; }
+  resolve_tmux_pane "$target" || { printf 'handoff: target not found: %s\n' "$target" >&2; return 1; }
+  pane="$REPLY"
+  observe_agent_state "$pane"; state="$REPLY"
+  if agent_state_is_working "$state"; then
+    printf 'handoff: refused target=%s pane=%s state=%s\n' "$target" "$pane" "$state" >&2
+    return 75
+  fi
+  if command -v bd >/dev/null 2>&1; then
+    bead_line="$(bd show "$bead" 2>/dev/null | head -1 || true)"
+    [ -n "$bead_line" ] || { printf 'handoff: bead not found: %s\n' "$bead" >&2; return 1; }
+  else
+    bead_line="$bead"
+  fi
+  [ -n "$file" ] || { handoff_default_file "$pane" "$bead"; file="$REPLY"; }
+  mkdir -p "$(dirname "$file")" 2>/dev/null || true
+  {
+    printf 'bead: %s\n' "$bead"
+    printf 'contract: bd show %s\n' "$bead"
+    printf 'summary: %s\n' "$bead_line"
+    [ -n "$parent" ] && printf 'parent-session: %s\n' "$parent"
+    [ -n "$note" ] && { printf '\nmeta-protocol:\n'; printf '%s\n' "$note"; }
+    printf '\nexpected-report:\n'
+    printf '%s\n' '- read the bead as the durable task contract'
+    printf '%s\n' '- update bead notes with findings/results'
+    printf '%s\n' '- do not send multiline payloads over tmux; use this file as context'
+  } > "$file"
+  pointer="leggi $file e seguilo. contratto durevole: bd show $bead. report finale nel bead."
+  safe_pointer_payload "$pointer" || return 2
+  printf -v qtarget '%q' "$target"
+  printf -v qpointer '%q' "$pointer"
+  log_event handoff.created target="$target" pane="$pane" bead="$bead" prompt_file="$file" parent="$parent" state="$state"
+  printf 'prompt-file\t%s\n' "$file"
+  printf 'bead\t%s\n' "$bead"
+  printf 'pointer\t%s\n' "$pointer"
+  printf 'command\t%s safe-send-pointer --yes %s %s\n' "$self" "$qtarget" "$qpointer"
+  if [ "$execute" = 1 ]; then
+    tmux set-option -p -t "$pane" -q @agent_bead "$bead" 2>/dev/null || true
+    tmux set-option -p -t "$pane" -q @agent_prompt_file "$file" 2>/dev/null || true
+    [ -n "$parent" ] && tmux set-option -p -t "$pane" -q @agent_parent_session "$parent" 2>/dev/null || true
+    [ -n "$bead_line" ] && tmux set-option -p -t "$pane" -q @agent_task "$(tsv_clean "$bead_line")" 2>/dev/null || true
+    log_event handoff.sent target="$target" pane="$pane" bead="$bead" prompt_file="$file" parent="$parent"
+    safe_send_pointer --yes "$target" "$pointer"
+  fi
+}
+
+safe_pointer_payload() {
+  local payload="${1:-}"
+  local force_freeform="${2:-0}"
+  [ -n "$payload" ] || { printf 'safe-send-pointer: empty payload\n' >&2; return 1; }
+  case "$payload" in *$'\n'*|*$'\r'*) printf 'safe-send-pointer: multiline payload rejected\n' >&2; return 1 ;; esac
+  case "$payload" in *'`'*|*'$('*) printf 'safe-send-pointer: command substitution/backticks rejected\n' >&2; return 1 ;; esac
+  if [ "$force_freeform" = 1 ]; then
+    return 0                                # multi-line + shell-substitution guards still enforced above
+  fi
+  case "$payload" in
+    /*) return 0 ;;                         # slash command, e.g. /compact
+    *'/tmp/'*) return 0 ;;                  # pointer to prompt-file
+    *) printf 'safe-send-pointer: payload must be a slash command or reference /tmp/<file> (use --force-freeform to bypass)\n' >&2; return 1 ;;
+  esac
+}
+
+# Return 0 if the given pane is running a Claude Code process, 1 otherwise.
+# Claude Code deterministically consumes the first Enter as paste-detection;
+# other agents (pi, codex, raw shell) do not. Auto-detected here so
+# safe-send-pointer / handoff callers do not need to know pane type.
+pane_is_claude_code() {
+  local pane="${1:-}" cmd=''
+  [ -n "$pane" ] || return 1
+  cmd="$(tmux display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null || true)"
+  case "$cmd" in
+    claude|claude-*|*/claude|*/claude-*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+safe_send_pointer() {
+  local execute=0 double_enter=-1 force_freeform=0 target='' payload='' arg pane state qpane qpayload cmd
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --yes|--send) execute=1 ;;
+      --dry-run) execute=0 ;;
+      --double-enter) double_enter=1 ;;
+      --no-double-enter) double_enter=0 ;;
+      --force-freeform) force_freeform=1 ;;
+      -h|--help) return 2 ;;
+      --*) printf 'safe-send-pointer: unknown option: %s\n' "$arg" >&2; return 2 ;;
+      *)
+        if [ -z "$target" ]; then
+          target="$arg"
+        else
+          payload+="${payload:+ }$arg"
+        fi
+        ;;
+    esac
+  done
+  [ -n "$target" ] && [ -n "$payload" ] || { printf 'usage: safe-send-pointer [--yes] [--double-enter|--no-double-enter] [--force-freeform] <target> <slash-command|/tmp pointer>\n' >&2; return 2; }
+  safe_pointer_payload "$payload" "$force_freeform" || return 2
+  resolve_tmux_pane "$target" || { printf 'safe-send-pointer: target not found: %s\n' "$target" >&2; return 1; }
+  pane="$REPLY"
+  observe_agent_state "$pane"; state="$REPLY"
+  if agent_state_is_working "$state"; then
+    printf 'safe-send-pointer: refused target=%s pane=%s state=%s\n' "$target" "$pane" "$state" >&2
+    return 75
+  fi
+
+  # Auto-double-Enter for Claude Code targets unless the caller explicitly opted out.
+  # Codex/pi/raw-shell panes never get the auto second Enter.
+  if [ "$double_enter" = -1 ]; then
+    if pane_is_claude_code "$pane"; then double_enter=1; else double_enter=0; fi
+  fi
+
+  # --force-freeform without --yes prints a confirmation banner so the operator sees
+  # exactly what is being bypassed before they re-run with --yes.
+  if [ "$force_freeform" = 1 ] && [ "$execute" != 1 ]; then
+    printf 'safe-send-pointer: --force-freeform bypasses the slash/tmp payload check.\n'
+    printf '  payload guards STILL enforced: no newlines, no `...`, no $(...).\n'
+    printf '  Re-run with --yes to send. Target=%s state=%s double_enter=%s\n' "$target" "${state:-unknown}" "$double_enter"
+  fi
+
+  printf -v qpane '%q' "$pane"
+  printf -v qpayload '%q' "$payload"
+  printf 'tmux send-keys -t %s %s Enter\n' "$qpane" "$qpayload"
+  if [ "$double_enter" = 1 ]; then
+    printf '# followed by second Enter after 2s (Claude Code paste-detection auto-double-Enter)\n'
+  fi
+  if [ "$execute" = 1 ]; then
+    tmux send-keys -t "$pane" "$payload" Enter
+    if [ "$double_enter" = 1 ]; then
+      sleep 2
+      tmux send-keys -t "$pane" Enter
+    fi
+    current_tmux_session; _from_session="$REPLY"
+    log_event message.sent via=safe-send-pointer from="${_from_session:-unknown}" to="$target" pane="$pane" text="$payload" state="${state:-unknown}" double_enter="$double_enter" force_freeform="$force_freeform"
+    printf 'sent target=%s pane=%s state=%s double_enter=%s\n' "$target" "$pane" "${state:-unknown}" "$double_enter"
+  fi
+}
+
 preview_session_row() {
   local sid="$1"
   local name="$2"
   local pane_path root root_name rel attached window_count pane_count
   local window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state pane_pid
+  local meta_bead meta_task meta_prompt_file meta_parent meta_last first_meta_line session_bead session_task session_prompt session_parent session_last
   local pane_root pane_loc active_mark hdr panes_raw first_pane_pid sp_hash sp_view_state bd_line
   declare -A root_cache=()
 
@@ -620,7 +1911,7 @@ preview_session_row() {
   fi
 
   # Single scoped call: only this session's panes (was list-panes -a | awk, twice).
-  panes_raw="$(tmux list-panes -s -t "$sid" -F $'#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}' 2>/dev/null || true)"
+  panes_raw="$(tmux list-panes -s -t "$sid" -F $'#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_prompt_file,#{@agent_prompt_file},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}' 2>/dev/null || true)"
   if [ -n "$panes_raw" ]; then
     pane_count="$(printf '%s\n' "$panes_raw" | grep -c .)"
   else
@@ -634,6 +1925,22 @@ preview_session_row() {
   fi
   [ -n "$rel" ] && printf 'cwd=%s\n' "$rel"
   first_pane_pid="$(printf '%s\n' "$panes_raw" | awk -F'\t' 'NF{print $13; exit}')"
+  first_meta_line="$(printf '%s\n' "$panes_raw" | awk -F'\t' 'NF && $14 != "" && $14 != "-" {print $14 "\t" $15 "\t" $16 "\t" $17 "\t" $18; exit}')"
+  if [ -n "$first_meta_line" ]; then
+    IFS=$'\t' read -r session_bead session_task session_prompt session_parent session_last <<< "$first_meta_line"
+    agent_meta_value "$session_bead"; session_bead="$REPLY"
+    agent_meta_value "$session_task"; session_task="$REPLY"
+    agent_meta_value "$session_prompt"; session_prompt="$REPLY"
+    agent_meta_value "$session_parent"; session_parent="$REPLY"
+    agent_meta_value "$session_last"; session_last="$REPLY"
+    printf 'agent-meta'
+    [ -n "$session_bead" ] && printf ' bead=%s' "$session_bead"
+    [ -n "$session_task" ] && printf ' task=%s' "$session_task"
+    [ -n "$session_parent" ] && printf ' parent=%s' "$session_parent"
+    [ -n "$session_prompt" ] && printf ' prompt=%s' "$session_prompt"
+    [ -n "$session_last" ] && printf ' last=%s' "$session_last"
+    printf '\n'
+  fi
   sp_meta "$name" "$first_pane_pid"
   if [ -n "$sp_role" ]; then
     sp_hash_from_name "$name"; sp_hash="$REPLY"
@@ -646,9 +1953,10 @@ preview_session_row() {
       [ -n "$bd_line" ] && printf 'bead %s\n' "$bd_line"
     fi
   fi
+  preview_enrichment "$pane_path" "$root" "$name" "$session_bead"
   printf 'windows=%s  panes=%s  attached=%s\n\n' "${window_count:-?}" "${pane_count:-0}" "${attached:-0}"
 
-  while IFS=$'\t' read -r window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state pane_pid; do
+  while IFS=$'\t' read -r window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state pane_pid meta_bead meta_task meta_prompt_file meta_parent meta_last; do
     pane_row_path="${pane_row_path:-$pane_path}"
     if [[ -v root_cache["$pane_row_path"] ]]; then
       pane_root="${root_cache[$pane_row_path]}"
@@ -676,10 +1984,11 @@ preview_pane_row() {
   local name="$2"
   local target_pane="$3"
   local pane_path root root_name rel attached window_line pane_cmd pane_state pane_pid sp_hash sp_view_state bd_line
+  local meta_bead meta_task meta_prompt_file meta_parent meta_last
 
   local pinfo
-  pinfo="$(tmux display-message -p -t "$target_pane" $'#{pane_current_path}	#{pane_current_command}	#I:#W	#{?@agent_state,#{@agent_state},-}	#{pane_pid}' 2>/dev/null || true)"
-  IFS=$'	' read -r pane_path pane_cmd window_line pane_state pane_pid <<< "$pinfo"
+  pinfo="$(tmux display-message -p -t "$target_pane" $'#{pane_current_path}	#{pane_current_command}	#I:#W	#{?@agent_state,#{@agent_state},-}	#{pane_pid}	#{?@agent_bead,#{@agent_bead},-}	#{?@agent_task,#{@agent_task},-}	#{?@agent_prompt_file,#{@agent_prompt_file},-}	#{?@agent_parent_session,#{@agent_parent_session},-}	#{?@agent_last_transition,#{@agent_last_transition},-}' 2>/dev/null || true)"
+  IFS=$'	' read -r pane_path pane_cmd window_line pane_state pane_pid meta_bead meta_task meta_prompt_file meta_parent meta_last <<< "$pinfo"
   pane_path="${pane_path:-$HOME}"
   git_root_for_path "$pane_path"; root="$REPLY"
   root_name="${root:+${root##*/}}"
@@ -701,6 +2010,20 @@ preview_pane_row() {
   fi
   [ -n "$rel" ] && printf 'cwd=%s
 ' "$rel"
+  agent_meta_value "$meta_bead"; meta_bead="$REPLY"
+  agent_meta_value "$meta_task"; meta_task="$REPLY"
+  agent_meta_value "$meta_prompt_file"; meta_prompt_file="$REPLY"
+  agent_meta_value "$meta_parent"; meta_parent="$REPLY"
+  agent_meta_value "$meta_last"; meta_last="$REPLY"
+  if [ -n "$meta_bead$meta_task$meta_prompt_file$meta_parent$meta_last" ]; then
+    printf 'agent-meta'
+    [ -n "$meta_bead" ] && printf ' bead=%s' "$meta_bead"
+    [ -n "$meta_task" ] && printf ' task=%s' "$meta_task"
+    [ -n "$meta_parent" ] && printf ' parent=%s' "$meta_parent"
+    [ -n "$meta_prompt_file" ] && printf ' prompt=%s' "$meta_prompt_file"
+    [ -n "$meta_last" ] && printf ' last=%s' "$meta_last"
+    printf '\n'
+  fi
 
   sp_meta "$name" "$pane_pid"
   if [ -n "$sp_role" ]; then
@@ -717,6 +2040,7 @@ preview_pane_row() {
     fi
   fi
 
+  preview_enrichment "$pane_path" "$root" "$name" "$meta_bead"
   printf 'win=%s  pane=%s  cmd=%s' "${window_line:-?}" "$target_pane" "${pane_cmd:-shell}"
   [ -n "$pane_state" ] && [ "$pane_state" != '-' ] && printf '  agent=%s' "$pane_state"
   printf '  attached=%s
@@ -732,6 +2056,10 @@ preview_row() {
   local name="${3:-}"
   local target="${4:-}"
 
+  if [ "$type" = 'header' ]; then
+    printf 'specialists (sp-*)\n\nreal tmux sessions from specialists are grouped here so normal interactive sessions stay at the top.\n'
+    return 0
+  fi
   [ -n "$sid" ] || return 0
   case "$type" in
     pane) preview_pane_row "$sid" "$name" "$target" ;;
@@ -743,6 +2071,10 @@ open_popup_client() {
   local type="$1"
   local sid="$2"
   local target="$3"
+
+  if [ "$type" = 'header' ] || [ -z "$sid" ]; then
+    return 0
+  fi
 
   if [ "$type" = 'pane' ] && [ -n "$target" ]; then
     exec env -u TMUX tmux attach-session -t "$sid" \; select-window -t "$target" \; select-pane -t "$target"
@@ -756,6 +2088,10 @@ jump_to_target() {
   local sid="$2"
   local target="$3"
 
+  if [ "$type" = 'header' ] || [ -z "$sid" ]; then
+    return 0
+  fi
+
   if [ "$type" = 'pane' ] && [ -n "$target" ]; then
     exec tmux switch-client -t "$sid" \; select-window -t "$target" \; select-pane -t "$target"
   fi
@@ -763,17 +2099,75 @@ jump_to_target() {
   exec tmux switch-client -t "$sid"
 }
 
+kill_confirm() {
+  local sid="${1:-}"
+  local answer="${2:-}"
+
+  [ -n "$sid" ] || return 1
+  case "$answer" in
+    y|Y|yes|YES|Yes)
+      tmux kill-session -t "$sid"
+      tmux display-message "tmux-picker: sessione uccisa $sid" 2>/dev/null || true
+      ;;
+    *)
+      tmux display-message "tmux-picker: kill annullato" 2>/dev/null || true
+      ;;
+  esac
+}
+
+bulk_kill_confirm() {
+  local answer="${1:-}" sid killed=0
+  shift || true
+
+  case "$answer" in
+    y|Y|yes|YES|Yes) ;;
+    *) tmux display-message "tmux-picker: bulk kill annullato" 2>/dev/null || true; return 0 ;;
+  esac
+
+  for sid in "$@"; do
+    [ -n "$sid" ] || continue
+    tmux kill-session -t "$sid" 2>/dev/null && killed=$((killed + 1))
+  done
+  tmux display-message "tmux-picker: sessioni uccise $killed" 2>/dev/null || true
+}
+
+bulk_kill() {
+  local row type sid name target rest sessions=() panes=0
+
+  for row in "$@"; do
+    [ -n "$row" ] || continue
+    IFS=$'\t' read -r type sid name target rest <<< "$row"
+    case "$type" in
+      pane)
+        [ -n "$target" ] && tmux kill-pane -t "$target" 2>/dev/null && panes=$((panes + 1))
+        ;;
+      session)
+        [ -n "$sid" ] && sessions+=("$sid")
+        ;;
+    esac
+  done
+
+  if [ "${#sessions[@]}" -gt 0 ]; then
+    tmux command-prompt -p "kill ${#sessions[@]} session(s)? [y/N]" "run-shell '$self bulk-kill-confirm "%1" ${sessions[*]}'"
+  elif [ "$panes" -gt 0 ]; then
+    tmux display-message "tmux-picker: pane uccisi $panes" 2>/dev/null || true
+  fi
+}
+
 kill_target() {
   local type="$1"
   local sid="$2"
   local target="$3"
+  local sname
 
   if [ "$type" = 'pane' ] && [ -n "$target" ]; then
     tmux kill-pane -t "$target"
     return 0
   fi
 
-  tmux kill-session -t "$sid"
+  [ -n "$sid" ] || return 1
+  sname="$(tmux display-message -p -t "$sid" '#S' 2>/dev/null || printf '%s' "$sid")"
+  tmux command-prompt -p "kill session ${sname:-$sid}? [y/N]" "run-shell '$self kill-confirm $sid "%1"'"
 }
 
 # act_on_target <type> <sid> <target> <action>
@@ -827,7 +2221,137 @@ case "${1:-}" in
     # for the whole TTL. Only the git half is cached (in build_list); the list
     # is always rendered fresh so @agent_state changes are immediate.
     shift
-    build_list "${1:-all}"
+    # xtmux-rib.12: accept mode as optional second arg (for CLI/test), else
+    # read from the persisted state file (for reloads from inside fzf).
+    if [ -n "${2:-}" ]; then
+      _list_mode="$2"
+    else
+      read_list_mode; _list_mode="$REPLY"
+    fi
+    build_list "${1:-all}" "$_list_mode"
+    exit 0
+    ;;
+  list-active)
+    # richer filters (xtmux-rib.11): rebuild the list applying the active
+    # content filter and the current sessions-only/expanded mode (xtmux-rib.12).
+    shift
+    filter_state_file; _spec="$(cat "$REPLY" 2>/dev/null || true)"
+    read_list_mode
+    build_list "$_spec" "$REPLY"
+    exit 0
+    ;;
+  mode-toggle)
+    # xtmux-rib.12: flip sessions-only <-> expanded; the bind then reloads
+    # with the flipped mode so the list immediately reflects it.
+    shift
+    toggle_list_mode
+    exit 0
+    ;;
+  wait-agent)
+    shift
+    wait_agent "$@"
+    exit $?
+    ;;
+  monitor-agent)
+    shift
+    monitor_agent "$@"
+    exit $?
+    ;;
+  monitor-run)
+    shift
+    monitor_run "$@"
+    exit $?
+    ;;
+  monitor-list)
+    shift
+    monitor_list
+    exit 0
+    ;;
+  monitor-kill)
+    shift
+    monitor_kill "$@"
+    exit $?
+    ;;
+  safe-send-pointer)
+    shift
+    safe_send_pointer "$@"
+    exit $?
+    ;;
+  worktree-collisions)
+    shift
+    worktree_collisions
+    exit 0
+    ;;
+  dashboard)
+    shift
+    dashboard "${1:-sessions-only}"
+    exit 0
+    ;;
+  audit)
+    shift
+    audit
+    exit 0
+    ;;
+  handoff)
+    shift
+    handoff "$@"
+    exit $?
+    ;;
+  mux-help)
+    shift
+    mux_help
+    exit 0
+    ;;
+  log)
+    shift
+    log_cli "$@"
+    exit $?
+    ;;
+  message-send)
+    shift
+    message_send "$@"
+    exit $?
+    ;;
+  message-list)
+    shift
+    message_list "$@"
+    exit $?
+    ;;
+  message-ack)
+    shift
+    message_ack "$@"
+    exit $?
+    ;;
+  telemetry)
+    shift
+    telemetry_run "$@"
+    exit $?
+    ;;
+  border-label)
+    # xtmux-rib.12: fzf transform-border-label source — reads current nesting
+    # mode and TMUX_PICKER_MODE so the border matches current UI state.
+    shift
+    read_list_mode
+    case "$mode:$REPLY" in
+      compact-wrap:sessions-only)
+        printf '%s' ' compact wrap · sessions-only · Enter switch · Space mark · Tab expand · Alt-Enter popup · Alt-x kill · ^Y approve · Alt-I interrupt · ^O msg · ^A/^W/^E filtri · ^F filter · Ctrl-r refresh · ? help '
+        ;;
+      compact-wrap:*)
+        printf '%s' ' compact wrap · expanded · Enter switch · Tab compact · Alt-Enter popup · Alt-x kill · ^Y approve · Alt-I interrupt · ^O msg · ^A/^W/^E filtri · ^F filter · Ctrl-r refresh · ? help '
+        ;;
+      compact-nowrap:sessions-only)
+        printf '%s' ' compact no-wrap · sessions-only · Enter switch · Space mark · Tab expand · Alt-Enter popup · Alt-x kill · ^Y approve · Alt-I interrupt · ^O msg · ^A/^W/^E filtri · ^F filter · Ctrl-r refresh · ? help '
+        ;;
+      compact-nowrap:*)
+        printf '%s' ' compact no-wrap · expanded · Enter switch · Tab compact · Alt-Enter popup · Alt-x kill · ^Y approve · Alt-I interrupt · ^O msg · ^A/^W/^E filtri · ^F filter · Ctrl-r refresh · ? help '
+        ;;
+      default:sessions-only|*:sessions-only)
+        printf '%s' ' sessions-only · Enter switch · Space mark · Tab expand · Alt-R rename · Alt-X bulk kill · Alt-x kill · ^Y ok · Alt-I int · ^O msg · ^A all ^W wait ^E run · ^F filter · Ctrl-r refresh · ? help · Ctrl-/ preview '
+        ;;
+      *)
+        printf '%s' ' expanded · Enter switch · Tab compact · Alt-R rename · Alt-X bulk kill · Alt-x kill · ^Y ok · Alt-I int · ^O msg · ^A all ^W wait ^E run · ^F filter · Ctrl-r refresh · ? help · Ctrl-/ preview '
+        ;;
+    esac
     exit 0
     ;;
   preview)
@@ -866,10 +2390,66 @@ case "${1:-}" in
     jump_back
     exit 0
     ;;
+  kill-confirm)
+    shift
+    kill_confirm "$@"
+    exit 0
+    ;;
+  bulk-kill)
+    shift
+    bulk_kill "$@"
+    exit 0
+    ;;
+  bulk-kill-confirm)
+    shift
+    bulk_kill_confirm "$@"
+    exit 0
+    ;;
+  rename)
+    shift
+    rename_target "$@"
+    exit 0
+    ;;
+  rename-apply)
+    shift
+    rename_apply "$@"
+    exit 0
+    ;;
+  clear-cache)
+    clear_cache
+    exit 0
+    ;;
+  filter-menu)
+    # ctrl-f submenu (xtmux-rib.11): writes the chosen spec to the state file.
+    shift
+    cmd_filter_menu
+    exit 0
+    ;;
+  filter-clear)
+    # reset the active content filter (ctrl-a/w/e reset to attention-only).
+    shift
+    filter_state_file
+    mkdir -p "$(dirname "$REPLY")" 2>/dev/null || true
+    : > "$REPLY" 2>/dev/null || true
+    exit 0
+    ;;
+  prompt-label)
+    # fzf transform-prompt source: reflects the active filter in the prompt.
+    shift
+    filter_state_file
+    _spec="$(cat "$REPLY" 2>/dev/null || true)"
+    if [ -n "$_spec" ]; then printf '%s> ' "$_spec"; else printf 'all> '; fi
+    exit 0
+    ;;
+  install-hooks)
+    shift
+    install_tmux_hooks "${1:-}"
+    exit 0
+    ;;
   "")
     ;;
   *)
-    printf 'usage: %s [list [all|waiting|running]|preview <type> <sid> <name> <target>|popup <type> <sid> <target>|jump <type> <sid> <target>|kill <type> <sid> <target>|act <type> <sid> <target> <approve|interrupt|message>|attn-jump <n>|jump-back]\n' "$0" >&2
+    printf 'usage: %s [list [all|waiting|running|repo:..|branch:..|cmd:..|grep:..]|preview <type> <sid> <name> <target>|popup <type> <sid> <target>|jump <type> <sid> <target>|kill <type> <sid> <target>|act <type> <sid> <target> <approve|interrupt|message>|attn-jump <n>|jump-back|kill-confirm <sid> <answer>|bulk-kill <rows...>|bulk-kill-confirm <answer> <sid...>|rename <type> <sid> <target>|rename-apply <type> <target> <name>|list-active|dashboard [sessions-only|expanded]|audit|handoff --target <target> --bead <id> [--note text] [--yes]|mux-help|log <emit|tail|query>|message-send --to <target> --text <text>|message-list --for <target>|message-ack <id>|telemetry <git|bd|gh> -- <args...>|wait-agent <target> [--timeout 30m] [--interval 30s]|monitor-agent <target> [--timeout 30m] [--interval 30s]|monitor-list|monitor-kill <id>|safe-send-pointer [--yes] [--double-enter|--no-double-enter] [--force-freeform] <target> <slash-command|/tmp pointer>|worktree-collisions|mode-toggle|border-label|filter-menu|filter-clear|prompt-label|clear-cache|install-hooks [picker-path]]\n' "$0" >&2
     exit 2
     ;;
 esac
@@ -881,17 +2461,17 @@ fi
 
 preview_window='right,62%,border-left,wrap,follow'
 preview_window_max='right,94%,border-left,wrap,follow'
-border_label=' Enter switch · Alt-Enter popup · Alt-x kill · ^Y ok · Alt-I int · ^O msg · ^A all ^W wait ^E run · Ctrl-r refresh · Ctrl-/ preview '
+border_label=' Enter switch · Tab mark · Alt-R rename · Alt-X bulk kill · Alt-x kill · ^Y ok · Alt-I int · ^O msg · ^A all ^W wait ^E run · ^F filter · Ctrl-r refresh · ? help · Ctrl-/ preview '
 case "$mode" in
   compact-wrap)
     preview_window='right,68%,border-left,wrap,follow'
     preview_window_max='right,94%,border-left,wrap,follow'
-    border_label=' compact wrap · Enter switch · Alt-Enter popup · Alt-x kill · ^Y approve · Alt-I interrupt · ^O msg · ^A/^W/^E filtri · Ctrl-r refresh '
+    border_label=' compact wrap · Enter switch · Alt-Enter popup · Alt-x kill · ^Y approve · Alt-I interrupt · ^O msg · ^A/^W/^E filtri · ^F filter · Ctrl-r refresh · ? help '
     ;;
   compact-nowrap)
     preview_window='right,68%,border-left,follow'
     preview_window_max='right,94%,border-left,follow'
-    border_label=' compact no-wrap · Enter switch · Alt-Enter popup · Alt-x kill · ^Y approve · Alt-I interrupt · ^O msg · ^A/^W/^E filtri · Ctrl-r refresh '
+    border_label=' compact no-wrap · Enter switch · Alt-Enter popup · Alt-x kill · ^Y approve · Alt-I interrupt · ^O msg · ^A/^W/^E filtri · ^F filter · Ctrl-r refresh · ? help '
     ;;
 esac
 
@@ -909,22 +2489,30 @@ choice="$({
   --no-scrollbar \
   --cycle \
   --no-bold \
+  --multi \
   --prompt='all> ' \
   --pointer='>' \
-  --marker='' \
+  --marker='✓ ' \
   --info=inline-right \
   --color='fg:#b8bcc0,bg:-1,hl:#ffffff,fg+:#ffffff,bg+:#222222,hl+:#ffffff,info:#8a8f94,prompt:#8a8f94,pointer:#c6cacf,marker:#c6cacf,label:#8a8f94,border:#303030,gutter:-1' \
   --preview-window="$preview_window" \
+  --bind="load:transform-prompt($self prompt-label)+transform-border-label($self border-label)" \
   --bind="ctrl-/:toggle-preview" \
-  --bind="ctrl-r:reload(TMUX_PICKER_NO_CACHE=1 $self list all)" \
-  --bind="ctrl-a:change-prompt(all> )+reload($self list all)" \
-  --bind="ctrl-w:change-prompt(wait> )+reload($self list waiting)" \
-  --bind="ctrl-e:change-prompt(run> )+reload($self list running)" \
+  --bind="?:change-preview($self mux-help)" \
+  --bind="ctrl-r:reload(TMUX_PICKER_NO_CACHE=1 $self list-active)" \
+  --bind="ctrl-a:execute-silent($self filter-clear)+change-prompt(all> )+reload($self list all)" \
+  --bind="ctrl-w:execute-silent($self filter-clear)+change-prompt(wait> )+reload($self list waiting)" \
+  --bind="ctrl-e:execute-silent($self filter-clear)+change-prompt(run> )+reload($self list running)" \
+  --bind="ctrl-f:execute($self filter-menu)+reload($self list-active)+transform-prompt($self prompt-label)" \
+  --bind="tab:execute($self mode-toggle)+reload($self list-active)+transform-prompt($self prompt-label)+transform-border-label($self border-label)" \
+  --bind="space:toggle+down" \
   --bind="alt-p:change-preview-window($preview_window_max|$preview_window)" \
-  --bind="alt-x:execute-silent($self kill {1} {2} {4})+reload($self list all)" \
-  --bind="ctrl-y:execute-silent($self act {1} {2} {4} approve)+reload($self list all)" \
-  --bind="alt-i:execute-silent($self act {1} {2} {4} interrupt)+reload($self list all)" \
-  --bind="ctrl-o:execute($self act {1} {2} {4} message)+reload($self list all)" \
+  --bind="alt-x:execute-silent($self kill {1} {2} {4})+reload($self list-active)" \
+  --bind="alt-X:execute-silent($self bulk-kill {+})+reload($self list-active)" \
+  --bind="alt-r:execute($self rename {1} {2} {4})+reload($self list-active)" \
+  --bind="ctrl-y:execute-silent($self act {1} {2} {4} approve)+reload($self list-active)" \
+  --bind="alt-i:execute-silent($self act {1} {2} {4} interrupt)+reload($self list-active)" \
+  --bind="ctrl-o:execute($self act {1} {2} {4} message)+reload($self list-active)" \
   --bind="alt-enter:become($self popup {1} {2} {4})" \
   --preview "$self preview {1} {2} {3} {4}"
 )" || true
