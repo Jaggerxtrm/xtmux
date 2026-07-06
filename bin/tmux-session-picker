@@ -104,9 +104,12 @@ state_badge() {
   esac
 }
 
-# --- specialist (sp-*) awareness (xtmux-rib.4) -----------------------------
-# detection is name + pane_pid based (no capture-pane cost). a pane is specialist
-# if its session name matches ^sp-<role>-<hex>$ and the pane_pid is alive.
+# --- specialist (sp-*) + role (role-*) awareness (xtmux-rib.4, xtmux-2i5) ----
+# detection is name + pane_pid based (no capture-pane cost). a pane is a
+# specialist / interactive role if its session name matches one of:
+#   ^sp-<role>-<hex>$        managed sp job
+#   ^role-<role>[-<hex>]$    interactive role session (xt pi --role)
+# and the pane_pid is alive.
 #
 # hot list path never calls sp/jq/ps/pgrep: it only checks session name + pane
 # pid. preview may inspect the pane process tree to extract --bead, but the picker
@@ -118,16 +121,24 @@ state_badge() {
 sp_role_from_name() {
   local name="$1"
   REPLY=''
-  [[ "$name" =~ ^sp-([a-z][a-z0-9-]*)-[0-9a-f]+$ ]] || return 0
-  REPLY="${BASH_REMATCH[1]}"
+  if [[ "$name" =~ ^sp-([a-z][a-z0-9-]*)-[0-9a-f]+$ ]]; then
+    REPLY="${BASH_REMATCH[1]}"
+  elif [[ "$name" =~ ^role-([a-z][a-z0-9-]*[a-z0-9])-[0-9a-f]{4,}$ ]]; then
+    REPLY="${BASH_REMATCH[1]}"
+  elif [[ "$name" =~ ^role-([a-z][a-z0-9-]*[a-z0-9])$ ]]; then
+    REPLY="${BASH_REMATCH[1]}"
+  fi
 }
 
 # sp_hash_from_name <session_name> -> REPLY=6-ish suffix hash (or empty)
 sp_hash_from_name() {
   local name="$1"
   REPLY=''
-  [[ "$name" =~ ^sp-[a-z][a-z0-9-]*-([0-9a-f]+)$ ]] || return 0
-  REPLY="${BASH_REMATCH[1]}"
+  if [[ "$name" =~ ^sp-[a-z][a-z0-9-]*-([0-9a-f]+)$ ]]; then
+    REPLY="${BASH_REMATCH[1]}"
+  elif [[ "$name" =~ ^role-[a-z][a-z0-9-]*[a-z0-9]-([0-9a-f]{4,})$ ]]; then
+    REPLY="${BASH_REMATCH[1]}"
+  fi
 }
 
 # sp_is_specialist <session_name> <pane_pid> -> REPLY=role if specialist else empty
