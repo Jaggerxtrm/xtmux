@@ -11,3 +11,6 @@
 
 # Local Serena project metadata
 .serena/
+
+# Local pi harness artifacts
+.pi/
