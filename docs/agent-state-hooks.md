@@ -29,7 +29,7 @@ pane-scoped tmux user options:
 | `@agent_bead` | `XTMUX_AGENT_BEAD` | current durable task contract, if any |
 | `@agent_task` | `XTMUX_AGENT_TASK` | short human-readable task summary |
 | `@agent_prompt_file` | `XTMUX_AGENT_PROMPT_FILE` | `/tmp/...` prompt-file pointer used for safe handoff |
-| `@agent_parent_session` | `XTMUX_AGENT_PARENT_SESSION` | orchestrator tmux session that delegated the work |
+| `@agent_parent_session` | `XTMUX_AGENT_PARENT_SESSION` | orchestrator tmux `#{session_id}` that delegated the work (stable per-instance id, e.g. `$3`; never `#S` session-name which is mutable and recycled) |
 | `@agent_last_transition` | automatic | ISO timestamp for the latest state transition |
 
 metadata env vars are optional and backward-compatible: if a hook only calls
@@ -43,7 +43,7 @@ example:
 XTMUX_AGENT_BEAD=xtmux-mux.1 \
 XTMUX_AGENT_TASK='standardize agent metadata' \
 XTMUX_AGENT_PROMPT_FILE=/tmp/orch-metadata.txt \
-XTMUX_AGENT_PARENT_SESSION=orchestrator \
+XTMUX_AGENT_PARENT_SESSION="$(tmux display-message -p '#{session_id}')" \
 ~/.tmux/scripts/agent-state.sh running
 ```
 

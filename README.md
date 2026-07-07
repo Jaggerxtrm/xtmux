@@ -354,7 +354,7 @@ Optional metadata env vars:
 | `XTMUX_AGENT_BEAD` | `@agent_bead` | current durable Beads task contract |
 | `XTMUX_AGENT_TASK` | `@agent_task` | short human-readable task summary |
 | `XTMUX_AGENT_PROMPT_FILE` | `@agent_prompt_file` | `/tmp/...` prompt file used for handoff |
-| `XTMUX_AGENT_PARENT_SESSION` | `@agent_parent_session` | orchestrator tmux session |
+| `XTMUX_AGENT_PARENT_SESSION` | `@agent_parent_session` | orchestrator tmux `#{session_id}` (e.g. `$3`) — stable, per-instance, never recycled; do not use `#S` (session name) |
 | automatic | `@agent_last_transition` | ISO timestamp for last state transition |
 
 `off` keeps `@agent_state=off` for compatibility and clears optional task
