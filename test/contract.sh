@@ -317,6 +317,22 @@ printf '%s\n' "$msg_list" | grep -F $'message\tmsg-test' >/dev/null && ok "messa
 XTMUX_EVENT_LOG_FILE="$WORK/events.jsonl" message_ack msg-test --by worker >/dev/null
 msg_list2="$(XTMUX_EVENT_LOG_FILE="$WORK/events.jsonl" message_list --for worker --unacked)"
 printf '%s\n' "$msg_list2" | grep -F 'msg-test' >/dev/null && nok "message channel: ack hides unacked" || ok "message channel: ack hides unacked"
+# xtmux-1hq: unacked column includes human age (Ns/Nm/Nh/Nd)
+XTMUX_EVENT_LOG_FILE="$WORK/events.jsonl" message_send --from o --to w2 --bead xtmux-1hq --id msg-age --text 'age check' >/dev/null
+age_out="$(XTMUX_EVENT_LOG_FILE="$WORK/events.jsonl" message_list --for w2 --unacked)"
+printf '%s\n' "$age_out" | awk -F'\t' '{ print $4 }' | grep -Eq '^[0-9]+[smhd]$' && ok "message channel: unacked shows age column" || nok "message channel: unacked shows age column"
+# xtmux-1hq: strict-fail on $N target that does not resolve; lenient on names
+if XTMUX_EVENT_LOG_FILE="$WORK/events.jsonl" message_send --to '$99999' --text 'dead' 2>/dev/null; then
+  nok "message channel: dead \$N target exits nonzero"
+else
+  grep -F '"type":"message.failed"' "$WORK/events.jsonl" >/dev/null && ok "message channel: dead \$N target exits nonzero" || nok "message channel: dead \$N target exits nonzero"
+fi
+# xtmux-1hq: log rotation triggers at size threshold (threshold is checked
+# BEFORE write, so we need one seed to cross the line before the trigger send)
+rot="$WORK/rot.jsonl"
+XTMUX_EVENT_LOG_FILE="$rot" XTMUX_EVENT_LOG_MAX_BYTES=50 message_send --from a --to b --text 'seed' >/dev/null
+XTMUX_EVENT_LOG_FILE="$rot" XTMUX_EVENT_LOG_MAX_BYTES=50 message_send --from a --to b --text 'triggers rotate' >/dev/null
+[ -f "$rot.1" ] && ok "message channel: log rotation on size threshold" || nok "message channel: log rotation on size threshold"
 grep -F '"turn_end"' extensions/pi-agent-state.ts >/dev/null && grep -F 'agent.turn.done' extensions/pi-agent-state.ts >/dev/null && grep -F 'last_message=' extensions/pi-agent-state.ts >/dev/null && ok "pi extension: publishes turn done" || nok "pi extension: publishes turn done"
 tele_repo="$WORK/telemetry-repo"; mkdir -p "$tele_repo"; (cd "$tele_repo" && git init -q && git config user.email t@example.invalid && git config user.name Test && printf 'x\n' > a.txt && git add a.txt && git commit -q -m init)
 tele_log="$WORK/telemetry-events.jsonl"

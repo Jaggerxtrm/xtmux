@@ -595,8 +595,65 @@ current_tmux_session() {
   REPLY="$(tmux display-message -p '#S' 2>/dev/null || true)"
 }
 
+current_tmux_session_id() {
+  REPLY="$(tmux display-message -p '#{session_id}' 2>/dev/null || true)"
+}
+
 current_tmux_pane() {
   REPLY="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
+}
+
+# Normalize any tmux target (session_id $N, pane_id %N, window_id @N, session
+# name, or session:window.pane shorthand) to a stable #{session_id}. Sets REPLY
+# to the session_id on success, empty on failure. Used by message-* to
+# canonicalize the address space — writers and readers must agree on the same
+# key for --for/--to matching to work.
+resolve_to_session_id() {
+  local target="${1:-}" out
+  REPLY=''
+  [ -n "$target" ] || return 1
+  # tmux display-message returns 0 with empty output for a non-existent $N/%N
+  # target instead of erroring, so we validate by checking the returned id.
+  out="$(tmux display-message -p -t "$target" '#{session_id}' 2>/dev/null || true)"
+  [ -n "$out" ] || return 1
+  REPLY="$out"
+  return 0
+}
+
+# human-friendly age from an epoch seconds value: 3s, 12m, 4h, 2d
+format_age_short() {
+  local epoch="${1:-0}" now diff
+  now="$(date +%s 2>/dev/null || printf '0')"
+  diff=$(( now - epoch ))
+  (( diff < 0 )) && diff=0
+  if (( diff < 60 ));      then REPLY="${diff}s"
+  elif (( diff < 3600 ));  then REPLY="$(( diff / 60 ))m"
+  elif (( diff < 86400 )); then REPLY="$(( diff / 3600 ))h"
+  else                          REPLY="$(( diff / 86400 ))d"
+  fi
+}
+
+# Best-effort size-triggered rotation. Keeps events.jsonl bounded so grep-based
+# message-list stays fast. Rotation is opportunistic (checked at write time),
+# not scheduled — no cron, no daemon.
+XTMUX_EVENT_LOG_MAX_BYTES="${XTMUX_EVENT_LOG_MAX_BYTES:-10485760}" # 10 MB
+XTMUX_EVENT_LOG_KEEP="${XTMUX_EVENT_LOG_KEEP:-3}"
+
+rotate_event_log_if_needed() {
+  local file="${1:-}" size i src dst
+  [ -n "$file" ] && [ -f "$file" ] || return 0
+  size="$(stat -c '%s' -- "$file" 2>/dev/null || stat -f '%z' -- "$file" 2>/dev/null || printf '0')"
+  [ "$size" -ge "$XTMUX_EVENT_LOG_MAX_BYTES" ] || return 0
+  # shift .N-1 -> .N (drop oldest), then file -> .1
+  for ((i=XTMUX_EVENT_LOG_KEEP; i>=1; i--)); do
+    src="${file}.$((i-1))"; dst="${file}.$i"
+    [ "$i" = 1 ] && src="$file"
+    if [ "$i" = "$XTMUX_EVENT_LOG_KEEP" ] && [ -f "$dst" ]; then
+      rm -f -- "$dst" 2>/dev/null || true
+    fi
+    [ -f "$src" ] && mv -f -- "$src" "$dst" 2>/dev/null || true
+  done
+  : > "$file" 2>/dev/null || true
 }
 
 log_event() {
@@ -604,6 +661,7 @@ log_event() {
   [ -n "$type" ] || return 0
   event_log_file; file="$REPLY"; dir="${file%/*}"
   mkdir -p "$dir" 2>/dev/null || true
+  rotate_event_log_if_needed "$file"
   ts="$(date -Is 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z')"
   epoch="$(date +%s 2>/dev/null || printf '0')"
   {
@@ -698,11 +756,49 @@ message_send() {
     esac
   done
   [ -n "$to" ] && [ -n "$text" ] || { printf 'usage: message-send --to <session|pane> [--from x] [--bead id] --text <text>\n' >&2; return 2; }
-  if [ -z "$from" ]; then current_tmux_session; from="$REPLY"; fi
-  [ -n "$from" ] || from='unknown'
+  # Canonicalize target to session_id so message-list --for finds it regardless
+  # of which alias (name/pane_id/session_id/shorthand) the recipient uses. For
+  # $N/%N ids we require resolution (those are meaningful only as live tmux
+  # objects; a stale $99999 is a routing bug). For plain names we fall through
+  # to the raw target so offline unit tests and legacy callers keep working.
+  local to_sid=''
+  if resolve_to_session_id "$to"; then
+    to_sid="$REPLY"
+  else
+    case "$to" in
+      '$'*|'%'*|'@'*)
+        printf 'message-send: target does not exist: %s\n' "$to" >&2
+        log_event message.failed to="$to" reason=target_missing text="$text"
+        return 1
+        ;;
+      *)
+        to_sid="$to"
+        ;;
+    esac
+  fi
+  # Normalize sender to session_id too. Fall back to raw --from if unresolvable
+  # (e.g. tests outside tmux), then to current session_id.
+  local from_sid=''
+  if [ -n "$from" ]; then
+    resolve_to_session_id "$from" && from_sid="$REPLY" || from_sid="$from"
+  else
+    current_tmux_session_id; from_sid="$REPLY"
+  fi
+  [ -n "$from_sid" ] || from_sid='unknown'
   [ -n "$id" ] || id="msg-$(date +%s)-$$"
-  log_event message.sent id="$id" from="$from" to="$to" bead="$bead" text="$text"
-  printf 'message\t%s\t%s\t%s\t%s\t%s\n' "$id" "$from" "$to" "$bead" "$text"
+  log_event message.sent id="$id" from="$from_sid" to="$to_sid" bead="$bead" text="$text"
+  # Delivery signal — best-effort. Bumps a session-scoped counter recipients
+  # can watch (@agent_unread_count) and stamps @agent_unread_since; also emits
+  # a status-line notice for any attached client. Failures are silent because
+  # the message is already durably logged.
+  local prev now_epoch
+  prev="$(tmux show-options -t "$to_sid" -qv @agent_unread_count 2>/dev/null || printf '0')"
+  case "$prev" in ''|*[!0-9]*) prev=0 ;; esac
+  now_epoch="$(date +%s 2>/dev/null || printf '0')"
+  tmux set-option -t "$to_sid" -q @agent_unread_count "$(( prev + 1 ))" 2>/dev/null || true
+  tmux set-option -t "$to_sid" -q @agent_unread_since "$now_epoch" 2>/dev/null || true
+  tmux display-message -t "$to_sid" "msg from ${from_sid}${bead:+ [$bead]}: ${text:0:80}" 2>/dev/null || true
+  printf 'message\t%s\t%s\t%s\t%s\t%s\n' "$id" "$from_sid" "$to_sid" "$bead" "$text"
 }
 
 message_ack() {
@@ -713,9 +809,25 @@ message_ack() {
     shift || true
   done
   [ -n "$id" ] || { printf 'usage: message-ack <message-id> [--by session]\n' >&2; return 2; }
-  [ -n "$by" ] || { current_tmux_session; by="$REPLY"; }
+  if [ -n "$by" ]; then
+    resolve_to_session_id "$by" && by="$REPLY"
+  else
+    current_tmux_session_id; by="$REPLY"
+  fi
   [ -n "$by" ] || by='unknown'
   log_event message.ack id="$id" by="$by"
+  # Decrement recipient's unread counter. If it hits zero, clear the stamp too.
+  # Best-effort: acking outside a tmux session (tests) just no-ops.
+  if [ -n "${by:-}" ] && [ "$by" != unknown ]; then
+    local prev
+    prev="$(tmux show-options -t "$by" -qv @agent_unread_count 2>/dev/null || printf '0')"
+    case "$prev" in ''|*[!0-9]*) prev=0 ;; esac
+    if [ "$prev" -gt 0 ]; then
+      local next=$(( prev - 1 ))
+      tmux set-option -t "$by" -q @agent_unread_count "$next" 2>/dev/null || true
+      [ "$next" = 0 ] && tmux set-option -t "$by" -qu @agent_unread_since 2>/dev/null || true
+    fi
+  fi
   printf 'ack\t%s\t%s\n' "$id" "$by"
 }
 
@@ -725,7 +837,7 @@ message_json_field() {
 }
 
 message_list() {
-  local to='' since='' limit=100 unacked=0 arg file now since_epoch ack_tmp line ts_epoch id from target bead text ts
+  local to='' since='' limit=100 unacked=0 arg file files=() now since_epoch ack_tmp line ts_epoch id from target bead text ts to_sid=''
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
@@ -740,16 +852,26 @@ message_list() {
     esac
   done
   event_log_file; file="$REPLY"
-  [ -f "$file" ] || return 0
+  # normalize --for to session_id when possible so callers can pass any alias
+  if [ -n "$to" ]; then
+    if resolve_to_session_id "$to"; then to_sid="$REPLY"; else to_sid=''; fi
+  fi
+  # include rotated backfiles so old messages remain queryable
+  local i
+  [ -f "$file" ] && files+=("$file")
+  for ((i=1; i<=XTMUX_EVENT_LOG_KEEP; i++)); do
+    [ -f "${file}.$i" ] && files+=("${file}.$i")
+  done
+  [ ${#files[@]} -gt 0 ] || return 0
   now="$(date +%s)"; since_epoch=0
   [ -n "$since" ] && since_epoch=$(( now - since ))
   ack_tmp="$(mktemp)"
   trap 'rm -f "${ack_tmp:-}"' RETURN EXIT INT TERM
-  grep -F '"type":"message.ack"' "$file" | sed -n 's/.*"id":"\([^"\\]*\)".*/\1/p' > "$ack_tmp" || true
+  grep -hF '"type":"message.ack"' "${files[@]}" 2>/dev/null | sed -n 's/.*"id":"\([^"\\]*\)".*/\1/p' > "$ack_tmp" || true
   while IFS= read -r line; do
     case "$line" in *'"type":"message.sent"'*) ;; *) continue ;; esac
+    ts_epoch="$(printf '%s\n' "$line" | sed -n 's/.*"ts_epoch":\([0-9][0-9]*\).*/\1/p')"
     if [ "$since_epoch" -gt 0 ]; then
-      ts_epoch="$(printf '%s\n' "$line" | sed -n 's/.*"ts_epoch":\([0-9][0-9]*\).*/\1/p')"
       [ -n "$ts_epoch" ] && [ "$ts_epoch" -lt "$since_epoch" ] && continue
     fi
     id="$(message_json_field id "$line")"
@@ -758,10 +880,18 @@ message_list() {
     bead="$(message_json_field bead "$line")"
     text="$(message_json_field text "$line")"
     ts="$(message_json_field ts "$line")"
-    [ -n "$to" ] && [ "$target" != "$to" ] && continue
+    # match either the raw --for arg (legacy) or its resolved session_id
+    if [ -n "$to" ] && [ "$target" != "$to" ] && { [ -z "$to_sid" ] || [ "$target" != "$to_sid" ]; }; then
+      continue
+    fi
     if [ "$unacked" = 1 ] && grep -Fx -- "$id" "$ack_tmp" >/dev/null 2>&1; then continue; fi
-    printf 'message\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$ts" "$from" "$target" "$bead" "$text"
-  done < "$file" | tail -n "$limit"
+    if [ "$unacked" = 1 ]; then
+      format_age_short "${ts_epoch:-0}"
+      printf 'message\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$ts" "$REPLY" "$from" "$target" "$bead" "$text"
+    else
+      printf 'message\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$ts" "$from" "$target" "$bead" "$text"
+    fi
+  done < <(cat "${files[@]}" 2>/dev/null) | tail -n "$limit"
 }
 
 

@@ -322,7 +322,7 @@ Important safety defaults:
 - `handoff` is dry-run unless `--yes`/`--send` is given.
 - `handoff` refuses working targets before writing the prompt-file.
 - `audit` is read-only.
-- `message-send` writes to the xtmux event log; it does not inject text into panes.
+- `message-send` writes to the xtmux event log and, when the target resolves, sets `@agent_unread_count`/`@agent_unread_since` on the recipient session and pings any attached client via `tmux display-message`. It does not inject text into panes. Targets are normalized to `#{session_id}` so `--for` finds messages regardless of the alias the recipient uses (name / `$N` / `%N` / `session:window.pane`). `$N`/`%N`/`@N` targets that do not resolve exit nonzero with stderr and log `message.failed`. The event log rotates at `XTMUX_EVENT_LOG_MAX_BYTES` (default 10 MB, keeps `XTMUX_EVENT_LOG_KEEP=3` backfiles).
 - `telemetry git|bd|gh` is explicit opt-in and forwards to the real command while logging start/end events.
 
 ### Maintenance
