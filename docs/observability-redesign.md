@@ -1,7 +1,7 @@
 # Observability redesign: SQLite substrate for xtmux v2
 
 Status: design brief for independent review
-Owner bead: xtmux-ihu1
+Owner bead: xtmux-ihu
 Scope: observability substrate only
 
 ## 1. Decision
@@ -11,7 +11,7 @@ Choose **Rung C**.
 Reason:
 - xtmux needs durable message/query substrate, not only faster grep.
 - current JSONL rotation can separate `message.sent` from later `message.ack`, making `--unacked` wrong at file boundaries.
-- xtmux already has stable local-shell workflow and can rely on system `sqlite3` without new dependency.
+- xtmux already has stable local-shell workflow and can rely on Python 3 stdlib `sqlite3` (SQLite 3.46.1 in current environment) without new dependency.
 - operator-facing pane routing and picker flows stay unchanged if storage moves under same commands.
 
 Rung meanings for this brief:
@@ -62,32 +62,34 @@ Failure source:
 xtmux v2 uses channels.md words with narrower meaning:
 
 - **participant**: routable local endpoint keyed by canonical tmux `#{session_id}`; optional pane metadata remains separate
-- **channel**: one implicit local channel namespace for xtmux observability; not user-created, not multi-topology
-- **channel message**: durable short message between participants, equivalent to current `message.sent`
-- **subscription/receipt**: durable per-participant state showing read cursor and optional ack state for messages addressed to that participant
+- **channel**: one implicit local observability channel record for xtmux; not user-created, not multi-topology
+- **channel message**: durable short message between participants with canonical `kind`, `message_family`, and `audience_json` fields, carrying current `message.sent` semantics
+- **channel subscription**: durable per-participant cursor seam aligned with channels.md; present in schema but dormant in v2 MVP
+- **receipt**: explicit per-message recipient state carrying current read/ack semantics
 - **event**: generic observability record, including message lifecycle and non-message telemetry
 
 Explicitly omitted from xtmux subset:
-- no `audience_json`
-- no multi-party subscriptions by filter language
+- no multi-party subscriptions by filter language at runtime
 - no judges, topologies, stop conditions, or proposal/verdict schemas
 - no claim that xtmux message channel equals full channels.md runtime
 
 ## 5. Storage design
 
 Canonical v2 database location:
-- `.specialists/db/observability.db` inside repo when repo context exists
-- if current xtmux command is outside repo context, v2 for that invocation must fail closed back to legacy mode unless future work explicitly defines non-repo fallback
+- `${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/observability.db`
+- in current operator environment, canonical absolute path is `/home/dawid/.local/state/xtmux/observability.db`
 
 Rationale:
-- repo-local database matches existing observability memory for specialists and keeps data migration-safe per worktree/repo
-- brief pins one canonical DB path, not per-user global DB
+- xtmux runs both inside and outside repos
+- DB must live beside legacy `events.jsonl` so migration covers whole existing local substrate
+- one global local path preserves current operator mental model and avoids repo-detection branches
 
 ### 5.1 Tables
 
 ```sql
 CREATE TABLE participants (
   participant_id TEXT PRIMARY KEY,        -- canonical tmux #{session_id}
+  participant_kind TEXT NOT NULL DEFAULT 'session',
   session_name TEXT,                      -- optional human aid; non-canonical
   pane_id TEXT,                           -- optional last-seen pane
   bead_id TEXT,
@@ -96,17 +98,41 @@ CREATE TABLE participants (
   last_seen_at_ms INTEGER NOT NULL
 );
 
+CREATE TABLE channels (
+  channel_id TEXT PRIMARY KEY,            -- fixed single row: 'xtmux.local'
+  kind TEXT NOT NULL,                     -- 'xtmux-local'
+  topology TEXT NOT NULL,                 -- 'reactive-single-hop'
+  status TEXT NOT NULL,                   -- 'open'
+  created_at_ms INTEGER NOT NULL
+);
+
 CREATE TABLE channel_messages (
   message_id TEXT PRIMARY KEY,            -- existing msg-<epoch>-<pid> or later stable id
+  channel_id TEXT NOT NULL,
+  message_family TEXT NOT NULL,           -- 'work' for current short messages
+  kind TEXT NOT NULL,                     -- 'message.sent' for current send path
   from_participant_id TEXT NOT NULL,
   to_participant_id TEXT NOT NULL,
+  audience_json TEXT NOT NULL,            -- minimal canonical subset; single action target today
   bead_id TEXT NOT NULL DEFAULT '',
   text TEXT NOT NULL,
   created_at_ts TEXT NOT NULL,
   created_at_epoch INTEGER NOT NULL,
-  legacy_jsonl_offset INTEGER,            -- nullable breadcrumb for migration/debug
+  legacy_jsonl_file TEXT,
+  legacy_jsonl_line INTEGER,
+  FOREIGN KEY (channel_id) REFERENCES channels(channel_id),
   FOREIGN KEY (from_participant_id) REFERENCES participants(participant_id),
   FOREIGN KEY (to_participant_id) REFERENCES participants(participant_id)
+);
+
+CREATE TABLE channel_subscriptions (
+  channel_id TEXT NOT NULL,
+  participant_id TEXT NOT NULL,
+  last_seen_message_id TEXT NOT NULL DEFAULT '',
+  paused INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (channel_id, participant_id),
+  FOREIGN KEY (channel_id) REFERENCES channels(channel_id),
+  FOREIGN KEY (participant_id) REFERENCES participants(participant_id)
 );
 
 CREATE TABLE message_receipts (
@@ -138,8 +164,8 @@ CREATE TABLE events (
 ### 5.2 Indexes
 
 ```sql
-CREATE INDEX idx_channel_messages_to_created
-  ON channel_messages(to_participant_id, created_at_epoch, message_id);
+CREATE INDEX idx_channel_messages_channel_to_created
+  ON channel_messages(channel_id, to_participant_id, created_at_epoch, message_id);
 
 CREATE INDEX idx_channel_messages_from_created
   ON channel_messages(from_participant_id, created_at_epoch, message_id);
@@ -163,13 +189,16 @@ CREATE INDEX idx_events_message
 ### 5.3 Contract rules
 
 - `participants.participant_id` is canonical routing key. It preserves flat one-hop `#{session_id}` addressing.
+- `channels` contains one canonical row: `channel_id='xtmux.local'`.
+- `channel_messages.kind`, `channel_messages.message_family`, and `channel_messages.audience_json` preserve channels.md vocabulary subset without claiming full channels runtime.
+- `channel_subscriptions` exists as future cursor seam, but remains **dormant** in v2 MVP: `message-list` is pure read and does not advance subscription state.
 - `@agent_state`, `@agent_bead`, `@agent_task`, `@agent_parent_session` stay tmux pane/session options; SQLite mirrors latest values only for query context.
 - every `channel_messages` row for recipient creates exactly one `message_receipts` row for same recipient.
-- **read** means message shown/listed to recipient and sets `read_at_*` if empty.
+- **read** and **list** are separate concepts in v2 MVP. `message-list` is pure observation and does not mutate receipts or subscriptions.
 - **ack** means explicit `message-ack` command and sets `ack_at_*` plus `ack_by_participant_id`.
 - ack never deletes message.
-- unacked means `ack_at_epoch IS NULL`; unread means `read_at_epoch IS NULL`.
-- `events` stores generic observability facts, including `message.sent`, `message.read`, `message.ack`, `agent.turn.done`, telemetry, handoff, monitor, audit.
+- unacked means `ack_at_epoch IS NULL`; unread means `read_at_epoch IS NULL` until future explicit read-marking exists.
+- `events` stores generic observability facts, including `message.sent`, optional future `message.read`, `message.ack`, `agent.turn.done`, telemetry, handoff, monitor, audit.
 - v2 queries use SQLite as source of truth. JSONL becomes compatibility mirror only.
 
 ## 6. CLI behavior contract
@@ -206,8 +235,8 @@ Operator-visible commands stay same. Semantics pinned below.
   - resolve `X` same as today
   - list from `channel_messages` filtered by `to_participant_id`
   - if `--unacked`, filter `message_receipts.ack_at_epoch IS NULL`
-  - absence of `--unacked` must not imply read or ack side effect
-  - if implementation later wants implicit read marking, it must be explicit and documented as post-MVP; this brief keeps list/read non-destructive
+  - command is pure observation: no receipt mutation, no subscription cursor advance, no ack side effect
+  - if implementation later adds explicit read-marking, it must be separate from list or explicitly opt-in; this brief keeps list pure
 
 - `message-ack <message-id> --by X`
   - resolve `X` same as today or current session_id if omitted
@@ -238,9 +267,11 @@ Phase 0: legacy
 - existing JSONL only
 
 Phase 1: first v2 start
-- create DB and schema if missing
-- do **not** rewrite or delete existing JSONL
-- optional backfill imports retained JSONL files into SQLite events/message tables using best-effort dedupe by `message_id + type + ts_epoch`
+- create DB and schema if missing at `${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/observability.db`
+- do **not** rewrite, truncate, or delete existing `events.jsonl`
+- non-destructively import existing `events.jsonl` plus retained backfiles `events.jsonl.1..N` into SQLite events/message tables
+- import uses Python 3 stdlib `sqlite3`; no sqlite3 CLI dependency
+- import dedupes by stable logical keys such as `message_id + type + ts_epoch` for message lifecycle rows and `(ts_epoch, type, payload_json)` fallback for generic events
 - import must preserve legacy files untouched
 
 Phase 2: dual-write
@@ -292,7 +323,7 @@ Reason:
 | Requirement | Design answer |
 | --- | --- |
 | choose Rung C | §1 chooses SQLite canonical v2 with JSONL compatibility mirror |
-| canonical participants/channel messages/subscriptions or receipts | `participants`, `channel_messages`, `message_receipts` in §5.1 |
+| canonical participants/channel messages/subscriptions or receipts | `participants`, single-row `channels`, canonical `channel_messages`, dormant `channel_subscriptions`, and `message_receipts` in §5.1 |
 | indexed generic events | `events` table + indexes in §5.1-5.2 |
 | explicit read-vs-ack semantics | §5.3 and §6.2 separate unread vs unacked; list does not auto-ack |
 | non-destructive JSONL migration | §7.1 import/dual-write leaves JSONL untouched |
@@ -302,7 +333,7 @@ Reason:
 | preserve metadata options | §5.3 mirrors but does not replace `@agent_state/@agent_bead/@agent_task/@agent_parent_session` |
 | flat one-hop routing | participant_id stays tmux `#{session_id}` only; no hierarchy in §4/§5.3 |
 | legacy byte-identical when v2 off | §6.1 |
-| no new dependency | sqlite3 CLI/system library only; no package add |
+| no new dependency | Python 3 stdlib `sqlite3` only; no package add |
 | subset, not full channels | §1 and §4 explicit |
 
 ## 10. Acceptance criteria
@@ -311,14 +342,14 @@ Reason:
 - only storage substrate changes behind existing commands
 - no new user-facing command names or addressing formats
 - v2-off path produces byte-identical JSONL rows and current command behavior
-- v2-on path creates repo-local `.specialists/db/observability.db`
+- v2-on path creates `${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/observability.db` and, in current environment, `/home/dawid/.local/state/xtmux/observability.db`
 - `message-list --unacked` no longer depends on rotated JSONL history integrity
 - read state and ack state represented separately in persistent schema
 - current unread counter/status-line side effects remain unchanged
 
 ### 10.2 Test acceptance criteria
 - golden test: `XTMUX_OBS_V2=0` output for `log emit`, `message-send`, `message-ack`, `message-list`, `log query` matches current fixture byte-for-byte
-- migration test: import existing JSONL with rotated generations reconstructs same message/ack truth in SQLite
+- migration test: import existing `events.jsonl` plus retained backfiles reconstructs same message/ack truth in SQLite
 - orphan test: historical ack without send does not crash import; counted as warning/event only
 - idempotency test: repeated import and repeated `message-ack` keep same logical state
 - routing test: pane id, session name, session id, and shorthand still resolve to same canonical recipient session_id
@@ -326,14 +357,15 @@ Reason:
 - compatibility test: v2 dual-write still produces legacy-readable JSONL `message.sent` and `message.ack`
 
 ### 10.3 Benchmark acceptance criteria
-- `message-list --unacked` on dataset larger than current 10 MB JSONL cap completes without grep-over-rotations behavior dominating runtime
+- corpus includes at least **100,000 `message.sent` rows** plus matching receipts and representative generic events
+- `message-list --for X --unacked` on that corpus must hit **p50 < 100 ms** and **p99 < 100 ms** on review target hardware
 - `log query --since 1h --limit 100` scales with indexes, not full-file scans
 - write path adds bounded SQLite transaction overhead acceptable for interactive tmux command use
 - benchmark comparison must include current JSONL worst case with rotated files versus v2 indexed query path
 
 ## 11. Risks and open questions
 
-- repo-local DB path for invocations outside git repo not yet specified; brief intentionally defers rather than invent global fallback
+- single global DB beside legacy log increases shared-history surface across unrelated xtmux sessions; acceptable but should be reviewed for long-term retention growth
 - exact env names for SQLite retention thresholds not pinned; implementation may reuse or introduce v2-specific vars
 - `log tail` exact v2 backing behavior needs implementation choice because SQLite not append-only file
 - participant registry freshness for session rename/close is best-effort mirror, not routing source; tmux remains routing authority
