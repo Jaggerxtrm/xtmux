@@ -380,3 +380,59 @@ Independent review should confirm:
 - rollback to legacy mode safe and exact
 - retention cannot reintroduce orphaned-ack bug
 - unchanged pane options/addressing guaranteed
+
+## 13. v1 correctness contracts to inherit (fold-in from session addendum)
+
+The messaging channel that Rung C replaces was hardened in the same session that filed this epic. The v2 substrate MUST preserve the following operator-visible behaviors — they are the contract, not the incidental JSONL implementation.
+
+### 13.1 Address normalization at boundary (from xtmux-1hq / commit `a0f665f`)
+
+- `message-send --to <target>` and `message-list --for <target>` canonicalize the argument through `resolve_to_session_id()` before touching storage. Recipients using name / `$N` / `%N` / `session:window.pane` shorthand all match the same rows.
+- v2: `to` column stores `#{session_id}` (`$N` form). Resolution happens in the CLI layer, not the schema. `SELECT ... WHERE to = ?` uses the pre-resolved sid.
+- v2 must keep the lenient-name fallback: plain-name targets that don't resolve (offline unit tests, legacy callers) get stored verbatim. Only `$N` / `%N` / `@N` unresolved ids exit nonzero.
+
+### 13.2 Dead-target discipline (from xtmux-1hq / commit `a0f665f`)
+
+- Unresolved `$N` / `%N` / `@N` target = exit nonzero + stderr + append `message.failed` event to the log. Silent black-hole delivery is a contract violation.
+- v2: `message-send` still returns nonzero on unresolved tmux ids; the failed event goes into the `events` table (not `channel_messages`), keyed on the same `ts_epoch` and the original argument.
+
+### 13.3 Delivery signal via tmux pane options (from xtmux-1hq / commit `a0f665f`)
+
+- On successful `message-send`, set `@agent_unread_count` (increment) and `@agent_unread_since` (epoch stamp) on the **recipient session** (not pane), plus best-effort `tmux display-message -t <sid>` for any attached client.
+- On successful `message-ack`, decrement `@agent_unread_count` on the acker's session; if it hits 0, unset `@agent_unread_since`.
+- **This is operator-visible UX.** The picker badges recipient sessions with pending messages using these two options. v2 substrate changes MUST NOT touch this signaling — it stays a tmux-option write, orthogonal to storage.
+
+### 13.4 Session-id parent binding (from xtmux-7ob / commit `85fccf5`)
+
+- `@agent_parent_session` on a child pane holds the **parent's `#{session_id}`** (e.g. `$3`), never the mutable session name (`#S`). Set by `xt pi --role` launcher (core PR #362) at spawn time. Read by `extensions/pi-agent-state.ts` on `agent_end` to route `message-send --to $parent`.
+- v2: `participants.session_id` is the FK. Parent-child topology is stored on the tmux pane (existing `@agent_parent_session` option) — v2 does NOT introduce a `parent_id` schema column. One-hop flat routing is the design intent (xtmux-1hq explicit non-goal for full pub/sub).
+
+### 13.5 Unacked age column (from xtmux-1hq / commit `a0f665f`)
+
+- `message-list --unacked` output includes a human age column (`Ns` / `Nm` / `Nh` / `Nd`) computed from `ts_epoch`.
+- v2: same column in the CLI adapter, formatted via `format_age_short` from the SELECT'd row's `ts_epoch`.
+
+### 13.6 Stopgaps that die with v2
+
+- **Grep pre-filter in `message_list`** (xtmux-bje / commit `8deb7ad`). Added Jul 10 as a 60% CPU-hang bandaid. Whole `while read | sed` loop deletes when v2 lands — replaced by an indexed `SELECT`.
+- **Size-triggered JSONL rotation** (`XTMUX_EVENT_LOG_MAX_BYTES` / `_KEEP` / `rotate_event_log_if_needed`). Retained under `XTMUX_OBS_V2=0` for compat; under v2, retention becomes SQL-level `DELETE WHERE ts_epoch < ?` with no cross-file boundary. This is what dissolves the ack-orphan boundary bug.
+- **Per-line `sed`-based JSON field extraction** (`message_json_field`). Whole function deletes with v2. If Rung C substrate absolutely needs to fall back to a JSONL read (e.g. legacy import), do the parse in one Python pass, not per-line subshells.
+
+### 13.7 Test coverage that must survive
+
+`test/contract.sh` (xtmux-1hq commit `a0f665f`, xtmux-bje commit `8deb7ad`) currently covers:
+- message channel: send prints TSV, list unacked, ack hides unacked
+- unacked shows age column
+- dead `$N` target exits nonzero
+- log rotation on size threshold
+
+v2 must ship equivalent coverage on the SQLite substrate (adapted names OK). Flag-off (`XTMUX_OBS_V2=0`) must still exercise the JSONL path and pass unchanged assertions.
+
+### 13.8 Orthogonal to this epic (do NOT bundle)
+
+Not touched by the messaging substrate — filed only for context so the implementer doesn't accidentally cross-scope:
+
+- `xt pi --role` launcher (core PRs #364, #365 — e1o skill scaffold + 2dy pi argv passthrough)
+- pi `process` tool PATH strip (specialists PR #177, doc-only workaround)
+
+If v2 wants to change the `pi-agent-state.ts` publish path, only the storage backend changes — the tmux-option delivery signal and CLI surface stay identical.
