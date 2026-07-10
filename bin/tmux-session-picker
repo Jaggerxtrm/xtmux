@@ -891,7 +891,11 @@ message_list() {
     else
       printf 'message\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$ts" "$from" "$target" "$bead" "$text"
     fi
-  done < <(cat "${files[@]}" 2>/dev/null) | tail -n "$limit"
+    # Pre-filter with grep so the while-read loop only sees message.sent
+    # lines. Without this, we iterate every line in every rotated backfile
+    # (~215k lines observed 2026-07-08) → multi-second hang burning ~60%
+    # CPU. See xtmux-bje.
+  done < <(grep -hF '"type":"message.sent"' "${files[@]}" 2>/dev/null) | tail -n "$limit"
 }
 
 
