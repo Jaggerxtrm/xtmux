@@ -33,7 +33,16 @@ describe("message status and unread-count queries", () => {
       const { messageId } = sendMessage(db, { messageKey: "outbound-1", senderId: "$sender", recipientId: "$recipient", summary: "hello" });
       const unacked = run(dbPath, ["message-status", "outbound-1"]);
       expect(unacked.exitCode).toBe(0);
-      expect(JSON.parse(unacked.stdout)).toEqual({ messageKey: "outbound-1", recipientId: "$recipient", acked: false, ackedAtMs: null, ackedBy: null });
+      expect(JSON.parse(unacked.stdout)).toEqual({
+        messageKey: "outbound-1",
+        senderId: "$sender",
+        recipientId: "$recipient",
+        beadId: null,
+        summary: "hello",
+        acked: false,
+        ackedAtMs: null,
+        ackedBy: null,
+      });
 
       ackMessage(db, { messageId, ackedBy: "$recipient" });
       const acked = run(dbPath, ["message-status", "outbound-1"]);

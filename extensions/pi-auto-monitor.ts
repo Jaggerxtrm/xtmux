@@ -23,6 +23,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isBashToolResult } from "@earendil-works/pi-coding-agent";
 import { spawn, spawnSync } from "node:child_process";
+import xtmuxInboxReply from "./pi-inbox-reply.ts";
 
 const PICKER =
   process.env.XTMUX_PICKER || "/home/dawid/dev/xtmux/bin/tmux-session-picker";
@@ -69,6 +70,7 @@ function fireMonitor(target: string): void {
 }
 
 export default function xtmuxAutoMonitor(pi: ExtensionAPI): void {
+  xtmuxInboxReply(pi);
   if (process.env.XTMUX_AUTO_MONITOR_DISABLE === "1") return;
 
   pi.on("tool_result", async (event) => {
