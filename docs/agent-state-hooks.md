@@ -333,11 +333,28 @@ XTMUX_AGENT_STATE_SCRIPT=/custom/path/agent-state.sh pi
 | `session_start` | `idle` |
 | `before_agent_start` | `running` |
 | `agent_start` | `running` |
-| `message_update` | `running` |
 | `tool_execution_start` | `running` |
 | `agent_end` | `done` |
 | `session_shutdown` with reason `quit` | `off` |
 | `session_shutdown` with other reasons | `idle` |
+
+### debouncing repeat `@agent_state` writes
+
+setState() debounces same-state writes within a rolling window so the pi
+extension does not fire redundant tmux `set-option -p @agent_state` calls
+for every intermediate event during a single pi turn. Default window is
+5000ms. Override with:
+
+```sh
+XTMUX_PI_STATE_DEBOUNCE_MS=0 pi   # disable debounce (write every event)
+XTMUX_PI_STATE_DEBOUNCE_MS=1000 pi  # tighter window for high-freq observers
+```
+
+Only same-state repeats are suppressed; any state transition (e.g. running
+→ done) writes through immediately regardless of window. `message_update`
+was previously mapped to `running` and dropped from the event list above
+because agent_start / tool_execution_start / turn_start already cover the
+'running' transitions.
 
 ### known pi limitation: no documented `needs-input` event
 
