@@ -1,0 +1,9 @@
+audit	read-only	warnings-and-cleanup-candidates
+cleanup	missing-path	<SESSION_ID>	golden-gone	<TMP> (deleted)
+cleanup	stale-specialist	<SESSION_ID>	sp-executor-golden	state=
+warning	agent-pane-without-bead	<SESSION_ID>	golden-work	<PANE>	state=running	cmd=zsh
+warning	dirty-worktree	<SESSION_ID>	sp-executor-golden	dirty=1	repo=wt-dirty	path=<TMP>
+warning	naming-convention	<SESSION_ID>	tmp-badname
+warning	shared-worktree	<SESSION_ID>	golden-main	repo=wt-clean	path=<TMP>
+warning	shared-worktree	<SESSION_ID>	golden-work	repo=wt-clean	path=<TMP>
+warning	working-do-not-kill	<SESSION_ID>	golden-work	state=running
