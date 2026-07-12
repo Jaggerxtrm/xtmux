@@ -793,8 +793,26 @@ _log_json_field_match() {
   printf '"%s":"%s"' "$field" "$(json_escape "$value")"
 }
 
+# _log_cli_query_v1_body — V1 JSONL scan for log-query; extracted so the
+# shadow-tee path can capture stdout before diffing. Args:
+# <type> <pane> <session> <bead> <since_secs> <limit>.
+_log_cli_query_v1_body() {
+  local type="$1" pane="$2" session="$3" bead="$4" since="$5" limit="$6"
+  local file now since_epoch
+  event_log_file; file="$REPLY"
+  [ -f "$file" ] || return 0
+  now="$(date +%s)"; since_epoch=0
+  [ -n "$since" ] && since_epoch=$(( now - since ))
+  awk -v since="$since_epoch" 'since<=0 {print; next} { if (match($0, /"ts_epoch":[0-9]+/)) { v=substr($0, RSTART+11, RLENGTH-11); if (v >= since) print } }' "$file" |
+    { [ -n "$type" ] && grep -F -- "$(_log_json_field_match type "$type")" || cat; } |
+    { [ -n "$pane" ] && grep -F -- "$(_log_json_field_match pane "$pane")" || cat; } |
+    { [ -n "$session" ] && grep -F -- "$(_log_json_field_match session "$session")" || cat; } |
+    { [ -n "$bead" ] && grep -F -- "$(_log_json_field_match bead "$bead")" || cat; } |
+    tail -n "$limit"
+}
+
 log_cli_query() {
-  local type='' pane='' session='' bead='' since='' limit=100 arg file now since_epoch
+  local type='' pane='' session='' bead='' since='' limit=100 arg
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
@@ -813,8 +831,8 @@ log_cli_query() {
       *) printf 'log query: unknown arg: %s\n' "$arg" >&2; return 2 ;;
     esac
   done
-  obs_v2_mode
-  if [ "$REPLY" = 'on' ]; then
+  obs_v2_mode; local mode="$REPLY"
+  if [ "$mode" = 'on' ]; then
     obs_runtime_argv
     local cli_args=(log-query --limit "$limit")
     [ -n "$type" ]    && cli_args+=(--type    "$type")
@@ -824,16 +842,24 @@ log_cli_query() {
     [ -n "$since" ]   && cli_args+=(--since   "$(( ( $(date +%s) - since ) * 1000 ))")
     exec "${OBS_ARGV[@]}" "${cli_args[@]}"
   fi
-  event_log_file; file="$REPLY"
-  [ -f "$file" ] || return 0
-  now="$(date +%s)"; since_epoch=0
-  [ -n "$since" ] && since_epoch=$(( now - since ))
-  awk -v since="$since_epoch" 'since<=0 {print; next} { if (match($0, /"ts_epoch":[0-9]+/)) { v=substr($0, RSTART+11, RLENGTH-11); if (v >= since) print } }' "$file" |
-    { [ -n "$type" ] && grep -F -- "$(_log_json_field_match type "$type")" || cat; } |
-    { [ -n "$pane" ] && grep -F -- "$(_log_json_field_match pane "$pane")" || cat; } |
-    { [ -n "$session" ] && grep -F -- "$(_log_json_field_match session "$session")" || cat; } |
-    { [ -n "$bead" ] && grep -F -- "$(_log_json_field_match bead "$bead")" || cat; } |
-    tail -n "$limit"
+  if [ "$mode" = 'shadow' ]; then
+    local v1_out v2_out=''
+    v1_out="$(_log_cli_query_v1_body "$type" "$pane" "$session" "$bead" "$since" "$limit")"
+    if obs_available; then
+      obs_runtime_argv
+      local v2_args=(log-query --limit "$limit")
+      [ -n "$type" ]    && v2_args+=(--type    "$type")
+      [ -n "$session" ] && v2_args+=(--session "$session")
+      [ -n "$pane" ]    && v2_args+=(--pane    "$pane")
+      [ -n "$bead" ]    && v2_args+=(--bead    "$bead")
+      [ -n "$since" ]   && v2_args+=(--since   "$(( ( $(date +%s) - since ) * 1000 ))")
+      v2_out="$("${OBS_ARGV[@]}" "${v2_args[@]}" 2>/dev/null || true)"
+    fi
+    obs_shadow_diff log log-query content "$v1_out" "$v2_out"
+    [ -n "$v1_out" ] && printf '%s\n' "$v1_out"
+    return 0
+  fi
+  _log_cli_query_v1_body "$type" "$pane" "$session" "$bead" "$since" "$limit"
 }
 
 log_cli() {

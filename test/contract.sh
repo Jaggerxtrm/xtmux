@@ -458,6 +458,19 @@ grep -F '"--wait-for-transition"' extensions/pi-auto-monitor.ts >/dev/null && gr
   echo '{"stop_hook_active":false}' | node .xtrm/hooks/auto-monitor-drain-stop.mjs >/dev/null
   [ ! -f "$amdir/stale_pending" ] || exit 7
 ) && ok "auto-monitor: three-hook Stop-block coordination (.23)" || nok "auto-monitor: three-hook Stop-block coordination (.23)"
+# xtmux-3xs.25: log-query shadow-diff records divergence when V1 JSONL differs from V2 SQL.
+(
+  set -e
+  self="$PICKER"
+  ldb="$WORK/logshadow.db"
+  llog="$WORK/logshadow-events.jsonl"
+  # V1 log has an event that V2 SQL event_journal does NOT (V2 unpopulated).
+  XTMUX_EVENT_LOG_FILE="$llog" log_cli_emit lqs.probe key1=v1 >/dev/null
+  XTMUX_OBS_V2=shadow XTMUX_OBS_DB_PATH="$ldb" XTMUX_EVENT_LOG_FILE="$llog" \
+    log_cli_query --type lqs.probe >/dev/null
+  XTMUX_OBS_DB_PATH="$ldb" "$ROOT/bin/xtmux-obs" shadow-summary 2>/dev/null \
+    | grep -q '"command": "log-query"' || exit 1
+) && ok "shadow-mode: log-query divergence detection (.25)" || nok "shadow-mode: log-query divergence detection (.25)"
 # xtmux-3xs.12: shadow-mode records divergence when V1 and V2 output disagree.
 (
   set -e
