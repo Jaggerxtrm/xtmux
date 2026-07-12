@@ -723,6 +723,23 @@ obs_call_strict() {
   "${OBS_ARGV[@]}" "$@"
 }
 
+# obs_shadow_diff <domain> <command> <diff_kind> <v1_output> <v2_output>
+# Byte-compare V1 vs V2. On mismatch, best-effort record via `obs_call
+# shadow-record` with snippets truncated to 512 chars each. Silent — cannot
+# fail the wrapped V1 command. Skipped entirely when V2 runtime unavailable.
+obs_shadow_diff() {
+  local domain="$1" command="$2" kind="$3" v1="$4" v2="$5"
+  [ "$v1" = "$v2" ] && return 0
+  obs_available || return 0
+  local v1s="${v1:0:512}" v2s="${v2:0:512}"
+  obs_call shadow-record \
+    --domain "$domain" \
+    --command "$command" \
+    --diff-kind "$kind" \
+    --v1-snippet "$v1s" \
+    --v2-snippet "$v2s"
+}
+
 log_event() {
   local type="${1:-}" file dir ts epoch first=1 kv key val
   [ -n "$type" ] || return 0
@@ -753,6 +770,10 @@ log_cli_emit() {
     exec "${OBS_ARGV[@]}" log-emit "$type" "$@"
   fi
   log_event "$type" "$@"
+  # Shadow-tee: also insert into V2 event_journal for parity.
+  if [ "$REPLY" = 'shadow' ] && obs_available; then
+    obs_call log-emit "$type" "$@"
+  fi
 }
 
 log_cli_tail() {
@@ -894,6 +915,19 @@ message_send() {
     return 0
   fi
   log_event message.sent id="$id" from="$from_sid" to="$to_sid" bead="$bead" text="$text"
+  # Shadow-tee: under XTMUX_OBS_V2=shadow, mirror the write into SQLite so
+  # subsequent shadow-mode reads can meaningfully diff V1 vs V2 state. V1
+  # remains authoritative; V2 failure is silent.
+  if [ "$REPLY" = 'shadow' ] && obs_available; then
+    local to_pid_s='' from_pid_s=''
+    to_pid_s="$(tmux display-message -p -t "$to" '#{pane_id}' 2>/dev/null || true)"
+    [ -n "$from" ] && from_pid_s="$(tmux display-message -p -t "$from" '#{pane_id}' 2>/dev/null || true)"
+    local shadow_args=(message-send --to "$to_sid" --from "$from_sid" --id "$id" --text "$text")
+    [ -n "$bead" ]      && shadow_args+=(--bead "$bead")
+    [ -n "$to_pid_s" ]  && shadow_args+=(--to-pane   "$to_pid_s")
+    [ -n "$from_pid_s" ] && shadow_args+=(--from-pane "$from_pid_s")
+    obs_call "${shadow_args[@]}"
+  fi
   # Delivery signal — best-effort. Bumps a session-scoped counter recipients
   # can watch (@agent_unread_count) and stamps @agent_unread_since; also emits
   # a status-line notice for any attached client. Failures are silent because
@@ -939,6 +973,10 @@ message_ack() {
     return 0
   fi
   log_event message.ack id="$id" by="$by"
+  # Shadow-tee: mirror ack into SQLite for parity. Best-effort; V1 keeps authority.
+  if [ "$REPLY" = 'shadow' ] && obs_available; then
+    obs_call message-ack "$id" --by "$by"
+  fi
   # Decrement recipient's unread counter. If it hits zero, clear the stamp too.
   # Best-effort: acking outside a tmux session (tests) just no-ops.
   if [ -n "${by:-}" ] && [ "$by" != unknown ]; then
@@ -959,38 +997,16 @@ message_json_field() {
   printf '%s\n' "$line" | sed -n "s/.*\"$name\":\"\([^\"\\]*\)\".*/\1/p"
 }
 
-message_list() {
-  local to='' since='' limit=100 unacked=0 arg file files=() now since_epoch ack_tmp line ts_epoch id from target bead text ts to_sid=''
-  while [ "$#" -gt 0 ]; do
-    arg="$1"; shift
-    case "$arg" in
-      --for|--to) [ "$#" -gt 0 ] || return 2; to="$1"; shift ;;
-      --for=*|--to=*) to="${arg#*=}" ;;
-      --since) [ "$#" -gt 0 ] || return 2; parse_wait_duration "$1" || return 2; since="$REPLY"; shift ;;
-      --since=*) parse_wait_duration "${arg#--since=}" || return 2; since="$REPLY" ;;
-      --limit) [ "$#" -gt 0 ] || return 2; limit="$1"; shift ;;
-      --limit=*) limit="${arg#--limit=}" ;;
-      --unacked) unacked=1 ;;
-      *) printf 'message-list: unknown arg: %s\n' "$arg" >&2; return 2 ;;
-    esac
-  done
-  obs_v2_mode
-  if [ "$REPLY" = 'on' ]; then
-    local to_sid_v2=''
-    if [ -n "$to" ] && resolve_to_session_id "$to"; then to_sid_v2="$REPLY"; else to_sid_v2="$to"; fi
-    [ -n "$to_sid_v2" ] || { printf 'usage: message-list --for <session|pane> [--unacked] [--limit N] [--since D]\n' >&2; return 2; }
-    obs_runtime_argv
-    local cli_args=(message-list --for "$to_sid_v2" --limit "$limit")
-    [ "$unacked" = 1 ] && cli_args+=(--unacked)
-    [ -n "$since" ] && cli_args+=(--since "$since")
-    exec "${OBS_ARGV[@]}" "${cli_args[@]}"
-  fi
+# _message_list_v1_body — V1 JSONL scan producing message-list stdout.
+# Shared between the mode=off direct path and the mode=shadow capture-then-diff
+# path (xtmux-3xs.12). Args: <for> <since_secs> <limit> <unacked_bool>.
+_message_list_v1_body() {
+  local to="$1" since="$2" limit="$3" unacked="$4"
+  local file files=() now since_epoch ack_tmp line ts_epoch id from target bead text ts to_sid=''
   event_log_file; file="$REPLY"
-  # normalize --for to session_id when possible so callers can pass any alias
   if [ -n "$to" ]; then
     if resolve_to_session_id "$to"; then to_sid="$REPLY"; else to_sid=''; fi
   fi
-  # include rotated backfiles so old messages remain queryable
   local i
   [ -f "$file" ] && files+=("$file")
   for ((i=1; i<=XTMUX_EVENT_LOG_KEEP; i++)); do
@@ -1014,7 +1030,6 @@ message_list() {
     bead="$(message_json_field bead "$line")"
     text="$(message_json_field text "$line")"
     ts="$(message_json_field ts "$line")"
-    # match either the raw --for arg (legacy) or its resolved session_id
     if [ -n "$to" ] && [ "$target" != "$to" ] && { [ -z "$to_sid" ] || [ "$target" != "$to_sid" ]; }; then
       continue
     fi
@@ -1025,13 +1040,55 @@ message_list() {
     else
       printf 'message\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$ts" "$from" "$target" "$bead" "$text"
     fi
-    # Pre-filter with grep so the while-read loop only sees message.sent
-    # lines. Without this, we iterate every line in every rotated backfile
-    # (~215k lines observed 2026-07-08) → multi-second hang burning ~60%
-    # CPU. See xtmux-bje.
   done < <(grep -hF '"type":"message.sent"' "${files[@]}" 2>/dev/null) | tail -n "$limit"
 }
 
+message_list() {
+  local to='' since='' limit=100 unacked=0 arg
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --for|--to) [ "$#" -gt 0 ] || return 2; to="$1"; shift ;;
+      --for=*|--to=*) to="${arg#*=}" ;;
+      --since) [ "$#" -gt 0 ] || return 2; parse_wait_duration "$1" || return 2; since="$REPLY"; shift ;;
+      --since=*) parse_wait_duration "${arg#--since=}" || return 2; since="$REPLY" ;;
+      --limit) [ "$#" -gt 0 ] || return 2; limit="$1"; shift ;;
+      --limit=*) limit="${arg#--limit=}" ;;
+      --unacked) unacked=1 ;;
+      *) printf 'message-list: unknown arg: %s\n' "$arg" >&2; return 2 ;;
+    esac
+  done
+  obs_v2_mode; local mode="$REPLY"
+  if [ "$mode" = 'on' ]; then
+    local to_sid_v2=''
+    if [ -n "$to" ] && resolve_to_session_id "$to"; then to_sid_v2="$REPLY"; else to_sid_v2="$to"; fi
+    [ -n "$to_sid_v2" ] || { printf 'usage: message-list --for <session|pane> [--unacked] [--limit N] [--since D]\n' >&2; return 2; }
+    obs_runtime_argv
+    local cli_args=(message-list --for "$to_sid_v2" --limit "$limit")
+    [ "$unacked" = 1 ] && cli_args+=(--unacked)
+    [ -n "$since" ] && cli_args+=(--since "$since")
+    exec "${OBS_ARGV[@]}" "${cli_args[@]}"
+  fi
+  if [ "$mode" = 'shadow' ]; then
+    local v1_out v2_out=''
+    v1_out="$(_message_list_v1_body "$to" "$since" "$limit" "$unacked")"
+    if obs_available; then
+      local to_sid_v2=''
+      if [ -n "$to" ] && resolve_to_session_id "$to"; then to_sid_v2="$REPLY"; else to_sid_v2="$to"; fi
+      if [ -n "$to_sid_v2" ]; then
+        obs_runtime_argv
+        local v2_args=(message-list --for "$to_sid_v2" --limit "$limit")
+        [ "$unacked" = 1 ] && v2_args+=(--unacked)
+        [ -n "$since" ] && v2_args+=(--since "$since")
+        v2_out="$("${OBS_ARGV[@]}" "${v2_args[@]}" 2>/dev/null || true)"
+      fi
+    fi
+    obs_shadow_diff messages message-list content "$v1_out" "$v2_out"
+    [ -n "$v1_out" ] && printf '%s\n' "$v1_out"
+    return 0
+  fi
+  _message_list_v1_body "$to" "$since" "$limit" "$unacked"
+}
 
 join_args_for_log() {
   local out='' arg
@@ -1357,6 +1414,10 @@ audit() {
   [ -n "$session" ] && ingest_args+=(--session "$session")
   [ "$rc" -eq 0 ] || ingest_args+=(--partial)
   printf '%s\n' "$out" | obs_call "${ingest_args[@]}"
+  # Shadow diff for audit is a follow-up: audit_walk reads live tmux state
+  # which drifts between two walks, so a live V1-vs-V2 comparison would
+  # produce racy false positives. xtmux-3xs.17's --stable makes ORDER
+  # comparable; a stable input-fixture harness would make CONTENT comparable.
   return "$rc"
 }
 
@@ -2065,15 +2126,10 @@ monitor_agent() {
   printf 'monitor\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$pid" "$target" "$pane" "$state" "$start" "$timeout" "$interval" "$start"
 }
 
-monitor_list() {
-  local dir file line type id pid target pane state start timeout interval updated now mode
-  obs_v2_mode; mode="$REPLY"
-  # V2 authoritative: the table is the registry, and reconciliation of crashed
-  # pollers happens inside the scan.
-  if [ "$mode" = 'on' ]; then
-    obs_call_strict monitor list
-    return "$?"
-  fi
+# _monitor_list_v1_body — V1 TSV scan of the monitor state dir; extracted so
+# the shadow-tee path can capture stdout before diffing.
+_monitor_list_v1_body() {
+  local dir file line type id pid target pane state start timeout interval updated now
   monitor_dir; dir="$REPLY"
   [ -d "$dir" ] || return 0
   now="$(date +%s)"
@@ -2090,6 +2146,27 @@ monitor_list() {
     fi
     printf 'monitor\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$pid" "$target" "$pane" "$state" "$start" "$timeout" "$interval" "$now"
   done | sort -t $'\t' -k6,6 -k2,2
+}
+
+monitor_list() {
+  obs_v2_mode; local mode="$REPLY"
+  # V2 authoritative: the table is the registry, and reconciliation of crashed
+  # pollers happens inside the scan.
+  if [ "$mode" = 'on' ]; then
+    obs_call_strict monitor list
+    return "$?"
+  fi
+  if [ "$mode" = 'shadow' ]; then
+    local v1_out v2_out=''
+    v1_out="$(_monitor_list_v1_body)"
+    if obs_available; then
+      v2_out="$(obs_call_strict monitor list 2>/dev/null || true)"
+    fi
+    obs_shadow_diff monitors monitor-list content "$v1_out" "$v2_out"
+    [ -n "$v1_out" ] && printf '%s\n' "$v1_out"
+    return 0
+  fi
+  _monitor_list_v1_body
 }
 
 monitor_kill() {

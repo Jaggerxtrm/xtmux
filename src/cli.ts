@@ -9,7 +9,7 @@ import { cliLogEmit, cliLogTail, cliLogQuery } from "./cli-log.ts";
 import { recordDelivery } from "./domains/deliveries/attempt.ts";
 import type { DeliveryKind } from "./domains/deliveries/attempt.ts";
 import { runMigration } from "./migration/runner.ts";
-import { summarizeDivergences } from "./db/shadow.ts";
+import { recordDivergence, summarizeDivergences, type DiffKind } from "./db/shadow.ts";
 import { monitorCommand } from "./commands/monitors.ts";
 import { telemetryCommand } from "./commands/telemetry.ts";
 import { auditCommand } from "./commands/audit.ts";
@@ -31,6 +31,8 @@ commands:
 
   obs-migrate --dry-run|--apply|--status  legacy JSONL importer + report
   shadow-summary                          shadow-mode divergence rollup
+  shadow-record --domain X --command Y --diff-kind Z [--v1-snippet S --v2-snippet S]
+                                          record a shadow divergence (picker-internal)
 `;
 }
 
@@ -128,6 +130,35 @@ async function main(argv: string[]): Promise<number> {
         } finally {
           db.close();
         }
+      }
+      case "shadow-record": {
+        // Best-effort divergence write from the picker's shadow-tee. Never fails
+        // the wrapped V1 command — parse errors and DB errors both return 0.
+        const args = argv.slice(3);
+        const get = (flag: string): string | undefined => {
+          const idx = args.indexOf(flag);
+          if (idx < 0) return undefined;
+          return args[idx + 1];
+        };
+        const domain = get("--domain");
+        const command = get("--command");
+        const diffKind = get("--diff-kind") as DiffKind | undefined;
+        if (!domain || !command || !diffKind) return 0;
+        const db = openDb(cfg);
+        try {
+          recordDivergence(db, {
+            domain,
+            command,
+            diffKind,
+            v1Snippet: get("--v1-snippet"),
+            v2Snippet: get("--v2-snippet"),
+          });
+        } catch {
+          // swallow — shadow writes must not cascade
+        } finally {
+          db.close();
+        }
+        return 0;
       }
       case "message-send":
       case "message-list":

@@ -458,6 +458,25 @@ grep -F '"--wait-for-transition"' extensions/pi-auto-monitor.ts >/dev/null && gr
   echo '{"stop_hook_active":false}' | node .xtrm/hooks/auto-monitor-drain-stop.mjs >/dev/null
   [ ! -f "$amdir/stale_pending" ] || exit 7
 ) && ok "auto-monitor: three-hook Stop-block coordination (.23)" || nok "auto-monitor: three-hook Stop-block coordination (.23)"
+# xtmux-3xs.12: shadow-mode records divergence when V1 and V2 output disagree.
+(
+  set -e
+  # Override $self so obs_available resolves the real picker/binary tree
+  # (contract sources functions into a temp file, breaking the ${self%/bin/*} inference).
+  self="$PICKER"
+  sh_db="$WORK/shadow.db"
+  sh_log="$WORK/shadow-events.jsonl"
+  # 1. Divergence: V1 has a message in JSONL, V2 SQLite is empty. shadow message-list must detect.
+  XTMUX_EVENT_LOG_FILE="$sh_log" \
+    message_send --from src --to dst --text 'v1 only' --id m1 >/dev/null
+  XTMUX_OBS_V2=shadow XTMUX_OBS_DB_PATH="$sh_db" XTMUX_EVENT_LOG_FILE="$sh_log" \
+    message_list --for dst --unacked >/dev/null
+  summary="$(XTMUX_OBS_DB_PATH="$sh_db" "$ROOT/bin/xtmux-obs" shadow-summary 2>/dev/null)"
+  echo "$summary" | grep -q '"command": "message-list"' || { printf '%s\n' "$summary" >&2; exit 1; }
+  # 2. shadow-record CLI verb path: direct call records without failing.
+  XTMUX_OBS_DB_PATH="$sh_db" "$ROOT/bin/xtmux-obs" shadow-record --domain probe --command probe --diff-kind content --v1-snippet a --v2-snippet b
+  XTMUX_OBS_DB_PATH="$sh_db" "$ROOT/bin/xtmux-obs" shadow-summary | grep -q '"domain": "probe"' || exit 2
+) && ok "shadow-mode: divergence detection + shadow-record CLI (.12)" || nok "shadow-mode: divergence detection + shadow-record CLI (.12)"
 tele_repo="$WORK/telemetry-repo"; mkdir -p "$tele_repo"; (cd "$tele_repo" && git init -q && git config user.email t@example.invalid && git config user.name Test && printf 'x\n' > a.txt && git add a.txt && git commit -q -m init)
 tele_log="$WORK/telemetry-events.jsonl"
 (cd "$tele_repo" && XTMUX_EVENT_LOG_FILE="$tele_log" telemetry_run git -- status --short >/dev/null)

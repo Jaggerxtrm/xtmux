@@ -738,9 +738,23 @@ Self-check surface: every domain phase's tests include a grep/query assertion ag
 
 ## 13. Cutover + rollback (Phase 10)
 
-**Current status: HOLD.** Cutover blocked pending shadow comparator (xtmux-3xs.12)
-and V1/V2 differential oracle (xtmux-3xs.19). Runtime p99 gate met via
-xtmux-3xs.11 compiled binary; other exit conditions green.
+**Current status: HOLD.** Shadow comparator wiring landed (xtmux-3xs.12); cutover
+now blocked on production traffic sample under `XTMUX_OBS_V2=shadow` returning
+zero unexplained divergences, and on the V1/V2 differential oracle (xtmux-3xs.19).
+Runtime p99 gate met via xtmux-3xs.11 compiled binary; other exit conditions green.
+
+Shadow-mode surface (xtmux-3xs.12):
+
+- Writes (`message-send`, `message-ack`, `log-emit`) shadow-tee into SQLite via
+  `obs_call` after V1 writes JSONL. Best-effort; failures are silent.
+- Reads (`message-list`, `monitor-list`) capture V1 output, invoke V2, byte-diff,
+  and record any divergence via `obs_call shadow-record` → `shadow_divergences`.
+- `xtmux-obs shadow-summary` rolls up divergence counts per (domain, command).
+- Deferred to a follow-up: `log-query` shadow-read (V1 body needs the same
+  extract-to-helper refactor pattern used for message-list), and `audit` shadow
+  content-diff (the walk isn't a stable input across two invocations, so live
+  V1-vs-V2 comparison produces noise — `--stable` orders it, but a fixture-driven
+  harness would be needed to compare content meaningfully).
 
 Cutover commit (deferred): sets `XTMUX_OBS_V2=1` as default in the picker +
 closes epic xtmux-3xs. Cutover proceeds only when: (a) message correctness
