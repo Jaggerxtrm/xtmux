@@ -383,11 +383,51 @@ what makes "terminal is absorbing" a schema invariant rather than a convention.
 
 ---
 
-## 5. Open questions for Phase 1/2 (1.1)
+## 5. Decisions taken during implementation
 
-1. `command_runs.owner_pid` — see §2.3.
-2. `audit_findings.session_name` — see §3.2.
-3. Journal envelope helper: which module exports the `event_journal` writer that
-   domains 4/7/8 call (`src/domains/events/`)? Phases 4/7/8 all need
-   `writeEnvelope({domain, event, correlation_id, …})` and should not each roll
-   their own.
+### 5.1 Schema deltas from the PRD DDL (all three landed in `0002_domains_4_7_8`)
+
+1. **`command_runs.owner_pid`** — without it, `terminal_status=interrupted` is a
+   pure age-threshold guess. With it, the PID check is authoritative and the 15-min
+   threshold is only a cross-host fallback.
+2. **`audit_findings.session_name`** — `session_id` (`$N`) is a per-instance handle.
+   Fingerprinting on it re-mints every finding whenever a session is recreated, so
+   `last_seen_ms` would never advance and the dedup requirement would silently fail.
+3. **`audit_findings.last_run_id`** — with one row per fingerprint, `run_id` stays
+   pinned to the run that *first* saw a finding. Resolution keyed on `run_id` would
+   therefore match nothing, ever. `last_run_id` is the column that moves.
+
+### 5.2 Module layout differs from the contracts' file sketch
+
+The contracts name `monitors/{register,heartbeat,list,kill,reconcile}.ts`,
+`telemetry/{start,finish,reconcile}.ts`, `audit/{run,find,fingerprint,resolve}.ts`.
+Shipped instead as one `store.ts` per domain (plus the pure `terminal.ts`,
+`classify.ts`, `fingerprint.ts`).
+
+The verbs are not independent: monitors' `list` calls `reconcile` and `heartbeat`,
+`kill` and `reconcile` both call `terminate`, and all of them share one lifecycle
+lookup and the same probe interface. Splitting them across five files means five
+files re-deriving the same helpers, or a sixth "common" file that is the module
+anyway. The pure decision logic — which is what actually benefits from isolation —
+*is* split out, and is tested without a database.
+
+### 5.3 `@agent_state` normalization is load-bearing for output compatibility
+
+V1 canonicalizes the raw pane option through `normalize_agent_state` before printing:
+an operator writes `working`, and `monitor-list` prints `running`. V2's first cut
+returned the raw option and diverged on exactly that column. `normalizeAgentState()`
+in `src/tmux.ts` mirrors V1's map, pinned by
+`tests/contracts/agent-state-normalization.test.ts`.
+
+Found by diffing V1 and V2 stdout in the same environment — not by any unit test,
+which is the argument for keeping that comparison in the suite.
+
+### 5.4 Two V1 quirks worth knowing (neither fixed here — both are V1 behaviour)
+
+- **`audit` emission order** follows the `dashboard expanded` walk, i.e. tmux
+  enumeration order, and is not stable across runs. Any byte-comparison must sort
+  first. "Fixing" the order would itself change stdout.
+- **`telemetry` session attribution**: `current_tmux_session` resolves tmux's notion
+  of a *current* session even when the wrapper is invoked outside tmux, so a run can
+  be tagged with a bystander session. V2 correlation should treat a missing `$TMUX`
+  as NULL rather than inheriting one; flagged to Phase 3, which owns identity.
