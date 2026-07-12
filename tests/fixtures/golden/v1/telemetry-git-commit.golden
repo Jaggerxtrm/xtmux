@@ -1,0 +1,3 @@
+exit=0
+{"ts":"<TS>","ts_epoch":<EPOCH>,"type":"telemetry.command.started","tool":"git","event":"git.commit","pane":"<PANE>","session":"golden-gone","bead":"","cwd":"<TMP>","repo":"<TMP>","branch":"main","head":"<SHA>","argv":"commit --allow-empty -m golden"}
+{"ts":"<TS>","ts_epoch":<EPOCH>,"type":"git.commit","tool":"git","exit":"0","pane":"<PANE>","session":"golden-gone","bead":"","cwd":"<TMP>","repo":"<TMP>","branch":"main","head":"<SHA>","argv":"commit --allow-empty -m golden"}

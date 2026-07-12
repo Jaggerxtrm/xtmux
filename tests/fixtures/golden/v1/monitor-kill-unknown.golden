@@ -1,0 +1,2 @@
+monitor-kill: not found: no-such-monitor
+exit=1

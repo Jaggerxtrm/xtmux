@@ -1,0 +1,2 @@
+usage: telemetry <git|bd|gh> -- <args...>
+exit=2
