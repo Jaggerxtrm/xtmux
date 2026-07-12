@@ -26,7 +26,7 @@ commands:
   message-list --for <sid> [--pane %N] [--from <sid>] [--since <ms>] [--unacked] [--limit N]
   message-ack <message_id> --by <sid>
   message-status <message_key>        print JSON receipt state (V2 only)
-  unread-count --for <sid>            print JSON unread summary (V2 only)
+  unread-count --for <sid> [--pane %N] print JSON unread summary; --pane scopes to that pane (xtmux-3xs.28)
 
   monitor register|adopt|heartbeat|terminate|list|kill   monitor registry (3xs.4)
   telemetry start|finish                                 correlated command runs (3xs.7)

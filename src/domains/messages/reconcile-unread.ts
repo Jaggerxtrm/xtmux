@@ -10,20 +10,46 @@ export interface UnreadStats {
  * Recompute unread stats for a recipient from SQLite (authoritative). Caller
  * writes the result into tmux options @agent_unread_count / @agent_unread_since
  * best-effort — projection failure does NOT roll back this read.
+ *
+ * Optional `paneId` filters to messages either explicitly targeted at that pane
+ * (`target_pane_id = ?`) or unpaned (`target_pane_id IS NULL`). Panes on the
+ * same tmux session share a session_id, so a session-wide count double-reports
+ * traffic across cohabiting agents (see xtmux-3xs.28); pane-scoping resolves it.
  */
-export function computeUnread(db: Db, recipientId: string): UnreadStats {
-  const stmt = db.raw.prepare<
-    { unread_count: number; oldest_at: number | null },
-    [string]
-  >(
-    `SELECT COUNT(*) AS unread_count,
-            MIN(m.created_at_ms) AS oldest_at
-       FROM messages m
-       LEFT JOIN message_receipts r
-         ON r.message_id = m.id AND r.recipient_id = m.recipient_id
-      WHERE m.recipient_id = ? AND (r.acked_at_ms IS NULL)`,
-  );
-  const row = stmt.get(recipientId);
+export function computeUnread(
+  db: Db,
+  recipientId: string,
+  paneId?: string,
+): UnreadStats {
+  const row = paneId
+    ? db.raw
+        .prepare<
+          { unread_count: number; oldest_at: number | null },
+          [string, string]
+        >(
+          `SELECT COUNT(*) AS unread_count,
+                  MIN(m.created_at_ms) AS oldest_at
+             FROM messages m
+             LEFT JOIN message_receipts r
+               ON r.message_id = m.id AND r.recipient_id = m.recipient_id
+            WHERE m.recipient_id = ?
+              AND (m.target_pane_id = ? OR m.target_pane_id IS NULL)
+              AND r.acked_at_ms IS NULL`,
+        )
+        .get(recipientId, paneId)
+    : db.raw
+        .prepare<
+          { unread_count: number; oldest_at: number | null },
+          [string]
+        >(
+          `SELECT COUNT(*) AS unread_count,
+                  MIN(m.created_at_ms) AS oldest_at
+             FROM messages m
+             LEFT JOIN message_receipts r
+               ON r.message_id = m.id AND r.recipient_id = m.recipient_id
+            WHERE m.recipient_id = ? AND r.acked_at_ms IS NULL`,
+        )
+        .get(recipientId);
   return {
     recipientId,
     unreadCount: row?.unread_count ?? 0,

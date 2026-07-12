@@ -161,7 +161,11 @@ export function cliUnreadCount(db: Db, argv: string[]): number {
     process.stderr.write("unread-count: --for <recipient> required\n");
     return 2;
   }
-  process.stdout.write(JSON.stringify(computeUnread(db, recipientId)) + "\n");
+  // Optional --pane %N: pane-scoped count (xtmux-3xs.28). Filters to messages
+  // explicitly targeted at that pane or unpaned; excludes cohabiting-pane traffic.
+  const paneFlag = flags.get("pane");
+  const paneId = typeof paneFlag === "string" && paneFlag ? paneFlag : undefined;
+  process.stdout.write(JSON.stringify(computeUnread(db, recipientId, paneId)) + "\n");
   return 0;
 }
 

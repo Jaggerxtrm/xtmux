@@ -198,6 +198,49 @@ describe("unread reconciliation", () => {
       cleanup();
     }
   });
+
+  // xtmux-3xs.28: pane-scoped unread — same session, two cohabiting agents.
+  test("computeUnread(..., paneId) filters to target pane + unpaned messages", () => {
+    const { db, cleanup, now } = setup();
+    try {
+      // 3 messages, all recipient=$1732 (shared session):
+      // - to Claude pane (%1930)
+      // - to pi pane (%1931)
+      // - unpaned (legacy — should count for both)
+      sendMessage(
+        db,
+        { messageKey: "to-claude", senderId: "$s", senderPaneId: "%9999",
+          recipientId: "$1732", targetPaneId: "%1930", summary: "c" },
+        () => ++now.t,
+      );
+      sendMessage(
+        db,
+        { messageKey: "to-pi", senderId: "$s", senderPaneId: "%9999",
+          recipientId: "$1732", targetPaneId: "%1931", summary: "p" },
+        () => ++now.t,
+      );
+      sendMessage(
+        db,
+        { messageKey: "unpaned", senderId: "$s", senderPaneId: "%9999",
+          recipientId: "$1732", summary: "u" },
+        () => ++now.t,
+      );
+
+      const sessionWide = computeUnread(db, "$1732");
+      expect(sessionWide.unreadCount).toBe(3);
+
+      const claudeScoped = computeUnread(db, "$1732", "%1930");
+      expect(claudeScoped.unreadCount).toBe(2); // to-claude + unpaned
+
+      const piScoped = computeUnread(db, "$1732", "%1931");
+      expect(piScoped.unreadCount).toBe(2); // to-pi + unpaned
+
+      const otherPane = computeUnread(db, "$1732", "%9998");
+      expect(otherPane.unreadCount).toBe(1); // just unpaned
+    } finally {
+      cleanup();
+    }
+  });
 });
 
 describe("pane-level addressing (same-session ambiguity fix)", () => {
