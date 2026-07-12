@@ -693,11 +693,21 @@ log_event() {
 log_cli_emit() {
   local type="${1:-}"; shift || true
   [ -n "$type" ] || { printf 'usage: log emit <type> [key=value...]\n' >&2; return 2; }
+  obs_v2_mode
+  if [ "$REPLY" = 'on' ]; then
+    obs_v2_bun; local repo="$REPLY"
+    exec bun run "$repo/src/cli.ts" log-emit "$type" "$@"
+  fi
   log_event "$type" "$@"
 }
 
 log_cli_tail() {
   local n="${1:-50}" file
+  obs_v2_mode
+  if [ "$REPLY" = 'on' ]; then
+    obs_v2_bun; local repo="$REPLY"
+    exec bun run "$repo/src/cli.ts" log-tail "$n"
+  fi
   event_log_file; file="$REPLY"
   [ -f "$file" ] || return 0
   tail -n "$n" "$file"
@@ -728,6 +738,17 @@ log_cli_query() {
       *) printf 'log query: unknown arg: %s\n' "$arg" >&2; return 2 ;;
     esac
   done
+  obs_v2_mode
+  if [ "$REPLY" = 'on' ]; then
+    obs_v2_bun; local repo="$REPLY"
+    local bun_args=(run "$repo/src/cli.ts" log-query --limit "$limit")
+    [ -n "$type" ]    && bun_args+=(--type    "$type")
+    [ -n "$session" ] && bun_args+=(--session "$session")
+    [ -n "$pane" ]    && bun_args+=(--pane    "$pane")
+    [ -n "$bead" ]    && bun_args+=(--bead    "$bead")
+    [ -n "$since" ]   && bun_args+=(--since   "$(( ( $(date +%s) - since ) * 1000 ))")
+    exec bun "${bun_args[@]}"
+  fi
   event_log_file; file="$REPLY"
   [ -f "$file" ] || return 0
   now="$(date +%s)"; since_epoch=0
@@ -748,6 +769,21 @@ log_cli() {
     query) log_cli_query "$@" ;;
     *) printf 'usage: log <emit|tail|query> ...\n' >&2; return 2 ;;
   esac
+}
+
+obs_v2_bun() {
+  local repo="${XTMUX_OBS_V2_REPO:-}"
+  if [ -z "$repo" ]; then
+    # infer from picker install location; script is bin/tmux-session-picker
+    local self="${BASH_SOURCE[0]:-$0}" self_dir
+    self_dir="$(cd "$(dirname "$self")/.." 2>/dev/null && pwd)"
+    if [ -f "$self_dir/src/cli.ts" ]; then
+      repo="$self_dir"
+    else
+      repo="$HOME/dev/xtmux/.xtrm/worktrees/xtmux-xt-claude-hnjk"
+    fi
+  fi
+  REPLY="$repo"
 }
 
 message_send() {
@@ -799,6 +835,25 @@ message_send() {
   fi
   [ -n "$from_sid" ] || from_sid='unknown'
   [ -n "$id" ] || id="msg-$(date +%s)-$$"
+  # V2 authoritative delegation: skip legacy events.jsonl + unread projection
+  # writes, delegate to the Bun runtime which owns messages/receipts/deliveries
+  # and reconciliation. Best-effort tmux display-message note still fires so
+  # the UI signal is unchanged.
+  obs_v2_mode
+  if [ "$REPLY" = 'on' ]; then
+    # pane-hint extraction — reproduce Phase 3's same-session ambiguity fix
+    local to_pid='' from_pid=''
+    to_pid="$(tmux display-message -p -t "$to" '#{pane_id}' 2>/dev/null || true)"
+    [ -n "$from" ] && from_pid="$(tmux display-message -p -t "$from" '#{pane_id}' 2>/dev/null || true)"
+    obs_v2_bun; local repo="$REPLY"
+    local bun_args=(run "$repo/src/cli.ts" message-send --to "$to_sid" --from "$from_sid" --id "$id" --text "$text")
+    [ -n "$bead" ]     && bun_args+=(--bead "$bead")
+    [ -n "$to_pid" ]   && bun_args+=(--to-pane   "$to_pid")
+    [ -n "$from_pid" ] && bun_args+=(--from-pane "$from_pid")
+    bun "${bun_args[@]}" || return $?
+    tmux display-message -t "$to_sid" "msg from ${from_sid}${bead:+ [$bead]}: ${text:0:80}" 2>/dev/null || true
+    return 0
+  fi
   log_event message.sent id="$id" from="$from_sid" to="$to_sid" bead="$bead" text="$text"
   # Delivery signal — best-effort. Bumps a session-scoped counter recipients
   # can watch (@agent_unread_count) and stamps @agent_unread_since; also emits
@@ -828,6 +883,22 @@ message_ack() {
     current_tmux_session_id; by="$REPLY"
   fi
   [ -n "$by" ] || by='unknown'
+  obs_v2_mode
+  if [ "$REPLY" = 'on' ]; then
+    obs_v2_bun; local repo="$REPLY"
+    bun run "$repo/src/cli.ts" message-ack "$id" --by "$by" || return $?
+    if [ "$by" != unknown ]; then
+      local prev
+      prev="$(tmux show-options -t "$by" -qv @agent_unread_count 2>/dev/null || printf '0')"
+      case "$prev" in ''|*[!0-9]*) prev=0 ;; esac
+      if [ "$prev" -gt 0 ]; then
+        local next=$(( prev - 1 ))
+        tmux set-option -t "$by" -q @agent_unread_count "$next" 2>/dev/null || true
+        [ "$next" -eq 0 ] && tmux set-option -u -t "$by" -q @agent_unread_since 2>/dev/null || true
+      fi
+    fi
+    return 0
+  fi
   log_event message.ack id="$id" by="$by"
   # Decrement recipient's unread counter. If it hits zero, clear the stamp too.
   # Best-effort: acking outside a tmux session (tests) just no-ops.
@@ -864,6 +935,17 @@ message_list() {
       *) printf 'message-list: unknown arg: %s\n' "$arg" >&2; return 2 ;;
     esac
   done
+  obs_v2_mode
+  if [ "$REPLY" = 'on' ]; then
+    local to_sid_v2=''
+    if [ -n "$to" ] && resolve_to_session_id "$to"; then to_sid_v2="$REPLY"; else to_sid_v2="$to"; fi
+    [ -n "$to_sid_v2" ] || { printf 'usage: message-list --for <session|pane> [--unacked] [--limit N] [--since D]\n' >&2; return 2; }
+    obs_v2_bun; local repo="$REPLY"
+    local bun_args=(run "$repo/src/cli.ts" message-list --for "$to_sid_v2" --limit "$limit")
+    [ "$unacked" = 1 ] && bun_args+=(--unacked)
+    [ -n "$since" ] && bun_args+=(--since "$since")
+    exec bun "${bun_args[@]}"
+  fi
   event_log_file; file="$REPLY"
   # normalize --for to session_id when possible so callers can pass any alias
   if [ -n "$to" ]; then
@@ -2025,8 +2107,26 @@ safe_send_pointer() {
       sleep 2
       tmux send-keys -t "$pane" Enter
     fi
-    current_tmux_session; _from_session="$REPLY"
-    log_event message.sent via=safe-send-pointer from="${_from_session:-unknown}" to="$target" pane="$pane" text="$payload" state="${state:-unknown}" double_enter="$double_enter" force_freeform="$force_freeform"
+    current_tmux_session_id; _from_session="$REPLY"
+    obs_v2_mode
+    if [ "$REPLY" = 'on' ]; then
+      # V2: pane pointer is a DELIVERY attempt, not a durable message. Semantic
+      # separation per PRD §7 / docs/observability-redesign.md §4.4.
+      obs_v2_bun; local repo="$REPLY"
+      local target_sid=''
+      resolve_to_session_id "$target" && target_sid="$REPLY" || target_sid="$target"
+      local summary
+      summary="$(printf '%s' "$payload" | head -c 80)"
+      bun run "$repo/src/cli.ts" delivery-record \
+        --kind pane_pointer \
+        --source-session "${_from_session:-unknown}" \
+        --target-session "$target_sid" \
+        --target-pane "$pane" \
+        --summary "$summary" \
+        --succeeded true 2>/dev/null || true
+    else
+      log_event message.sent via=safe-send-pointer from="${_from_session:-unknown}" to="$target" pane="$pane" text="$payload" state="${state:-unknown}" double_enter="$double_enter" force_freeform="$force_freeform"
+    fi
     printf 'sent target=%s pane=%s state=%s double_enter=%s\n' "$target" "$pane" "${state:-unknown}" "$double_enter"
   fi
 }

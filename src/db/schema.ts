@@ -95,9 +95,9 @@ export function migrate(db: Db, now: () => number = Date.now): MigrationResult {
 
   const currentVersion = sortedMigrations[sortedMigrations.length - 1]?.version ?? 0;
 
-  // Envelope written only after event_journal exists (created by migration 1).
-  // On a fresh DB this is safe: migration 1 runs before we get here.
-  if (currentVersion >= 1) {
+  // Envelope written only when we actually applied a migration — reruns are
+  // silent so `log tail` isn't polluted by CLI startup envelopes.
+  if (currentVersion >= 1 && applied.length > 0) {
     const finishedAtMs = now();
     insertEnvelope(db, {
       type: "db.migration.apply",

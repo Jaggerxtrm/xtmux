@@ -51,7 +51,12 @@ export interface MessageSendArgs {
   messageKey?: string;
 }
 
-/** V1 shape: no stdout on success. Error → stderr, exit=1. */
+/**
+ * V1 shape (from picker::message_send):
+ * `message\t<id>\t<from>\t<to>\t<bead>\t<text>` on stdout after successful send.
+ * Non-existent tmux target ($/%/@ prefix): stderr + rc=1 (validated by shell caller
+ * before we get here; V2 accepts opaque strings).
+ */
 export function cliMessageSend(db: Db, argv: string[]): number {
   const { flags } = parseArgs(argv);
   const to = String(flags.get("to") ?? "");
@@ -63,16 +68,20 @@ export function cliMessageSend(db: Db, argv: string[]): number {
   }
   const messageKey =
     (flags.get("message-key") as string | undefined) ??
+    (flags.get("id") as string | undefined) ??
     `msg-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  const bead = (flags.get("bead") as string | undefined) ?? "";
   sendMessage(db, {
     messageKey,
     senderId: from,
     senderPaneId: (flags.get("from-pane") as string | undefined) ?? undefined,
     recipientId: to,
     targetPaneId: (flags.get("to-pane") as string | undefined) ?? undefined,
-    beadId: (flags.get("bead") as string | undefined) ?? undefined,
+    beadId: bead || undefined,
     summary: text,
   });
+  // Match V1 stdout: message\tid\tfrom\tto\tbead\ttext
+  process.stdout.write(`message\t${messageKey}\t${from}\t${to}\t${bead}\t${text}\n`);
   return 0;
 }
 

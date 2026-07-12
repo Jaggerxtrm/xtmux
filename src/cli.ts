@@ -5,6 +5,9 @@ import { migrate } from "./db/schema.ts";
 import { checkHealth } from "./db/health.ts";
 import { DbError } from "./db/errors.ts";
 import { cliMessageAck, cliMessageList, cliMessageSend } from "./cli-messages.ts";
+import { cliLogEmit, cliLogTail, cliLogQuery } from "./cli-log.ts";
+import { recordDelivery } from "./domains/deliveries/attempt.ts";
+import type { DeliveryKind } from "./domains/deliveries/attempt.ts";
 
 function usage(): string {
   return `usage: xtmux-obs <command>
@@ -55,14 +58,24 @@ function main(argv: string[]): number {
       }
       case "message-send":
       case "message-list":
-      case "message-ack": {
+      case "message-ack":
+      case "log-emit":
+      case "log-tail":
+      case "log-query":
+      case "delivery-record": {
         const db = openDb(cfg);
         try {
           migrate(db);
           const rest = argv.slice(3);
-          if (cmd === "message-send") return cliMessageSend(db, rest);
-          if (cmd === "message-list") return cliMessageList(db, rest);
-          return cliMessageAck(db, rest);
+          switch (cmd) {
+            case "message-send":     return cliMessageSend(db, rest);
+            case "message-list":     return cliMessageList(db, rest);
+            case "message-ack":      return cliMessageAck(db, rest);
+            case "log-emit":         return cliLogEmit(db, rest);
+            case "log-tail":         return cliLogTail(db, rest);
+            case "log-query":        return cliLogQuery(db, rest);
+            case "delivery-record":  return cliDeliveryRecord(db, rest);
+          }
         } finally {
           db.close();
         }
@@ -84,6 +97,47 @@ function main(argv: string[]): number {
     process.stderr.write(String(err instanceof Error ? err.stack ?? err.message : err) + "\n");
     return 1;
   }
+}
+
+/**
+ * Minimal delivery-recording CLI so the picker can log delivery attempts
+ * (safe-send-pointer, second-Enter injection) without embedding a Bun call
+ * per side effect. Flags mirror recordDelivery() input.
+ */
+function cliDeliveryRecord(db: import("./db/connection.ts").Db, argv: string[]): number {
+  const flags = new Map<string, string>();
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a.startsWith("--")) {
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("--")) {
+        flags.set(a.slice(2), next);
+        i++;
+      } else {
+        flags.set(a.slice(2), "true");
+      }
+    }
+  }
+  const kind = flags.get("kind") as DeliveryKind | undefined;
+  if (!kind) {
+    process.stderr.write("delivery-record: --kind required\n");
+    return 2;
+  }
+  const succeeded = flags.get("succeeded") !== "false";
+  recordDelivery(db, {
+    kind,
+    sourceSessionId: flags.get("source-session") ?? undefined,
+    targetSessionId: flags.get("target-session") ?? undefined,
+    targetPaneId: flags.get("target-pane") ?? undefined,
+    relatedMessageId: flags.get("related-message-id")
+      ? Number(flags.get("related-message-id"))
+      : undefined,
+    relatedHandoffId: flags.get("related-handoff-id"),
+    payloadSummary: flags.get("summary"),
+    succeeded,
+    failureCode: flags.get("failure-code"),
+  });
+  return 0;
 }
 
 process.exit(main(process.argv));
