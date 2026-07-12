@@ -669,6 +669,35 @@ obs_v2_mode() {
   esac
 }
 
+# Delegate a durable operation to the Bun runtime (epic xtmux-3xs).
+#
+# Two callers, two needs:
+#   obs_call  — best-effort. Used on the shadow path and for additive writes.
+#               A V2 failure must never change V1's stdout or exit status, so
+#               everything is swallowed. Returns 1 if the call did not run.
+#   obs_call_strict — stdout/exit pass through. Used when V2 is authoritative
+#               (XTMUX_OBS_V2=1), where a silent failure would mean silently
+#               losing the operation.
+obs_runtime_cli() {
+  REPLY="${self%/bin/*}/src/cli.ts"
+}
+obs_available() {
+  local cli
+  obs_runtime_cli; cli="$REPLY"
+  [ -f "$cli" ] && command -v bun >/dev/null 2>&1
+}
+obs_call() {
+  local cli
+  obs_available || return 1
+  obs_runtime_cli; cli="$REPLY"
+  bun "$cli" "$@" >/dev/null 2>&1 || true
+}
+obs_call_strict() {
+  local cli
+  obs_runtime_cli; cli="$REPLY"
+  bun "$cli" "$@"
+}
+
 log_event() {
   local type="${1:-}" file dir ts epoch first=1 kv key val
   [ -n "$type" ] || return 0
@@ -1014,18 +1043,39 @@ git_head_hash() {
   REPLY="$(git rev-parse --short HEAD 2>/dev/null || true)"
 }
 
+# One command_runs row per invocation (xtmux-3xs.7): insert on start, UPDATE the
+# same row on finish. The wrapped command still runs here in the shell, so its
+# stdout/stderr/exit pass through untouched (PRD §20).
+obs_run_start() {
+  local tool="$1" mode="$2" session="$3" pane="$4" bead="$5" cwd="$6" repo="$7" branch="$8" head="$9"; shift 9
+  local cli
+  [ "$mode" = 'off' ] && return 0
+  obs_available || return 0
+  obs_runtime_cli; cli="$REPLY"
+  bun "$cli" telemetry start --tool "$tool" --pid "$$" --session "$session" --pane "$pane" \
+    --bead "$bead" --cwd "$cwd" --repo "$repo" --branch "$branch" --head "$head" -- "$@" 2>/dev/null || true
+}
+obs_run_finish() {
+  local run_id="$1" rc="$2" branch="$3" head="$4"
+  [ -n "$run_id" ] || return 0
+  obs_call telemetry finish --id "$run_id" --exit "$rc" --branch "$branch" --head "$head"
+}
+
 telemetry_run() {
   local tool="${1:-}"; shift || true
   [ -n "$tool" ] || { printf 'usage: telemetry <git|bd|gh> -- <args...>\n' >&2; return 2; }
   [ "${1:-}" = -- ] && shift
   [ "$#" -gt 0 ] || { printf 'usage: telemetry %s -- <args...>\n' "$tool" >&2; return 2; }
-  local event args pane session bead cwd rc repo branch head sub
+  local event args pane session bead cwd rc repo branch head sub mode run_id session_id
   args="$(join_args_for_log "$@")"
   current_tmux_pane; pane="$REPLY"
   current_tmux_session; session="$REPLY"
+  current_tmux_session_id; session_id="$REPLY"
   cwd="$(pwd -P 2>/dev/null || pwd)"
   bead=''
   [ -n "$pane" ] && bead="$(tmux show-options -p -t "$pane" -qv @agent_bead 2>/dev/null || true)"
+  obs_v2_mode; mode="$REPLY"
+  run_id=''
   case "$tool" in
     git)
       case "${1:-}" in
@@ -1036,12 +1086,14 @@ telemetry_run() {
       esac
       git_repo_root; repo="$REPLY"; git_current_branch; branch="$REPLY"; git_head_hash; head="$REPLY"
       log_event telemetry.command.started tool=git event="$event" pane="$pane" session="$session" bead="$bead" cwd="$cwd" repo="$repo" branch="$branch" head="$head" argv="$args"
+      run_id="$(obs_run_start git "$mode" "$session_id" "$pane" "$bead" "$cwd" "$repo" "$branch" "$head" "$@")"
       set +e
       git "$@"
       rc=$?
       set -e
       git_head_hash; head="$REPLY"; git_current_branch; branch="$REPLY"
       log_event "$event" tool=git exit="$rc" pane="$pane" session="$session" bead="$bead" cwd="$cwd" repo="$repo" branch="$branch" head="$head" argv="$args"
+      obs_run_finish "$run_id" "$rc" "$branch" "$head"
       return "$rc"
       ;;
     bd)
@@ -1057,11 +1109,13 @@ telemetry_run() {
         *) event='bd.command' ;;
       esac
       log_event telemetry.command.started tool=bd event="$event" pane="$pane" session="$session" bead="$bead" cwd="$cwd" argv="$args"
+      run_id="$(obs_run_start bd "$mode" "$session_id" "$pane" "$bead" "$cwd" '' '' '' "$@")"
       set +e
       bd "$@"
       rc=$?
       set -e
       log_event "$event" tool=bd exit="$rc" pane="$pane" session="$session" bead="$bead" cwd="$cwd" argv="$args"
+      obs_run_finish "$run_id" "$rc" '' ''
       return "$rc"
       ;;
     gh)
@@ -1074,11 +1128,14 @@ telemetry_run() {
       fi
       git_repo_root; repo="$REPLY"; git_current_branch; branch="$REPLY"; git_head_hash; head="$REPLY"
       log_event telemetry.command.started tool=gh event="$event" pane="$pane" session="$session" bead="$bead" cwd="$cwd" repo="$repo" branch="$branch" head="$head" argv="$args"
+      run_id="$(obs_run_start gh "$mode" "$session_id" "$pane" "$bead" "$cwd" "$repo" "$branch" "$head" "$@")"
       set +e
       gh "$@"
       rc=$?
       set -e
+      git_head_hash; head="$REPLY"; git_current_branch; branch="$REPLY"
       log_event "$event" tool=gh exit="$rc" pane="$pane" session="$session" bead="$bead" cwd="$cwd" repo="$repo" branch="$branch" head="$head" argv="$args"
+      obs_run_finish "$run_id" "$rc" "$branch" "$head"
       return "$rc"
       ;;
     *) printf 'telemetry: unknown tool: %s\n' "$tool" >&2; return 2 ;;
@@ -1246,7 +1303,30 @@ cleanup rule of thumb
 EOF
 }
 
+# audit_walk emits V1's human TSV. audit() wraps it so persistence is purely
+# additive: stdout is whatever the walk printed, byte for byte (PRD §20), and a
+# copy is piped to the runtime (xtmux-3xs.8).
 audit() {
+  local mode out rc session
+  obs_v2_mode; mode="$REPLY"
+  if [ "$mode" = 'off' ] || ! obs_available; then
+    audit_walk
+    return "$?"
+  fi
+  out="$(audit_walk)"; rc=$?
+  [ -n "$out" ] && printf '%s\n' "$out"
+  current_tmux_session_id; session="$REPLY"
+  # A walk that failed halfway is a PARTIAL run: it records what it saw but must
+  # never resolve findings it simply never reached.
+  if [ "$rc" -eq 0 ]; then
+    printf '%s\n' "$out" | obs_call audit ingest --session "$session"
+  else
+    printf '%s\n' "$out" | obs_call audit ingest --session "$session" --partial
+  fi
+  return "$rc"
+}
+
+audit_walk() {
   local line type sid name state bead task repo branch dirty shared idle path pane cmd
   current_tmux_session; log_event audit.run session="${REPLY:-unknown}"
   dashboard expanded | while IFS= read -r line; do
@@ -1854,7 +1934,11 @@ monitor_file() {
 
 monitor_write_record() {
   local id="$1" pid="$2" target="$3" pane="$4" state="$5" start="$6" timeout="$7" interval="$8" updated="$9"
-  local file tmp dir
+  local file tmp dir mode
+  # Under XTMUX_OBS_V2=1 the monitors table is authoritative and the /tmp registry
+  # is not written at all (xtmux-3xs.4: "no /tmp writes from the V2 monitor path").
+  obs_v2_mode; mode="$REPLY"
+  [ "$mode" = 'on' ] && return 0
   monitor_file "$id"; file="$REPLY"; dir="${file%/*}"
   mkdir -p "$dir" 2>/dev/null || true
   tmp="$file.tmp.$$"
@@ -1866,21 +1950,30 @@ monitor_write_record() {
 
 monitor_run() {
   local id="$1" target="$2" pane="$3" timeout="$4" interval="$5" start="$6"
-  local state now elapsed
-  cleanup_monitor() { monitor_file "$id"; rm -f "$REPLY" 2>/dev/null || true; }
+  local state now elapsed mode
+  obs_v2_mode; mode="$REPLY"
+  cleanup_monitor() {
+    # V2 keeps the row (it carries the terminal history); only the TSV goes.
+    [ "$mode" = 'on' ] || { monitor_file "$id"; rm -f "$REPLY" 2>/dev/null || true; }
+  }
   trap cleanup_monitor EXIT INT TERM
   while :; do
     observe_agent_state "$pane"; state="$REPLY"
     now="$(date +%s)"
     monitor_write_record "$id" "$$" "$target" "$pane" "$state" "$start" "$timeout" "$interval" "$now"
+    # A tick updates the row in place. It does not append a historical event —
+    # that is the whole point of the phase.
+    [ "$mode" = 'off' ] || obs_call monitor heartbeat --id "$id" --state "$state"
     if ! agent_state_is_working "$state"; then
       log_event monitor.done id="$id" target="$target" pane="$pane" state="$state"
+      [ "$mode" = 'off' ] || obs_call monitor terminate --id "$id" --status done
       return 0
     fi
     if [ "$timeout" -gt 0 ]; then
       elapsed=$(( now - start ))
       if [ "$elapsed" -ge "$timeout" ]; then
         log_event monitor.timeout id="$id" target="$target" pane="$pane" state="$state" elapsed="$elapsed"
+        [ "$mode" = 'off' ] || obs_call monitor terminate --id "$id" --status timeout
         return 124
       fi
     fi
@@ -1889,7 +1982,7 @@ monitor_run() {
 }
 
 monitor_agent() {
-  local target='' timeout=0 interval=30 arg pane state start id pid
+  local target='' timeout=0 interval=30 arg pane state start id pid mode session
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
@@ -1907,16 +2000,30 @@ monitor_agent() {
   observe_agent_state "$pane"; state="$REPLY"
   start="$(date +%s)"
   id="m${start}-$(printf '%s' "$pane" | tr -cd '0-9A-Za-z')-$$"
+  obs_v2_mode; mode="$REPLY"
   monitor_write_record "$id" "starting" "$target" "$pane" "$state" "$start" "$timeout" "$interval" "$start"
+  current_tmux_session_id; session="$REPLY"
+  [ "$mode" = 'off' ] || obs_call monitor register --id "$id" --target "$target" --pane "$pane" \
+    --session "$session" --state "$state" --timeout "$timeout" --interval "$interval"
   "$self" monitor-run "$id" "$target" "$pane" "$timeout" "$interval" "$start" >/dev/null 2>&1 &
   pid="$!"
   monitor_write_record "$id" "$pid" "$target" "$pane" "$state" "$start" "$timeout" "$interval" "$start"
+  # The poller now has a PID: adopt it, so reconciliation can tell a crashed
+  # monitor from one that simply has not ticked yet.
+  [ "$mode" = 'off' ] || obs_call monitor adopt --id "$id" --pid "$pid"
   log_event monitor.started id="$id" pid="$pid" target="$target" pane="$pane" state="$state" timeout="$timeout" interval="$interval"
   printf 'monitor\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$pid" "$target" "$pane" "$state" "$start" "$timeout" "$interval" "$start"
 }
 
 monitor_list() {
-  local dir file line type id pid target pane state start timeout interval updated now
+  local dir file line type id pid target pane state start timeout interval updated now mode
+  obs_v2_mode; mode="$REPLY"
+  # V2 authoritative: the table is the registry, and reconciliation of crashed
+  # pollers happens inside the scan.
+  if [ "$mode" = 'on' ]; then
+    obs_call_strict monitor list
+    return "$?"
+  fi
   monitor_dir; dir="$REPLY"
   [ -d "$dir" ] || return 0
   now="$(date +%s)"
@@ -1936,14 +2043,22 @@ monitor_list() {
 }
 
 monitor_kill() {
-  local id="${1:-}" file type rid pid rest
+  local id="${1:-}" file type rid pid rest mode
   [ -n "$id" ] || { printf 'usage: monitor-kill <id>\n' >&2; return 2; }
+  obs_v2_mode; mode="$REPLY"
+  # V2 authoritative: the row is preserved with terminal_status=killed. V1 deleted
+  # the TSV here, which is why a killed monitor left no history at all.
+  if [ "$mode" = 'on' ]; then
+    obs_call_strict monitor kill --id "$id"
+    return "$?"
+  fi
   monitor_file "$id"; file="$REPLY"
   [ -f "$file" ] || { printf 'monitor-kill: not found: %s\n' "$id" >&2; return 1; }
   IFS=$'\t' read -r type rid pid rest < "$file" || true
   if [ -n "${pid:-}" ] && [ "$pid" != starting ]; then kill "$pid" 2>/dev/null || true; fi
   rm -f "$file" 2>/dev/null || true
   log_event monitor.killed id="$id" pid="${pid:-}"
+  [ "$mode" = 'off' ] || obs_call monitor terminate --id "$id" --status killed
   printf 'killed\t%s\n' "$id"
 }
 

@@ -10,6 +10,9 @@ import { recordDelivery } from "./domains/deliveries/attempt.ts";
 import type { DeliveryKind } from "./domains/deliveries/attempt.ts";
 import { runMigration } from "./migration/runner.ts";
 import { summarizeDivergences } from "./db/shadow.ts";
+import { monitorCommand } from "./commands/monitors.ts";
+import { telemetryCommand } from "./commands/telemetry.ts";
+import { auditCommand } from "./commands/audit.ts";
 
 function usage(): string {
   return `usage: xtmux-obs <command>
@@ -17,19 +20,43 @@ commands:
   health                     print JSON health report and exit 0 if ok else 2
   migrate                    apply pending schema migrations
   version                    print schema version
+
   message-send --to <sid> --from <sid> [--to-pane %N] [--from-pane %N] --text T [--bead ID] [--message-key K]
   message-list --for <sid> [--pane %N] [--from <sid>] [--since <ms>] [--unacked] [--limit N]
   message-ack <message_id> --by <sid>
+
+  monitor register|adopt|heartbeat|terminate|list|kill   monitor registry (3xs.4)
+  telemetry start|finish                                 correlated command runs (3xs.7)
+  audit ingest [--partial]                               persist audit findings from stdin (3xs.8)
+
   obs-migrate --dry-run|--apply|--status  legacy JSONL importer + report
   shadow-summary                          shadow-mode divergence rollup
 `;
 }
 
-function main(argv: string[]): number {
+async function main(argv: string[]): Promise<number> {
   const cmd = argv[2] ?? "";
   const cfg = loadConfig();
+  const now = Date.now();
   try {
     switch (cmd) {
+      case "monitor":
+      case "telemetry":
+      case "audit": {
+        // Domain commands assume the schema is current: the picker calls them on
+        // the hot path and cannot afford a migrate() per invocation, so `migrate`
+        // is an explicit install/upgrade step.
+        const db = openDb(cfg);
+        try {
+          const sub = argv[3] ?? "";
+          const rest = argv.slice(4);
+          if (cmd === "monitor") return monitorCommand(db, sub, rest, now);
+          if (cmd === "telemetry") return telemetryCommand(db, sub, rest, now);
+          return await auditCommand(db, sub, rest, now);
+        } finally {
+          db.close();
+        }
+      }
       case "health": {
         const db = openDb(cfg);
         try {
@@ -126,6 +153,7 @@ function main(argv: string[]): number {
           db.close();
         }
       }
+      // eslint-disable-next-line no-fallthrough
       case "":
       case "help":
       case "--help":
@@ -186,4 +214,4 @@ function cliDeliveryRecord(db: import("./db/connection.ts").Db, argv: string[]):
   return 0;
 }
 
-process.exit(main(process.argv));
+process.exit(await main(process.argv));

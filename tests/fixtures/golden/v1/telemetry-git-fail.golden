@@ -1,3 +1,3 @@
 exit=128
-{"ts":"<TS>","ts_epoch":<EPOCH>,"type":"telemetry.command.started","tool":"git","event":"git.command","pane":"<PANE>","session":"golden-gone","bead":"","cwd":"<TMP>","repo":"<TMP>","branch":"main","head":"<SHA>","argv":"rev-parse --verify no-such-ref"}
-{"ts":"<TS>","ts_epoch":<EPOCH>,"type":"git.command","tool":"git","exit":"128","pane":"<PANE>","session":"golden-gone","bead":"","cwd":"<TMP>","repo":"<TMP>","branch":"main","head":"<SHA>","argv":"rev-parse --verify no-such-ref"}
+{"ts":"<TS>","ts_epoch":<EPOCH>,"type":"telemetry.command.started","tool":"git","event":"git.command","pane":"<PANE>","session":"<SESSION>","bead":"","cwd":"<TMP>","repo":"<TMP>","branch":"main","head":"<SHA>","argv":"rev-parse --verify no-such-ref"}
+{"ts":"<TS>","ts_epoch":<EPOCH>,"type":"git.command","tool":"git","exit":"128","pane":"<PANE>","session":"<SESSION>","bead":"","cwd":"<TMP>","repo":"<TMP>","branch":"main","head":"<SHA>","argv":"rev-parse --verify no-such-ref"}
