@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Db } from "../db/connection.ts";
 import { importLegacyJsonl, manifestSources, type ImportCounts } from "./legacy-jsonl.ts";
+import { importLegacyMonitorTsv, type MonitorImportCounts } from "./legacy-monitor-tsv.ts";
 
 function defaultSources(): string[] {
   const state = process.env["XDG_STATE_HOME"] ?? join(homedir(), ".local", "state");
@@ -27,6 +28,7 @@ export interface RunReport {
   id: string;
   mode: "dry-run" | "apply";
   counts: ImportCounts;
+  monitorCounts: MonitorImportCounts;
   sources: Array<{ path: string; sizeBytes: number; mtimeMs: number; sha256: string }>;
   durationMs: number;
 }
@@ -42,6 +44,9 @@ export function runMigration(db: Db, opts: RunOptions, now: () => number = Date.
     sources,
     now,
   });
+  // Reconstruct typed monitor rows from historical .tsv files (xtmux-3xs.13).
+  // Uses default source dir (${XTMUX_PICKER_STATE:-${TMPDIR:-/tmp}/tmux-picker-state-<uid>}/monitors).
+  const monitorCounts = importLegacyMonitorTsv(db, { apply: opts.apply, now });
 
   const completedAtMs = now();
   if (opts.apply) {
@@ -73,6 +78,7 @@ export function runMigration(db: Db, opts: RunOptions, now: () => number = Date.
     id,
     mode: opts.apply ? "apply" : "dry-run",
     counts,
+    monitorCounts,
     sources: manifest,
     durationMs: completedAtMs - startedAtMs,
   };
