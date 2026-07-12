@@ -6,16 +6,16 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/using-xtrm-reminder.mjs\""
+            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/using-xtrm-reminder.mjs\""
           },
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/beads-compact-restore.mjs\"",
+            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/beads-compact-restore.mjs\"",
             "timeout": 5000
           },
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/quality-check-env.mjs\"",
+            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/quality-check-env.mjs\"",
             "timeout": 5000
           },
           {
@@ -24,7 +24,7 @@
           },
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/xtrm-session-logger.mjs\"",
+            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/xtrm-session-logger.mjs\"",
             "timeout": 3000
           }
         ]
@@ -36,12 +36,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/worktree-boundary.mjs\"",
+            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/worktree-boundary.mjs\"",
             "timeout": 2000
           },
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/beads-edit-gate.mjs\"",
+            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/beads-edit-gate.mjs\"",
             "timeout": 5000
           }
         ]
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/specialists-agent-guard.mjs\"",
+            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/specialists-agent-guard.mjs\"",
             "timeout": 2000
           }
         ]
@@ -61,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/beads-commit-gate.mjs\"",
+            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/beads-commit-gate.mjs\"",
             "timeout": 5000
           }
         ]
@@ -82,8 +82,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/beads-claim-sync.mjs\"",
+            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/beads-claim-sync.mjs\"",
             "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/auto-monitor-on-send.mjs\"",
+            "timeout": 3000
           }
         ]
       },
@@ -92,12 +97,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/quality-check.cjs\"",
+            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/quality-check.cjs\"",
             "timeout": 30000
           },
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/quality-check.py\"",
+            "command": "python3 \"/home/dawid/dev/xtmux/.xtrm/hooks/quality-check.py\"",
             "timeout": 30000
           }
         ]
@@ -107,7 +112,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/gitnexus/gitnexus-hook.cjs\"",
+            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/gitnexus/gitnexus-hook.cjs\"",
             "timeout": 10000
           }
         ]
@@ -126,7 +131,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/xtrm-tool-logger.mjs\"",
+            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/xtrm-tool-logger.mjs\"",
             "timeout": 3000
           }
         ]
@@ -137,12 +142,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/beads-stop-gate.mjs\"",
+            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/beads-stop-gate.mjs\"",
             "timeout": 5000
           },
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/beads-memory-gate.mjs\"",
+            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/beads-memory-gate.mjs\"",
             "timeout": 8000
           }
         ]
@@ -154,7 +159,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/beads-compact-save.mjs\"",
+            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/beads-compact-save.mjs\"",
             "timeout": 5000
           }
         ]
