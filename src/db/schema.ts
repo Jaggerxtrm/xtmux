@@ -10,6 +10,7 @@ import { migration as m0002 } from "./migrations/0002_messages.ts";
 import { migration as m0003 } from "./migrations/0003_domains_4_7_8.ts";
 import { migration as m0004 } from "./migrations/0004_agents.ts";
 import { migration as m0007 } from "./migrations/0007_handoffs.ts";
+import { migration as m0008 } from "./migrations/0008_migration_and_shadow.ts";
 
 export interface Migration {
   readonly version: number;
@@ -17,7 +18,7 @@ export interface Migration {
   readonly up: string;
 }
 
-export const MIGRATIONS: readonly Migration[] = [m0001, m0002, m0003, m0004, m0007];
+export const MIGRATIONS: readonly Migration[] = [m0001, m0002, m0003, m0004, m0007, m0008];
 
 const SCHEMA_MIGRATIONS_DDL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (

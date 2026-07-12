@@ -8,6 +8,8 @@ import { cliMessageAck, cliMessageList, cliMessageSend } from "./cli-messages.ts
 import { cliLogEmit, cliLogTail, cliLogQuery } from "./cli-log.ts";
 import { recordDelivery } from "./domains/deliveries/attempt.ts";
 import type { DeliveryKind } from "./domains/deliveries/attempt.ts";
+import { runMigration } from "./migration/runner.ts";
+import { summarizeDivergences } from "./db/shadow.ts";
 
 function usage(): string {
   return `usage: xtmux-obs <command>
@@ -18,6 +20,8 @@ commands:
   message-send --to <sid> --from <sid> [--to-pane %N] [--from-pane %N] --text T [--bead ID] [--message-key K]
   message-list --for <sid> [--pane %N] [--from <sid>] [--since <ms>] [--unacked] [--limit N]
   message-ack <message_id> --by <sid>
+  obs-migrate --dry-run|--apply|--status  legacy JSONL importer + report
+  shadow-summary                          shadow-mode divergence rollup
 `;
 }
 
@@ -51,6 +55,48 @@ function main(argv: string[]): number {
         try {
           const report = checkHealth(db, cfg.dbPath);
           process.stdout.write(String(report.schemaVersion) + "\n");
+          return 0;
+        } finally {
+          db.close();
+        }
+      }
+      case "obs-migrate": {
+        const db = openDb(cfg);
+        try {
+          migrate(db);
+          const rest = argv.slice(3);
+          const apply = rest.includes("--apply");
+          const status = rest.includes("--status");
+          if (status) {
+            const rows = db.raw
+              .query<
+                {
+                  id: string;
+                  mode: string;
+                  completed_at_ms: number | null;
+                  counts_json: string | null;
+                },
+                []
+              >(
+                "SELECT id, mode, completed_at_ms, counts_json FROM migration_runs ORDER BY started_at_ms DESC LIMIT 10",
+              )
+              .all();
+            process.stdout.write(JSON.stringify(rows, null, 2) + "\n");
+            return 0;
+          }
+          const report = runMigration(db, { apply });
+          process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+          return 0;
+        } finally {
+          db.close();
+        }
+      }
+      case "shadow-summary": {
+        const db = openDb(cfg);
+        try {
+          migrate(db);
+          const rows = summarizeDivergences(db);
+          process.stdout.write(JSON.stringify(rows, null, 2) + "\n");
           return 0;
         } finally {
           db.close();
