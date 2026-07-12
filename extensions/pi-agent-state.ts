@@ -26,6 +26,7 @@ type ExtensionAPI = {
 const SCRIPT = process.env.XTMUX_AGENT_STATE_SCRIPT ?? `${process.env.HOME}/.tmux/scripts/agent-state.sh`;
 const PICKER = process.env.XTMUX_PICKER ?? `${process.env.HOME}/.local/bin/tmux-session-picker`;
 const MAX_LAST_MESSAGE = Number(process.env.XTMUX_PI_LAST_MESSAGE_MAX ?? "600");
+const STATE_DEBOUNCE_MS = Number(process.env.XTMUX_PI_STATE_DEBOUNCE_MS ?? "5000");
 
 function stdoutOf(result: unknown): string {
   if (typeof result === "string") return result;
@@ -79,8 +80,15 @@ function lastAssistantTextFromMessages(messages: unknown[] | undefined): string 
 
 export default function xtmuxAgentState(pi: ExtensionAPI) {
   let lastTurnMessage = "";
+  let lastState: AgentState | undefined;
+  let lastStateAt = 0;
 
   async function setState(state: AgentState) {
+    const now = Date.now();
+    if (state === lastState && now - lastStateAt < STATE_DEBOUNCE_MS) return;
+    lastState = state;
+    lastStateAt = now;
+
     try {
       // The script is intentionally best-effort: outside tmux it exits 0, and
       // dead panes are ignored. Keep a short timeout so hook latency is bounded.
@@ -150,10 +158,6 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
 
   pi.on("agent_start", async () => {
     lastTurnMessage = "";
-    await setState("running");
-  });
-
-  pi.on("message_update", async () => {
     await setState("running");
   });
 

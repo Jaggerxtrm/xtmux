@@ -14,3 +14,7 @@
 
 # Local pi harness artifacts
 .pi/
+
+# xt / bd worktrees (transient sandbox checkouts)
+.xtrm/worktrees/
+.worktrees/
