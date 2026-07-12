@@ -107,6 +107,9 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
   }
 
   async function publishTurnDone(event: AgentEndEvent) {
+    // Without the client socket, tmux may return a bystander pane from its
+    // default server. Agent turn/message writes need a real invocation context.
+    if (!process.env.TMUX) return;
     const pane = await tmuxValue(["display-message", "-p", "#{pane_id}"]);
     if (!pane) return;
     // Use #{session_id} (stable, per-instance, never recycled) rather than #S

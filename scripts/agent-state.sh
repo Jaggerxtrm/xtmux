@@ -30,7 +30,9 @@ case "$state" in
 esac
 
 # hooks run fine even outside tmux (tests, editor launches, detached agents).
-# invalid states still fail above.
+# invalid states still fail above. TMUX_PANE alone is not enough: without the
+# client socket, tmux may resolve the pane against a bystander server.
+[ -n "${TMUX:-}" ] || exit 0
 target="${TMUX_PANE:-}"
 [ -n "$target" ] || exit 0
 

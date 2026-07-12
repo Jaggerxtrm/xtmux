@@ -431,6 +431,17 @@ CREATE INDEX cr_incomplete ON command_runs(started_at_ms) WHERE finished_at_ms I
 - `owner_pid INTEGER` added to make `terminal_status=interrupted` detection authoritative rather than a pure age-threshold guess. Same pattern as `monitors.owner_pid`. Reconciliation query: `finished_at_ms IS NULL AND owner_pid NOT IN (running pids)`.
 - CHECK constraints promote the tool taxonomy and terminal-status enum to schema invariants rather than convention.
 
+**Invocation identity boundary (V2).** The picker derives current session, pane,
+and `@agent_bead` only when the invoking context has `$TMUX`. With `$TMUX`
+unset, it omits unknown optional identity arguments so `command_runs.session_id`,
+`pane_id`, and `bead_id` remain `NULL`; a stale `$TMUX` socket also produces
+`NULL` rather than falling back to tmux's default server and a bystander pane.
+V1 keeps its historical best-effort lookup for byte-identity compatibility. The
+same guarded helpers cover inferred identity on V2 message send/ack, monitor
+registration, audit-run ingestion, and safe-send delivery source. The agent-state
+hook and Pi turn-done publisher also no-op without `$TMUX`; explicit target
+resolution and pane/session enumeration are not current-context inference.
+
 ### 4.9 `audit_runs` + `audit_findings` (PRD §14)
 
 ```sql

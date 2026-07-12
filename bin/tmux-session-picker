@@ -591,15 +591,29 @@ json_escape() {
   printf '%s' "$s"
 }
 
+# V1 deliberately retains its historical best-effort default-server lookup.
+# V2 durable writes must not infer identity outside a tmux client: a bare shell
+# can otherwise be attributed to whichever pane is current.
+tmux_identity_available() {
+  [ -n "${TMUX:-}" ] && return 0
+  case "${XTMUX_OBS_V2:-}" in
+    shadow|1) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 current_tmux_session() {
+  tmux_identity_available || { REPLY=''; return 0; }
   REPLY="$(tmux display-message -p '#S' 2>/dev/null || true)"
 }
 
 current_tmux_session_id() {
+  tmux_identity_available || { REPLY=''; return 0; }
   REPLY="$(tmux display-message -p '#{session_id}' 2>/dev/null || true)"
 }
 
 current_tmux_pane() {
+  tmux_identity_available || { REPLY=''; return 0; }
   REPLY="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
 }
 
@@ -1052,8 +1066,16 @@ obs_run_start() {
   [ "$mode" = 'off' ] && return 0
   obs_available || return 0
   obs_runtime_cli; cli="$REPLY"
-  bun "$cli" telemetry start --tool "$tool" --pid "$$" --session "$session" --pane "$pane" \
-    --bead "$bead" --cwd "$cwd" --repo "$repo" --branch "$branch" --head "$head" -- "$@" 2>/dev/null || true
+  local args=("$cli" telemetry start --tool "$tool" --pid "$$")
+  [ -n "$session" ] && args+=(--session "$session")
+  [ -n "$pane" ] && args+=(--pane "$pane")
+  [ -n "$bead" ] && args+=(--bead "$bead")
+  [ -n "$cwd" ] && args+=(--cwd "$cwd")
+  [ -n "$repo" ] && args+=(--repo "$repo")
+  [ -n "$branch" ] && args+=(--branch "$branch")
+  [ -n "$head" ] && args+=(--head "$head")
+  args+=(-- "$@")
+  bun "${args[@]}" 2>/dev/null || true
 }
 obs_run_finish() {
   local run_id="$1" rc="$2" branch="$3" head="$4"
@@ -1068,13 +1090,18 @@ telemetry_run() {
   [ "$#" -gt 0 ] || { printf 'usage: telemetry %s -- <args...>\n' "$tool" >&2; return 2; }
   local event args pane session bead cwd rc repo branch head sub mode run_id session_id
   args="$(join_args_for_log "$@")"
-  current_tmux_pane; pane="$REPLY"
-  current_tmux_session; session="$REPLY"
-  current_tmux_session_id; session_id="$REPLY"
-  cwd="$(pwd -P 2>/dev/null || pwd)"
-  bead=''
-  [ -n "$pane" ] && bead="$(tmux show-options -p -t "$pane" -qv @agent_bead 2>/dev/null || true)"
   obs_v2_mode; mode="$REPLY"
+  pane=''; session=''; session_id=''; bead=''
+  # In V2, a missing TMUX context means identity is unknown. Do not let tmux
+  # resolve its default server and credit a bystander pane. V1 keeps its
+  # historical lookup for byte-identity compatibility.
+  if tmux_identity_available; then
+    current_tmux_pane; pane="$REPLY"
+    current_tmux_session; session="$REPLY"
+    current_tmux_session_id; session_id="$REPLY"
+    [ -n "$pane" ] && bead="$(tmux show-options -p -t "$pane" -qv @agent_bead 2>/dev/null || true)"
+  fi
+  cwd="$(pwd -P 2>/dev/null || pwd)"
   run_id=''
   case "$tool" in
     git)
@@ -1317,12 +1344,12 @@ audit() {
   [ -n "$out" ] && printf '%s\n' "$out"
   current_tmux_session_id; session="$REPLY"
   # A walk that failed halfway is a PARTIAL run: it records what it saw but must
-  # never resolve findings it simply never reached.
-  if [ "$rc" -eq 0 ]; then
-    printf '%s\n' "$out" | obs_call audit ingest --session "$session"
-  else
-    printf '%s\n' "$out" | obs_call audit ingest --session "$session" --partial
-  fi
+  # never resolve findings it simply never reached. Omit unknown optional
+  # identity so SQLite stores NULL rather than an empty sentinel.
+  local ingest_args=(audit ingest)
+  [ -n "$session" ] && ingest_args+=(--session "$session")
+  [ "$rc" -eq 0 ] || ingest_args+=(--partial)
+  printf '%s\n' "$out" | obs_call "${ingest_args[@]}"
   return "$rc"
 }
 
@@ -2003,8 +2030,12 @@ monitor_agent() {
   obs_v2_mode; mode="$REPLY"
   monitor_write_record "$id" "starting" "$target" "$pane" "$state" "$start" "$timeout" "$interval" "$start"
   current_tmux_session_id; session="$REPLY"
-  [ "$mode" = 'off' ] || obs_call monitor register --id "$id" --target "$target" --pane "$pane" \
-    --session "$session" --state "$state" --timeout "$timeout" --interval "$interval"
+  if [ "$mode" != 'off' ]; then
+    local register_args=(monitor register --id "$id" --target "$target" --pane "$pane" \
+      --state "$state" --timeout "$timeout" --interval "$interval")
+    [ -n "$session" ] && register_args+=(--session "$session")
+    obs_call "${register_args[@]}"
+  fi
   "$self" monitor-run "$id" "$target" "$pane" "$timeout" "$interval" "$start" >/dev/null 2>&1 &
   pid="$!"
   monitor_write_record "$id" "$pid" "$target" "$pane" "$state" "$start" "$timeout" "$interval" "$start"
