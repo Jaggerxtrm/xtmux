@@ -431,3 +431,37 @@ which is the argument for keeping that comparison in the suite.
   of a *current* session even when the wrapper is invoked outside tmux, so a run can
   be tagged with a bystander session. V2 correlation should treat a missing `$TMUX`
   as NULL rather than inheriting one; flagged to Phase 3, which owns identity.
+
+---
+
+## 6. Alignment with the Channels canonical vocabulary
+
+The epic makes `~/dev/xtrm/docs/channels/channels.md` normative for overlapping
+concepts. Three overlap; none conflict.
+
+**Identity (Channels §5.1).** Channels separates a **stable member identity** (L3,
+`participant_id` — "used for subscriptions, addressing, authority checks") from the
+**current activation** (L4, `job_id` — "changes when the participant respawns or
+resumes in a new process"). That is precisely the split these domains need:
+
+| Channels layer | This epic |
+|---|---|
+| L3 stable identity | `audit_findings.session_name`, `monitors.target` |
+| L4 activation | `audit_findings.session_id` (`$N`), `monitors.owner_pid` |
+
+This is the argument for the `session_name` column (§5.1) stated in the canonical
+vocabulary: fingerprinting on `session_id` keys a durable fact to an *activation*,
+so it re-mints on every respawn. Channels already says identity checks go against the
+stable layer, and the activation is resolved separately.
+
+**Terminal status (Channels §5.2).** "Terminal status is thus separate from the
+unread/running drain state." Same rule here: `monitors.terminal_status` is the
+lifecycle and is absorbing; `monitors.state` is the observed pane state and churns
+every tick. Conflating them is the V1 mistake.
+
+**Forensic envelope.** Channels' envelope is the same one Phase 2 exposes as
+`insertEnvelope()`; these domains write through it rather than rolling their own.
+
+Nothing from the Channels *subsystem* (judges, topologies, quorum, stop conditions,
+evidence dereference) is imported — PRD §25 explicitly excludes it. Only the
+vocabulary is borrowed.
