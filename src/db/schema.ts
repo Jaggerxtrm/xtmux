@@ -6,6 +6,8 @@ import { migration as m0001 } from "./migrations/0001_bootstrap.ts";
 import { migration as m0002 } from "./migrations/0002_messages.ts";
 // migration 3 reserved for Phase 4 monitors (xtmux:1.2 / xt/ojsx)
 import { migration as m0004 } from "./migrations/0004_agents.ts";
+// migrations 5,6 reserved for Phase 7 command_runs + Phase 8 audit (xt/ojsx)
+import { migration as m0007 } from "./migrations/0007_handoffs.ts";
 
 export interface Migration {
   readonly version: number;
@@ -13,7 +15,7 @@ export interface Migration {
   readonly up: string;
 }
 
-export const MIGRATIONS: readonly Migration[] = [m0001, m0002, m0004];
+export const MIGRATIONS: readonly Migration[] = [m0001, m0002, m0004, m0007];
 
 const SCHEMA_MIGRATIONS_DDL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
