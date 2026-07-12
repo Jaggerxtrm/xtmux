@@ -87,7 +87,7 @@
           },
           {
             "type": "command",
-            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/auto-monitor-on-send.mjs\"",
+            "command": "bash \"/home/dawid/dev/xtmux/.xtrm/hooks/auto-monitor-on-send.sh\"",
             "timeout": 3000
           }
         ]
