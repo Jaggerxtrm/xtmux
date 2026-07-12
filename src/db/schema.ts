@@ -4,9 +4,11 @@ import { DbError } from "./errors.ts";
 import { insertEnvelope } from "./journal.ts";
 import { migration as m0001 } from "./migrations/0001_bootstrap.ts";
 import { migration as m0002 } from "./migrations/0002_messages.ts";
-// migration 3 reserved for Phase 4 monitors (xtmux:1.2 / xt/ojsx)
+// migration 3 combines Phase 4 monitors + Phase 7 command_runs + Phase 8 audit
+// (contributed on xt/ojsx by xtmux:1.2, originally at version 2 there; bumped
+// to 3 here because messages already occupies version 2 on xt/hnjk)
+import { migration as m0003 } from "./migrations/0003_domains_4_7_8.ts";
 import { migration as m0004 } from "./migrations/0004_agents.ts";
-// migrations 5,6 reserved for Phase 7 command_runs + Phase 8 audit (xt/ojsx)
 import { migration as m0007 } from "./migrations/0007_handoffs.ts";
 
 export interface Migration {
@@ -15,7 +17,7 @@ export interface Migration {
   readonly up: string;
 }
 
-export const MIGRATIONS: readonly Migration[] = [m0001, m0002, m0004, m0007];
+export const MIGRATIONS: readonly Migration[] = [m0001, m0002, m0003, m0004, m0007];
 
 const SCHEMA_MIGRATIONS_DDL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
