@@ -19,12 +19,30 @@
 //   XTMUX_AUTO_MONITOR_INTERVAL=60s
 //   XTMUX_AUTO_MONITOR_DISABLE=1   (bypass entirely)
 
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, utimesSync, closeSync, openSync } from "node:fs";
 import { spawnSync, spawn } from "node:child_process";
 
 const TIMEOUT = process.env.XTMUX_AUTO_MONITOR_TIMEOUT || "8h";
 const INTERVAL = process.env.XTMUX_AUTO_MONITOR_INTERVAL || "60s";
 const PICKER = process.env.XTMUX_PICKER || "/home/dawid/dev/xtmux/bin/tmux-session-picker";
+const STATE_DIR = `${process.env.XDG_RUNTIME_DIR || "/tmp"}/xtmux-auto-monitor`;
+
+function pendingPath(target) {
+  return `${STATE_DIR}/${target.replace(/[^A-Za-z0-9._:%$-]/g, "_")}_pending`;
+}
+
+function touchPending(target) {
+  try {
+    mkdirSync(STATE_DIR, { recursive: true });
+    const p = pendingPath(target);
+    const fd = openSync(p, "a");
+    closeSync(fd);
+    const now = new Date();
+    utimesSync(p, now, now);
+  } catch {
+    // Best-effort — don't crash the hook on state-dir failure.
+  }
+}
 
 function readInput() {
   try {
@@ -68,7 +86,7 @@ function alreadyMonitored(target) {
 }
 
 function fireMonitor(target) {
-  const child = spawn(PICKER, ["monitor-agent", target, "--timeout", TIMEOUT, "--interval", INTERVAL], {
+  const child = spawn(PICKER, ["monitor-agent", target, "--wait-for-transition", "--timeout", TIMEOUT, "--interval", INTERVAL], {
     detached: true,
     stdio: "ignore",
   });
@@ -91,6 +109,13 @@ function main() {
 
   // Never fire on commands that themselves manage monitors — avoids double-arms.
   if (/monitor-(agent|list|kill)\b/.test(cmd)) return;
+  // Never fire on wait-agent — that IS the drain, not a new send.
+  if (/\bwait-agent\b/.test(cmd)) return;
+
+  // Mark this target as needing a Monitor arm before the next Stop.
+  // Kept even if a monitor-agent daemon is already active — daemon feeds pi/
+  // shadow-mode but does NOT wake Claude Code; only Monitor(wait-agent) does.
+  touchPending(target);
 
   if (alreadyMonitored(target)) return;
 

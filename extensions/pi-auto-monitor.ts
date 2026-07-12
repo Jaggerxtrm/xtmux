@@ -3,7 +3,7 @@
  *
  * After the bash tool executes a `message-send` or `safe-send-pointer`
  * command against a tmux target, automatically register a monitor on that
- * target so state changes surface as pi task-notifications.
+ * target so its next work cycle is captured by the durable monitor registry.
  *
  * Idempotent: if a monitor is already active for the target, no-op.
  * Silent by default; the tool_result gets an appended note so the agent
@@ -62,7 +62,7 @@ function alreadyMonitored(target: string): boolean {
 function fireMonitor(target: string): void {
   const child = spawn(
     PICKER,
-    ["monitor-agent", target, "--timeout", TIMEOUT, "--interval", INTERVAL],
+    ["monitor-agent", target, "--wait-for-transition", "--timeout", TIMEOUT, "--interval", INTERVAL],
     { detached: true, stdio: "ignore" },
   );
   child.unref();
@@ -85,7 +85,7 @@ export default function xtmuxAutoMonitor(pi: ExtensionAPI): void {
 
     fireMonitor(target);
 
-    const note = `\n\n[auto-monitor] armed on ${target} (${TIMEOUT}, ${INTERVAL}) — state changes will page pi.`;
+    const note = `\n\n[auto-monitor] armed on ${target} (${TIMEOUT}, ${INTERVAL}) — waiting for its next work cycle.`;
     return { content: [...event.content, { type: "text", text: note }] };
   });
 }

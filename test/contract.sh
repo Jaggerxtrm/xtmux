@@ -189,6 +189,86 @@ agent_state_is_working idle && nok "wait-agent: idle is not working" || ok "wait
   out="$(wait_agent %mock --timeout 5s --interval 0s 2>/dev/null)"
   case "$out" in *"pane=%mock"*"state=idle"*) exit 0 ;; *) printf '%s\n' "$out" >&2; exit 1 ;; esac
 ) && ok "wait-agent: mocked running -> idle" || nok "wait-agent: mocked running -> idle"
+(
+  calls_file="$WORK/wait-agent-default-calls"
+  printf '0' > "$calls_file"
+  tmux() {
+    case "$1" in
+      display-message)
+        case "${*: -1}" in '#{pane_id}') printf '%%mock\n' ;; *) printf 'bash\n' ;; esac
+        ;;
+      show-options) calls="$(cat "$calls_file")"; calls=$((calls + 1)); printf '%s' "$calls" > "$calls_file"; printf 'done\n' ;;
+      *) return 1 ;;
+    esac
+  }
+  out="$(wait_agent %mock --timeout 5s --interval 0s 2>/dev/null)"
+  [ "$(cat "$calls_file")" -eq 1 ] && case "$out" in *"state=done"*) exit 0 ;; esac
+  exit 1
+) && ok "wait-agent: default terminal is immediate" || nok "wait-agent: default terminal is immediate"
+(
+  calls_file="$WORK/wait-agent-transition-calls"
+  printf '0' > "$calls_file"
+  tmux() {
+    case "$1" in
+      display-message)
+        case "${*: -1}" in
+          '#{pane_id}') printf '%%mock\n' ;;
+          '#{pane_current_command}') printf 'bash\n' ;;
+          *) printf '%%mock\n' ;;
+        esac
+        ;;
+      show-options)
+        calls="$(cat "$calls_file")"; calls=$((calls + 1)); printf '%s' "$calls" > "$calls_file"
+        case "$calls" in 1) printf 'done\n' ;; 2) printf 'running\n' ;; *) printf 'done\n' ;; esac
+        ;;
+      capture-pane) printf '' ;;
+      *) return 1 ;;
+    esac
+  }
+  sleep() { :; }
+  out="$(wait_agent %mock --wait-for-transition --timeout 5s --interval 0s 2>/dev/null)"
+  [ "$(cat "$calls_file")" -eq 3 ] && case "$out" in *"state=done"*) exit 0 ;; esac
+  printf '%s\n' "$out" >&2; exit 1
+) && ok "wait-agent: terminal -> working -> terminal" || nok "wait-agent: terminal -> working -> terminal"
+(
+  calls_file="$WORK/monitor-transition-calls"
+  printf '0' > "$calls_file"
+  tmux() {
+    case "$1" in
+      show-options)
+        calls="$(cat "$calls_file")"; calls=$((calls + 1)); printf '%s' "$calls" > "$calls_file"
+        case "$calls" in 1) printf 'done\n' ;; 2) printf 'running\n' ;; *) printf 'done\n' ;; esac
+        ;;
+      *) return 1 ;;
+    esac
+  }
+  sleep() { :; }
+  obs_v2_mode() { REPLY=off; }
+  log_event() { :; }
+  monitor_write_record() { :; }
+  monitor_run m1 target %mock 0 0 0 1 done >/dev/null
+  [ "$(cat "$calls_file")" -eq 3 ]
+) && ok "monitor-agent: terminal -> working -> terminal" || nok "monitor-agent: terminal -> working -> terminal"
+(
+  calls_file="$WORK/monitor-v2-transition-calls"; events_file="$WORK/monitor-v2-transition-events"
+  printf '0' > "$calls_file"; : > "$events_file"
+  tmux() {
+    case "$1" in
+      show-options)
+        calls="$(cat "$calls_file")"; calls=$((calls + 1)); printf '%s' "$calls" > "$calls_file"
+        case "$calls" in 1) printf 'done\n' ;; 2) printf 'running\n' ;; *) printf 'done\n' ;; esac
+        ;;
+      *) return 1 ;;
+    esac
+  }
+  sleep() { :; }
+  obs_v2_mode() { REPLY=on; }
+  obs_call() { printf '%s\n' "$*" >> "$events_file"; }
+  log_event() { :; }
+  monitor_write_record() { :; }
+  monitor_run m1 target %mock 0 0 0 1 done >/dev/null
+  [ "$(cat "$calls_file")" -eq 3 ] && grep -F 'monitor terminate --id m1 --status done' "$events_file" >/dev/null
+) && ok "monitor-agent: V2 waits for transition" || nok "monitor-agent: V2 waits for transition"
 safe_pointer_payload "leggi /tmp/xtmux-task.txt e seguilo" && ok "safe-send-pointer: accepts /tmp pointer" || nok "safe-send-pointer: accepts /tmp pointer"
 safe_pointer_payload "/compact" && ok "safe-send-pointer: accepts slash command" || nok "safe-send-pointer: accepts slash command"
 safe_pointer_payload $'leggi /tmp/x\nseguilo' >/dev/null 2>&1 && nok "safe-send-pointer: rejects multiline" || ok "safe-send-pointer: rejects multiline"
@@ -334,6 +414,36 @@ XTMUX_EVENT_LOG_FILE="$rot" XTMUX_EVENT_LOG_MAX_BYTES=50 message_send --from a -
 XTMUX_EVENT_LOG_FILE="$rot" XTMUX_EVENT_LOG_MAX_BYTES=50 message_send --from a --to b --text 'triggers rotate' >/dev/null
 [ -f "$rot.1" ] && ok "message channel: log rotation on size threshold" || nok "message channel: log rotation on size threshold"
 grep -F '"turn_end"' extensions/pi-agent-state.ts >/dev/null && grep -F 'agent.turn.done' extensions/pi-agent-state.ts >/dev/null && grep -F 'last_message=' extensions/pi-agent-state.ts >/dev/null && ok "pi extension: publishes turn done" || nok "pi extension: publishes turn done"
+grep -F '"--wait-for-transition"' extensions/pi-auto-monitor.ts >/dev/null && grep -F '"--wait-for-transition"' .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null && ok "auto-monitor: waits for next transition" || nok "auto-monitor: waits for next transition"
+# xtmux-3xs.23: three-hook Stop-block coordination — send touches pending, wait-agent consumes it, drain-stop blocks/allows.
+(
+  set -e
+  export XDG_RUNTIME_DIR="$WORK"
+  amdir="$WORK/xtmux-auto-monitor"; rm -rf "$amdir"
+  # 1. Send touches pending (bypass daemon spawn via PICKER=/bin/true).
+  echo '{"tool_name":"Bash","tool_input":{"command":"tmux-session-picker message-send --to xtmux:99 --text x"},"tool_response":{"exitCode":0}}' \
+    | XTMUX_PICKER=/bin/true node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
+  [ -f "$amdir/xtmux:99_pending" ] || exit 1
+  # 2. Drain-stop blocks with decision=block.
+  out="$(echo '{"stop_hook_active":false}' | node .xtrm/hooks/auto-monitor-drain-stop.mjs)"
+  echo "$out" | grep -q '"decision":"block"' || exit 2
+  echo "$out" | grep -q 'wait-agent xtmux:99' || exit 3
+  # 3. Wait-agent invocation clears pending.
+  echo '{"tool_input":{"command":"tmux-session-picker wait-agent xtmux:99 --wait-for-transition"}}' \
+    | node .xtrm/hooks/auto-monitor-consumed.mjs
+  [ ! -f "$amdir/xtmux:99_pending" ] || exit 4
+  # 4. Drain-stop now allows (silent).
+  out="$(echo '{"stop_hook_active":false}' | node .xtrm/hooks/auto-monitor-drain-stop.mjs)"
+  [ -z "$out" ] || exit 5
+  # 5. Loop guard: stop_hook_active=true never blocks even with pending.
+  touch "$amdir/xtmux:99_pending"
+  out="$(echo '{"stop_hook_active":true}' | node .xtrm/hooks/auto-monitor-drain-stop.mjs)"
+  [ -z "$out" ] || exit 6
+  # 6. TTL prunes stale.
+  touch -d '2 hours ago' "$amdir/stale_pending"
+  echo '{"stop_hook_active":false}' | node .xtrm/hooks/auto-monitor-drain-stop.mjs >/dev/null
+  [ ! -f "$amdir/stale_pending" ] || exit 7
+) && ok "auto-monitor: three-hook Stop-block coordination (.23)" || nok "auto-monitor: three-hook Stop-block coordination (.23)"
 tele_repo="$WORK/telemetry-repo"; mkdir -p "$tele_repo"; (cd "$tele_repo" && git init -q && git config user.email t@example.invalid && git config user.name Test && printf 'x\n' > a.txt && git add a.txt && git commit -q -m init)
 tele_log="$WORK/telemetry-events.jsonl"
 (cd "$tele_repo" && XTMUX_EVENT_LOG_FILE="$tele_log" telemetry_run git -- status --short >/dev/null)

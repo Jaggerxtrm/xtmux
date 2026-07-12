@@ -360,6 +360,8 @@ Terminal-status closed set: `done`, `timeout`, `killed`, `target_gone`, `process
 
 Heartbeat is an in-place update of `updated_at_ms` + `heartbeat_at_ms`. Never inserts a historical row per poll tick.
 
+`wait-agent` and `monitor-agent` accept `--wait-for-transition` for reply monitoring: an initially terminal target must first become working, then return terminal before completion. Without the flag, both retain their immediate-terminal behavior. The send hooks use the flag so an idle recipient does not consume its monitor before handling the next message.
+
 ### 4.7 `handoffs` (PRD §12)
 
 ```sql

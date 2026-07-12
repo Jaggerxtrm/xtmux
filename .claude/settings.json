@@ -93,6 +93,16 @@
         ]
       },
       {
+        "matcher": "Monitor|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"/home/dawid/dev/xtmux/.xtrm/hooks/auto-monitor-consumed.sh\"",
+            "timeout": 3000
+          }
+        ]
+      },
+      {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit|mcp__serena__rename_symbol|mcp__serena__replace_symbol_body|mcp__serena__insert_after_symbol|mcp__serena__insert_before_symbol",
         "hooks": [
           {
@@ -149,6 +159,11 @@
             "type": "command",
             "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/beads-memory-gate.mjs\"",
             "timeout": 8000
+          },
+          {
+            "type": "command",
+            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/auto-monitor-drain-stop.mjs\"",
+            "timeout": 3000
           }
         ]
       }

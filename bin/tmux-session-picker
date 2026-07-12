@@ -1299,8 +1299,8 @@ communication contract
   3. send-keys third: single-line pointer only
 
 never send while working
-  wait-agent <pane> --timeout 30m --interval 30s
-  monitor-agent <pane> --timeout 30m --interval 30s
+  wait-agent <pane> [--wait-for-transition] --timeout 30m --interval 30s
+  monitor-agent <pane> [--wait-for-transition] --timeout 30m --interval 30s
   monitor-list / monitor-kill <id>
 
 safe handoff
@@ -1916,10 +1916,11 @@ observe_agent_state() {
 }
 
 wait_agent() {
-  local target='' timeout=0 interval=30 arg pane state start now elapsed
+  local target='' timeout=0 interval=30 wait_for_transition=0 arg pane state start now elapsed armed=1
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
+      --wait-for-transition) wait_for_transition=1 ;;
       --timeout=*) parse_wait_duration "${arg#--timeout=}" || return 2; timeout="$REPLY" ;;
       --timeout) [ "$#" -gt 0 ] || return 2; parse_wait_duration "$1" || return 2; timeout="$REPLY"; shift ;;
       --interval=*) parse_wait_duration "${arg#--interval=}" || return 2; interval="$REPLY" ;;
@@ -1932,9 +1933,15 @@ wait_agent() {
   resolve_tmux_pane "$target" || { printf 'wait-agent: target not found: %s\n' "$target" >&2; return 1; }
   pane="$REPLY"
   start="$(date +%s)"
+  if [ "$wait_for_transition" = 1 ]; then
+    observe_agent_state "$pane"
+    agent_state_is_working "$REPLY" || armed=0
+  fi
   while :; do
     observe_agent_state "$pane"; state="$REPLY"
-    if ! agent_state_is_working "$state"; then
+    if [ "$armed" = 0 ]; then
+      agent_state_is_working "$state" && armed=1
+    elif ! agent_state_is_working "$state"; then
       printf 'target=%s pane=%s state=%s\n' "$target" "$pane" "$state"
       return 0
     fi
@@ -1976,14 +1983,16 @@ monitor_write_record() {
 }
 
 monitor_run() {
-  local id="$1" target="$2" pane="$3" timeout="$4" interval="$5" start="$6"
-  local state now elapsed mode
+  local id="$1" target="$2" pane="$3" timeout="$4" interval="$5" start="$6" wait_for_transition="${7:-0}" initial_state="${8:-}"
+  local state now elapsed mode armed=1
+  [ "$wait_for_transition" = 1 ] && ! agent_state_is_working "$initial_state" && armed=0
   obs_v2_mode; mode="$REPLY"
   cleanup_monitor() {
+    local cleanup_id="$1" cleanup_mode="$2"
     # V2 keeps the row (it carries the terminal history); only the TSV goes.
-    [ "$mode" = 'on' ] || { monitor_file "$id"; rm -f "$REPLY" 2>/dev/null || true; }
+    [ "$cleanup_mode" = 'on' ] || { monitor_file "$cleanup_id"; rm -f "$REPLY" 2>/dev/null || true; }
   }
-  trap cleanup_monitor EXIT INT TERM
+  trap "cleanup_monitor '$id' '$mode'" EXIT INT TERM
   while :; do
     observe_agent_state "$pane"; state="$REPLY"
     now="$(date +%s)"
@@ -1991,7 +2000,9 @@ monitor_run() {
     # A tick updates the row in place. It does not append a historical event —
     # that is the whole point of the phase.
     [ "$mode" = 'off' ] || obs_call monitor heartbeat --id "$id" --state "$state"
-    if ! agent_state_is_working "$state"; then
+    if [ "$armed" = 0 ]; then
+      agent_state_is_working "$state" && armed=1
+    elif ! agent_state_is_working "$state"; then
       log_event monitor.done id="$id" target="$target" pane="$pane" state="$state"
       [ "$mode" = 'off' ] || obs_call monitor terminate --id "$id" --status done
       return 0
@@ -2009,10 +2020,11 @@ monitor_run() {
 }
 
 monitor_agent() {
-  local target='' timeout=0 interval=30 arg pane state start id pid mode session
+  local target='' timeout=0 interval=30 wait_for_transition=0 arg pane state start id pid mode session
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
+      --wait-for-transition) wait_for_transition=1 ;;
       --timeout=*) parse_wait_duration "${arg#--timeout=}" || return 2; timeout="$REPLY" ;;
       --timeout) [ "$#" -gt 0 ] || return 2; parse_wait_duration "$1" || return 2; timeout="$REPLY"; shift ;;
       --interval=*) parse_wait_duration "${arg#--interval=}" || return 2; interval="$REPLY" ;;
@@ -2021,7 +2033,7 @@ monitor_agent() {
       *) [ -z "$target" ] || return 2; target="$arg" ;;
     esac
   done
-  [ -n "$target" ] || { printf 'usage: monitor-agent <target> [--timeout 30m] [--interval 30s]\n' >&2; return 2; }
+  [ -n "$target" ] || { printf 'usage: monitor-agent <target> [--wait-for-transition] [--timeout 30m] [--interval 30s]\n' >&2; return 2; }
   resolve_tmux_pane "$target" || { printf 'monitor-agent: target not found: %s\n' "$target" >&2; return 1; }
   pane="$REPLY"
   observe_agent_state "$pane"; state="$REPLY"
@@ -2036,7 +2048,7 @@ monitor_agent() {
     [ -n "$session" ] && register_args+=(--session "$session")
     obs_call "${register_args[@]}"
   fi
-  "$self" monitor-run "$id" "$target" "$pane" "$timeout" "$interval" "$start" >/dev/null 2>&1 &
+  "$self" monitor-run "$id" "$target" "$pane" "$timeout" "$interval" "$start" "$wait_for_transition" "$state" >/dev/null 2>&1 &
   pid="$!"
   monitor_write_record "$id" "$pid" "$target" "$pane" "$state" "$start" "$timeout" "$interval" "$start"
   # The poller now has a PID: adopt it, so reconciliation can tell a crashed
@@ -2842,7 +2854,7 @@ case "${1:-}" in
   "")
     ;;
   *)
-    printf 'usage: %s [list [all|waiting|running|repo:..|branch:..|cmd:..|grep:..]|preview <type> <sid> <name> <target>|popup <type> <sid> <target>|jump <type> <sid> <target>|kill <type> <sid> <target>|act <type> <sid> <target> <approve|interrupt|message>|attn-jump <n>|jump-back|kill-confirm <sid> <answer>|bulk-kill <rows...>|bulk-kill-confirm <answer> <sid...>|rename <type> <sid> <target>|rename-apply <type> <target> <name>|list-active|dashboard [sessions-only|expanded]|audit|handoff --target <target> --bead <id> [--note text] [--yes]|mux-help|log <emit|tail|query>|message-send --to <target> --text <text>|message-list --for <target>|message-ack <id>|telemetry <git|bd|gh> -- <args...>|wait-agent <target> [--timeout 30m] [--interval 30s]|monitor-agent <target> [--timeout 30m] [--interval 30s]|monitor-list|monitor-kill <id>|safe-send-pointer [--yes] [--double-enter|--no-double-enter] [--force-freeform] <target> <slash-command|/tmp pointer>|worktree-collisions|mode-toggle|border-label|filter-menu|filter-clear|prompt-label|clear-cache|install-hooks [picker-path]]\n' "$0" >&2
+    printf 'usage: %s [list [all|waiting|running|repo:..|branch:..|cmd:..|grep:..]|preview <type> <sid> <name> <target>|popup <type> <sid> <target>|jump <type> <sid> <target>|kill <type> <sid> <target>|act <type> <sid> <target> <approve|interrupt|message>|attn-jump <n>|jump-back|kill-confirm <sid> <answer>|bulk-kill <rows...>|bulk-kill-confirm <answer> <sid...>|rename <type> <sid> <target>|rename-apply <type> <target> <name>|list-active|dashboard [sessions-only|expanded]|audit|handoff --target <target> --bead <id> [--note text] [--yes]|mux-help|log <emit|tail|query>|message-send --to <target> --text <text>|message-list --for <target>|message-ack <id>|telemetry <git|bd|gh> -- <args...>|wait-agent <target> [--wait-for-transition] [--timeout 30m] [--interval 30s]|monitor-agent <target> [--wait-for-transition] [--timeout 30m] [--interval 30s]|monitor-list|monitor-kill <id>|safe-send-pointer [--yes] [--double-enter|--no-double-enter] [--force-freeform] <target> <slash-command|/tmp pointer>|worktree-collisions|mode-toggle|border-label|filter-menu|filter-clear|prompt-label|clear-cache|install-hooks [picker-path]]\n' "$0" >&2
     exit 2
     ;;
 esac
