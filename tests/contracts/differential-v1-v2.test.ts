@@ -64,6 +64,37 @@ describe("V1/V2 picker differential", () => {
     }
   });
 
+  // xtmux-3xs.27: V2 message-list must emit local-tz ISO with a colon
+  // offset (matches `date -Is`), not UTC-Z. Previously fmtTsIso used
+  // toISOString() → UTC-Z, which recorded a false divergence on every
+  // message-list under XTMUX_OBS_V2=shadow. Byte-parity on the timestamp
+  // column is required for cutover.
+  test("message-list timestamp column is local-tz ISO with colon offset (matches V1)", () => {
+    const { dir, bin } = setupMockTmux();
+    try {
+      send(dir, bin, "0");
+      send(dir, bin, "1");
+      const v1 = run(PICKER, ["message-list", "--for", "recipient", "--unacked"], modeEnv(dir, bin, "0"));
+      const v2 = run(PICKER, ["message-list", "--for", "recipient", "--unacked"], modeEnv(dir, bin, "1"));
+      // Column 3 (1-indexed) of each row is the ISO timestamp.
+      const tsCol = (out: string): string => {
+        const line = out.trim().split("\n")[0] ?? "";
+        return line.split("\t")[2] ?? "";
+      };
+      const v1Ts = tsCol(v1.stdout);
+      const v2Ts = tsCol(v2.stdout);
+      // Both must match a local-tz ISO with a colon-separated offset.
+      const localTzIsoColon = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$/;
+      expect(v1Ts).toMatch(localTzIsoColon);
+      expect(v2Ts).toMatch(localTzIsoColon);
+      // Neither may be UTC-Z.
+      expect(v1Ts).not.toContain("Z");
+      expect(v2Ts).not.toContain("Z");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("unacked list and successful ack preserve V1 rows and keys", () => {
     const { dir, bin } = setupMockTmux();
     try {

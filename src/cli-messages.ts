@@ -39,8 +39,26 @@ function parseArgs(argv: string[]): Args {
   return { positional, flags };
 }
 
+// xtmux-3xs.27: emit local-tz ISO with colon-separated numeric offset (matches
+// `date -Is`, which is what the V1 shell picker emits). Byte-parity with V1
+// is required so XTMUX_OBS_V2=shadow doesn't record a false divergence on
+// every message-list call.
 function fmtTsIso(epochMs: number): string {
-  return new Date(epochMs).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const d = new Date(epochMs);
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  const mm = pad(d.getMonth() + 1);
+  const dd = pad(d.getDate());
+  const HH = pad(d.getHours());
+  const MM = pad(d.getMinutes());
+  const SS = pad(d.getSeconds());
+  // getTimezoneOffset returns minutes WEST of UTC, so invert the sign to
+  // match `date -Is` conventions (+02:00 for CEST, -05:00 for EST).
+  const offMin = -d.getTimezoneOffset();
+  const sign = offMin >= 0 ? "+" : "-";
+  const oh = pad(Math.floor(Math.abs(offMin) / 60));
+  const om = pad(Math.abs(offMin) % 60);
+  return `${yyyy}-${mm}-${dd}T${HH}:${MM}:${SS}${sign}${oh}:${om}`;
 }
 
 function fmtAge(epochMs: number): string {
