@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "github-grep": {
+      "type": "http",
+      "url": "https://mcp.grep.app"
+    },
+    "deepwiki": {
+      "type": "http",
+      "url": "https://mcp.deepwiki.com/mcp"
+    },
+    "gitnexus": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "gitnexus",
+        "mcp"
+      ],
+      "env": {}
+    }
+  }
+}

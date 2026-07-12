@@ -1,7 +1,8 @@
 {
   "database": "dolt",
   "backend": "dolt",
-  "dolt_mode": "embedded",
+  "dolt_mode": "server",
+  "dolt_server_port": 3308,
   "dolt_database": "xtmux",
   "project_id": "4c122700-ee7d-4418-a37f-8fc11bcbb185"
 }
