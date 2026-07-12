@@ -186,6 +186,13 @@ runtime case — `xtmux:1.1` and `xtmux:1.2` both resolve to `$1732`).
 `target_pane_id = ? OR IS NULL` so session broadcasts still land at every
 pane. Reported by xtmux:1.2 during Phase 1 fixture capture.
 
+**Reader note.** `message-list` prints session ids only (V1 stdout shape
+preserved). The pane-level discrimination lives in the row columns, not in
+the stdout. Verify the fix by inspecting the row directly, e.g.
+`sqlite3 observability.db 'SELECT sender_pane_id, target_pane_id FROM messages ORDER BY id DESC LIMIT 1'`.
+Trusting stdout alone will make the fix look absent when it is in fact
+working end-to-end (verified by xtmux:1.2 on merged main).
+
 Invariants:
 
 - Recipient `recipient_id` normalized to `#{session_id}` before insert.
