@@ -4,6 +4,8 @@ import { DbError } from "./errors.ts";
 import { insertEnvelope } from "./journal.ts";
 import { migration as m0001 } from "./migrations/0001_bootstrap.ts";
 import { migration as m0002 } from "./migrations/0002_messages.ts";
+// migration 3 reserved for Phase 4 monitors (xtmux:1.2 / xt/ojsx)
+import { migration as m0004 } from "./migrations/0004_agents.ts";
 
 export interface Migration {
   readonly version: number;
@@ -11,7 +13,7 @@ export interface Migration {
   readonly up: string;
 }
 
-export const MIGRATIONS: readonly Migration[] = [m0001, m0002];
+export const MIGRATIONS: readonly Migration[] = [m0001, m0002, m0004];
 
 const SCHEMA_MIGRATIONS_DDL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -40,11 +42,14 @@ export function migrate(db: Db, now: () => number = Date.now): MigrationResult {
   const skipped: number[] = [];
 
   const sortedMigrations = [...MIGRATIONS].sort((a, b) => a.version - b.version);
-  for (let i = 0; i < sortedMigrations.length; i++) {
-    if (sortedMigrations[i]!.version !== i + 1) {
+  // Versions must be strictly increasing but need not be contiguous — versions
+  // are reserved across parallel worktrees (Phase 4 owns 3, Phase 5 owns 4,
+  // Phase 7 owns 5, …). Gaps close when the reserved worktree merges.
+  for (let i = 1; i < sortedMigrations.length; i++) {
+    if (sortedMigrations[i]!.version <= sortedMigrations[i - 1]!.version) {
       throw new DbError(
         "XTMUX_DB_MIGRATION_FAILED",
-        `migration versions must be contiguous starting at 1; got ${sortedMigrations[i]!.version} at index ${i}`,
+        `migration versions must be strictly increasing; got ${sortedMigrations[i - 1]!.version} then ${sortedMigrations[i]!.version}`,
       );
     }
   }

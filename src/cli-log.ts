@@ -7,6 +7,9 @@
 import type { Db } from "./db/connection.ts";
 import { emitEvent, query as journalQuery, tail as journalTail } from "./domains/events/query.ts";
 import type { JournalRow } from "./domains/events/query.ts";
+import { openInstance } from "./domains/agents/instance.ts";
+import { recordTransition } from "./domains/agents/transition.ts";
+import { completeTurn } from "./domains/agents/turn.ts";
 
 interface Args {
   positional: string[];
@@ -71,8 +74,54 @@ export function cliLogEmit(db: Db, argv: string[]): number {
     if (eq <= 0) continue;
     fields[kv.slice(0, eq)] = kv.slice(eq + 1);
   }
-  emitEvent(db, { type, fields });
-  return 0;
+
+  // Typed-event smart dispatch: agent-state.sh emits `log emit agent.state ...`
+  // and pi-agent-state.ts emits `log emit agent.turn.done ...`. Under V2 route
+  // them to typed writers so agent_state_transitions / agent_turns get the row
+  // + envelope in one transaction. Anything else falls through to the generic
+  // event_journal writer.
+  switch (type) {
+    case "agent.role.launched":
+      openInstance(db, {
+        instanceId: fields["instance_id"] ?? fields["instance"] ?? `inst-${Date.now()}-${fields["pane"] ?? ""}`,
+        sessionId: fields["session"] ?? fields["session_id"] ?? "",
+        sessionName: fields["session_name"],
+        paneId: fields["pane"] ?? fields["pane_id"] ?? "",
+        runtime: fields["runtime"],
+        role: fields["role"],
+        beadId: fields["bead"] ?? fields["bead_id"],
+        task: fields["task"],
+        promptFile: fields["prompt_file"],
+        parentSessionId: fields["parent"] ?? fields["parent_session"],
+        sourceEvent: "agent.role.launched",
+      });
+      return 0;
+    case "agent.state":
+      recordTransition(db, {
+        paneId: fields["pane"] ?? fields["pane_id"] ?? "",
+        sessionId: fields["session"] ?? fields["session_id"],
+        state: fields["state"] ?? "",
+        sourceEvent: fields["hook_event"] ?? fields["source_event"],
+        beadId: fields["bead"] ?? fields["bead_id"],
+        task: fields["task"],
+        promptFile: fields["prompt_file"],
+        parentSessionId: fields["parent"] ?? fields["parent_session"],
+      });
+      return 0;
+    case "agent.turn.done":
+      completeTurn(db, {
+        paneId: fields["pane"] ?? fields["pane_id"] ?? "",
+        sessionId: fields["session"] ?? fields["session_id"] ?? "",
+        sessionName: fields["session_name"],
+        beadId: fields["bead"] ?? fields["bead_id"],
+        parentSessionId: fields["parent"] ?? fields["parent_session"],
+        summary: fields["last_message"] ?? fields["summary"],
+      });
+      return 0;
+    default:
+      emitEvent(db, { type, fields });
+      return 0;
+  }
 }
 
 export function cliLogTail(db: Db, argv: string[]): number {
