@@ -149,16 +149,19 @@ Typed-table mutation + journal envelope insertion happen in the same transaction
 
 ```sql
 CREATE TABLE messages (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    message_key     TEXT NOT NULL UNIQUE,
-    sender_id       TEXT NOT NULL,
-    recipient_id    TEXT NOT NULL,
-    bead_id         TEXT,
-    summary         TEXT NOT NULL,
-    payload_json    TEXT,
-    created_at_ms   INTEGER NOT NULL
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_key        TEXT NOT NULL UNIQUE,
+    sender_id          TEXT NOT NULL,
+    sender_pane_id     TEXT,                            -- fine-grained addressing (see below)
+    recipient_id       TEXT NOT NULL,
+    target_pane_id     TEXT,                            -- fine-grained addressing (see below)
+    bead_id            TEXT,
+    summary            TEXT NOT NULL,
+    payload_json       TEXT,
+    created_at_ms      INTEGER NOT NULL
 );
 CREATE INDEX msg_recipient_id ON messages(recipient_id, id);
+CREATE INDEX msg_target_pane  ON messages(target_pane_id, id);
 CREATE INDEX msg_bead_id      ON messages(bead_id, id);
 
 CREATE TABLE message_receipts (
@@ -173,9 +176,20 @@ CREATE TABLE message_receipts (
 CREATE INDEX rcpt_unacked ON message_receipts(recipient_id, acked_at_ms);
 ```
 
+**Pane-level addressing deviation from PRD §6 DDL.** PRD §6 lists only
+`sender_id` / `recipient_id`. Two panes of the same tmux session collapse to
+the same `session_id`, so pure session-level addressing loses sender identity
+when panes of the same session need to message each other (a real xtmux
+runtime case — `xtmux:1.1` and `xtmux:1.2` both resolve to `$1732`).
+`sender_pane_id` and `target_pane_id` are optional finer-grained hints;
+`recipient_id` remains the durable session-level identity. `list` filters
+`target_pane_id = ? OR IS NULL` so session broadcasts still land at every
+pane. Reported by xtmux:1.2 during Phase 1 fixture capture.
+
 Invariants:
 
-- Recipient normalized to `#{session_id}` before insert.
+- Recipient `recipient_id` normalized to `#{session_id}` before insert.
+- `target_pane_id` / `sender_pane_id` normalized to `#{pane_id}` when provided.
 - Message + receipt inserted in one transaction.
 - `message-list` is a pure read; `message-ack` is the sole ack mutation; ack is idempotent.
 - Foreign key cascade: a receipt cannot exist without its message.
@@ -379,6 +393,7 @@ CREATE TABLE command_runs (
     id                  TEXT PRIMARY KEY,
     tool                TEXT NOT NULL,
     operation           TEXT NOT NULL,
+    owner_pid           INTEGER,                        -- deviation from PRD §13, see below
     session_id          TEXT,
     pane_id             TEXT,
     instance_id         TEXT,
@@ -394,6 +409,8 @@ CREATE TABLE command_runs (
     finished_at_ms      INTEGER,
     exit_code           INTEGER,
     terminal_status     TEXT,
+    CHECK (tool IN ('git','bd','gh')),
+    CHECK (terminal_status IS NULL OR terminal_status IN ('success','failed','interrupted')),
     FOREIGN KEY (instance_id) REFERENCES agent_instances(instance_id)
 );
 CREATE INDEX cr_tool_op    ON command_runs(tool, operation, started_at_ms);
@@ -401,7 +418,11 @@ CREATE INDEX cr_bead       ON command_runs(bead_id, started_at_ms);
 CREATE INDEX cr_incomplete ON command_runs(started_at_ms) WHERE finished_at_ms IS NULL;
 ```
 
-`terminal_status` closed set: `success`, `failed`, `interrupted`, `crashed`.
+`terminal_status` closed set: `success`, `failed`, `interrupted`.
+
+**Deviation from PRD §13 DDL** (approved during Phase 1/2 by xtmux:1.1, delta drafted by xtmux:1.2):
+- `owner_pid INTEGER` added to make `terminal_status=interrupted` detection authoritative rather than a pure age-threshold guess. Same pattern as `monitors.owner_pid`. Reconciliation query: `finished_at_ms IS NULL AND owner_pid NOT IN (running pids)`.
+- CHECK constraints promote the tool taxonomy and terminal-status enum to schema invariants rather than convention.
 
 ### 4.9 `audit_runs` + `audit_findings` (PRD §14)
 
@@ -417,11 +438,13 @@ CREATE TABLE audit_runs (
 
 CREATE TABLE audit_findings (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id              TEXT NOT NULL,
+    run_id              TEXT NOT NULL,                  -- run that FIRST saw the finding
+    last_run_id         TEXT NOT NULL,                  -- run that saw it MOST RECENTLY (deviation, see below)
     fingerprint         TEXT NOT NULL,
     severity            TEXT NOT NULL,
     kind                TEXT NOT NULL,
-    session_id          TEXT,
+    session_id          TEXT,                           -- live-instance pointer ($N)
+    session_name        TEXT,                           -- durable identity (deviation, see below)
     pane_id             TEXT,
     repo                TEXT,
     path                TEXT,
@@ -429,14 +452,24 @@ CREATE TABLE audit_findings (
     first_seen_ms       INTEGER NOT NULL,
     last_seen_ms        INTEGER NOT NULL,
     resolved_at_ms      INTEGER,
-    FOREIGN KEY (run_id) REFERENCES audit_runs(id)
+    CHECK (severity IN ('warning','cleanup')),
+    CHECK (kind IN ('missing-path','stale-specialist','dirty-worktree','shared-worktree',
+                    'working-do-not-kill','naming-convention','agent-pane-without-bead')),
+    FOREIGN KEY (run_id)      REFERENCES audit_runs(id),
+    FOREIGN KEY (last_run_id) REFERENCES audit_runs(id)
 );
-CREATE INDEX af_fingerprint ON audit_findings(fingerprint);
-CREATE INDEX af_unresolved  ON audit_findings(kind) WHERE resolved_at_ms IS NULL;
+CREATE UNIQUE INDEX af_fingerprint ON audit_findings(fingerprint);
+CREATE INDEX af_unresolved ON audit_findings(kind, last_seen_ms) WHERE resolved_at_ms IS NULL;
 ```
 
-Finding-kind closed set (extendable): `missing-path`, `stale-specialist`, `dirty-worktree`, `shared-worktree`, `working-do-not-kill`, `naming-convention`, `agent-pane-without-bead`.
-Severity closed set: `info`, `warn`, `error`.
+Finding-kind closed set: `missing-path`, `stale-specialist`, `dirty-worktree`, `shared-worktree`, `working-do-not-kill`, `naming-convention`, `agent-pane-without-bead`.
+Severity closed set: `warning`, `cleanup` (matches `audit_runs.warning_count` / `cleanup_count` bucket shape from PRD §14).
+
+**Deviations from PRD §14 DDL** (approved during Phase 1/2 by xtmux:1.1, delta drafted by xtmux:1.2):
+- `last_run_id` added: without it, `run_id` pins to the first-observing run, so resolution keyed on `run_id ≠ latest` matches nothing ever. Resolution query becomes `resolved_at_ms IS NULL AND last_run_id ≠ :run_id`, executed in the same transaction as the completed_at_ms write on the current run.
+- `session_name` added: tmux `session_id` (`$N`) is per-instance — destroy + recreate a session and every finding re-fingerprints as new, silently breaking dedup. Fingerprints key on `session_name` (durable via naming convention); `session_id` stays as the live pointer.
+- CHECK constraints promote severity and kind to schema invariants.
+- `UNIQUE (fingerprint)` — the dedup rule *is* this constraint. A repeat observation UPDATEs `last_seen_ms` + `last_run_id`; it never inserts.
 
 Fingerprint recipe per kind: **Phase 8 owner (xtmux-3xs.8) writes and commits this section.** Rule: fingerprint is deterministic from `(kind, session_id?, pane_id?, repo?, path?, salient-detail-fields)` — no timestamps in the fingerprint.
 

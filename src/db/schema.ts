@@ -3,6 +3,7 @@ import type { Db } from "./connection.ts";
 import { DbError } from "./errors.ts";
 import { insertEnvelope } from "./journal.ts";
 import { migration as m0001 } from "./migrations/0001_bootstrap.ts";
+import { migration as m0002 } from "./migrations/0002_messages.ts";
 
 export interface Migration {
   readonly version: number;
@@ -10,7 +11,7 @@ export interface Migration {
   readonly up: string;
 }
 
-export const MIGRATIONS: readonly Migration[] = [m0001];
+export const MIGRATIONS: readonly Migration[] = [m0001, m0002];
 
 const SCHEMA_MIGRATIONS_DDL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (

@@ -1,0 +1,142 @@
+/**
+ * V1-compatible stdout for messages. See tests/fixtures/golden/v1/ for the
+ * TSV shapes the picker currently prints; these formatters reproduce them
+ * byte-for-byte so `XTMUX_OBS_V2=0` and `=1` outputs remain interchangeable.
+ *
+ * Called by src/cli.ts under the `message-send`, `message-list`, `message-ack`
+ * subcommands, and via the picker delegation branch under V2.
+ */
+import type { Db } from "./db/connection.ts";
+import { ackMessage } from "./domains/messages/ack.ts";
+import { listMessages } from "./domains/messages/list.ts";
+import { sendMessage } from "./domains/messages/send.ts";
+
+interface Args {
+  positional: string[];
+  flags: Map<string, string | boolean>;
+}
+
+function parseArgs(argv: string[]): Args {
+  const positional: string[] = [];
+  const flags = new Map<string, string | boolean>();
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a.startsWith("--")) {
+      const key = a.slice(2);
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("--")) {
+        flags.set(key, next);
+        i++;
+      } else {
+        flags.set(key, true);
+      }
+    } else {
+      positional.push(a);
+    }
+  }
+  return { positional, flags };
+}
+
+function fmtTsIso(epochMs: number): string {
+  return new Date(epochMs).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+export interface MessageSendArgs {
+  to: string;
+  toPaneId?: string;
+  from: string;
+  fromPaneId?: string;
+  bead?: string;
+  text: string;
+  messageKey?: string;
+}
+
+/** V1 shape: no stdout on success. Error → stderr, exit=1. */
+export function cliMessageSend(db: Db, argv: string[]): number {
+  const { flags } = parseArgs(argv);
+  const to = String(flags.get("to") ?? "");
+  const from = String(flags.get("from") ?? "");
+  const text = String(flags.get("text") ?? "");
+  if (!to || !from || !text) {
+    process.stderr.write("message-send: --to, --from, and --text are required\n");
+    return 2;
+  }
+  const messageKey =
+    (flags.get("message-key") as string | undefined) ??
+    `msg-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  sendMessage(db, {
+    messageKey,
+    senderId: from,
+    senderPaneId: (flags.get("from-pane") as string | undefined) ?? undefined,
+    recipientId: to,
+    targetPaneId: (flags.get("to-pane") as string | undefined) ?? undefined,
+    beadId: (flags.get("bead") as string | undefined) ?? undefined,
+    summary: text,
+  });
+  return 0;
+}
+
+/**
+ * V1 shape (from picker):
+ * `message\t<message_key>\t<ts>\t<from>\t<to>\t<bead>\t<summary>`
+ * with rows ordered newest-first.
+ */
+export function cliMessageList(db: Db, argv: string[]): number {
+  const { flags } = parseArgs(argv);
+  const forTarget = String(flags.get("for") ?? "");
+  if (!forTarget) {
+    process.stderr.write("message-list: --for is required\n");
+    return 2;
+  }
+  const rows = listMessages(db, {
+    recipientId: forTarget,
+    targetPaneId: (flags.get("pane") as string | undefined) ?? undefined,
+    senderId: (flags.get("from") as string | undefined) ?? undefined,
+    sinceMs: flags.has("since") ? Number(flags.get("since")) : undefined,
+    unackedOnly: flags.get("unacked") === true,
+    limit: flags.has("limit") ? Number(flags.get("limit")) : undefined,
+  });
+  // V1 prints oldest-first when it drains rotated files; --limit implies newest.
+  // Match V1: reverse so the tail (newest) shows last.
+  for (const r of [...rows].reverse()) {
+    const parts = [
+      "message",
+      r.message_key,
+      fmtTsIso(r.created_at_ms),
+      r.sender_id,
+      r.recipient_id,
+      r.bead_id ?? "",
+      (r.summary ?? "").replace(/\n/g, " "),
+    ];
+    process.stdout.write(parts.join("\t") + "\n");
+  }
+  return 0;
+}
+
+/**
+ * V1 shape: `ack\t<id-or-->\t<by-session>`. Idempotent + wrong-recipient
+ * rejection is a stderr note with a distinct exit code so the picker or a
+ * downstream test can branch on it.
+ */
+export function cliMessageAck(db: Db, argv: string[]): number {
+  const { positional, flags } = parseArgs(argv);
+  const messageId = Number(positional[0] ?? 0);
+  const ackedBy = String(flags.get("by") ?? "");
+  if (!messageId || !ackedBy) {
+    process.stderr.write("message-ack: <message_id> --by <session> required\n");
+    return 2;
+  }
+  const r = ackMessage(db, { messageId, ackedBy });
+  process.stdout.write(`ack\t${messageId}\t${ackedBy}\n`);
+  switch (r.status) {
+    case "acked":
+    case "already-acked":
+      return 0;
+    case "wrong-recipient":
+      process.stderr.write("message-ack: wrong recipient (no mutation)\n");
+      return 4;
+    case "unknown-message":
+      process.stderr.write("message-ack: unknown message id\n");
+      return 5;
+  }
+}
