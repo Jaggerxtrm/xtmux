@@ -347,6 +347,20 @@ mk_repo "$WORK/collide-b"
   printf '%s\n' "$out" | grep -F $'cleanup\tstale-specialist\ts2' >/dev/null
 ) && ok "audit: separates warnings and cleanup candidates" || nok "audit: separates warnings and cleanup candidates"
 (
+  audit_walk() {
+    printf '%s\n' \
+      $'audit\tread-only\twarnings-and-cleanup-candidates' \
+      $'warning\tz-kind\t$2\tzeta\tpath=/z' \
+      $'cleanup\ta-kind\t$1\talpha\tpath=/a'
+  }
+  obs_v2_mode() { REPLY=on; }
+  obs_available() { return 0; }
+  obs_call() { :; }
+  current_tmux_session_id() { REPLY='$mock'; }
+  out="$(audit --stable)"
+  [ "$out" = $'audit\tread-only\twarnings-and-cleanup-candidates\ncleanup\ta-kind\t$1\talpha\tpath=/a\nwarning\tz-kind\t$2\tzeta\tpath=/z' ]
+) && ok "audit: V2 --stable sorts display only" || nok "audit: V2 --stable sorts display only"
+(
   tmux() {
     case "$1" in
       display-message) printf '%%mock\n' ;;

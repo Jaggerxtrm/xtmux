@@ -41,6 +41,14 @@ function fmtTsIso(epochMs: number): string {
   return new Date(epochMs).toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
+function fmtAge(epochMs: number): string {
+  const seconds = Math.max(0, Math.floor((Date.now() - epochMs) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3_600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3_600)}h`;
+  return `${Math.floor(seconds / 86_400)}d`;
+}
+
 export interface MessageSendArgs {
   to: string;
   toPaneId?: string;
@@ -112,6 +120,7 @@ export function cliMessageList(db: Db, argv: string[]): number {
       "message",
       r.message_key,
       fmtTsIso(r.created_at_ms),
+      ...(flags.get("unacked") === true ? [fmtAge(r.created_at_ms)] : []),
       r.sender_id,
       r.recipient_id,
       r.bead_id ?? "",
@@ -129,14 +138,20 @@ export function cliMessageList(db: Db, argv: string[]): number {
  */
 export function cliMessageAck(db: Db, argv: string[]): number {
   const { positional, flags } = parseArgs(argv);
-  const messageId = Number(positional[0] ?? 0);
+  const messageKey = positional[0] ?? "";
   const ackedBy = String(flags.get("by") ?? "");
-  if (!messageId || !ackedBy) {
+  if (!messageKey || !ackedBy) {
     process.stderr.write("message-ack: <message_id> --by <session> required\n");
     return 2;
   }
+  const messageId = db.raw.query<{ id: number }, [string]>("SELECT id FROM messages WHERE message_key = ?").get(messageKey)?.id
+    ?? Number(messageKey);
+  if (!messageId) {
+    process.stderr.write("message-ack: unknown message id\n");
+    return 5;
+  }
   const r = ackMessage(db, { messageId, ackedBy });
-  process.stdout.write(`ack\t${messageId}\t${ackedBy}\n`);
+  process.stdout.write(`ack\t${messageKey}\t${ackedBy}\n`);
   switch (r.status) {
     case "acked":
     case "already-acked":

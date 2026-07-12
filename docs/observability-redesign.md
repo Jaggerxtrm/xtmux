@@ -644,7 +644,7 @@ Remaining fixtures — captured across Phase 3–8 as each command becomes routa
 
 `tests/contracts/hostile-env.test.ts` runs V2 commands under degraded invocation conditions: absent invocation metadata, panes without bead/state options, and a missing `tmux` binary. It asserts explicit `NULL`/`unknown` handling and no partial durable write on rejection. Add one matrix row for each new V2 route rather than relying on an in-tmux happy-path test.
 
-`tests/contracts/differential-v1-v2.test.ts` runs V1 and V2 from the same isolated tmux state and compares stdout, stderr, and exit status after normalizing volatile timestamps. Message send/list/unacked/ack are covered now; audit remains an explicit TODO until V2-only stable ordering lands rather than being normalized away.
+`tests/contracts/differential-v1-v2.test.ts` runs V1 and V2 from the same isolated tmux state and compares stdout, stderr, and exit status after normalizing volatile timestamps. Message send/list/unacked/ack are covered now. Under `XTMUX_OBS_V2=1`, `audit --stable` sorts display rows by severity, kind, session name, and path; default audit output and persistence retain observed V1 order.
 
 ---
 

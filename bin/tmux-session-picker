@@ -1329,14 +1329,26 @@ EOF
 # additive: stdout is whatever the walk printed, byte for byte (PRD §20), and a
 # copy is piped to the runtime (xtmux-3xs.8).
 audit() {
-  local mode out rc session
+  local mode out display_out rc session stable=0 arg
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --stable) stable=1 ;;
+      *) printf 'audit: unknown arg: %s\n' "$arg" >&2; return 2 ;;
+    esac
+  done
   obs_v2_mode; mode="$REPLY"
   if [ "$mode" = 'off' ] || ! obs_available; then
     audit_walk
     return "$?"
   fi
   out="$(audit_walk)"; rc=$?
-  [ -n "$out" ] && printf '%s\n' "$out"
+  display_out="$out"
+  if [ "$stable" = 1 ] && [[ "$out" == *$'\n'* ]]; then
+    local header="${out%%$'\n'*}" body="${out#*$'\n'}"
+    display_out="$header"$'\n'"$(printf '%s\n' "$body" | sort -t $'\t' -k1,1 -k2,2 -k4,4 -k5,5)"
+  fi
+  [ -n "$display_out" ] && printf '%s\n' "$display_out"
   current_tmux_session_id; session="$REPLY"
   # A walk that failed halfway is a PARTIAL run: it records what it saw but must
   # never resolve findings it simply never reached. Omit unknown optional
@@ -2689,8 +2701,8 @@ case "${1:-}" in
     ;;
   audit)
     shift
-    audit
-    exit 0
+    audit "$@"
+    exit $?
     ;;
   handoff)
     shift
