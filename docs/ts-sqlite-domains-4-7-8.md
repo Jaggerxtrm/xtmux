@@ -228,22 +228,41 @@ a `pane_id`-keyed fingerprint would create a fresh finding every tmux restart.
 > operator's naming convention makes durable). Proposal: add `session_name
 > TEXT`; keep `session_id` as the live-instance pointer.
 
-### 3.3 Resolution detection
+### 3.3 Observation and resolution
+
+Each observation is one upsert. `run_id` pins the run that first saw the finding;
+`last_run_id` tracks the most recent one, and that is what resolution keys on —
+`run_id` cannot serve, because a finding seen in ten consecutive runs still
+carries the *first* run's id.
+
+```sql
+INSERT INTO audit_findings (run_id, last_run_id, fingerprint, severity, kind,
+                            session_id, session_name, pane_id, repo, path,
+                            detail_json, first_seen_ms, last_seen_ms)
+VALUES (:run_id, :run_id, :fp, :severity, :kind, :sid, :sname, :pane, :repo, :path,
+        :detail, :now_ms, :now_ms)
+ON CONFLICT (fingerprint) DO UPDATE SET
+    last_run_id    = :run_id,
+    last_seen_ms   = :now_ms,
+    resolved_at_ms = NULL,        -- it came back; same finding, not a new row
+    detail_json    = :detail,     -- volatile part (dirty count, state) is overwritten
+    session_id     = :sid,        -- live-instance pointer follows the current session
+    pane_id        = :pane;
+```
+
+Resolution then runs once, after a **complete** audit:
 
 ```sql
 UPDATE audit_findings SET resolved_at_ms = :run_completed_ms
-WHERE resolved_at_ms IS NULL
-  AND fingerprint NOT IN (SELECT fingerprint FROM audit_findings WHERE run_id = :run_id);
+WHERE resolved_at_ms IS NULL AND last_run_id <> :run_id;
 ```
 
-Gated on the run being **complete**: `audit_runs.completed_at_ms` is written
-only after the audit walks the whole dashboard without error. A partial audit
-(crash mid-run) leaves `completed_at_ms NULL` and must never drive resolution —
-otherwise a crash halfway through the session list would mass-resolve every
-finding it did not reach.
-
-A previously-resolved fingerprint seen again clears `resolved_at_ms` (the
-finding came back) rather than inserting a second row.
+Gated on completeness: `audit_runs.completed_at_ms` is written only after the
+audit walks the whole dashboard without error. A partial audit (crash mid-run)
+leaves it `NULL` and must never drive resolution — otherwise a crash halfway
+through the session list mass-resolves every finding it simply did not reach.
+This is why the resolution `UPDATE` lives in the same transaction as the
+`completed_at_ms` write, and nowhere else.
 
 ### 3.4 V1 behaviours the V2 path must preserve
 
@@ -257,7 +276,114 @@ finding came back) rather than inserting a second row.
 
 ---
 
-## 4. Open questions for Phase 1/2 (1.1)
+## 4. DDL for the schema freeze (Phase 2 input)
+
+Drop-in for `src/db/schema.ts` / the first migration. PRD §11/§13/§14 verbatim,
+plus the indexes each phase's contract requires and the two deviations in §5.
+`*_at_ms` are epoch milliseconds throughout.
+
+```sql
+CREATE TABLE IF NOT EXISTS monitors (
+    id                  TEXT PRIMARY KEY,
+    owner_pid           INTEGER,
+    target              TEXT NOT NULL,
+    session_id          TEXT,
+    pane_id             TEXT NOT NULL,
+    instance_id         TEXT,
+    state               TEXT NOT NULL,          -- observed pane state, not lifecycle
+    started_at_ms       INTEGER NOT NULL,
+    updated_at_ms       INTEGER NOT NULL,
+    heartbeat_at_ms     INTEGER,
+    lease_expires_at_ms INTEGER,
+    timeout_ms          INTEGER,                -- NULL = no timeout (V1 encodes this as 0)
+    interval_ms         INTEGER NOT NULL,
+    terminal_status     TEXT,                   -- NULL while active; absorbing once set
+    terminal_at_ms      INTEGER,
+    terminal_detail     TEXT,
+    CHECK (terminal_status IS NULL OR terminal_status IN
+           ('done','timeout','killed','target_gone','process_gone','error')),
+    CHECK ((terminal_status IS NULL) = (terminal_at_ms IS NULL))
+);
+CREATE INDEX IF NOT EXISTS monitors_state_updated ON monitors (state, updated_at_ms);
+CREATE INDEX IF NOT EXISTS monitors_pane          ON monitors (pane_id);
+CREATE INDEX IF NOT EXISTS monitors_owner_pid     ON monitors (owner_pid);
+-- reconciliation and monitor-list both scan "still active", so index it directly
+CREATE INDEX IF NOT EXISTS monitors_active        ON monitors (lease_expires_at_ms)
+    WHERE terminal_status IS NULL;
+
+CREATE TABLE IF NOT EXISTS command_runs (
+    id                  TEXT PRIMARY KEY,
+    tool                TEXT NOT NULL,
+    operation           TEXT NOT NULL,
+    owner_pid           INTEGER,                -- DEVIATION, see §5.1
+    session_id          TEXT,
+    pane_id             TEXT,
+    instance_id         TEXT,
+    bead_id             TEXT,
+    cwd                 TEXT,
+    repo                TEXT,
+    argv                TEXT,
+    branch_before       TEXT,
+    head_before         TEXT,
+    branch_after        TEXT,
+    head_after          TEXT,
+    started_at_ms       INTEGER NOT NULL,
+    finished_at_ms      INTEGER,
+    exit_code           INTEGER,
+    terminal_status     TEXT,
+    CHECK (tool IN ('git','bd','gh')),
+    CHECK (terminal_status IS NULL OR terminal_status IN ('success','failed','interrupted'))
+);
+CREATE INDEX IF NOT EXISTS command_runs_bead      ON command_runs (bead_id, started_at_ms);
+CREATE INDEX IF NOT EXISTS command_runs_tool_op   ON command_runs (tool, operation, started_at_ms);
+-- the incomplete-run query is the hot one for reconciliation
+CREATE INDEX IF NOT EXISTS command_runs_incomplete ON command_runs (started_at_ms)
+    WHERE finished_at_ms IS NULL;
+
+CREATE TABLE IF NOT EXISTS audit_runs (
+    id                  TEXT PRIMARY KEY,
+    session_id          TEXT,
+    started_at_ms       INTEGER NOT NULL,
+    completed_at_ms     INTEGER,                -- NULL = partial; must NOT drive resolution
+    warning_count       INTEGER,
+    cleanup_count       INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS audit_findings (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id              TEXT NOT NULL REFERENCES audit_runs(id),   -- run that FIRST saw it
+    last_run_id         TEXT NOT NULL REFERENCES audit_runs(id),   -- run that saw it MOST RECENTLY
+    fingerprint         TEXT NOT NULL,
+    severity            TEXT NOT NULL,
+    kind                TEXT NOT NULL,
+    session_id          TEXT,                   -- live-instance pointer ($N), NOT identity
+    session_name        TEXT,                   -- DEVIATION, see §5.2; this is the identity
+    pane_id             TEXT,
+    repo                TEXT,
+    path                TEXT,
+    detail_json         TEXT,
+    first_seen_ms       INTEGER NOT NULL,
+    last_seen_ms        INTEGER NOT NULL,
+    resolved_at_ms      INTEGER,
+    CHECK (severity IN ('warning','cleanup')),
+    CHECK (kind IN ('missing-path','stale-specialist','dirty-worktree','shared-worktree',
+                    'working-do-not-kill','naming-convention','agent-pane-without-bead'))
+);
+-- the dedup rule *is* this constraint: one row per fingerprint, forever. A repeat
+-- observation UPDATEs last_seen_ms + last_run_id; it never inserts.
+CREATE UNIQUE INDEX IF NOT EXISTS audit_findings_fp ON audit_findings (fingerprint);
+CREATE INDEX IF NOT EXISTS audit_findings_open ON audit_findings (kind, last_seen_ms)
+    WHERE resolved_at_ms IS NULL;
+```
+
+Note the partial indexes and `CHECK` constraints — they need `foreign_keys=ON`
+and a SQLite new enough for partial indexes (3.8+; Bun's bundled SQLite is far
+past that). The `(terminal_status IS NULL) = (terminal_at_ms IS NULL)` check is
+what makes "terminal is absorbing" a schema invariant rather than a convention.
+
+---
+
+## 5. Open questions for Phase 1/2 (1.1)
 
 1. `command_runs.owner_pid` — see §2.3.
 2. `audit_findings.session_name` — see §3.2.
