@@ -434,6 +434,11 @@ grep -F '"--wait-for-transition"' extensions/pi-auto-monitor.ts >/dev/null && gr
   set -e
   export XDG_RUNTIME_DIR="$WORK"
   amdir="$WORK/xtmux-auto-monitor"; rm -rf "$amdir"
+  # xtmux-3xs.30: hook now precheck-checks tmux has-session; stub tmux to accept every target.
+  stubdir="$WORK/stub-tmux-23"; mkdir -p "$stubdir"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$stubdir/tmux"
+  chmod +x "$stubdir/tmux"
+  export PATH="$stubdir:$PATH"
   # 1. Send touches pending (bypass daemon spawn via PICKER=/bin/true).
   echo '{"tool_name":"Bash","tool_input":{"command":"tmux-session-picker message-send --to xtmux:99 --text x"},"tool_response":{"exitCode":0}}' \
     | XTMUX_PICKER=/bin/true node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
@@ -463,6 +468,11 @@ grep -F '"--wait-for-transition"' extensions/pi-auto-monitor.ts >/dev/null && gr
   set -e
   export XDG_RUNTIME_DIR="$WORK"
   amdir="$WORK/xtmux-auto-monitor"; rm -rf "$amdir"
+  # xtmux-3xs.30: hook precheck-checks tmux has-session; stub tmux to accept every target.
+  stubdir="$WORK/stub-tmux-29"; mkdir -p "$stubdir"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$stubdir/tmux"
+  chmod +x "$stubdir/tmux"
+  export PATH="$stubdir:$PATH"
   # send to alice WITHOUT skip → marker touched.
   echo '{"tool_name":"Bash","tool_input":{"command":"tmux-session-picker message-send --to alice --text hi"},"tool_response":{"exitCode":0}}' \
     | XTMUX_PICKER=/bin/true node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
@@ -477,6 +487,33 @@ grep -F '"--wait-for-transition"' extensions/pi-auto-monitor.ts >/dev/null && gr
     | XTMUX_PICKER=/bin/true XTMUX_AUTO_MONITOR_SKIP_TARGETS="alice:bob" node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
   [ -f "$amdir/real:1.2_pending" ] || exit 3
 ) && ok "auto-monitor: SKIP_TARGETS bypass (.29)" || nok "auto-monitor: SKIP_TARGETS bypass (.29)"
+# xtmux-3xs.30: tmux has-session precheck — phantom target skipped even without env.
+(
+  set -e
+  export XDG_RUNTIME_DIR="$WORK"
+  amdir="$WORK/xtmux-auto-monitor"; rm -rf "$amdir"
+  # Stub tmux that exits 1 for our fake target (has-session -t phantom-30 returns 1).
+  stubdir="$WORK/stub-tmux-30"; mkdir -p "$stubdir"
+  cat > "$stubdir/tmux" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "has-session" ] && [ "$2" = "-t" ] && [ "$3" = "phantom-30" ]; then
+  exit 1
+fi
+if [ "$1" = "has-session" ] && [ "$2" = "-t" ] && [ "$3" = "realone-30" ]; then
+  exit 0
+fi
+exit 0
+STUB
+  chmod +x "$stubdir/tmux"
+  # phantom target → no marker.
+  echo '{"tool_name":"Bash","tool_input":{"command":"tmux-session-picker message-send --to phantom-30 --text hi"},"tool_response":{"exitCode":0}}' \
+    | PATH="$stubdir:$PATH" XTMUX_PICKER=/bin/true node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
+  [ ! -f "$amdir/phantom-30_pending" ] || exit 1
+  # real target → marker.
+  echo '{"tool_name":"Bash","tool_input":{"command":"tmux-session-picker message-send --to realone-30 --text hi"},"tool_response":{"exitCode":0}}' \
+    | PATH="$stubdir:$PATH" XTMUX_PICKER=/bin/true node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
+  [ -f "$amdir/realone-30_pending" ] || exit 2
+) && ok "auto-monitor: tmux has-session precheck (.30)" || nok "auto-monitor: tmux has-session precheck (.30)"
 # xtmux-3xs.25: log-query shadow-diff records divergence when V1 JSONL differs from V2 SQL.
 (
   set -e

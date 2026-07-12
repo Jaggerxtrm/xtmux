@@ -55,6 +55,21 @@ function extractTarget(cmd: string): string | null {
   return null;
 }
 
+// xtmux-3xs.30: `tmux has-session -t <target>` precheck. Exit 1 = target
+// missing → skip. Anything else (exit 0, subprocess error, timeout) falls
+// through: better to spawn a monitor than silently drop a wake.
+function targetExists(target: string): boolean {
+  try {
+    const r = spawnSync("tmux", ["has-session", "-t", target], {
+      stdio: "ignore",
+      timeout: 2000,
+    });
+    return r.status !== 1;
+  } catch {
+    return true;
+  }
+}
+
 function alreadyMonitored(target: string): boolean {
   const r = spawnSync(PICKER, ["monitor-list"], {
     encoding: "utf8",
@@ -94,6 +109,8 @@ export default function xtmuxAutoMonitor(pi: ExtensionAPI): void {
     if (!target) return undefined;
     // xtmux-3xs.29: synthetic smoke-test targets never wake anyone — skip.
     if (SKIP_TARGETS.has(target)) return undefined;
+    // xtmux-3xs.30: also skip when tmux confirms the target doesn't exist.
+    if (!targetExists(target)) return undefined;
     if (alreadyMonitored(target)) return undefined;
 
     fireMonitor(target);

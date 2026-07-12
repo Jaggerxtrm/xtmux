@@ -81,6 +81,22 @@ function extractTarget(cmd) {
   return null;
 }
 
+// xtmux-3xs.30: `tmux has-session -t <target>` precheck. Exit 1 = target
+// missing → skip touch + monitor spawn. Anything else (exit 0, subprocess
+// error, timeout) falls through: better to touch than silently drop a wake
+// we could have armed.
+function targetExists(target) {
+  try {
+    const r = spawnSync("tmux", ["has-session", "-t", target], {
+      stdio: "ignore",
+      timeout: 2000,
+    });
+    return r.status !== 1;
+  } catch {
+    return true; // can't check → assume exists
+  }
+}
+
 function alreadyMonitored(target) {
   const r = spawnSync(PICKER, ["monitor-list"], { encoding: "utf8", stdio: "pipe" });
   if (r.status !== 0) return false;
@@ -122,6 +138,8 @@ function main() {
 
   // xtmux-3xs.29: synthetic smoke-test targets never wake anyone — skip.
   if (SKIP_TARGETS.has(target)) return;
+  // xtmux-3xs.30: also skip when tmux confirms the target doesn't exist.
+  if (!targetExists(target)) return;
 
   // Mark this target as needing a Monitor arm before the next Stop.
   // Kept even if a monitor-agent daemon is already active — daemon feeds pi/
