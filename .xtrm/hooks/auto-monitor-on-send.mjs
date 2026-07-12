@@ -26,6 +26,14 @@ const TIMEOUT = process.env.XTMUX_AUTO_MONITOR_TIMEOUT || "8h";
 const INTERVAL = process.env.XTMUX_AUTO_MONITOR_INTERVAL || "60s";
 const PICKER = process.env.XTMUX_PICKER || "/home/dawid/dev/xtmux/bin/tmux-session-picker";
 const STATE_DIR = `${process.env.XDG_RUNTIME_DIR || "/tmp"}/xtmux-auto-monitor`;
+// xtmux-3xs.29: colon-separated list of targets to skip entirely (no marker,
+// no monitor). Same shape as PATH. Set in smoke-test env so synthetic
+// recipients (alice, dst, smoke:1.99, ...) don't trip the drain-stop hook.
+const SKIP_TARGETS = new Set(
+  (process.env.XTMUX_AUTO_MONITOR_SKIP_TARGETS || "")
+    .split(":")
+    .filter((s) => s.length > 0),
+);
 
 function pendingPath(target) {
   return `${STATE_DIR}/${target.replace(/[^A-Za-z0-9._:%$-]/g, "_")}_pending`;
@@ -111,6 +119,9 @@ function main() {
   if (/monitor-(agent|list|kill)\b/.test(cmd)) return;
   // Never fire on wait-agent — that IS the drain, not a new send.
   if (/\bwait-agent\b/.test(cmd)) return;
+
+  // xtmux-3xs.29: synthetic smoke-test targets never wake anyone — skip.
+  if (SKIP_TARGETS.has(target)) return;
 
   // Mark this target as needing a Monitor arm before the next Stop.
   // Kept even if a monitor-agent daemon is already active — daemon feeds pi/

@@ -15,10 +15,11 @@
  * This extension enforces monitor arming structurally.
  *
  * Env overrides:
- *   XTMUX_AUTO_MONITOR_TIMEOUT  (default 8h)
- *   XTMUX_AUTO_MONITOR_INTERVAL (default 60s)
- *   XTMUX_AUTO_MONITOR_DISABLE=1 (bypass)
- *   XTMUX_PICKER                (default /home/dawid/dev/xtmux/bin/tmux-session-picker)
+ *   XTMUX_AUTO_MONITOR_TIMEOUT       (default 8h)
+ *   XTMUX_AUTO_MONITOR_INTERVAL      (default 60s)
+ *   XTMUX_AUTO_MONITOR_DISABLE=1     (bypass entirely)
+ *   XTMUX_AUTO_MONITOR_SKIP_TARGETS  (colon-separated; skip these targets. xtmux-3xs.29)
+ *   XTMUX_PICKER                     (default /home/dawid/dev/xtmux/bin/tmux-session-picker)
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isBashToolResult } from "@earendil-works/pi-coding-agent";
@@ -29,6 +30,14 @@ const PICKER =
   process.env.XTMUX_PICKER || "/home/dawid/dev/xtmux/bin/tmux-session-picker";
 const TIMEOUT = process.env.XTMUX_AUTO_MONITOR_TIMEOUT || "8h";
 const INTERVAL = process.env.XTMUX_AUTO_MONITOR_INTERVAL || "60s";
+// xtmux-3xs.29: colon-separated list of targets to skip entirely (no monitor
+// spawn). Same shape as PATH. Set in smoke-test env so synthetic recipients
+// (alice, dst, smoke:1.99, ...) don't spawn useless monitor-agent daemons.
+const SKIP_TARGETS = new Set(
+  (process.env.XTMUX_AUTO_MONITOR_SKIP_TARGETS || "")
+    .split(":")
+    .filter((s) => s.length > 0),
+);
 
 function extractTarget(cmd: string): string | null {
   // message-send --to <target>
@@ -83,6 +92,8 @@ export default function xtmuxAutoMonitor(pi: ExtensionAPI): void {
 
     const target = extractTarget(cmd);
     if (!target) return undefined;
+    // xtmux-3xs.29: synthetic smoke-test targets never wake anyone — skip.
+    if (SKIP_TARGETS.has(target)) return undefined;
     if (alreadyMonitored(target)) return undefined;
 
     fireMonitor(target);

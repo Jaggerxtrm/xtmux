@@ -458,6 +458,25 @@ grep -F '"--wait-for-transition"' extensions/pi-auto-monitor.ts >/dev/null && gr
   echo '{"stop_hook_active":false}' | node .xtrm/hooks/auto-monitor-drain-stop.mjs >/dev/null
   [ ! -f "$amdir/stale_pending" ] || exit 7
 ) && ok "auto-monitor: three-hook Stop-block coordination (.23)" || nok "auto-monitor: three-hook Stop-block coordination (.23)"
+# xtmux-3xs.29: XTMUX_AUTO_MONITOR_SKIP_TARGETS skips both marker + monitor spawn.
+(
+  set -e
+  export XDG_RUNTIME_DIR="$WORK"
+  amdir="$WORK/xtmux-auto-monitor"; rm -rf "$amdir"
+  # send to alice WITHOUT skip → marker touched.
+  echo '{"tool_name":"Bash","tool_input":{"command":"tmux-session-picker message-send --to alice --text hi"},"tool_response":{"exitCode":0}}' \
+    | XTMUX_PICKER=/bin/true node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
+  [ -f "$amdir/alice_pending" ] || exit 1
+  rm -rf "$amdir"
+  # send to alice WITH skip → no marker.
+  echo '{"tool_name":"Bash","tool_input":{"command":"tmux-session-picker message-send --to alice --text hi"},"tool_response":{"exitCode":0}}' \
+    | XTMUX_PICKER=/bin/true XTMUX_AUTO_MONITOR_SKIP_TARGETS="alice:bob" node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
+  [ ! -f "$amdir/alice_pending" ] || exit 2
+  # send to real target with skip set for others → still touches.
+  echo '{"tool_name":"Bash","tool_input":{"command":"tmux-session-picker message-send --to real:1.2 --text hi"},"tool_response":{"exitCode":0}}' \
+    | XTMUX_PICKER=/bin/true XTMUX_AUTO_MONITOR_SKIP_TARGETS="alice:bob" node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
+  [ -f "$amdir/real:1.2_pending" ] || exit 3
+) && ok "auto-monitor: SKIP_TARGETS bypass (.29)" || nok "auto-monitor: SKIP_TARGETS bypass (.29)"
 # xtmux-3xs.25: log-query shadow-diff records divergence when V1 JSONL differs from V2 SQL.
 (
   set -e
