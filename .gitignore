@@ -18,3 +18,8 @@
 # xt / bd worktrees (transient sandbox checkouts)
 .xtrm/worktrees/
 .worktrees/
+
+# Bun / Node
+node_modules/
+dist/
+*.tsbuildinfo

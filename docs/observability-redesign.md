@@ -715,9 +715,10 @@ Base directory: `tests/fixtures/golden/v1/`. Each command produces three files:
 
 Normalization: shared `tests/fixtures/golden/v1/normalize.sed` filters volatile tokens (timestamps, PIDs, hashes, tmp paths, pane / session ids, epoch seconds, 40-hex SHAs) before diff. Comparators run `sed -f normalize.sed` on both sides before comparing.
 
-Phase 1 captured (this session, in worktree `xtmux-xt-claude-hnjk`):
+Phase 1/2 captured (this session, in worktree `xtmux-xt-claude-hnjk`):
 
-- `message-list-empty`, `message-list-unacked-empty`, `monitor-list-empty`, `log-tail-empty`, `log-query-empty`, `audit-noop`
+- **Isolated (byte-identity oracle):** `message-list-empty`, `message-list-unacked-empty`, `monitor-list-empty`, `log-tail-empty`, `log-query-empty` — reproducible via `scripts/capture-v1-fixtures.sh` inside a scratch `XDG_STATE_HOME` + `TMPDIR` so no /tmp monitor rows or ambient events pollute the capture. Drift check: `scripts/capture-v1-fixtures.sh --check`.
+- **Live (documentary):** `log-tail-live`, `log-query-live`, `audit-live` — snapshots of a real dev-machine state; NOT a byte-identity oracle. Serve as reference for downstream phase authors.
 
 Phase 1 captured (concurrent, in worktree `xtmux-xt-claude-ojsx`): `normalize.sed` + monitor/telemetry/audit-focused fixtures — merged at Phase 1 close.
 

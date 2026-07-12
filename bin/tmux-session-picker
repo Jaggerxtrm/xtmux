@@ -656,6 +656,19 @@ rotate_event_log_if_needed() {
   : > "$file" 2>/dev/null || true
 }
 
+# V2 backend mode: 0/unset -> off; shadow -> mirror writes to observability.db
+# for divergence comparison while V1 stays authoritative; 1 -> V2 authoritative.
+# Domain phases (3-8, epic xtmux-3xs) wire the actual delegation; this function
+# only surfaces the mode so shell callers can branch without re-parsing the env.
+obs_v2_mode() {
+  case "${XTMUX_OBS_V2:-}" in
+    '' | '0')  REPLY='off' ;;
+    shadow)    REPLY='shadow' ;;
+    '1')       REPLY='on' ;;
+    *)         REPLY='off' ;;
+  esac
+}
+
 log_event() {
   local type="${1:-}" file dir ts epoch first=1 kv key val
   [ -n "$type" ] || return 0

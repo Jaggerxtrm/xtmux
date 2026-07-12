@@ -1,0 +1,19 @@
+{
+  "name": "@xtmux/observability",
+  "version": "0.1.0-alpha",
+  "private": true,
+  "type": "module",
+  "description": "SQLite-backed durable runtime for xtmux observability, messaging, and agent lifecycle (epic xtmux-3xs). Delegated backend for bin/tmux-session-picker under XTMUX_OBS_V2.",
+  "bin": {
+    "xtmux-obs": "./src/cli.ts"
+  },
+  "scripts": {
+    "cli": "bun run src/cli.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}
