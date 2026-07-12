@@ -583,6 +583,61 @@ Preservation rules:
 
 Cleanup runs transactionally per domain, independent. WAL checkpoint after cleanup allowed. `VACUUM` does NOT run on every threshold crossing — Phase 10 sets an explicit trigger threshold.
 
+### 6.1 Scheduling (xtmux-3xs.16)
+
+Retention is intentionally NOT auto-run on picker invocation (no in-process
+scheduler — PRD §25 forbids mandatory daemons). Operators wire it externally.
+The CLI exposes:
+
+```bash
+xtmux-obs retention   # prints a RetentionReport JSON; exits 0 on success
+```
+
+Two vetted patterns:
+
+**systemd user timer** (`~/.config/systemd/user/xtmux-obs-retention.{service,timer}`):
+
+```ini
+# xtmux-obs-retention.service
+[Unit]
+Description=xtmux observability retention
+
+[Service]
+Type=oneshot
+ExecStart=/home/%u/dev/xtmux/bin/xtmux-obs retention
+Environment=XTMUX_OBS_MESSAGE_RETENTION_DAYS=30
+
+# xtmux-obs-retention.timer
+[Unit]
+Description=Run xtmux observability retention daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable: `systemctl --user enable --now xtmux-obs-retention.timer`.
+
+**crontab** (`crontab -e`):
+
+```cron
+17 3 * * * XTMUX_OBS_MESSAGE_RETENTION_DAYS=30 /home/USER/dev/xtmux/bin/xtmux-obs retention >> ~/.local/state/xtmux/retention.log 2>&1
+```
+
+Retention env references (all defaults chosen in Phase 10; see
+`src/db/retention.ts::DEFAULTS`):
+
+- `XTMUX_OBS_MESSAGE_RETENTION_DAYS` (default 30)
+- `XTMUX_OBS_AGENT_STATE_RETENTION_DAYS` (default 14)
+- `XTMUX_OBS_TURN_RETENTION_DAYS` (default 60)
+- `XTMUX_OBS_TELEMETRY_RETENTION_DAYS` (default 30)
+- `XTMUX_OBS_AUDIT_RETENTION_DAYS` (default 90)
+- `XTMUX_OBS_DELIVERY_RETENTION_DAYS` (default 7)
+- `XTMUX_OBS_DB_MAX_BYTES` (default unset — no size cap)
+
 ---
 
 ## 7. Feature-flag modes (PRD §18)

@@ -10,6 +10,7 @@ import { recordDelivery } from "./domains/deliveries/attempt.ts";
 import type { DeliveryKind } from "./domains/deliveries/attempt.ts";
 import { runMigration } from "./migration/runner.ts";
 import { recordDivergence, summarizeDivergences, type DiffKind } from "./db/shadow.ts";
+import { applyRetention } from "./db/retention.ts";
 import { monitorCommand } from "./commands/monitors.ts";
 import { telemetryCommand } from "./commands/telemetry.ts";
 import { auditCommand } from "./commands/audit.ts";
@@ -30,6 +31,7 @@ commands:
   audit ingest [--partial]                               persist audit findings from stdin (3xs.8)
 
   obs-migrate --dry-run|--apply|--status  legacy JSONL importer + report
+  retention                                apply per-domain retention; prints RetentionReport
   shadow-summary                          shadow-mode divergence rollup
   shadow-record --domain X --command Y --diff-kind Z [--v1-snippet S --v2-snippet S]
                                           record a shadow divergence (picker-internal)
@@ -126,6 +128,20 @@ async function main(argv: string[]): Promise<number> {
           migrate(db);
           const rows = summarizeDivergences(db);
           process.stdout.write(JSON.stringify(rows, null, 2) + "\n");
+          return 0;
+        } finally {
+          db.close();
+        }
+      }
+      case "retention": {
+        // Apply per-domain retention. Preservation rules baked into the SQL
+        // (unacked messages / active instances / incomplete runs / unresolved
+        // findings never touched). Config comes from env — see docs §6.
+        const db = openDb(cfg);
+        try {
+          migrate(db);
+          const report = applyRetention(db);
+          process.stdout.write(JSON.stringify(report, null, 2) + "\n");
           return 0;
         } finally {
           db.close();
