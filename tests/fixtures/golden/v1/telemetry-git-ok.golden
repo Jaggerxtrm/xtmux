@@ -1,4 +1,4 @@
 main
 exit=0
-{"ts":"<TS>","ts_epoch":<EPOCH>,"type":"telemetry.command.started","tool":"git","event":"git.command","pane":"<PANE>","session":"golden-gone","bead":"","cwd":"<TMP>","repo":"<TMP>","branch":"main","head":"<SHA>","argv":"rev-parse --abbrev-ref HEAD"}
-{"ts":"<TS>","ts_epoch":<EPOCH>,"type":"git.command","tool":"git","exit":"0","pane":"<PANE>","session":"golden-gone","bead":"","cwd":"<TMP>","repo":"<TMP>","branch":"main","head":"<SHA>","argv":"rev-parse --abbrev-ref HEAD"}
+{"ts":"<TS>","ts_epoch":<EPOCH>,"type":"telemetry.command.started","tool":"git","event":"git.command","pane":"<PANE>","session":"<SESSION>","bead":"","cwd":"<TMP>","repo":"<TMP>","branch":"main","head":"<SHA>","argv":"rev-parse --abbrev-ref HEAD"}
+{"ts":"<TS>","ts_epoch":<EPOCH>,"type":"git.command","tool":"git","exit":"0","pane":"<PANE>","session":"<SESSION>","bead":"","cwd":"<TMP>","repo":"<TMP>","branch":"main","head":"<SHA>","argv":"rev-parse --abbrev-ref HEAD"}

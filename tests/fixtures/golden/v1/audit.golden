@@ -2,8 +2,15 @@ audit	read-only	warnings-and-cleanup-candidates
 cleanup	missing-path	<SESSION_ID>	golden-gone	<TMP> (deleted)
 cleanup	stale-specialist	<SESSION_ID>	sp-executor-golden	state=
 warning	agent-pane-without-bead	<SESSION_ID>	golden-work	<PANE>	state=running	cmd=zsh
+warning	dirty-worktree	<SESSION_ID>	marketdata-mmd-5suv	dirty=1	repo=market-data	path=/home/dawid/projects/mercury/market-data
 warning	dirty-worktree	<SESSION_ID>	sp-executor-golden	dirty=1	repo=wt-dirty	path=<TMP>
+warning	dirty-worktree	<SESSION_ID>	design	dirty=8	repo=specialists	path=/home/dawid/dev/specialists
+warning	dirty-worktree	<SESSION_ID>	infra	dirty=1	repo=infra	path=/home/dawid/projects/mercury/infra
+warning	dirty-worktree	<SESSION_ID>	marketdata	dirty=1	repo=infra	path=/home/dawid/projects/mercury/infra
+warning	dirty-worktree	<SESSION_ID>	marketdata-bcs-roll	dirty=9	repo=barchart-scraper	path=/home/dawid/projects/mercury/barchart-scraper
 warning	naming-convention	<SESSION_ID>	tmp-badname
 warning	shared-worktree	<SESSION_ID>	golden-main	repo=wt-clean	path=<TMP>
 warning	shared-worktree	<SESSION_ID>	golden-work	repo=wt-clean	path=<TMP>
+warning	shared-worktree	<SESSION_ID>	infra	repo=infra	path=/home/dawid/projects/mercury/infra
+warning	shared-worktree	<SESSION_ID>	marketdata	repo=infra	path=/home/dawid/projects/mercury/infra
 warning	working-do-not-kill	<SESSION_ID>	golden-work	state=running
