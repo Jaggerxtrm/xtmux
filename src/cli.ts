@@ -4,7 +4,7 @@ import { openDb } from "./db/connection.ts";
 import { migrate } from "./db/schema.ts";
 import { checkHealth } from "./db/health.ts";
 import { DbError } from "./db/errors.ts";
-import { cliMessageAck, cliMessageList, cliMessageSend } from "./cli-messages.ts";
+import { cliMessageAck, cliMessageList, cliMessageSend, cliMessageStatus, cliUnreadCount } from "./cli-messages.ts";
 import { cliLogEmit, cliLogTail, cliLogQuery } from "./cli-log.ts";
 import { recordDelivery } from "./domains/deliveries/attempt.ts";
 import type { DeliveryKind } from "./domains/deliveries/attempt.ts";
@@ -25,6 +25,8 @@ commands:
   message-send --to <sid> --from <sid> [--to-pane %N] [--from-pane %N] --text T [--bead ID] [--message-key K]
   message-list --for <sid> [--pane %N] [--from <sid>] [--since <ms>] [--unacked] [--limit N]
   message-ack <message_id> --by <sid>
+  message-status <message_key>        print JSON receipt state (V2 only)
+  unread-count --for <sid>            print JSON unread summary (V2 only)
 
   monitor register|adopt|heartbeat|terminate|list|kill   monitor registry (3xs.4)
   telemetry start|finish                                 correlated command runs (3xs.7)
@@ -179,6 +181,8 @@ async function main(argv: string[]): Promise<number> {
       case "message-send":
       case "message-list":
       case "message-ack":
+      case "message-status":
+      case "unread-count":
       case "log-emit":
       case "log-tail":
       case "log-query":
@@ -191,6 +195,8 @@ async function main(argv: string[]): Promise<number> {
             case "message-send":     return cliMessageSend(db, rest);
             case "message-list":     return cliMessageList(db, rest);
             case "message-ack":      return cliMessageAck(db, rest);
+            case "message-status":   return cliMessageStatus(db, rest);
+            case "unread-count":     return cliUnreadCount(db, rest);
             case "log-emit":         return cliLogEmit(db, rest);
             case "log-tail":         return cliLogTail(db, rest);
             case "log-query":        return cliLogQuery(db, rest);

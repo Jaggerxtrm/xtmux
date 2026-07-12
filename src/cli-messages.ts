@@ -10,6 +10,8 @@ import type { Db } from "./db/connection.ts";
 import { ackMessage } from "./domains/messages/ack.ts";
 import { listMessages } from "./domains/messages/list.ts";
 import { sendMessage } from "./domains/messages/send.ts";
+import { computeUnread } from "./domains/messages/reconcile-unread.ts";
+import { messageStatus } from "./domains/messages/status.ts";
 
 interface Args {
   positional: string[];
@@ -136,6 +138,33 @@ export function cliMessageList(db: Db, argv: string[]): number {
  * rejection is a stderr note with a distinct exit code so the picker or a
  * downstream test can branch on it.
  */
+export function cliMessageStatus(db: Db, argv: string[]): number {
+  const { positional } = parseArgs(argv);
+  const key = positional[0] ?? "";
+  if (!key) {
+    process.stderr.write("message-status: <message_key> required\n");
+    return 2;
+  }
+  const status = messageStatus(db, key);
+  if (!status) {
+    process.stderr.write("message-status: unknown message key\n");
+    return 5;
+  }
+  process.stdout.write(JSON.stringify(status) + "\n");
+  return 0;
+}
+
+export function cliUnreadCount(db: Db, argv: string[]): number {
+  const { flags } = parseArgs(argv);
+  const recipientId = String(flags.get("for") ?? "");
+  if (!recipientId) {
+    process.stderr.write("unread-count: --for <recipient> required\n");
+    return 2;
+  }
+  process.stdout.write(JSON.stringify(computeUnread(db, recipientId)) + "\n");
+  return 0;
+}
+
 export function cliMessageAck(db: Db, argv: string[]): number {
   const { positional, flags } = parseArgs(argv);
   const messageKey = positional[0] ?? "";

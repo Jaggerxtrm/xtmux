@@ -1018,6 +1018,33 @@ message_ack() {
   printf 'ack\t%s\t%s\n' "$id" "$by"
 }
 
+message_status() {
+  local key="${1:-}"
+  [ -n "$key" ] || { printf 'usage: message-status <message_key>\n' >&2; return 2; }
+  obs_v2_mode
+  [ "$REPLY" = on ] || { printf 'message-status: requires XTMUX_OBS_V2=1\n' >&2; return 2; }
+  obs_runtime_argv
+  exec "${OBS_ARGV[@]}" message-status "$key"
+}
+
+unread_count() {
+  local recipient="" arg
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --for) [ "$#" -gt 0 ] || return 2; recipient="$1"; shift ;;
+      --for=*) recipient="${arg#--for=}" ;;
+      *) printf 'unread-count: unknown arg: %s\n' "$arg" >&2; return 2 ;;
+    esac
+  done
+  [ -n "$recipient" ] || { printf 'usage: unread-count --for <recipient>\n' >&2; return 2; }
+  obs_v2_mode
+  [ "$REPLY" = on ] || { printf 'unread-count: requires XTMUX_OBS_V2=1\n' >&2; return 2; }
+  if resolve_to_session_id "$recipient"; then recipient="$REPLY"; fi
+  obs_runtime_argv
+  exec "${OBS_ARGV[@]}" unread-count --for "$recipient"
+}
+
 message_json_field() {
   local name="$1" line="$2"
   printf '%s\n' "$line" | sed -n "s/.*\"$name\":\"\([^\"\\]*\)\".*/\1/p"
@@ -2832,6 +2859,16 @@ case "${1:-}" in
     message_list "$@"
     exit $?
     ;;
+  message-status)
+    shift
+    message_status "$@"
+    exit $?
+    ;;
+  unread-count)
+    shift
+    unread_count "$@"
+    exit $?
+    ;;
   message-ack)
     shift
     message_ack "$@"
@@ -2964,7 +3001,7 @@ case "${1:-}" in
   "")
     ;;
   *)
-    printf 'usage: %s [list [all|waiting|running|repo:..|branch:..|cmd:..|grep:..]|preview <type> <sid> <name> <target>|popup <type> <sid> <target>|jump <type> <sid> <target>|kill <type> <sid> <target>|act <type> <sid> <target> <approve|interrupt|message>|attn-jump <n>|jump-back|kill-confirm <sid> <answer>|bulk-kill <rows...>|bulk-kill-confirm <answer> <sid...>|rename <type> <sid> <target>|rename-apply <type> <target> <name>|list-active|dashboard [sessions-only|expanded]|audit|handoff --target <target> --bead <id> [--note text] [--yes]|mux-help|log <emit|tail|query>|message-send --to <target> --text <text>|message-list --for <target>|message-ack <id>|telemetry <git|bd|gh> -- <args...>|wait-agent <target> [--wait-for-transition] [--timeout 30m] [--interval 30s]|monitor-agent <target> [--wait-for-transition] [--timeout 30m] [--interval 30s]|monitor-list|monitor-kill <id>|safe-send-pointer [--yes] [--double-enter|--no-double-enter] [--force-freeform] <target> <slash-command|/tmp pointer>|worktree-collisions|mode-toggle|border-label|filter-menu|filter-clear|prompt-label|clear-cache|install-hooks [picker-path]]\n' "$0" >&2
+    printf 'usage: %s [list [all|waiting|running|repo:..|branch:..|cmd:..|grep:..]|preview <type> <sid> <name> <target>|popup <type> <sid> <target>|jump <type> <sid> <target>|kill <type> <sid> <target>|act <type> <sid> <target> <approve|interrupt|message>|attn-jump <n>|jump-back|kill-confirm <sid> <answer>|bulk-kill <rows...>|bulk-kill-confirm <answer> <sid...>|rename <type> <sid> <target>|rename-apply <type> <target> <name>|list-active|dashboard [sessions-only|expanded]|audit|handoff --target <target> --bead <id> [--note text] [--yes]|mux-help|log <emit|tail|query>|message-send --to <target> --text <text>|message-list --for <target>|message-ack <id>|message-status <message_key>|unread-count --for <recipient>|telemetry <git|bd|gh> -- <args...>|wait-agent <target> [--wait-for-transition] [--timeout 30m] [--interval 30s]|monitor-agent <target> [--wait-for-transition] [--timeout 30m] [--interval 30s]|monitor-list|monitor-kill <id>|safe-send-pointer [--yes] [--double-enter|--no-double-enter] [--force-freeform] <target> <slash-command|/tmp pointer>|worktree-collisions|mode-toggle|border-label|filter-menu|filter-clear|prompt-label|clear-cache|install-hooks [picker-path]]\n' "$0" >&2
     exit 2
     ;;
 esac
