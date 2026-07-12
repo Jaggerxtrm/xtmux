@@ -1,0 +1,49 @@
+audit	read-only	warnings-and-cleanup-candidates
+warning	agent-pane-without-bead	$1156	sre-agent	%1792	state=done	cmd=claude
+warning	agent-pane-without-bead	$1495	xt-design	%1654	state=running	cmd=claude
+warning	agent-pane-without-bead	$1495	xt-design	%1863	state=done	cmd=pi
+warning	agent-pane-without-bead	$1625	infra-sprint	%1807	state=done	cmd=node
+warning	agent-pane-without-bead	$1686	core-coord	%1882	state=done	cmd=node
+warning	agent-pane-without-bead	$1732	xtmux	%1930	state=running	cmd=node
+warning	agent-pane-without-bead	$1732	xtmux	%1931	state=done	cmd=node
+warning	dirty-worktree	$1156	sre-agent	dirty=1	repo=infra	path=/home/dawid/projects/mercury/infra
+warning	shared-worktree	$1156	sre-agent	repo=infra	path=/home/dawid/projects/mercury/infra
+warning	shared-worktree	$1275	xtmux-monitor	repo=xtmux	path=/home/dawid/dev/xtmux
+warning	shared-worktree	$1495	xt-design	repo=core	path=/home/dawid/dev/core
+warning	working-do-not-kill	$1495	xt-design	state=running
+warning	dirty-worktree	$1625	infra-sprint	dirty=1	repo=infra	path=/home/dawid/projects/mercury/infra
+warning	shared-worktree	$1625	infra-sprint	repo=infra	path=/home/dawid/projects/mercury/infra
+warning	dirty-worktree	$1639	xtmux-obs	dirty=3	repo=xtmux-xt-pi-obs-redesign	path=/home/dawid/dev/xtmux/.xtrm/worktrees/xtmux-xt-pi-obs-redesign
+cleanup	stale-specialist	$1675	sp-executor-5c56f3	state=
+warning	shared-worktree	$1675	sp-executor-5c56f3	repo=core	path=/home/dawid/dev/core
+cleanup	stale-specialist	$1678	sp-executor-7877ac	state=
+warning	shared-worktree	$1678	sp-executor-7877ac	repo=core	path=/home/dawid/dev/core
+warning	shared-worktree	$1686	core-coord	repo=core	path=/home/dawid/dev/core
+cleanup	stale-specialist	$1687	sp-executor-bf3f73	state=
+warning	shared-worktree	$1687	sp-executor-bf3f73	repo=core	path=/home/dawid/dev/core
+cleanup	stale-specialist	$1690	sp-executor-69eb18	state=
+warning	shared-worktree	$1690	sp-executor-69eb18	repo=core	path=/home/dawid/dev/core
+cleanup	stale-specialist	$1693	sp-executor-bf9a1d	state=
+warning	shared-worktree	$1693	sp-executor-bf9a1d	repo=core	path=/home/dawid/dev/core
+cleanup	stale-specialist	$1701	sp-executor-1ca1c0	state=
+warning	shared-worktree	$1701	sp-executor-1ca1c0	repo=core	path=/home/dawid/dev/core
+cleanup	stale-specialist	$1703	sp-executor-aece94	state=
+warning	shared-worktree	$1703	sp-executor-aece94	repo=core	path=/home/dawid/dev/core
+cleanup	stale-specialist	$1707	sp-executor-9d0ac0	state=
+warning	shared-worktree	$1707	sp-executor-9d0ac0	repo=core	path=/home/dawid/dev/core
+cleanup	stale-specialist	$1710	sp-executor-5fc97b	state=
+warning	shared-worktree	$1710	sp-executor-5fc97b	repo=core	path=/home/dawid/dev/core
+cleanup	stale-specialist	$1720	sp-executor-19f44b	state=
+warning	shared-worktree	$1720	sp-executor-19f44b	repo=core	path=/home/dawid/dev/core
+cleanup	stale-specialist	$1721	sp-executor-f19df9	state=
+warning	shared-worktree	$1721	sp-executor-f19df9	repo=core	path=/home/dawid/dev/core
+cleanup	stale-specialist	$1723	sp-executor-1d44e0	state=
+warning	shared-worktree	$1723	sp-executor-1d44e0	repo=core	path=/home/dawid/dev/core
+cleanup	stale-specialist	$1729	sp-executor-547db5	state=
+warning	shared-worktree	$1729	sp-executor-547db5	repo=core	path=/home/dawid/dev/core
+cleanup	stale-specialist	$1731	sp-executor-a4f9d2	state=
+warning	shared-worktree	$1731	sp-executor-a4f9d2	repo=core	path=/home/dawid/dev/core
+warning	shared-worktree	$1732	xtmux	repo=xtmux	path=/home/dawid/dev/xtmux
+warning	working-do-not-kill	$1732	xtmux	state=running
+warning	dirty-worktree	$590	pr-watch	dirty=1	repo=infra	path=/home/dawid/projects/mercury/infra
+warning	shared-worktree	$590	pr-watch	repo=infra	path=/home/dawid/projects/mercury/infra
