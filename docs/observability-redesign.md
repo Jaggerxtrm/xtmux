@@ -99,6 +99,12 @@ PRAGMA busy_timeout = 3000;
 PRAGMA foreign_keys = ON;
 ```
 
+On close, per SQLite's own guidance and xtmux-3xs.15:
+
+```sql
+PRAGMA optimize;   -- best-effort; opt out with XTMUX_OBS_SKIP_PRAGMA_OPTIMIZE=1
+```
+
 Any deviation requires benchmark or reliability evidence appended to §11 of this doc.
 
 ### 4.1 `schema_migrations`

@@ -34,6 +34,13 @@ export function openDb(cfg: Config): Db {
   return {
     raw,
     close(): void {
+      // xtmux-3xs.15: SQLite's own guidance is to run `PRAGMA optimize` before
+      // closing so the query planner's stats don't drift as data grows.
+      // Best-effort; XTMUX_OBS_SKIP_PRAGMA_OPTIMIZE=1 opts out for benchmark
+      // comparability.
+      if (process.env["XTMUX_OBS_SKIP_PRAGMA_OPTIMIZE"] !== "1") {
+        try { raw.exec("PRAGMA optimize;"); } catch { /* best-effort */ }
+      }
       raw.close();
     },
   };
