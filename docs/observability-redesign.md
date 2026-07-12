@@ -640,6 +640,12 @@ Phase 1 captured fixtures (this session):
 Remaining fixtures — captured across Phase 3–8 as each command becomes routable:
 `message-send`, `message-ack`, `monitor-agent`, `monitor-kill`, `handoff`, `safe-send-pointer`, `telemetry`.
 
+### Test-time hostile and differential contracts
+
+`tests/contracts/hostile-env.test.ts` runs V2 commands under degraded invocation conditions: absent invocation metadata, panes without bead/state options, and a missing `tmux` binary. It asserts explicit `NULL`/`unknown` handling and no partial durable write on rejection. Add one matrix row for each new V2 route rather than relying on an in-tmux happy-path test.
+
+`tests/contracts/differential-v1-v2.test.ts` runs V1 and V2 from the same isolated tmux state and compares stdout, stderr, and exit status after normalizing volatile timestamps. Message send/list/unacked/ack are covered now; audit remains an explicit TODO until V2-only stable ordering lands rather than being normalized away.
+
 ---
 
 ## 10. Performance target and benchmark plan (PRD §21)
@@ -671,49 +677,48 @@ Acceptance:
 
 ### 11.1 Benchmark result (Corpus A, 100k messages × 100 recipients)
 
-Full-command latency including Bun startup + DB open + schema verification +
-query + formatting + exit. `src/benchmarks/messages.ts`, 100 samples with 5
-warmup iterations, run under XTMUX_OBS_V2=1 against the hot recipient:
+Full-command latency including runtime startup + DB open + schema verification +
+query + formatting + exit. `src/benchmarks/messages.ts`, 200 samples with 5
+warmup iterations, run under XTMUX_OBS_V2=1 against the hot recipient.
 
-- p50: 63.8 ms
-- p95: 85.4 ms
-- p99: 139.4 ms
-- max: 139.4 ms
+Two runtimes measured back-to-back on the same machine:
+
+| Percentile | `bun run src/cli.ts` (baseline) | `bin/xtmux-obs` (compiled) | Δ      |
+| ---------: | ------------------------------: | -------------------------: | -----: |
+| p50        | 72.9 ms                         | 59.6 ms                    | −18%   |
+| p95        | 110.8 ms                        | 76.4 ms                    | −31%   |
+| p99        | 134.2 ms                        | 93.0 ms                    | −31%   |
+| max        | 135.9 ms                        | 97.2 ms                    | −29%   |
 
 The query itself is under 5 ms (LEFT JOIN receipts, indexed by
-`msg_recipient_id (recipient_id, id)`); the remaining ~60 ms floor is Bun
-runtime startup + module resolution + schema verification. The p99 tail is
-OS-level jitter (spawnSync + filesystem cache miss + fsync burst).
+`msg_recipient_id (recipient_id, id)`); the remaining floor is runtime
+startup + module resolution + schema verification. `bun build --compile` (xtmux-3xs.11)
+produces a single-file 101 MB binary that ships the Bun runtime inline; startup
+drops by ~13 ms at p50 and ~40 ms at p99 versus `bun run`, moving p99 under
+the PRD §21 100 ms target.
 
-**Status vs PRD §21 target (`p99 < 100 ms on 100k-message corpus`): FAIL on
-p99, PASS on p95.** p50/p95 are comfortably under target; the deficit is
-entirely in the top-1% tail from process-startup noise. Query-only latency
-(measured in-process without spawnSync) is <5 ms and PASSES with margin.
-
-Recommendations (defer to a post-Phase-10 tuning issue):
-
-1. `bun build --compile` a single-file binary for the CLI, cutting
-   startup latency by ~40 ms per invocation; expect p99 to drop under 60 ms.
-2. Alternatively, redefine the target as p95<100 ms (which passes), given
-   that PRD §21 acceptance also names "no per-row process spawning" which
-   is already met (a single spawn per user command).
+**Status vs PRD §21 target (`p99 < 100 ms on 100k-message corpus`): PASS**
+under the compiled binary. Fallback path (`bun run src/cli.ts`, used when
+`bin/xtmux-obs` is absent) remains FAIL on p99, PASS on p95 — the picker
+prefers the binary automatically when present.
 
 ### 11.2 Cutover HOLD
 
-Given the p99 miss, `XTMUX_OBS_V2` default remains **unset (V1 authoritative)**
-until:
+Phase 10 shipped with the cutover on HOLD pending the p99 result. That
+condition is now met via xtmux-3xs.11 (see §11.1). Remaining cutover checks
+before flipping the `XTMUX_OBS_V2` default:
 
-1. Benchmark p99 <100 ms is met after Bun-startup optimization, OR
-2. The target is explicitly redefined + reviewed.
+- Shadow-mode per-command comparator wiring (xtmux-3xs.12)
+- V1/V2 differential contract oracle (xtmux-3xs.19)
 
 Every other Phase 10 exit condition (PRD §24) is green:
 
 - Message correctness: 109/109 tests pass; concurrency test 100 sends → 100 distinct rows
 - Migration idempotent: verified via runMigration rerun test
 - Retention preservation rules: 5 tests, all green (unacked never deleted, active instances/monitors/incomplete-runs/unresolved-findings preserved, agent-state compacts to latest per instance)
-- Shadow substrate ready (per-command comparator wiring is a follow-up issue)
 - Rollback procedure: documented below (§13)
 - No mandatory daemon or broker introduced
+- Runtime p99 under 100 ms (§11.1) ✅
 
 ---
 
@@ -733,15 +738,16 @@ Self-check surface: every domain phase's tests include a grep/query assertion ag
 
 ## 13. Cutover + rollback (Phase 10)
 
-**Current status: HOLD.** Cutover blocked by §11.1 benchmark p99 gap. Every
-other exit condition is met.
+**Current status: HOLD.** Cutover blocked pending shadow comparator (xtmux-3xs.12)
+and V1/V2 differential oracle (xtmux-3xs.19). Runtime p99 gate met via
+xtmux-3xs.11 compiled binary; other exit conditions green.
 
 Cutover commit (deferred): sets `XTMUX_OBS_V2=1` as default in the picker +
 closes epic xtmux-3xs. Cutover proceeds only when: (a) message correctness
 passes ✅, (b) concurrency tests pass ✅, (c) migration idempotent ✅,
 (d) shadow comparison clean on production traffic sample (pending — Phase 10
-follow-up), (e) benchmark targets pass ❌ (p99 tail, §11.1), (f) rollback
-procedure documented ✅ (below).
+follow-up), (e) benchmark targets pass ✅ (p99=93 ms via compiled binary, §11.1),
+(f) rollback procedure documented ✅ (below).
 
 Rollback procedure (from XTMUX_OBS_V2=1 default):
 

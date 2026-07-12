@@ -9,7 +9,7 @@
  *
  * Run: bun run src/benchmarks/messages.ts
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -55,13 +55,22 @@ function main(): void {
   const seedMs = performance.now() - startSeed;
   console.log(`seed: ${seedMs.toFixed(0)} ms`);
 
-  const selfPath = new URL(import.meta.resolve("../cli.ts")).pathname;
+  // Prefer the compiled binary (bin/xtmux-obs) when present — startup wins
+  // ~40ms over `bun run src/cli.ts`. Fallback keeps parity for CI runs that
+  // haven't run `bun run build` yet.
+  const repoRoot = new URL("../../", import.meta.url).pathname;
+  const binaryPath = join(repoRoot, "bin/xtmux-obs");
+  const usingBinary = existsSync(binaryPath);
+  const cmd = usingBinary ? binaryPath : "bun";
+  const argvPrefix = usingBinary ? [] : ["run", join(repoRoot, "src/cli.ts")];
+  const runtimeLabel = usingBinary ? "compiled binary" : "bun run src/cli.ts";
+  console.log(`runtime: ${runtimeLabel} (${cmd})`);
 
   const samples: number[] = [];
   const total = ITER_PROBE + WARMUP_ITER;
   for (let i = 0; i < total; i++) {
     const t0 = performance.now();
-    const r = spawnSync("bun", ["run", selfPath, "message-list", "--for", HOT_RECIPIENT, "--limit", "200"], {
+    const r = spawnSync(cmd, [...argvPrefix, "message-list", "--for", HOT_RECIPIENT, "--limit", "200"], {
       env: { ...process.env, XTMUX_OBS_DB_PATH: dbPath, XTMUX_OBS_V2: "1" },
       encoding: "utf8",
     });
