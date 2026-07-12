@@ -29,10 +29,78 @@ export function openDb(cfg: Config): Db {
   raw.exec("PRAGMA synchronous = NORMAL;");
   raw.exec(`PRAGMA busy_timeout = ${cfg.busyTimeoutMs};`);
   raw.exec("PRAGMA foreign_keys = ON;");
+  const threshold = cfg.slowQueryMs ?? 0;
+  if (threshold > 0) installSlowQueryWrapper(raw, threshold);
   return {
     raw,
     close(): void {
       raw.close();
     },
+  };
+}
+
+// installSlowQueryWrapper — proxy Database.prepare so every statement's
+// .all/.get/.run is timed. On exceeding `threshold` ms, insert a db.slow_query
+// envelope into event_journal directly (bypassing journal.ts::insertEnvelope
+// to avoid reentrant prepare calls). xtmux-3xs.14. Zero cost when threshold=0
+// (openDb doesn't call this).
+function installSlowQueryWrapper(raw: Database, threshold: number): void {
+  // Statement built with the UNWRAPPED prepare (so it stays out of the timing
+  // hot path and cannot recurse on itself). Prepared lazily on first slow query
+  // — openDb may run before migrate() has created event_journal, so we cannot
+  // eagerly prepare in the constructor path.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const originalPrepare = (raw.prepare as any).bind(raw) as (sql: string) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let envelopeStmt: any = null;
+  let reentry = false;
+  const record = (sql: string, method: string, ms: number): void => {
+    if (reentry) return;
+    reentry = true;
+    try {
+      if (envelopeStmt === null) {
+        envelopeStmt = originalPrepare(
+          `INSERT INTO event_journal
+             (event_key, type, domain, session_id, pane_id, instance_id, bead_id,
+              correlation_id, payload_json, created_at_ms)
+           VALUES (NULL, ?, 'db', NULL, NULL, NULL, NULL, NULL, ?, ?)
+           RETURNING id`,
+        );
+      }
+      envelopeStmt.get(
+        "db.slow_query",
+        JSON.stringify({ sql, method, duration_ms: Math.round(ms * 100) / 100 }),
+        Date.now(),
+      );
+    } catch {
+      // Best-effort — never let observability break the wrapped call. Also
+      // covers the pre-migrate window: if event_journal doesn't exist yet the
+      // envelope insert throws and we swallow it; envelopeStmt stays null so
+      // we retry after migrate() lands.
+      envelopeStmt = null;
+    } finally {
+      reentry = false;
+    }
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (raw as any).prepare = function (sql: string): unknown {
+    const stmt = originalPrepare(sql);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const wrap = (fn: (...a: any[]) => any, name: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (...args: any[]): unknown => {
+        const t0 = performance.now();
+        try {
+          return fn(...args);
+        } finally {
+          const dt = performance.now() - t0;
+          if (dt > threshold) record(sql, name, dt);
+        }
+      };
+    };
+    if (typeof stmt.all === "function") stmt.all = wrap(stmt.all.bind(stmt), "all");
+    if (typeof stmt.get === "function") stmt.get = wrap(stmt.get.bind(stmt), "get");
+    if (typeof stmt.run === "function") stmt.run = wrap(stmt.run.bind(stmt), "run");
+    return stmt;
   };
 }
