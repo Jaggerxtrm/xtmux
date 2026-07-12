@@ -21,28 +21,13 @@
  *   XTMUX_PICKER                (default /home/dawid/dev/xtmux/bin/tmux-session-picker)
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isBashToolResult } from "@earendil-works/pi-coding-agent";
 import { spawn, spawnSync } from "node:child_process";
 
 const PICKER =
   process.env.XTMUX_PICKER || "/home/dawid/dev/xtmux/bin/tmux-session-picker";
 const TIMEOUT = process.env.XTMUX_AUTO_MONITOR_TIMEOUT || "8h";
 const INTERVAL = process.env.XTMUX_AUTO_MONITOR_INTERVAL || "60s";
-
-interface BashInput { command?: string }
-interface BashResult {
-  tool: string;
-  input: BashInput;
-  content: Array<{ type: string; text?: string }>;
-  isError?: boolean;
-}
-
-function isBashToolResult(event: unknown): event is BashResult {
-  return (
-    typeof event === "object" &&
-    event !== null &&
-    (event as { tool?: string }).tool === "bash"
-  );
-}
 
 function extractTarget(cmd: string): string | null {
   // message-send --to <target>
@@ -90,7 +75,7 @@ export default function xtmuxAutoMonitor(pi: ExtensionAPI): void {
     if (!isBashToolResult(event)) return undefined;
     if (event.isError) return undefined;
 
-    const cmd = event.input.command ?? "";
+    const cmd = (event as unknown as { input?: { command?: string } }).input?.command ?? "";
     // Skip commands that already manage monitors — avoids double-arm loops.
     if (/monitor-(agent|list|kill)\b/.test(cmd)) return undefined;
 
