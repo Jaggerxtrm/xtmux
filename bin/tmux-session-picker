@@ -764,14 +764,15 @@ log_event() {
 log_cli_emit() {
   local type="${1:-}"; shift || true
   [ -n "$type" ] || { printf 'usage: log emit <type> [key=value...]\n' >&2; return 2; }
-  obs_v2_mode
-  if [ "$REPLY" = 'on' ]; then
+  obs_v2_mode; local _mode="$REPLY"
+  if [ "$_mode" = 'on' ]; then
     obs_runtime_argv
     exec "${OBS_ARGV[@]}" log-emit "$type" "$@"
   fi
   log_event "$type" "$@"
-  # Shadow-tee: also insert into V2 event_journal for parity.
-  if [ "$REPLY" = 'shadow' ] && obs_available; then
+  # Shadow-tee: also insert into V2 event_journal for parity. log_event above
+  # clobbers $REPLY (via event_log_file), so we snapshot mode up-front.
+  if [ "$_mode" = 'shadow' ] && obs_available; then
     obs_call log-emit "$type" "$@"
   fi
 }
@@ -925,8 +926,8 @@ message_send() {
   # writes, delegate to the Bun runtime which owns messages/receipts/deliveries
   # and reconciliation. Best-effort tmux display-message note still fires so
   # the UI signal is unchanged.
-  obs_v2_mode
-  if [ "$REPLY" = 'on' ]; then
+  obs_v2_mode; local _mode="$REPLY"
+  if [ "$_mode" = 'on' ]; then
     # pane-hint extraction — reproduce Phase 3's same-session ambiguity fix
     local to_pid='' from_pid=''
     to_pid="$(tmux display-message -p -t "$to" '#{pane_id}' 2>/dev/null || true)"
@@ -943,8 +944,9 @@ message_send() {
   log_event message.sent id="$id" from="$from_sid" to="$to_sid" bead="$bead" text="$text"
   # Shadow-tee: under XTMUX_OBS_V2=shadow, mirror the write into SQLite so
   # subsequent shadow-mode reads can meaningfully diff V1 vs V2 state. V1
-  # remains authoritative; V2 failure is silent.
-  if [ "$REPLY" = 'shadow' ] && obs_available; then
+  # remains authoritative; V2 failure is silent. log_event above clobbers
+  # $REPLY (event_log_file), so we snapshot mode up-front.
+  if [ "$_mode" = 'shadow' ] && obs_available; then
     local to_pid_s='' from_pid_s=''
     to_pid_s="$(tmux display-message -p -t "$to" '#{pane_id}' 2>/dev/null || true)"
     [ -n "$from" ] && from_pid_s="$(tmux display-message -p -t "$from" '#{pane_id}' 2>/dev/null || true)"
@@ -982,8 +984,8 @@ message_ack() {
     current_tmux_session_id; by="$REPLY"
   fi
   [ -n "$by" ] || by='unknown'
-  obs_v2_mode
-  if [ "$REPLY" = 'on' ]; then
+  obs_v2_mode; local _mode="$REPLY"
+  if [ "$_mode" = 'on' ]; then
     obs_runtime_argv
     "${OBS_ARGV[@]}" message-ack "$id" --by "$by" || return $?
     if [ "$by" != unknown ]; then
@@ -1000,7 +1002,8 @@ message_ack() {
   fi
   log_event message.ack id="$id" by="$by"
   # Shadow-tee: mirror ack into SQLite for parity. Best-effort; V1 keeps authority.
-  if [ "$REPLY" = 'shadow' ] && obs_available; then
+  # log_event clobbers $REPLY (event_log_file) so we snapshot mode up-front.
+  if [ "$_mode" = 'shadow' ] && obs_available; then
     obs_call message-ack "$id" --by "$by"
   fi
   # Decrement recipient's unread counter. If it hits zero, clear the stamp too.
