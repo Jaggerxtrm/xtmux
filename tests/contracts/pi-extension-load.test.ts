@@ -3,10 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { expect, test } from "bun:test";
+import xtmuxAutoMonitor from "../../extensions/pi-auto-monitor.ts";
 
 const root = join(import.meta.dir, "../..");
 
-test("pinned Pi API loads exactly the three project extensions", () => {
+test("pinned Pi API loads the two package entrypoints", () => {
   const home = mkdtempSync(join(tmpdir(), "xtmux-pi-home-"));
   const agentDir = join(home, "pi-agent");
   const marker = join(home, "ambient-extension-loaded");
@@ -15,7 +16,6 @@ test("pinned Pi API loads exactly the three project extensions", () => {
 
   const extensions = [
     "extensions/pi-agent-state.ts",
-    "extensions/pi-inbox-reply.ts",
     "extensions/pi-auto-monitor.ts",
   ];
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, PI_CODING_AGENT_DIR: agentDir };
@@ -58,9 +58,23 @@ test("pinned Pi API loads exactly the three project extensions", () => {
     }
 
     expect(result.status, result.stderr).toBe(0);
-    expect(extensions).toHaveLength(3);
+    expect(extensions).toHaveLength(2);
     expect(existsSync(marker)).toBe(false);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
 }, 20_000);
+
+
+test("pi-auto-monitor initializes inbox exactly once", () => {
+  const events: string[] = [];
+  const pi = { on(event: string) { events.push(event); } };
+  xtmuxAutoMonitor(pi as any);
+
+  // Inbox contributes one session_start and agent lifecycle handlers; auto-monitor
+  // adds only its own tool_result listener. Loading pi-inbox-reply as a third package
+  // entrypoint would duplicate these registrations and its idle polling timer.
+  expect(events.filter((event) => event === "session_start")).toHaveLength(1);
+  expect(events.filter((event) => event === "session_shutdown")).toHaveLength(1);
+  expect(events.filter((event) => event === "tool_result")).toHaveLength(2);
+});

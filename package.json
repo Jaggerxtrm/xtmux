@@ -1,17 +1,74 @@
 {
-  "name": "@xtmux/observability",
-  "version": "0.1.0-alpha",
-  "private": true,
+  "name": "@jaggerxtrm/xtmux",
+  "version": "0.1.0",
+  "description": "tmux-native coordination, messaging, hooks, and Pi extensions for coding agents",
   "type": "module",
-  "description": "SQLite-backed durable runtime for xtmux observability, messaging, and agent lifecycle (epic xtmux-3xs). Delegated backend for bin/tmux-session-picker under XTMUX_OBS_V2.",
-  "bin": {
-    "xtmux-obs": "./src/cli.ts"
+  "license": "MIT",
+  "author": "jaggerxtrm <jagger.xtrm@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jaggerxtrm/xtmux.git"
   },
+  "homepage": "https://github.com/Jaggerxtrm/xtmux#readme",
+  "bugs": "https://github.com/Jaggerxtrm/xtmux/issues",
+  "keywords": [
+    "tmux",
+    "pi-package",
+    "claude-code",
+    "agent",
+    "coordination",
+    "changelog"
+  ],
+  "bin": {
+    "xtmux": "./bin/tmux-session-picker",
+    "tmux-session-picker": "./bin/tmux-session-picker",
+    "xtmux-obs": "./scripts/xtmux-obs.mjs",
+    "xtmux-monitor": "./scripts/xtmux-monitor.sh",
+    "xtmux-install": "./scripts/install.mjs",
+    "xtmux-changelog": "./scripts/changelog.mjs"
+  },
+  "exports": {
+    "./changelog-config": "./changelog/cliff.toml",
+    "./aicommit2-prompt": "./prompts/aicommit2.txt"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/pi-agent-state.ts",
+      "./extensions/pi-auto-monitor.ts"
+    ]
+  },
+  "files": [
+    "bin/tmux-session-picker",
+    "changelog/",
+    "docs/INSTALL.md",
+    "extensions/",
+    "prompts/",
+    "scripts/agent-state.sh",
+    "scripts/changelog.mjs",
+    "scripts/git-pane-status.sh",
+    "scripts/install.mjs",
+    "scripts/xtmux-obs.mjs",
+    "scripts/xtmux-monitor.sh",
+    "src/",
+    "hooks/claude/",
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "cli": "bun run src/cli.ts",
     "build": "bun build --compile --minify --sourcemap src/cli.ts --outfile bin/xtmux-obs",
-    "test": "bun test",
+    "changelog": "node scripts/changelog.mjs",
+    "install:global": "node scripts/install.mjs",
+    "uninstall:global": "node scripts/install.mjs --uninstall",
+    "postinstall": "node scripts/install.mjs --from-npm",
+    "test": "bun test && bash test/contract.sh && node --test tests/installer/*.test.mjs",
+    "test:installer": "node --test tests/installer/*.test.mjs",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "bun": "1.3.14",
+    "git-cliff": "2.13.1"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.80.6",
@@ -19,5 +76,12 @@
     "@types/bun": "latest",
     "typebox": "1.1.38",
     "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }

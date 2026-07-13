@@ -22,7 +22,7 @@ import { spawnSync } from "node:child_process";
 
 const TIMEOUT = process.env.XTMUX_AUTO_MONITOR_TIMEOUT || "8h";
 const INTERVAL = process.env.XTMUX_AUTO_MONITOR_INTERVAL || "60s";
-const PICKER = process.env.XTMUX_PICKER || "/home/dawid/dev/xtmux/bin/tmux-session-picker";
+const PICKER = process.env.XTMUX_PICKER || `${process.env.HOME}/.local/bin/xtmux`;
 const STATE_DIR = `${process.env.XDG_RUNTIME_DIR || "/tmp"}/xtmux-auto-monitor`;
 // xtmux-3xs.29: colon-separated list of targets to skip entirely (no marker,
 // no monitor). Same shape as PATH. Set in smoke-test env so synthetic

@@ -1,0 +1,11 @@
+Write one Conventional Commit subject for the staged diff. Use imperative mood, no period, and at most 72 characters.
+
+Allowed scopes:
+- obs: SQLite/Bun observability runtime, event journal, and CLI
+- coordination: hooks, auto-monitoring, agent state, and goal draining
+- messages: messages, receipts, deliveries, and inbox behavior
+- migration: schemas, migrations, and legacy importers
+- pi: Pi extensions
+- meta: documentation, licensing, changelog, workflows, packaging, and tests
+
+Use feat for user-visible additions, fix for defects, docs/test/build/ci/refactor/chore as appropriate. Return only the subject.

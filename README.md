@@ -99,6 +99,19 @@ and clean up tmux-based agent work.
 - local JSONL event log for state/message/handoff/monitor/audit events
 - log-backed message channel between sessions/panes
 
+## Operator quickstart
+
+```sh
+xtmux health
+xtmux dashboard sessions-only
+xtmux message-send --to <session-or-pane> --bead <id> --text 'status'
+xtmux message-list --for "$(tmux display-message -p '#{session_id}')" --unacked
+```
+
+The SQLite runtime is default-on. Set `XTMUX_OBS_V2=0` for temporary rollback or
+`XTMUX_OBS_V2=shadow` for V1-authoritative comparison. Data lives at
+`${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/observability.db`.
+
 ## Files
 
 | path | role |
@@ -117,24 +130,22 @@ repo rows, and the tmux status line can call it directly.
 
 ## Install
 
-Symlink the live scripts (idempotent; backs up existing real files first):
+```sh
+npm install --global @jaggerxtrm/xtmux
+```
+
+This installs the command suite, grouped Pi extensions under `~/.pi`, and owned
+Claude hooks under `~/.claude`. Existing unrelated settings and xtrm-managed
+hooks are preserved. The installer is idempotent and never opens a browser.
+
+For upgrade, uninstall, conflict behavior, optional aicommit2 setup, and the
+reusable changelog command, see [`docs/INSTALL.md`](docs/INSTALL.md).
+
+A checkout can use the same installer directly:
 
 ```sh
 ./install.sh
 ```
-
-Live paths:
-
-- `~/.local/bin/xtmux` -> `bin/tmux-session-picker` (canonical name)
-- `~/.local/bin/tmux-session-picker` -> `bin/tmux-session-picker` (compatibility name)
-- `~/.local/bin/xtmux-obs` -> `bin/xtmux-obs` (V2 observability backend)
-- `~/.tmux/scripts/git-pane-status.sh` -> `scripts/git-pane-status.sh`
-- `~/.tmux/scripts/agent-state.sh` -> `scripts/agent-state.sh`
-- `~/.local/bin/xtmux-monitor` -> `scripts/xtmux-monitor.sh`
-
-`bin/xtmux-obs` is a compiled artifact and is not tracked in git. `install.sh` builds
-it (`bun run build`) when it is missing, and refuses to install without it rather than
-leaving you with a setup where every `--json` command fails.
 
 ### The `xtmux` name
 
@@ -145,11 +156,9 @@ existing call site, hook or live tmux pane needs to change.
 
 Both entries must live in the **same directory**. The picker derives its repo root
 from its own path as `${self%/bin/*}` and does not resolve symlinks, so it looks for
-the compiled observability backend at `$root/bin/xtmux-obs` — which only resolves when
+the observability backend beside the installed command as `xtmux-obs` — which only resolves when
 the entry sits in `~/.local/bin/` alongside `~/.local/bin/xtmux-obs`. An `xtmux` placed
-anywhere else resolves root to the wrong directory and silently falls back to
-`bun run $root/src/cli.ts` against a path that does not exist, taking the V2 backend
-down with it. `install.sh` places it correctly; do not hand-copy it elsewhere.
+anywhere else resolves root to the wrong directory and cannot find the adjacent backend. The npm and checkout installers place both entries together; do not hand-copy only one entry.
 
 Optional tmux cache-invalidation hooks:
 
