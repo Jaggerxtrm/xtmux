@@ -18,3 +18,20 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun test
       - run: bun run typecheck
+
+  smoke:
+    name: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: sudo apt-get update && sudo apt-get install -y tmux jq
+      - run: bun install --frozen-lockfile
+      # Project's own gate: build + binary-freshness + tests + typecheck
+      # + shell contracts + v1 fixtures + live tmux smoke of the --json surface.
+      - run: bash scripts/verify-json-api.sh
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: json-api-gate-artifacts
+          path: /tmp/xtmux-json-gate-*/

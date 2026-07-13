@@ -129,10 +129,18 @@ agent_meta_value $'task\tline'; assert_eq "agent meta: strips tabs" "task line" 
 agent_meta_label "xtmux-mux.1" "standardize metadata" "orch"; meta_plain="$(idle_plain "$REPLY")"
 case "$meta_plain" in *"bead:xtmux-mux.1"*"task:standardize metadata"*"from:orch"*) ok "agent meta: label includes bead task parent" ;; *) nok "agent meta: label includes bead task parent" ;; esac
 empty_bead_summary="$(bead_preview_summary "$ROOT" "")"; [ -z "$empty_bead_summary" ] && ok "bead preview: missing metadata is empty" || nok "bead preview: missing metadata is empty"
-valid_bead_summary="$(bead_preview_summary "$ROOT" "xtmux-mux.1")"; case "$valid_bead_summary" in *"bead-context xtmux-mux.1"*"xtmux-mux.1"*) ok "bead preview: valid bead summary" ;; *) nok "bead preview: valid bead summary" ;; esac
-invalid_bead_summary="$(bead_preview_summary "$ROOT" "xtmux-no-such-bead")"; case "$invalid_bead_summary" in *"bead-context xtmux-no-such-bead (not found"*) ok "bead preview: invalid bead degrades" ;; *) nok "bead preview: invalid bead degrades" ;; esac
+if command -v bd >/dev/null 2>&1; then
+  valid_bead_summary="$(bead_preview_summary "$ROOT" "xtmux-mux.1")"; case "$valid_bead_summary" in *"bead-context xtmux-mux.1"*"xtmux-mux.1"*) ok "bead preview: valid bead summary" ;; *) nok "bead preview: valid bead summary" ;; esac
+  invalid_bead_summary="$(bead_preview_summary "$ROOT" "xtmux-no-such-bead")"; case "$invalid_bead_summary" in *"bead-context xtmux-no-such-bead (not found"*) ok "bead preview: invalid bead degrades" ;; *) nok "bead preview: invalid bead degrades" ;; esac
+else
+  printf '  \033[33mskip\033[0m bead preview summaries (bd not on PATH)\n'
+fi
 extract_bead_id "session xtmux-rib.16 work"; assert_eq "bead derive: extract dot child id" "xtmux-rib.16" "$REPLY"
-derive_bead_id "agent-xtmux-rib.16" "$WORK/nope" ""; assert_eq "bead derive: from session name" "xtmux-rib.16" "$REPLY"
+if command -v bd >/dev/null 2>&1; then
+  derive_bead_id "agent-xtmux-rib.16" "$WORK/nope" ""; assert_eq "bead derive: from session name" "xtmux-rib.16" "$REPLY"
+else
+  printf '  \033[33mskip\033[0m bead derive from session name (bd not on PATH)\n'
+fi
 derive_bead_id "agent" "$WORK/.xtrm/worktrees/xtmux-mux.6-demo" "$WORK"; assert_eq "bead derive: from path convention" "xtmux-mux.6" "$REPLY"
 derive_bead_id "feature-123" "$WORK/feature-123" ""; assert_eq "bead derive: avoids loose numeric slug" "" "$REPLY"
 nonrepo_git_preview="$(git_worktree_preview "$WORK/no-such-repo")"; [ -z "$nonrepo_git_preview" ] && ok "git preview: non-repo degrades empty" || nok "git preview: non-repo degrades empty"
@@ -433,6 +441,8 @@ XTMUX_EVENT_LOG_FILE="$rot" XTMUX_EVENT_LOG_MAX_BYTES=50 message_send --from a -
 [ -f "$rot.1" ] && ok "message channel: log rotation on size threshold" || nok "message channel: log rotation on size threshold"
 grep -F '"turn_end"' extensions/pi-agent-state.ts >/dev/null && grep -F 'agent.turn.done' extensions/pi-agent-state.ts >/dev/null && grep -F 'last_message=' extensions/pi-agent-state.ts >/dev/null && ok "pi extension: publishes turn done" || nok "pi extension: publishes turn done"
 grep -F '"--wait-for-transition"' extensions/pi-auto-monitor.ts >/dev/null && grep -F '"--wait-for-transition"' .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null && ok "auto-monitor: waits for next transition" || nok "auto-monitor: waits for next transition"
+# The auto-monitor hooks shell out to bd; without it on PATH they cannot run.
+if command -v bd >/dev/null 2>&1; then
 # xtmux-3xs.23: three-hook Stop-block coordination — send touches pending, wait-agent consumes it, drain-stop blocks/allows.
 (
   set -e
@@ -518,6 +528,9 @@ STUB
     | PATH="$stubdir:$PATH" XTMUX_PICKER=/bin/true node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
   [ -f "$amdir/realone-30_pending" ] || exit 2
 ) && ok "auto-monitor: tmux has-session precheck (.30)" || nok "auto-monitor: tmux has-session precheck (.30)"
+else
+  printf '  \033[33mskip\033[0m auto-monitor hook contracts .23/.29/.30 (bd not on PATH)\n'
+fi
 # xtmux-3xs.25: log-query shadow-diff records divergence when V1 JSONL differs from V2 SQL.
 (
   set -e
