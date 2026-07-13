@@ -13,6 +13,8 @@ function harness() {
   let unread = 0;
   let failUnread = false;
   const statuses = new Map<string, object>();
+  const pickerCalls: string[][] = [];
+  let failPane = false;
   const ui = {
     setWidget(key: string, lines: string[] | undefined) {
       if (lines) widgets.set(key, lines);
@@ -25,9 +27,14 @@ function harness() {
     on(name: string, handler: Handler) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
     async exec(command: string, args: string[]) {
       if (command === "tmux") {
+        if (args.at(-1) === "#{pane_id}") {
+          if (failPane) throw new Error("pane unavailable");
+          return { stdout: "%me\n", code: 0 };
+        }
         const target = args[args.indexOf("-t") + 1];
         return { stdout: target && target !== "display-message" ? `${target}\n` : "$me\n", code: 0 };
       }
+      pickerCalls.push(args);
       if (args[0] === "unread-count") {
         if (failUnread) throw new Error("db unavailable");
         return { stdout: JSON.stringify({ recipientId: "$me", unreadCount: unread, oldestUnackedAtMs: null }) };
@@ -41,8 +48,10 @@ function harness() {
     widgets,
     notifications,
     statuses,
+    pickerCalls,
     setUnread(value: number) { unread = value; },
     setUnreadFailure(value: boolean) { failUnread = value; },
+    setPaneFailure(value: boolean) { failPane = value; },
     async emit(name: string, event: any = {}) {
       for (const handler of handlers.get(name) ?? []) await handler(event, ctx);
     },
@@ -68,6 +77,9 @@ describe("Pi inbox widget (.22)", () => {
       h.setUnread(2);
       await h.emit("session_start");
       expect(h.widgets.get("xtmux-inbox")).toEqual(["Inbox: 2 unread"]);
+      expect(h.pickerCalls.find((args) => args[0] === "unread-count")).toEqual([
+        "unread-count", "--for", "$me", "--pane", "%me",
+      ]);
 
       h.setUnread(0);
       await h.emit("tool_result", { toolName: "bash", input: { command: "tmux-session-picker message-ack m1 --by $me" }, isError: false });
@@ -79,6 +91,10 @@ describe("Pi inbox widget (.22)", () => {
       expect(h.widgets.has("xtmux-inbox")).toBe(false);
 
       h.setUnreadFailure(false);
+      h.setPaneFailure(true);
+      await h.emit("session_start");
+      expect(h.pickerCalls.at(-1)).toEqual(["unread-count", "--for", "$me"]);
+
       delete process.env.TMUX;
       await h.emit("agent_start");
       expect(h.widgets.has("xtmux-inbox")).toBe(false);

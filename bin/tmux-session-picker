@@ -1032,12 +1032,14 @@ message_status() {
 }
 
 unread_count() {
-  local recipient="" arg
+  local recipient="" pane="" arg
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
       --for) [ "$#" -gt 0 ] || return 2; recipient="$1"; shift ;;
       --for=*) recipient="${arg#--for=}" ;;
+      --pane) [ "$#" -gt 0 ] || return 2; pane="$1"; shift ;;
+      --pane=*) pane="${arg#--pane=}" ;;
       *) printf 'unread-count: unknown arg: %s\n' "$arg" >&2; return 2 ;;
     esac
   done
@@ -1046,7 +1048,9 @@ unread_count() {
   [ "$REPLY" = on ] || { printf 'unread-count: requires XTMUX_OBS_V2=1\n' >&2; return 2; }
   if resolve_to_session_id "$recipient"; then recipient="$REPLY"; fi
   obs_runtime_argv
-  exec "${OBS_ARGV[@]}" unread-count --for "$recipient"
+  local args=(unread-count --for "$recipient")
+  [ -n "$pane" ] && args+=(--pane "$pane")
+  exec "${OBS_ARGV[@]}" "${args[@]}"
 }
 
 message_json_field() {

@@ -115,6 +115,8 @@ function setWidget(ctx: ExtensionContext, lines: string[] | undefined): void {
 }
 
 export default function xtmuxInboxReply(pi: ExtensionAPI): void {
+  let ownPaneId = "";
+
   async function sessionId(): Promise<string> {
     if (!process.env.TMUX) return "";
     try {
@@ -151,7 +153,9 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     }
     let unread = 0;
     try {
-      const result = await pi.exec(PICKER, ["unread-count", "--for", id], { timeout: 1500 });
+      const args = ["unread-count", "--for", id];
+      if (ownPaneId) args.push("--pane", ownPaneId);
+      const result = await pi.exec(PICKER, args, { timeout: 1500 });
       unread = Number((JSON.parse(stdoutOf(result)) as { unreadCount?: unknown }).unreadCount) || 0;
     } catch {
       const reminderLines = obligations.map((item) => `Reply required: ${item.senderId} (${item.beadId})`);
@@ -167,7 +171,17 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
   }
 
   const refresh = async (_event: unknown, ctx: ExtensionContext) => { await render(ctx); };
-  pi.on("session_start", refresh);
+  pi.on("session_start", async (_event, ctx) => {
+    ownPaneId = "";
+    if (process.env.TMUX) {
+      try {
+        ownPaneId = stdoutOf(await pi.exec("tmux", ["display-message", "-p", "#{pane_id}"], { timeout: 1000 })).trim();
+      } catch {
+        // Session-wide count is the safe fallback when pane identity is unavailable.
+      }
+    }
+    await render(ctx);
+  });
   pi.on("agent_start", refresh);
 
   pi.on("tool_result", async (event, ctx) => {
