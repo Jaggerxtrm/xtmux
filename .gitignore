@@ -17,8 +17,9 @@
 # Local Serena project metadata
 .serena/
 
-# Local pi harness artifacts
-.pi/
+# Local pi harness artifacts (project extension wiring is tracked)
+.pi/*
+!.pi/settings.json
 
 # xt / bd worktrees (transient sandbox checkouts)
 .xtrm/worktrees/
