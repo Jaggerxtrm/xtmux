@@ -27,6 +27,8 @@ mcpq servers 2>/dev/null || true
 
 Send a one-line ready signal after loading context:
 
+_[xtmux-3xs]_ For pure FYI status pings ("deploy monitor ready", "T+15m sample OK") add `--expects-reply=false` so a pi orchestrator does not register a reply obligation it never needs to satisfy. Reserve the default (expects-reply auto-true on `--bead`) for verdicts and HOLD/BLOCKED escalations that genuinely need a response. See `/multiplexing` § V2 SQLite runtime.
+
 ```bash
 tmux-session-picker message-send --to <orchestrator> --bead <bead> --text "deploy monitor ready — awaiting deploy signal"
 ```

@@ -147,6 +147,8 @@ tmux-session-picker message-send \
 
 Keep the text short — one line, no findings inline. The orchestrator reads the bead for the details. The message is a pointer, not the payload. This mirrors `/multiplexing`'s Cardinal Rule 3.
 
+_[xtmux-3xs]_ The `--bead` on the verdict message implicitly sets `--expects-reply=true` under V2 (default 2026-07-13). A pi orchestrator's inbox surfaces your PASS/PASS_WITH_NOTES/NEEDS_CHANGES/BLOCKED as a reply obligation and will proactively wake itself — you do not need to also `safe-send-pointer` a nudge. See `/multiplexing` § V2 SQLite runtime.
+
 ## Merge sequencing — when order matters
 
 If the sprint plan sequences merges (e.g. "A merges first, DM watches 60 min, THEN B merges"), your `PASS` verdict on B does not authorize a merge until the DM window on A has cleared. Verdict is emitted at the moment the PR itself is judged ready; execution of the merge is a separate authority (usually the orchestrator, sometimes the worker after DM PASS).

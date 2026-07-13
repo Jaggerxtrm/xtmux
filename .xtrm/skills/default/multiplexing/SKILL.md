@@ -340,6 +340,58 @@ Session-name shape post-xtmux-3h8: `role-<runtime>-<slug>[-<bead>]`. The `<runti
 
 
 
+## V2 SQLite runtime (xtmux-3xs) — default-on since 2026-07-13
+
+The picker delegates message/monitor/audit primitives to a SQLite-backed
+runtime by default. The CLI surface (`message-send`, `message-list`,
+`unread-count`, `monitor-list`, `log-emit`, ...) is unchanged; storage moved
+from JSONL to `${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/observability.db`.
+Everything below composes with the primitives already documented above.
+
+- **Env override**: `XTMUX_OBS_V2=on|shadow|off`. Unset defaults to `on`.
+  `shadow` runs V1 authoritatively and mirrors writes into V2 for divergence
+  tracking (`tmux-session-picker shadow-summary`). `0`/`off` reverts to the
+  JSONL path — contract tests still export this because goldens are V1-shaped.
+- **Sender-declared reply obligation**: `message-send --bead <id> ...`
+  implicitly sets `--expects-reply=true`. Opt out with `--expects-reply=false`
+  for FYI beaded messages. Non-beaded messages remain expects_reply=false.
+  The delegated pane's extension uses this flag to record its own reply
+  obligation (see `/multiplexing-team`).
+- **Pane-scoped inbox**: `unread-count --for <sid> --pane %N` filters to
+  messages targeting that pane (or unpaned to the session). Two agents
+  cohabiting one tmux session (pi + Claude on `$1732:%1930` / `$1732:%1931`)
+  no longer double-count each other. Omit `--pane` for session-wide.
+- **Auto-monitor coordination (Claude side)**: `.claude/settings.json`
+  registers three hooks that structurally enforce "wake me when the peer
+  responds":
+  - `PostToolUse` on `Bash` matching `message-send|safe-send-pointer|tmux send-keys -t`:
+    touches `${XDG_RUNTIME_DIR:-/tmp}/xtmux-auto-monitor/<target>_pending`.
+  - `PostToolUse` on `Monitor|Bash` matching `wait-agent <target>`: deletes marker.
+  - `Stop`: if any marker survives, emits `{"decision":"block","reason":"..."}`
+    with the exact `Monitor(command:"tmux-session-picker wait-agent <target>
+    --wait-for-transition --timeout 30m --interval 30s")` Claude must call.
+    Loop-guarded via `stop_hook_active`; TTL prune via
+    `XTMUX_AUTO_MONITOR_TTL_MS` (default 1h); global bypass via
+    `XTMUX_AUTO_MONITOR_DRAIN_DISABLE=1`.
+- **Auto-wake (pi side)**: the `pi-inbox-reply` + `pi-auto-monitor` extensions
+  provide the symmetric mechanism — obligation record on `--bead` receipt,
+  `sendUserMessage(followUp)` wake on new mid-idle inbound (30s poll),
+  outbound-expectation record + `sendUserMessage` wake on peer transition,
+  and `before_agent_start` systemPrompt injection of the pending duty. Full
+  detail in `/multiplexing-team`. From the orchestrator's view: a pi
+  coordinator you launched via `xt pi --role` will not sit silently on a
+  reply — no operator prod required.
+- **Smoke-test bypass**: `XTMUX_AUTO_MONITOR_SKIP_TARGETS=alice:bob:smoke:1.99`
+  (colon-separated, PATH-shape) tells both Claude hooks and the pi extension
+  to skip monitor spawn + marker touch for synthetic recipients. Redundant
+  with the `tmux has-session -t <target>` precheck (non-existent targets
+  skip automatically) but kept as an explicit override for cross-tmux-server
+  smoke where the target is real on another daemon.
+- **Runtime binary**: `bin/xtmux-obs` is a compiled Bun single-file binary
+  (`bun run build`, ~100 MB, gitignored). Falls back to `bun run src/cli.ts`
+  when absent. Rebuild after any pull or after editing `src/`:
+  `cd <xtmux-checkout> && bun run build`.
+
 ## xtmux team observability — logs, messages, telemetry
 
 When `xtmux-team` primitives are installed, the orchestrator has a local event
