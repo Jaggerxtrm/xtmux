@@ -155,6 +155,53 @@ done
 
 Prefer `tmux-session-picker wait-agent`/`monitor-agent` for pane-state waits (they know how to fire on `@agent_state` transitions). Compose them with an inbox poll if your wait is longer than a couple of minutes.
 
+### Auto-wake — the extension knows when peers move (xtmux-3xs)
+
+The `pi-inbox-reply` + `pi-auto-monitor` extensions (loaded by default in
+`xt pi` sessions since 2026-07-13) make the coordination loop bidirectional
+without operator prodding. If you are a pi delegated pane, most of what the
+manual poll loop above solved is now handled for you.
+
+- **Inbound**: on receiving a `message-send --bead <id>` targeted at your
+  session/pane, you owe a reply. The extension records an obligation file
+  (`${XDG_RUNTIME_DIR:-/tmp}/xtmux-reply-obligations/reply-to-<sender>-for-<pane>_pending`),
+  injects `Reply required: <sender> (<bead>)` into your NEXT turn's
+  systemPrompt via `before_agent_start`, and — if the message arrives
+  mid-idle — calls `pi.sendUserMessage(followUp)` within 30 seconds
+  (`XTMUX_INBOX_POLL_INTERVAL_S`, default 30) to wake you. The obligation
+  appears as a first-class instruction, not chrome.
+- **Outbound**: every `message-send` you make records an outbound
+  expectation under `${XDG_RUNTIME_DIR:-/tmp}/xtmux-outbound-expectations/`
+  and arms a `monitor-agent` daemon on the peer. When `monitor-list` no
+  longer reports the captured monitor ID (peer transitioned to a terminal
+  `@agent_state`), the same 30s poll fires `sendUserMessage` to nudge you
+  back — no need to leave a manual wait-agent loop.
+- **Ack semantics**: `message-ack <id> --by <me>` clears the sender's
+  read receipt but does NOT clear your local reply obligation. Only a
+  matching outbound `message-send --to <sender> --bead <id>` clears it.
+  Restarting your pi runtime rehydrates outstanding obligations from disk.
+- **Pane-scoped widget**: the `belowEditor` inbox widget reads
+  `unread-count --for $sid --pane $pane_id`, so two agents cohabiting one
+  tmux session no longer see each other's messages in their own count.
+- **Runtime hygiene**:
+  - Rebuild `bin/xtmux-obs` after a pull: `cd <xtmux-checkout> && bun run build`.
+  - `/reload` the extension after any change to
+    `extensions/pi-inbox-reply.ts` or `extensions/pi-auto-monitor.ts` — the
+    Node module is cached in the running runtime.
+- **Verify V2 is active**: a bare `bin/tmux-session-picker message-list
+  --for $(tmux display-message -p '#{session_id}')` should return
+  identical shape to before. Under the hood it reads
+  `${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/observability.db`
+  (`event_journal` + `messages` tables). `XTMUX_OBS_V2=0` reverts to JSONL.
+- **Smoke env**: `XTMUX_AUTO_MONITOR_SKIP_TARGETS=alice:bob:...` skips
+  monitor spawn for synthetic recipients so a post-close smoke doesn't
+  leave phantom `monitor-agent` daemons alive on your tmux server.
+
+You should still poll external timers (gh CI, deploy checks) per the
+section above — auto-wake covers peer-to-peer coordination, not external
+work. Keep the "inbox + timer" pattern for those cases; drop the manual
+inbox polling when your only wait is on a peer reply.
+
 ## Finding your siblings/team
 
 Use this for situational awareness, not as permission to interfere:

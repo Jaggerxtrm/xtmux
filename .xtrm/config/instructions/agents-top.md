@@ -35,6 +35,8 @@ Use these as the minimal operational surface; use `--help` for full syntax.
 - `bd prime`, `bd ready`, `bd list --status=in_progress`, `bd show <id>`
 - `bd update <id> --claim`, `bd remember "<insight>"`, `bd close <id> --reason="..."`
 - `bd set-state <id> <dim>=<val> --reason="..."`, `bd state <id> <dim>` — operational state labels (e.g. `contract=ready`, `patrol=muted`, `health=healthy`)
+- `bd ready --claim` — atomic claim-on-ready; `bd ready --explain` — why an issue is ready/blocked
+- `bd create --graph <plan.json> --dry-run` — issue-graph decomposition; `--waits-for <id> --waits-for-gate all-children|any-children` for fan-in/out; `--spec-id`/`--skills` to link specs/required skills
 - `bv --robot-triage --format toon`, `bv --robot-next` — never bare `bv`
 - `xt report list` / latest report file, `xt update --apply`, `xt end`
 - `xt worktree --help` — PR/branch/restart audit primitives (`audit-prs`, `branch-gc`, `restart-audit`); pair with specialists `doctor --pr-drift` / `doctor --reap-dead-jobs`. Details: `/using-xtrm`.
@@ -75,4 +77,5 @@ Use these as the minimal operational surface; use `--help` for full syntax.
 ## Worktree sessions
 
 - `xt pi` — launch Pi in a sandboxed worktree.
+- `xt pi --role <specialist>` — spawn an interactive specialist session (e.g. `chain-coordinator` for tracking epic chains, `pr-reviewer`, `sre-triage`). Coordination and escalation live in `/multiplexing` Pattern 7 and `/using-specialists`.
 - `xt end` — close session: commit / push / PR / cleanup when appropriate.

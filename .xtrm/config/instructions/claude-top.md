@@ -35,6 +35,8 @@ Use these as the minimal operational surface; use `--help` for full syntax.
 - `bd prime`, `bd ready`, `bd list --status=in_progress`, `bd show <id>`
 - `bd update <id> --claim`, `bd remember "<insight>"`, `bd close <id> --reason="..."`
 - `bd set-state <id> <dim>=<val> --reason="..."`, `bd state <id> <dim>` — operational state labels (e.g. `contract=ready`, `patrol=muted`, `health=healthy`)
+- `bd ready --claim` — atomic claim-on-ready; `bd ready --explain` — why an issue is ready/blocked
+- `bd create --graph <plan.json> --dry-run` — issue-graph decomposition; `--waits-for <id> --waits-for-gate all-children|any-children` for fan-in/out; `--spec-id`/`--skills` to link specs/required skills
 - `bv --robot-triage --format toon`, `bv --robot-next` — never bare `bv`
 - `xt report list` / latest report file, `xt update --apply`, `xt end`
 - `xt worktree --help` — PR/branch/restart audit primitives (`audit-prs`, `branch-gc`, `restart-audit`); pair with specialists `doctor --pr-drift` / `doctor --reap-dead-jobs`. Details: `/using-xtrm`.
@@ -62,14 +64,18 @@ Use these as the minimal operational surface; use `--help` for full syntax.
 - Prefer targeted symbol/file reads and precise edits over whole-tree dumps.
 - When Serena is available, prefer symbolic tools (`find_symbol` → `get_symbols_overview` → `replace_symbol_body`; `find_referencing_symbols`/`rename_symbol` for LSP-accurate references) over grep-read-sed for code reads and edits.
 
+## Context and output management
+
+- Use context-mode automatically to keep command/file output compact: `ctx_execute` for logs, tests, large command output, and structured data processing; `ctx_execute_file` for deriving facts from files without dumping contents; `ctx_batch_execute` for multi-command research; `ctx_search` for previously indexed material.
+- Use normal read/edit tools only when exact file text is needed for a patch. Do not `cat`/dump large outputs into the conversation when a context-mode tool can summarize or index them.
+
 ## Quality gates
 
 - Run targeted tests/build/typecheck relevant to changed files.
-- Use `structured_return` for tests, builds, linters, type checkers, and package checks.
-- Use `process` for long-running servers, watchers, and log tails.
 - Fix quality failures before commit.
 
 ## Worktree sessions
 
 - `xt claude` — launch Claude Code in a sandboxed worktree.
+- `xt claude --role <specialist>` — spawn an interactive specialist session (e.g. `chain-coordinator` for tracking epic chains, `pr-reviewer`, `sre-triage`). Coordination and escalation live in `/multiplexing` Pattern 7 and `/using-specialists`.
 - `xt end` — close session: commit / push / PR / cleanup when appropriate.

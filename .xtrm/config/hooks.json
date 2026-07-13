@@ -84,21 +84,6 @@
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/beads-claim-sync.mjs",
             "timeout": 5000
-          },
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/auto-monitor-on-send.sh\"",
-            "timeout": 3000
-          }
-        ]
-      },
-      {
-        "matcher": "Monitor|Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/auto-monitor-consumed.sh\"",
-            "timeout": 3000
           }
         ]
       },
@@ -159,11 +144,6 @@
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/beads-memory-gate.mjs",
             "timeout": 8000
-          },
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/auto-monitor-drain-stop.mjs\"",
-            "timeout": 3000
           }
         ]
       }
