@@ -1044,6 +1044,60 @@ else
   tmux kill-session -t "$sb" 2>/dev/null || true
 fi
 echo
+echo "== xtmux alias =="
+# `xtmux` is a second symlink to bin/tmux-session-picker (see install.sh).
+# The picker derives its root as ${self%/bin/*} and BASH_SOURCE does not resolve
+# symlinks, so root comes from the directory the alias SITS IN, not from its
+# target. Next to the picker symlink, $root/bin/xtmux-obs resolves; anywhere else
+# it silently does not, and the V2 backend disappears. Both halves are asserted.
+alias_bin="$WORK/fakehome/.local/bin"
+mkdir -p "$alias_bin"
+ln -sf "$PICKER" "$alias_bin/tmux-session-picker"
+ln -sf "$PICKER" "$alias_bin/xtmux"
+
+# stub obs backend at $root/bin/xtmux-obs, i.e. exactly where a correctly-placed
+# alias must look for it. `log query` execs the backend, so stdout is verbatim.
+cat > "$alias_bin/xtmux-obs" <<'STUB'
+#!/usr/bin/env bash
+printf '{"stub":"obs-resolved"}\n'
+STUB
+chmod +x "$alias_bin/xtmux-obs"
+
+# 1. the alias is the same program: identical help surface. The usage line echoes
+#    $self (argv[0]), which SHOULD differ between the two names — that is correct
+#    CLI behaviour, not drift — so it is normalized away. Everything else, i.e.
+#    the whole subcommand surface, must be byte-identical.
+_norm_self() { sed -E 's#^usage: [^ ]+#usage: <self>#'; }
+"$alias_bin/xtmux" help 2>&1 | _norm_self >"$WORK/alias-help.act"
+"$alias_bin/tmux-session-picker" help 2>&1 | _norm_self >"$WORK/compat-help.act"
+if diff -q "$WORK/compat-help.act" "$WORK/alias-help.act" >/dev/null 2>&1; then
+  ok "alias: xtmux help == tmux-session-picker help (modulo argv[0])"
+else
+  nok "alias: xtmux help == tmux-session-picker help (modulo argv[0])"
+  diff -u "$WORK/compat-help.act" "$WORK/alias-help.act" | sed 's/^/      /' | head -10
+fi
+
+# 2. correctly-placed alias resolves root -> finds $root/bin/xtmux-obs
+_alias_obs="$(XTMUX_OBS_V2=1 "$alias_bin/xtmux" log query --type query.completed --json 2>&1)"
+case "$_alias_obs" in
+  *obs-resolved*) ok "alias: root resolves through xtmux -> V2 backend found" ;;
+  *) nok "alias: root resolves through xtmux -> V2 backend found"
+     printf '      actual: %s\n' "$_alias_obs" ;;
+esac
+
+# 3. THE TRAP: an alias outside the bin/ dir resolves root wrong and loses V2.
+#    This is why install.sh must keep xtmux next to tmux-session-picker.
+ln -sf "$PICKER" "$WORK/fakehome/.local/xtmux"
+_misplaced="$(XTMUX_OBS_V2=1 "$WORK/fakehome/.local/xtmux" log query --type query.completed --json 2>&1)"
+case "$_misplaced" in
+  *XTMUX_JSON_BACKEND_UNAVAILABLE*) ok "alias: misplaced alias loses V2 backend (documents the trap)" ;;
+  *obs-resolved*) nok "alias: misplaced alias loses V2 backend (documents the trap)"
+     printf '      misplaced alias unexpectedly found the backend\n' ;;
+  *) nok "alias: misplaced alias loses V2 backend (documents the trap)"
+     printf '      actual: %s\n' "$_misplaced" ;;
+esac
+
+echo
 printf '== %s pass, %s fail ==\n' "$pass" "$fail"
 [ "$fail" -gt 0 ] && { printf 'FAILED:%s\n' "$failed"; exit 1; }
 exit 0

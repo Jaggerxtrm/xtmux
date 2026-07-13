@@ -36,6 +36,11 @@ link() {
 }
 
 link "$repo/bin/tmux-session-picker"      "$HOME/.local/bin/tmux-session-picker"
+# `xtmux` is the canonical name; `tmux-session-picker` stays forever as the
+# compatibility name. The alias MUST sit next to it: the picker derives its
+# repo root as ${self%/bin/*} without resolving symlinks, so a copy placed in
+# any other directory resolves root wrong and silently loses the V2 obs backend.
+link "$repo/bin/tmux-session-picker"      "$HOME/.local/bin/xtmux"
 link "$repo/scripts/xtmux-monitor.sh"      "$HOME/.local/bin/xtmux-monitor"
 link "$repo/scripts/git-pane-status.sh"   "$HOME/.tmux/scripts/git-pane-status.sh"
 link "$repo/scripts/agent-state.sh"       "$HOME/.tmux/scripts/agent-state.sh"

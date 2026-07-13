@@ -125,10 +125,26 @@ Symlink the live scripts (idempotent; backs up existing real files first):
 
 Live paths:
 
-- `~/.local/bin/tmux-session-picker` -> `bin/tmux-session-picker`
+- `~/.local/bin/xtmux` -> `bin/tmux-session-picker` (canonical name)
+- `~/.local/bin/tmux-session-picker` -> `bin/tmux-session-picker` (compatibility name)
 - `~/.tmux/scripts/git-pane-status.sh` -> `scripts/git-pane-status.sh`
 - `~/.tmux/scripts/agent-state.sh` -> `scripts/agent-state.sh`
 - `~/.local/bin/xtmux-monitor` -> `scripts/xtmux-monitor.sh`
+
+### The `xtmux` name
+
+`xtmux <subcommand>` and `tmux-session-picker <subcommand>` are the same program:
+same subcommands, same flags, byte-identical output. `xtmux` is the name to use in
+new docs, skills and hooks; `tmux-session-picker` keeps working indefinitely, so no
+existing call site, hook or live tmux pane needs to change.
+
+Both entries must live in the **same directory**. The picker derives its repo root
+from its own path as `${self%/bin/*}` and does not resolve symlinks, so it looks for
+the compiled observability backend at `$root/bin/xtmux-obs` — which only resolves when
+the entry sits in `~/.local/bin/` alongside `~/.local/bin/xtmux-obs`. An `xtmux` placed
+anywhere else resolves root to the wrong directory and silently falls back to
+`bun run $root/src/cli.ts` against a path that does not exist, taking the V2 backend
+down with it. `install.sh` places it correctly; do not hand-copy it elsewhere.
 
 Optional tmux cache-invalidation hooks:
 
