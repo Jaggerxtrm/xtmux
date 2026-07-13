@@ -8,59 +8,59 @@
       "files": {
         ".env.example": {
           "hash": "70e6af83cb0faf13a74676a5a3b79551ac60997cccd226e14c8dbc5887c047d5",
-          "version": "0.10.4"
+          "version": "0.10.5"
         },
         "claude.mcp.json": {
           "hash": "20b811ccc82395f9f3cd9a45ef36b776c3382d553924ef34662dd817a0a1c197",
-          "version": "0.10.4"
+          "version": "0.10.5"
         },
         "claude.mcp.optional.json": {
           "hash": "6cf39ec4a4cf6096a8108c883456c80bd45f0d37430f9403ea44aea1590f4d5c",
-          "version": "0.10.4"
+          "version": "0.10.5"
         },
         "hooks.json": {
           "hash": "50217409cab7bd410e1ad7add30ce799656a64fae9ba84d9a0807c1cdcbc2bda",
-          "version": "0.10.4"
+          "version": "0.10.5"
         },
         "instructions/agents-top.md": {
           "hash": "fbf67a96bf240cef77e63665dbc016d8c20ef8b47c2fe73dc48cd76b6c64e2a1",
-          "version": "0.10.4"
+          "version": "0.10.5"
         },
         "instructions/claude-top.md": {
           "hash": "2a3c2054c1b9c832b31bc002bac3493a9211f6a7f29f0a56dfc3b65fefb5cbaf",
-          "version": "0.10.4"
+          "version": "0.10.5"
         },
         "pi.mcp.json": {
           "hash": "fb7f018e15e0d04b46ca473994ea275b46ebb21d741ff59c90188e26be8fb2d2",
-          "version": "0.10.4"
+          "version": "0.10.5"
         },
         "pi/auth.json.template": {
           "hash": "3d608dfc7574015abbf8c0c395845ecd2a2c8d166a25ca1cfda6398a82ee723b",
-          "version": "0.10.4"
+          "version": "0.10.5"
         },
         "pi/install-schema.json": {
           "hash": "44d91fd7b9ca6eb7198f1e4cd0f5f849a42dcb3df119b741746211218acf0c2b",
-          "version": "0.10.4"
+          "version": "0.10.5"
         },
         "pi/models.json.template": {
           "hash": "b3c0ba93f087eef9645edbe8790307c44d075a8cbba1806e621ef983db92c4fa",
-          "version": "0.10.4"
+          "version": "0.10.5"
         },
         "pi/pi-worktrees-settings.json": {
           "hash": "7ebd4bed1a3a88dd8d423e8a557d487df009a06c2871658be7da1661e9651891",
-          "version": "0.10.4"
+          "version": "0.10.5"
         },
         "pi/settings.json.template": {
           "hash": "3acfbfd2a13b1319dd228ba2f9ae5f16ab203a2f0290f74b21cb763697ec2713",
-          "version": "0.10.4"
+          "version": "0.10.5"
         },
         "README.md": {
           "hash": "45a8977e6aaf3ce8cf349bc4382ab00e66329e5e240421fa25b04a71073d8aa9",
-          "version": "0.10.4"
+          "version": "0.10.5"
         },
         "settings.json": {
           "hash": "ec83b2db614a707fe2406d6b5907e848f6680bc36f85fc82ffd5e2d6283755ec",
-          "version": "0.10.4"
+          "version": "0.10.5"
         }
       }
     }
@@ -69,9 +69,9 @@
     "version": 1,
     "source": {
       "kind": "ref",
-      "ref": "v3.18.2",
-      "resolved_sha": "fb5ba95c988f808095a451cf77b2c6388371c1a0",
-      "repo_path": "../specialists",
+      "ref": "master",
+      "resolved_sha": "bbb30401bbb7caa6833828241a8722777bf28fcc",
+      "repo_path": "specialists-src",
       "source_path": "config/skills"
     },
     "skills": [
@@ -109,7 +109,7 @@
         "evals/fixtures/qa-routing/source-regression-result.json": "0f566ca2ad84458ce183a1ca4a925ef0b308c8d8cc61fa75b90dc14685d9e3bf",
         "evals/fixtures/qa-routing/source-regression.diff": "7fc1868c75cae4ec9ecd87eeead1b4f0b82d9e1f41d1edf1697d7ab4d40598d0",
         "evals/README.md": "c6c871a9e2a5ca8d9cea7b23f89033018791fd1fcdb8fec775b888fe88d4dfa9",
-        "SKILL.md": "b1172e9405f6c6d2c9e8fdf2f9b53404d73467b83e4fabd64403baf981fd60a3"
+        "SKILL.md": "9f4a1b124f6178d62d76b9e417e8233ecbae166d4e15b6ecd58fdb0b6a21b6a1"
       },
       "using-specialists-auto": {
         "SKILL.md": "932f4248cd4a8bcece747bcc08c6e0dc775126cbb83aab5318e1ea82dde09686"
