@@ -2681,14 +2681,41 @@ safe_pointer_payload() {
 # Claude Code deterministically consumes the first Enter as paste-detection;
 # other agents (pi, codex, raw shell) do not. Auto-detected here so
 # safe-send-pointer / handoff callers do not need to know pane type.
+# Is `claude` running anywhere in this process subtree? Bounded depth, first match
+# wins — we are answering a yes/no question, not building an inventory.
+pane_has_claude_descendant() {
+  local pid="${1:-}" depth="${2:-0}" child comm
+  [ -n "$pid" ] || return 1
+  [ "$depth" -gt 0 ] || return 1
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    comm="$(ps -o comm= -p "$child" 2>/dev/null || true)"
+    case "${comm##*/}" in
+      claude|claude-*) return 0 ;;
+    esac
+    pane_has_claude_descendant "$child" "$((depth - 1))" && return 0
+  done
+  return 1
+}
+
 pane_is_claude_code() {
-  local pane="${1:-}" cmd=''
+  local pane="${1:-}" cmd='' pid=''
   [ -n "$pane" ] || return 1
   cmd="$(tmux display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null || true)"
   case "$cmd" in
     claude|claude-*|*/claude|*/claude-*) return 0 ;;
-    *) return 1 ;;
   esac
+  # pane_current_command names only the FOREGROUND process. A pane launched with
+  # `xt claude` runs a node wrapper (`node .../bin/xt claude`) which spawns claude
+  # underneath it, so the pane reports `node` and this check used to miss — the
+  # pane got double_enter=0, Claude Code's paste-detection ate the single Enter,
+  # and the pointer sat in the input box, never submitted, while the sender was
+  # told `sent`. A silent non-delivery is the worst failure this command can have,
+  # so when the command name is inconclusive, look for claude in the subtree.
+  #
+  # Depth 3 covers the shapes we have: `claude` direct (1), `xt claude` wrapper
+  # (2), and one extra level of shell nesting.
+  pid="$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || true)"
+  pane_has_claude_descendant "$pid" 3
 }
 
 safe_send_pointer() {

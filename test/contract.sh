@@ -739,6 +739,54 @@ else
 fi
 
 echo
+echo "== claude-pane detection contract (xtmux-k0d) =="
+
+if ! command -v tmux >/dev/null 2>&1; then
+  printf '  \033[33mskip\033[0m claude detection (tmux missing)\n'
+else
+  cd_sock="xtmux-contract-claude-$$"
+  cd_bin="$WORK/claude-detect-bin"; mkdir -p "$cd_bin"
+  # `ps -o comm=` reports the executable's basename, so a COPY of sleep named
+  # `claude` is a process the detector sees exactly as it sees the real one — and a
+  # copy of sh named `node` reproduces the `xt claude` wrapper. Real process table,
+  # no mocking of the thing under test.
+  cp "$(command -v sleep)" "$cd_bin/claude" 2>/dev/null || true
+  cp "$(command -v sh)"    "$cd_bin/node"   2>/dev/null || true
+  if [ -x "$cd_bin/claude" ] && [ -x "$cd_bin/node" ] && \
+     command tmux -L "$cd_sock" -f /dev/null new-session -d -s cdetect -n wrapped "$cd_bin/node -c '$cd_bin/claude 100; true'" 2>/dev/null; then
+    (
+      tmux() { command tmux -L "$cd_sock" "$@"; }
+      tmux new-window -d -n direct "$cd_bin/claude 100"
+      tmux new-window -d -n plain  "sleep 100"
+      sleep 1
+      cd_pane() { tmux list-panes -a -F '#{window_name} #{pane_id}' 2>/dev/null | awk -v w="$1" '$1==w{print $2; exit}'; }
+      p_wrapped="$(cd_pane wrapped)"; p_direct="$(cd_pane direct)"; p_plain="$(cd_pane plain)"
+
+      # If the fixture does not reproduce the real shape, everything below is
+      # vacuous — so assert the shape first. `xt claude` panes report `node`.
+      assert_eq "claude-detect: wrapped pane reports 'node', not 'claude'" \
+        "node" "$(tmux display-message -p -t "$p_wrapped" '#{pane_current_command}' 2>/dev/null || true)"
+
+      # The bug (xtmux-k0d): detection read pane_current_command only, so this pane
+      # missed, got double_enter=0, and Claude Code's paste-detection ate the single
+      # Enter — the pointer sat unsubmitted while the sender was told `sent`.
+      if pane_is_claude_code "$p_wrapped"; then ok "claude-detect: node-wrapped claude pane IS detected"; else nok "claude-detect: node-wrapped claude pane IS detected"; fi
+
+      # Regression guard on the path that already worked.
+      if pane_is_claude_code "$p_direct"; then ok "claude-detect: direct claude pane still detected"; else nok "claude-detect: direct claude pane still detected"; fi
+
+      # The other half of the contract. A spurious second Enter into a pi or shell
+      # pane submits whatever is sitting in its prompt — false positives are not
+      # harmless, so a non-claude pane must stay negative.
+      if pane_is_claude_code "$p_plain"; then nok "claude-detect: non-claude pane is NOT detected"; else ok "claude-detect: non-claude pane is NOT detected"; fi
+    )
+    command tmux -L "$cd_sock" kill-server >/dev/null 2>&1 || true
+  else
+    printf '  \033[33mskip\033[0m claude detection (isolated tmux unavailable)\n'
+  fi
+fi
+
+echo
 echo "== kill contract =="
 
 if ! command -v tmux >/dev/null 2>&1; then
