@@ -25,10 +25,22 @@ export function openDb(cfg: Config): Db {
       cause: err instanceof Error ? err.message : String(err),
     });
   }
-  raw.exec("PRAGMA journal_mode = WAL;");
-  raw.exec("PRAGMA synchronous = NORMAL;");
-  raw.exec(`PRAGMA busy_timeout = ${cfg.busyTimeoutMs};`);
-  raw.exec("PRAGMA foreign_keys = ON;");
+  // busy_timeout FIRST, and it is not a style preference. `journal_mode = WAL`
+  // takes an exclusive lock, so on a virgin DB that several processes open at
+  // once it is the one pragma that genuinely contends. Setting busy_timeout
+  // after it meant the WAL switch ran with SQLite's default timeout of 0 and
+  // failed instantly with a raw "database is locked" — as a bare SQLiteError,
+  // since these pragmas were outside the try/catch that wraps the open above.
+  try {
+    raw.exec(`PRAGMA busy_timeout = ${cfg.busyTimeoutMs};`);
+    raw.exec("PRAGMA journal_mode = WAL;");
+    raw.exec("PRAGMA synchronous = NORMAL;");
+    raw.exec("PRAGMA foreign_keys = ON;");
+  } catch (err) {
+    throw new DbError("XTMUX_DB_OPEN_FAILED", `pragma setup failed: ${cfg.dbPath}`, {
+      cause: err instanceof Error ? err.message : String(err),
+    });
+  }
   const threshold = cfg.slowQueryMs ?? 0;
   if (threshold > 0) installSlowQueryWrapper(raw, threshold);
   return {
