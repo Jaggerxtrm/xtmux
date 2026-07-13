@@ -1146,6 +1146,166 @@ else
 fi
 
 echo
+echo "== help surface (xtmux-d0a.15) =="
+# Help that rots is worse than no help, so nothing here trusts the help text:
+# the command list is checked BOTH ways against the real dispatch table, and the
+# documented --json field names are checked against LIVE command output.
+"$PICKER" help >"$WORK/help.out" 2>&1
+_help_lines="$(wc -l <"$WORK/help.out" | tr -d ' ')"
+
+if [ "$_help_lines" -ge 50 ] && [ "$_help_lines" -le 160 ]; then
+  ok "help: grouped and scannable ($_help_lines lines, bd/sp/xt band is 50-160)"
+else
+  nok "help: grouped and scannable ($_help_lines lines, want 50-160)"
+fi
+
+# the authoritative command list: the top-level dispatch arms themselves
+awk '/^case "\$\{1:-\}" in/{inblock=1; next}
+     inblock && /^esac/{exit}
+     inblock && /^  [a-z][a-z0-9|_-]*\)/{
+       sub(/\).*/, "", $1); n=split($1, arms, "|");
+       for (i=1; i<=n; i++) if (arms[i] ~ /^[a-z]/) print arms[i]
+     }' "$PICKER" | sort -u >"$WORK/dispatch.cmds"
+_ndispatch="$(wc -l <"$WORK/dispatch.cmds" | tr -d ' ')"
+
+# 1. forward: every real command is documented (a new command must not land undocumented)
+_undocumented=''
+while read -r _cmd; do
+  grep -qE "(^|[[:space:],])${_cmd}([[:space:],]|$)" "$WORK/help.out" || _undocumented="$_undocumented $_cmd"
+done <"$WORK/dispatch.cmds"
+if [ -z "$_undocumented" ]; then
+  ok "help: documents every dispatch command ($_ndispatch commands)"
+else
+  nok "help: documents every dispatch command"
+  printf '      undocumented:%s\n' "$_undocumented"
+fi
+
+# 2. reverse: help invents nothing (a removed/renamed command must not linger).
+#    The help FORMAT is the contract: a command is the first word of a line
+#    indented exactly 2 spaces and starting lowercase. Prose is indented deeper
+#    or starts uppercase; field lists are indented 4. The only multi-command
+#    lines are the comma lists under PICKER INTERNALS. "json output:" is a header.
+awk '/^  [a-z]/ && !/^   / {
+       line=$0; sub(/^  /, "", line);
+       if (line ~ /^([a-z][a-z0-9_-]*, )+[a-z][a-z0-9_-]*,?$/) {      # pure comma list
+         n=split(line, toks, /, */);
+         for (i=1; i<=n; i++) { gsub(/,/, "", toks[i]); if (toks[i] != "") print toks[i] }
+       } else {
+         split(line, f, / /);                                          # first word only
+         gsub(/[^a-z0-9_-]/, "", f[1]);
+         if (f[1] != "" && f[1] != "json") print f[1]
+       }
+     }' "$WORK/help.out" | sort -u >"$WORK/help.cmds"
+_phantom=''
+while read -r _cmd; do
+  grep -qx "$_cmd" "$WORK/dispatch.cmds" || _phantom="$_phantom $_cmd"
+done <"$WORK/help.cmds"
+if [ -z "$_phantom" ]; then
+  ok "help: names no command that does not exist"
+else
+  nok "help: names no command that does not exist"
+  printf '      phantom:%s\n' "$_phantom"
+fi
+
+# 3. the two discoverability retries from the design consult must be answerable
+#    from help alone. (a) required input arg, loud failure:
+grep -q -- '--for is REQUIRED' "$WORK/help.out" \
+  && ok "help: marks message-list --for as REQUIRED" \
+  || nok "help: marks message-list --for as REQUIRED"
+_noforl="$("$PICKER" message-list --json 2>&1 >/dev/null; printf 'exit=%s' "$?")"
+case "$_noforl" in *exit=2*) ok "help: matches reality — message-list without --for exits 2" ;;
+  *) nok "help: matches reality — message-list without --for exits 2 ($_noforl)" ;; esac
+
+# (b) the silent one: guessed output fields return null instead of failing.
+grep -q 'messageKey' "$WORK/help.out" && grep -q 'summary' "$WORK/help.out" \
+  && ok "help: documents the message output fields (messageKey, summary)" \
+  || nok "help: documents the message output fields (messageKey, summary)"
+grep -q 'no `text` field and no `id` field' "$WORK/help.out" \
+  && ok "help: names the id/text trap explicitly" \
+  || nok "help: names the id/text trap explicitly"
+
+# 4. THE DRIFT GUARD: documented json fields vs what the commands actually emit.
+#    Pinned to live output, not to a doc — a doc can rot in lockstep with help.
+if command -v jq >/dev/null 2>&1 && [ -x "$ROOT/bin/xtmux-obs" ] && tmux info >/dev/null 2>&1; then
+  _hstate="$WORK/helpstate"; mkdir -p "$_hstate"
+  _hs="xt-help-fields-$$"
+  tmux new-session -d -s "$_hs" 'sleep 30' 2>/dev/null
+  _hp="$(tmux list-panes -t "$_hs" -F '#{pane_id}' 2>/dev/null | head -1)"
+  # each: <label> <live json keys>
+  _live_keys() { # _live_keys <jq-filter> <cmd...>
+    local filter="$1"; shift
+    XDG_STATE_HOME="$_hstate" XTMUX_OBS_V2=1 "$PICKER" "$@" 2>/dev/null | jq -r "$filter" 2>/dev/null
+  }
+  # The field must be documented in THAT command's own `json output:` block —
+  # grepping the whole help would let a field survive in a neighbouring block and
+  # mask its removal here (a false pass this test was written to catch).
+  _help_block() { # _help_block <label> -> that label's field block
+    awk -v L="$1" '
+      $0 ~ "^    " L "([[:space:]]|$)" { inb=1; print; next }
+      inb && /^    [a-z]/ { exit }   # next label at the same indent
+      inb && /^[A-Z]/     { exit }   # next section
+      inb && /^$/         { exit }   # end of the json output block
+      inb                 { print }
+    ' "$WORK/help.out"
+  }
+  _assert_fields() { # _assert_fields <label> <live-keys> [doc-label]
+    local label="$1" keys="$2" doclabel="${3:-$1}" block missing=''
+    block="$(_help_block "$doclabel")"
+    if [ -z "$block" ]; then
+      nok "help: json fields match live output ($label)"
+      printf '      no `json output:` block documents %s\n' "$doclabel"
+      return
+    fi
+    for _k in $keys; do
+      printf '%s' "$block" | grep -q "\b$_k\b" || missing="$missing $_k"
+    done
+    if [ -z "$missing" ]; then
+      ok "help: json fields match live output ($label)"
+    else
+      nok "help: json fields match live output ($label)"
+      printf '      emitted but undocumented under `%s`:%s\n' "$doclabel" "$missing"
+    fi
+  }
+  _k_send="$(_live_keys 'keys|join(" ")' message-send --to "$_hp" --from "$_hp" --text 'help-field-probe' --json)"
+  _assert_fields "message-send" "$_k_send"
+  # message-list rows are the `message` model — that is the block agents misread
+  _k_list="$(_live_keys '.[0]|keys|join(" ")' message-list --for "$_hp" --json)"
+  _assert_fields "message-list" "$_k_list" "message"
+  _k_unread="$(_live_keys 'keys|join(" ")' unread-count --for "$_hp" --json)"
+  _assert_fields "unread-count" "$_k_unread"
+  _k_dash="$(_live_keys 'keys|join(" ")' dashboard sessions-only --json)"
+  _assert_fields "dashboard" "$_k_dash"
+  tmux kill-session -t "$_hs" 2>/dev/null || true
+else
+  printf '  \033[33mskip\033[0m help json-field drift guard (needs jq + built xtmux-obs + live tmux)\n'
+fi
+
+# 5. help and docs/json-command-api.md cannot fork: every field the doc calls stable
+#    for a Message must be documented in help's `message` block.
+if [ -f "$ROOT/docs/json-command-api.md" ]; then
+  _doc_msg_fields="$(awk -F'|' '/^\| Message \|/{gsub(/`|,/, "", $3); print $3; exit}' "$ROOT/docs/json-command-api.md")"
+  _doc_missing=''
+  _msg_block="$(awk '/^    message([[:space:]])/{inb=1; print; next} inb && /^    [a-z]/{exit} inb && /^$/{exit} inb{print}' "$WORK/help.out")"
+  for _f in $_doc_msg_fields; do
+    printf '%s' "$_msg_block" | grep -q "\b$_f\b" || _doc_missing="$_doc_missing $_f"
+  done
+  if [ -n "$_doc_msg_fields" ] && [ -z "$_doc_missing" ]; then
+    ok "help: agrees with docs/json-command-api.md stable Message fields"
+  else
+    nok "help: agrees with docs/json-command-api.md stable Message fields"
+    printf '      documented in the doc but missing from help:%s\n' "${_doc_missing:- (doc table not parsed)}"
+  fi
+fi
+
+# 6. mux-help survives and help points at it
+[ "$("$PICKER" mux-help 2>/dev/null | wc -l)" -gt 10 ] \
+  && ok "help: mux-help still works (protocol, not command reference)" \
+  || nok "help: mux-help still works (protocol, not command reference)"
+grep -q 'mux-help' "$WORK/help.out" \
+  && ok "help: cross-references mux-help" \
+  || nok "help: cross-references mux-help"
+
+echo
 printf '== %s pass, %s fail ==\n' "$pass" "$fail"
 [ "$fail" -gt 0 ] && { printf 'FAILED:%s\n' "$failed"; exit 1; }
 exit 0

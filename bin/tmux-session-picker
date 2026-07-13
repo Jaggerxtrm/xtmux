@@ -1589,6 +1589,131 @@ cleanup rule of thumb
 EOF
 }
 
+# The command reference. Two rules when editing this:
+#   1. Every command in the top-level dispatch must appear here, and nothing that
+#      is not a command may appear as one. test/contract.sh fails otherwise.
+#   2. The `json output:` field lists must match what the commands actually emit.
+#      contract.sh compares them against live --json output, not against a doc —
+#      a wrong INPUT flag fails loudly (exit 2), but a wrong OUTPUT field name
+#      returns null silently, which is how `id`/`text` got guessed for messages.
+# Full JSON contract (envelope, ordering, error codes): docs/json-command-api.md.
+help_text() {
+  cat <<'EOF'
+xtmux — tmux session/pane picker and agent-orchestration CLI
+
+usage:  xtmux <command> [args]
+        xtmux help              this reference
+        xtmux mux-help          delegation safety protocol (beads > /tmp > send-keys)
+
+`tmux-session-picker` is the same program under its legacy name; every command
+below works under either. <angled> args are REQUIRED, [bracketed] are optional.
+[json] marks commands that accept --json and print machine-readable output.
+
+MESSAGES — short status/escalation between panes.
+Durable task content belongs in beads (`bd`), not here.
+  message-send   --to <target> --text <text> [--from <id>] [--bead <id>]
+                 [--expects-reply[=true|false]] [json]
+                 --bead implies --expects-reply=true; opt out explicitly.
+  message-list   --for <target> [--unacked] [--limit <n>] [--since <dur>] [json]
+                 --for is REQUIRED. Without it: exit 2.
+  message-ack    <message-id> [--by <target>] [json]
+  message-status <message-key> [json]
+  unread-count   --for <recipient> [--pane <%id>] [json]
+                 --for is REQUIRED. --pane narrows to one pane's inbox.
+
+  json output:
+    message        messageKey, senderId, senderPaneId, senderKind, recipientId,
+                   targetPaneId, recipientKind, beadId, summary, createdAtMs,
+                   expectsReply, acked, ackedAtMs, ackedBy
+    message-send   messageKey, messageId, duplicate, senderId, senderPaneId,
+                   senderKind, recipientId, recipientKind, targetPaneId, beadId,
+                   expectsReply, createdAtMs
+    message-ack    messageKey, acked, ackedAtMs, ackedBy, status
+    unread-count   recipientId, unreadCount, oldestUnackedAtMs
+
+    TRAP: the message body is `summary` and its id is `messageKey`.
+    There is no `text` field and no `id` field — reading those yields null.
+
+  A target is a session id ($1732), a pane id (%2635), or a session name.
+  Quote pane/session ids in shells: '$1732' unquoted expands to nothing,
+    which silently sends or reads under the WRONG identity.
+
+MONITORS — never prompt a pane that is working; wait for it instead.
+  wait-agent    <target> [--wait-for-transition] [--timeout <dur>]
+                [--interval <dur>] [json]        blocks until the pane leaves
+                                                 working/running/busy/thinking
+  monitor-agent <target> [--wait-for-transition] [--timeout <dur>]
+                [--interval <dur>] [json]        same, but registered + background
+  monitor-list  [json]
+  monitor-kill  <id> [json]
+  monitor-run   <internal — spawned by monitor-agent; do not call directly>
+
+  json output:
+    wait-agent    target, sessionId, paneId, state, status, startedAtMs,
+                  completedAtMs, timeoutMs, intervalMs
+    monitor-agent monitorId, target, sessionId, paneId, state, startedAtMs
+    monitor-list  monitorId, target, sessionId, paneId, state, startedAtMs,
+                  updatedAtMs, timeoutMs, intervalMs, terminalStatus,
+                  terminalAtMs, terminalDetail
+    monitor-kill  monitorId, status
+
+DELEGATION — hand work to another pane without fragmenting its prompt.
+  handoff          --target <target> --bead <id> [--note <text>] [--file <path>]
+                   [--yes] [json]   writes the /tmp prompt file, keeps the bead as
+                                    the contract, prints the exact send command
+  safe-send-pointer [--yes] [--double-enter|--no-double-enter] [--force-freeform]
+                   <target> <slash-command | /tmp pointer> [json]
+                   Refuses working targets, multiline payloads and $(...).
+                   Dry-runs unless --yes. Adds the second Enter that Claude Code
+                   panes eat via paste-detection; pi/Codex panes do not get it.
+
+  json output:
+    handoff        target, paneId, beadId, promptFile, sent, createdAtMs
+
+SESSIONS & DASHBOARD — inventory for orchestrators.
+  dashboard [sessions-only|expanded] [json]   agent-readable inventory
+  list [all|waiting|running|repo:<x>|branch:<x>|cmd:<x>|grep:<x>]
+  list-active                                 list under the active filter
+
+  json output:
+    dashboard      mode, sessions, panes
+                   sessions/panes rows: sessionId, sessionName, paneId, state,
+                   beadId, task, repo, branch, dirtyCount, sharedWorktree,
+                   idleMs, path
+
+OBSERVABILITY — the local event log and command telemetry.
+  log emit  <type> [key=value ...]
+  log tail  [n]
+  log query [--type <t>] [--session <s>] [--pane <%id>] [--bead <id>]
+            [--since <dur>] [--limit <n>] [json]
+  telemetry <git|bd|gh> -- <args ...>          run a command and record it
+
+  json output:
+    log query      createdAtMs, type, domain, eventKey, sessionId, paneId,
+                   beadId, correlationId, plus type-specific detail keys
+
+HYGIENE — end-of-session cleanup.
+  audit                [json]   read-only report: `warning` rows need judgment,
+                                `cleanup` rows are safe candidates
+  worktree-collisions  [json]   sessions sharing one git checkout
+  clear-cache                   drop the picker's git cache
+  install-hooks [picker-path]   tmux cache-invalidation hooks
+
+  json output:
+    audit                severity, kind, sessionId, sessionName, paneId,
+                         paneIndex, path, repo, detail
+    worktree-collisions  path, sessionCount, paneCount, sessionNames
+
+PICKER INTERNALS — invoked by the fzf UI. Agents do not normally call these.
+  preview, popup, jump, kill, act, attn-jump, jump-back, kill-confirm,
+  bulk-kill, bulk-kill-confirm, rename, rename-apply, mode-toggle,
+  filter-menu, filter-clear, prompt-label, border-label
+
+Errors are `exit 2` with a usage line; under --json they are
+{"code":"XTMUX_...","message":...}. See docs/json-command-api.md.
+EOF
+}
+
 audit_json() {
   local input="$1" line severity kind sid name pane path repo state cmd dirty first=1 field
   printf '['
@@ -3249,8 +3374,16 @@ case "${1:-}" in
     ;;
   "")
     ;;
+  help|--help|-h)
+    help_text
+    exit 0
+    ;;
   *)
-    printf 'usage: %s [list [all|waiting|running|repo:..|branch:..|cmd:..|grep:..]|preview <type> <sid> <name> <target>|popup <type> <sid> <target>|jump <type> <sid> <target>|kill <type> <sid> <target>|act <type> <sid> <target> <approve|interrupt|message>|attn-jump <n>|jump-back|kill-confirm <sid> <answer>|bulk-kill <rows...>|bulk-kill-confirm <answer> <sid...>|rename <type> <sid> <target>|rename-apply <type> <target> <name>|list-active|dashboard [sessions-only|expanded]|audit|handoff --target <target> --bead <id> [--note text] [--yes] [--json]|mux-help|log <emit|tail|query>|message-send --to <target> --text <text> [--json]|message-list --for <target> [--json]|message-ack <id> [--json]|message-status <message_key> [--json]|unread-count --for <recipient> [--json]|telemetry <git|bd|gh> -- <args...>|wait-agent <target> [--wait-for-transition] [--timeout 30m] [--interval 30s] [--json]|monitor-agent <target> [--wait-for-transition] [--timeout 30m] [--interval 30s] [--json]|monitor-list [--json]|monitor-kill <id> [--json]|safe-send-pointer [--yes] [--json] [--double-enter|--no-double-enter] [--force-freeform] <target> <slash-command|/tmp pointer>|worktree-collisions|mode-toggle|border-label|filter-menu|filter-clear|prompt-label|clear-cache|install-hooks [picker-path]]\n' "$0" >&2
+    # The old ~1,500-character usage blob lived here. It listed every flag and
+    # was unreadable, so agents missed required args that were technically in it
+    # (`message-list --for`). Point at the grouped reference instead.
+    printf 'xtmux: unknown command: %s\n' "${1:-}" >&2
+    printf 'run `xtmux help` for the command reference, `xtmux mux-help` for the delegation protocol.\n' >&2
     exit 2
     ;;
 esac
