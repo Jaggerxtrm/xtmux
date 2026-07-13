@@ -443,6 +443,16 @@ grep -F '"turn_end"' extensions/pi-agent-state.ts >/dev/null && grep -F 'agent.t
 grep -F '"--wait-for-transition"' extensions/pi-auto-monitor.ts >/dev/null && grep -F '"--wait-for-transition"' .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null && ok "auto-monitor: waits for next transition" || nok "auto-monitor: waits for next transition"
 # The auto-monitor hooks shell out to bd; without it on PATH they cannot run.
 if command -v bd >/dev/null 2>&1; then
+json_picker="$WORK/json-picker"
+cat > "$json_picker" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  monitor-list) printf '[]\n' ;;
+  monitor-agent) printf '{"monitorId":"contract-monitor","target":"%s"}\n' "$2" ;;
+  *) exit 2 ;;
+esac
+STUB
+chmod +x "$json_picker"
 # xtmux-3xs.23: three-hook Stop-block coordination — send touches pending, wait-agent consumes it, drain-stop blocks/allows.
 (
   set -e
@@ -453,9 +463,9 @@ if command -v bd >/dev/null 2>&1; then
   printf '#!/usr/bin/env bash\nexit 0\n' > "$stubdir/tmux"
   chmod +x "$stubdir/tmux"
   export PATH="$stubdir:$PATH"
-  # 1. Send touches pending (bypass daemon spawn via PICKER=/bin/true).
-  echo '{"tool_name":"Bash","tool_input":{"command":"tmux-session-picker message-send --to xtmux:99 --text x"},"tool_response":{"exitCode":0}}' \
-    | XTMUX_PICKER=/bin/true node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
+  # 1. Reworded send touches pending from JSON output, independent of command text.
+  echo '{"tool_name":"Bash","tool_input":{"command":"xtmux send --format changed --recipient differently-quoted"},"tool_response":{"exitCode":0,"stdout":"{\"messageKey\":\"m99\",\"duplicate\":false,\"senderId\":\"orchestrator\",\"recipientId\":\"xtmux:99\"}"}}' \
+    | XTMUX_PICKER="$json_picker" node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
   [ -f "$amdir/xtmux:99_pending" ] || exit 1
   # 2. Drain-stop blocks with decision=block.
   out="$(echo '{"stop_hook_active":false}' | node .xtrm/hooks/auto-monitor-drain-stop.mjs)"
@@ -488,17 +498,17 @@ if command -v bd >/dev/null 2>&1; then
   chmod +x "$stubdir/tmux"
   export PATH="$stubdir:$PATH"
   # send to alice WITHOUT skip → marker touched.
-  echo '{"tool_name":"Bash","tool_input":{"command":"tmux-session-picker message-send --to alice --text hi"},"tool_response":{"exitCode":0}}' \
-    | XTMUX_PICKER=/bin/true node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
+  echo '{"tool_name":"Bash","tool_input":{"command":"reworded send"},"tool_response":{"exitCode":0,"stdout":"{\"messageKey\":\"alice-msg\",\"duplicate\":false,\"senderId\":\"orchestrator\",\"recipientId\":\"alice\"}"}}' \
+    | XTMUX_PICKER="$json_picker" node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
   [ -f "$amdir/alice_pending" ] || exit 1
   rm -rf "$amdir"
   # send to alice WITH skip → no marker.
-  echo '{"tool_name":"Bash","tool_input":{"command":"tmux-session-picker message-send --to alice --text hi"},"tool_response":{"exitCode":0}}' \
-    | XTMUX_PICKER=/bin/true XTMUX_AUTO_MONITOR_SKIP_TARGETS="alice:bob" node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
+  echo '{"tool_name":"Bash","tool_input":{"command":"reworded send"},"tool_response":{"exitCode":0,"stdout":"{\"messageKey\":\"alice-msg\",\"duplicate\":false,\"senderId\":\"orchestrator\",\"recipientId\":\"alice\"}"}}' \
+    | XTMUX_PICKER="$json_picker" XTMUX_AUTO_MONITOR_SKIP_TARGETS="alice:bob" node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
   [ ! -f "$amdir/alice_pending" ] || exit 2
   # send to real target with skip set for others → still touches.
-  echo '{"tool_name":"Bash","tool_input":{"command":"tmux-session-picker message-send --to real:1.2 --text hi"},"tool_response":{"exitCode":0}}' \
-    | XTMUX_PICKER=/bin/true XTMUX_AUTO_MONITOR_SKIP_TARGETS="alice:bob" node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
+  echo '{"tool_name":"Bash","tool_input":{"command":"reworded send"},"tool_response":{"exitCode":0,"stdout":"{\"messageKey\":\"real-msg\",\"duplicate\":false,\"senderId\":\"orchestrator\",\"recipientId\":\"real:1.2\"}"}}' \
+    | XTMUX_PICKER="$json_picker" XTMUX_AUTO_MONITOR_SKIP_TARGETS="alice:bob" node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
   [ -f "$amdir/real:1.2_pending" ] || exit 3
 ) && ok "auto-monitor: SKIP_TARGETS bypass (.29)" || nok "auto-monitor: SKIP_TARGETS bypass (.29)"
 # xtmux-3xs.30: tmux has-session precheck — phantom target skipped even without env.
@@ -520,12 +530,12 @@ exit 0
 STUB
   chmod +x "$stubdir/tmux"
   # phantom target → no marker.
-  echo '{"tool_name":"Bash","tool_input":{"command":"tmux-session-picker message-send --to phantom-30 --text hi"},"tool_response":{"exitCode":0}}' \
-    | PATH="$stubdir:$PATH" XTMUX_PICKER=/bin/true node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
+  echo '{"tool_name":"Bash","tool_input":{"command":"reworded send"},"tool_response":{"exitCode":0,"stdout":"{\"messageKey\":\"phantom-msg\",\"duplicate\":false,\"senderId\":\"orchestrator\",\"recipientId\":\"phantom-30\"}"}}' \
+    | PATH="$stubdir:$PATH" XTMUX_PICKER="$json_picker" node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
   [ ! -f "$amdir/phantom-30_pending" ] || exit 1
   # real target → marker.
-  echo '{"tool_name":"Bash","tool_input":{"command":"tmux-session-picker message-send --to realone-30 --text hi"},"tool_response":{"exitCode":0}}' \
-    | PATH="$stubdir:$PATH" XTMUX_PICKER=/bin/true node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
+  echo '{"tool_name":"Bash","tool_input":{"command":"reworded send"},"tool_response":{"exitCode":0,"stdout":"{\"messageKey\":\"realone-msg\",\"duplicate\":false,\"senderId\":\"orchestrator\",\"recipientId\":\"realone-30\"}"}}' \
+    | PATH="$stubdir:$PATH" XTMUX_PICKER="$json_picker" node .xtrm/hooks/auto-monitor-on-send.mjs >/dev/null 2>&1
   [ -f "$amdir/realone-30_pending" ] || exit 2
 ) && ok "auto-monitor: tmux has-session precheck (.30)" || nok "auto-monitor: tmux has-session precheck (.30)"
 else

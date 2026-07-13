@@ -9,10 +9,8 @@
 // Motivation: the user's assistant (xtmux:1.1) repeatedly forgets to re-arm
 // monitors after sending. This hook enforces it structurally.
 //
-// Detects these command shapes:
-//   tmux-session-picker message-send --to <target> ...
-//   tmux-session-picker safe-send-pointer [...flags] <target> <pointer>
-//   tmux send-keys -t <target> ...            (raw send-keys fallback)
+// Reads stable `message-send --json` and `safe-send-pointer --json` results;
+// command spelling, quoting, and flag order are intentionally irrelevant.
 //
 // Monitor defaults: 8h timeout, 60s interval. Overridable via env:
 //   XTMUX_AUTO_MONITOR_TIMEOUT=8h
@@ -20,7 +18,7 @@
 //   XTMUX_AUTO_MONITOR_DISABLE=1   (bypass entirely)
 
 import { readFileSync, mkdirSync, utimesSync, closeSync, openSync } from "node:fs";
-import { spawnSync, spawn } from "node:child_process";
+import { spawnSync } from "node:child_process";
 
 const TIMEOUT = process.env.XTMUX_AUTO_MONITOR_TIMEOUT || "8h";
 const INTERVAL = process.env.XTMUX_AUTO_MONITOR_INTERVAL || "60s";
@@ -60,23 +58,39 @@ function readInput() {
   }
 }
 
-function extractTarget(cmd) {
-  if (!cmd || typeof cmd !== "string") return null;
+function responseText(response) {
+  if (typeof response === "string") return response.trim();
+  if (!response || typeof response !== "object") return "";
+  for (const key of ["stdout", "output"]) {
+    if (typeof response[key] === "string") return response[key].trim();
+  }
+  if (Array.isArray(response.content)) {
+    return response.content.map((part) => typeof part?.text === "string" ? part.text : "").join("").trim();
+  }
+  return "";
+}
 
-  // message-send --to <target>
-  {
-    const m = cmd.match(/message-send\b[^\n]*?(?:--to[= ]|--to\s+)['"]?([^\s'"]+)['"]?/);
-    if (m) return m[1];
+function coordinationTarget(response) {
+  const text = responseText(response);
+  if (!text.startsWith("{")) return null;
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`Malformed xtmux JSON result: ${error instanceof Error ? error.message : String(error)}`);
   }
-  // safe-send-pointer [flags] <target> <pointer>
-  {
-    const m = cmd.match(/safe-send-pointer\s+((?:--\S+\s+)*)([^\s'"]+)\s+\S+/);
-    if (m) return m[2];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if ("duplicate" in value || ("recipientId" in value && "messageKey" in value)) {
+    if (typeof value.messageKey !== "string" || typeof value.duplicate !== "boolean" || typeof value.senderId !== "string" || typeof value.recipientId !== "string") {
+      throw new Error("Incompatible xtmux message-send JSON result");
+    }
+    return value.recipientId;
   }
-  // raw tmux send-keys -t <target>
-  {
-    const m = cmd.match(/tmux\s+send-keys\s+(?:-\S+\s+)*-t\s+['"]?([^\s'"]+)['"]?/);
-    if (m) return m[1];
+  if ("doubleEnter" in value || ("sent" in value && "target" in value)) {
+    if (typeof value.target !== "string" || typeof value.sent !== "boolean" || typeof value.doubleEnter !== "boolean") {
+      throw new Error("Incompatible xtmux safe-send-pointer JSON result");
+    }
+    return value.sent ? value.target : null;
   }
   return null;
 }
@@ -97,24 +111,32 @@ function targetExists(target) {
   }
 }
 
-function alreadyMonitored(target) {
-  const r = spawnSync(PICKER, ["monitor-list"], { encoding: "utf8", stdio: "pipe" });
-  if (r.status !== 0) return false;
-  // monitor-list rows: monitor\t<id>\t<pid>\t<target>\t<pane>\t<state>\t...
-  const lines = (r.stdout || "").trim().split("\n").filter(Boolean);
-  for (const l of lines) {
-    const parts = l.split("\t");
-    if (parts.length >= 5 && parts[3] === target) return true;
+function pickerJson(args, command) {
+  const result = spawnSync(PICKER, args, { encoding: "utf8", stdio: "pipe", timeout: 5000 });
+  if (result.status !== 0) throw new Error(`${command} failed with exit code ${result.status}: ${(result.stderr || "").trim()}`);
+  try {
+    return JSON.parse(result.stdout || "");
+  } catch (error) {
+    throw new Error(`Malformed ${command} JSON result: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return false;
+}
+
+function alreadyMonitored(target) {
+  const rows = pickerJson(["monitor-list", "--json"], "monitor-list");
+  if (!Array.isArray(rows)) throw new Error("Incompatible xtmux monitor-list JSON result");
+  return rows.some((row) => {
+    if (!row || typeof row !== "object" || typeof row.monitorId !== "string" || typeof row.target !== "string") {
+      throw new Error("Incompatible xtmux monitor-list JSON row");
+    }
+    return row.target === target;
+  });
 }
 
 function fireMonitor(target) {
-  const child = spawn(PICKER, ["monitor-agent", target, "--wait-for-transition", "--timeout", TIMEOUT, "--interval", INTERVAL], {
-    detached: true,
-    stdio: "ignore",
-  });
-  child.unref();
+  const result = pickerJson(["monitor-agent", target, "--json", "--wait-for-transition", "--timeout", TIMEOUT, "--interval", INTERVAL], "monitor-agent");
+  if (!result || typeof result !== "object" || typeof result.monitorId !== "string") {
+    throw new Error("Incompatible xtmux monitor-agent JSON result");
+  }
 }
 
 function main() {
@@ -127,14 +149,8 @@ function main() {
   const exitCode = input.tool_response?.exitCode ?? input.exit_code ?? 0;
   if (exitCode !== 0) return;
 
-  const cmd = input.tool_input?.command;
-  const target = extractTarget(cmd);
+  const target = coordinationTarget(input.tool_response);
   if (!target) return;
-
-  // Never fire on commands that themselves manage monitors — avoids double-arms.
-  if (/monitor-(agent|list|kill)\b/.test(cmd)) return;
-  // Never fire on wait-agent — that IS the drain, not a new send.
-  if (/\bwait-agent\b/.test(cmd)) return;
 
   // xtmux-3xs.29: synthetic smoke-test targets never wake anyone — skip.
   if (SKIP_TARGETS.has(target)) return;

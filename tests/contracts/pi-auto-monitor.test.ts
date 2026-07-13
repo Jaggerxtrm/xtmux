@@ -12,8 +12,8 @@ test("outbound send records pane-owned monitor expectation (.38)", async () => {
   writeFileSync(join(bin, "picker"), `#!/bin/sh
 printf '%s\\n' "$*" >> '${join(dir, "calls")}'
 case "$1" in
-  monitor-list) exit 0 ;;
-  monitor-agent) printf 'monitor\\tmonitor-38\\t123\\tpeer:1.1\\t%%peer\\tidle\\t1\\t99\\t1\\t1\\n' ;;
+  monitor-list) printf '[]\\n' ;;
+  monitor-agent) printf '{"monitorId":"monitor-38","target":"peer:1.1"}\\n' ;;
 esac
 `);
   chmodSync(join(bin, "tmux"), 0o755);
@@ -33,18 +33,23 @@ esac
     const handlers = new Map<string, Function[]>();
     const pi = {
       on(name: string, handler: Function) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
-      exec: async () => ({ stdout: "" }),
+      exec: async (command: string, args: string[]) => {
+        const output = spawnSync(command, args, { encoding: "utf8" });
+        return { stdout: output.stdout, stderr: output.stderr, code: output.status ?? 1, killed: false };
+      },
       sendUserMessage() {},
     };
     const module = await import(`../../extensions/pi-auto-monitor.ts?test=${Date.now()}`);
-    expect(module.extractTarget("tmux-session-picker message-send --to peer:1.1 --bead work --text done")).toBe("peer:1.1");
     module.default(pi as any);
     expect(handlers.get("tool_result")).toHaveLength(2);
     const autoHandler = handlers.get("tool_result")?.at(-1);
     const result = await autoHandler?.({
       type: "tool_result", toolName: "bash", isError: false,
-      input: { command: "tmux-session-picker message-send --to peer:1.1 --bead work --text done" },
-      content: [],
+      input: { command: "xtmux send --format changed --recipient differently-quoted" },
+      content: [{ type: "text", text: JSON.stringify({
+        messageKey: "m1", duplicate: false, senderId: "$me", recipientId: "peer:1.1",
+        targetPaneId: "%peer", beadId: "work", expectsReply: true, createdAtMs: Date.now(),
+      }) }],
     });
     expect(readFileSync(join(dir, "tmux-calls"), "utf8")).toContain("has-session -t peer:1.1");
     const calls = readFileSync(join(dir, "calls"), "utf8");
@@ -57,6 +62,11 @@ esac
       target: "peer:1.1", monitorId: "monitor-38", paneId: "%me",
     });
     expect(result.content.at(-1).text).toContain("[auto-monitor] armed on peer:1.1");
+    await expect(autoHandler?.({
+      type: "tool_result", toolName: "bash", isError: false,
+      input: { command: "another reworded send" },
+      content: [{ type: "text", text: "{not-json" }],
+    })).rejects.toThrow("Malformed xtmux JSON result");
   } finally {
     for (const key of ["TMUX", "TMUX_PANE", "XDG_RUNTIME_DIR", "XTMUX_PICKER", "XTMUX_TMUX", "XTMUX_AUTO_MONITOR_SKIP_TARGETS", "XTMUX_AUTO_MONITOR_DISABLE"] as const) {
       if (old[key] === undefined) delete process.env[key];

@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { coordinationResult } from "./coordination-json.ts";
 
 const PICKER = process.env.XTMUX_PICKER || "/home/dawid/dev/xtmux/bin/tmux-session-picker";
 const WIDGET = "xtmux-inbox";
@@ -156,19 +157,6 @@ function clearObligation(senderId: string, paneId: string): void {
   rmSync(markerPath(senderId, paneId), { force: true });
 }
 
-function commandMatch(command: string, subcommand: string): RegExpMatchArray | null {
-  return command.match(new RegExp(`(?:^|(?:&&|\\|\\||;|\\n)\\s*)(?:(?:[^\\s;&|]*/)?tmux-session-picker\\s+)?${subcommand}\\b([^;&|\\n]*)`));
-}
-
-export function commandAction(command: string): { ackKey?: string; sendTarget?: string; relevant: boolean } {
-  const ack = commandMatch(command, "message-ack");
-  const send = commandMatch(command, "message-send");
-  const list = commandMatch(command, "message-list");
-  const ackKey = ack?.[1]?.trim().match(/^['"]?([^\s'"]+)/)?.[1];
-  const sendTarget = send?.[1]?.match(/--to(?:=|\s+)['"]?([^\s'";]+)/)?.[1];
-  return { ...(ackKey ? { ackKey } : {}), ...(sendTarget ? { sendTarget } : {}), relevant: Boolean(ack || send || list) };
-}
-
 function stdoutOf(value: unknown): string {
   if (!value || typeof value !== "object") return typeof value === "string" ? value : "";
   const result = value as { stdout?: unknown };
@@ -203,13 +191,14 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     }
   }
 
-  async function status(key: string): Promise<MessageStatus | null> {
-    try {
-      const result = await pi.exec(PICKER, ["message-status", key], { timeout: 1500 });
-      return JSON.parse(stdoutOf(result)) as MessageStatus;
-    } catch {
-      return null;
+  async function status(key: string): Promise<MessageStatus> {
+    const result = await pi.exec(PICKER, ["message-status", key], { timeout: 1500 });
+    if (result.code !== 0) throw new Error(`message-status failed with exit code ${result.code}: ${result.stderr.trim()}`);
+    const value: unknown = JSON.parse(result.stdout);
+    if (!value || typeof value !== "object" || typeof (value as { messageKey?: unknown }).messageKey !== "string" || typeof (value as { acked?: unknown }).acked !== "boolean") {
+      throw new Error("Incompatible xtmux message-status JSON result");
     }
+    return value as MessageStatus;
   }
 
   async function syncExpectedReplies(): Promise<InboundMessage[]> {
@@ -218,23 +207,24 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     const discovered: InboundMessage[] = [];
     const args = ["message-list", "--for", id, "--unacked", "--expects-reply", "--json", "--limit", "500"];
     if (ownPaneId) args.push("--pane", ownPaneId);
-    try {
-      const result = await pi.exec(PICKER, args, { timeout: 1500 });
-      const messages = JSON.parse(stdoutOf(result)) as InboundMessage[];
-      if (!Array.isArray(messages)) return [];
-      for (const message of [...messages].reverse()) {
-        if (!message.expectsReply || !message.beadId || message.recipientId !== id) continue;
-        recordObligation(message, ownPaneId);
-        if (!seenMessageKeys.has(message.messageKey)) discovered.push(message);
-        seenMessageKeys.add(message.messageKey);
-        try {
-          await pi.exec(PICKER, ["message-ack", message.messageKey, "--by", id], { timeout: 1500 });
-        } catch {
-          // The durable marker is authoritative even if receipt projection fails.
-        }
+    const result = await pi.exec(PICKER, args, { timeout: 1500 });
+    if (result.code !== 0) throw new Error(`message-list failed with exit code ${result.code}: ${result.stderr.trim()}`);
+    const messages: unknown = JSON.parse(result.stdout);
+    if (!Array.isArray(messages)) throw new Error("Incompatible xtmux message-list JSON result");
+    for (const message of [...messages].reverse()) {
+      if (!message || typeof message !== "object" || typeof (message as { messageKey?: unknown }).messageKey !== "string") {
+        throw new Error("Incompatible xtmux message-list JSON row");
       }
-    } catch {
-      // Best-effort boundary: retain existing markers and UI.
+      const value = message as InboundMessage;
+      if (!value.expectsReply || !value.beadId || value.recipientId !== id) continue;
+      recordObligation(value, ownPaneId);
+      if (!seenMessageKeys.has(value.messageKey)) discovered.push(value);
+      seenMessageKeys.add(value.messageKey);
+      try {
+        await pi.exec(PICKER, ["message-ack", value.messageKey, "--by", id, "--json"], { timeout: 1500 });
+      } catch {
+        // The durable marker is authoritative even if receipt projection fails.
+      }
     }
     return discovered;
   }
@@ -242,15 +232,19 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
   async function consumeCompletedOutbound(): Promise<string[]> {
     const expected = readOutboundExpectations(ownPaneId);
     if (!expected.length) return [];
-    try {
-      const result = await pi.exec(PICKER, ["monitor-list"], { timeout: 1500 });
-      const active = new Set(stdoutOf(result).split("\n").map((line) => line.split("\t")[1]).filter(Boolean));
-      const completed = expected.filter((item) => !active.has(item.monitorId));
-      for (const item of completed) rmSync(item.path, { force: true });
-      return completed.map((item) => item.target);
-    } catch {
-      return [];
-    }
+    const result = await pi.exec(PICKER, ["monitor-list", "--json"], { timeout: 1500 });
+    if (result.code !== 0) throw new Error(`monitor-list failed with exit code ${result.code}: ${result.stderr.trim()}`);
+    const rows: unknown = JSON.parse(result.stdout);
+    if (!Array.isArray(rows)) throw new Error("Incompatible xtmux monitor-list JSON result");
+    const active = new Set(rows.map((row) => {
+      if (!row || typeof row !== "object" || typeof (row as { monitorId?: unknown }).monitorId !== "string") {
+        throw new Error("Incompatible xtmux monitor-list JSON row");
+      }
+      return (row as { monitorId: string }).monitorId;
+    }));
+    const completed = expected.filter((item) => !active.has(item.monitorId));
+    for (const item of completed) rmSync(item.path, { force: true });
+    return completed.map((item) => item.target);
   }
 
   async function render(ctx: ExtensionContext): Promise<Obligation[]> {
@@ -330,15 +324,14 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_result", async (event, ctx) => {
-    if (event.toolName !== "bash" || typeof event.input.command !== "string") return;
-    const action = commandAction(event.input.command);
-    if (!action.relevant) return;
-    if (!event.isError) {
-      if (action.ackKey) {
-        const [message, me] = await Promise.all([status(action.ackKey), sessionId()]);
-        if (message?.acked && message.expectsReply && message.beadId && message.recipientId === me) recordObligation(message, ownPaneId);
-      }
-      if (action.sendTarget) clearObligation(await canonicalTarget(action.sendTarget), ownPaneId);
+    if (event.toolName !== "bash" || event.isError) return;
+    const action = coordinationResult(event.content);
+    if (!action) return;
+    if (action.kind === "message-ack") {
+      const [message, me] = await Promise.all([status(action.messageKey), sessionId()]);
+      if (message?.acked && message.expectsReply && message.beadId && message.recipientId === me) recordObligation(message, ownPaneId);
+    } else {
+      clearObligation(await canonicalTarget(action.target), ownPaneId);
     }
     await render(ctx);
   });
