@@ -53,11 +53,13 @@ async function main(argv: string[]): Promise<number> {
       case "monitor":
       case "telemetry":
       case "audit": {
-        // Domain commands assume the schema is current: the picker calls them on
-        // the hot path and cannot afford a migrate() per invocation, so `migrate`
-        // is an explicit install/upgrade step.
         const db = openDb(cfg);
         try {
+          // Same as the message-* path: migrate on every invocation. These are
+          // picker hot-path commands, but a no-op migrate() on a current schema
+          // is lost in process-startup noise, and skipping it meant a fresh
+          // XDG_STATE_HOME hit "no such table: monitors" instead of an empty list.
+          migrate(db);
           const sub = argv[3] ?? "";
           const rest = argv.slice(4);
           if (cmd === "monitor") return monitorCommand(db, sub, rest, now);
