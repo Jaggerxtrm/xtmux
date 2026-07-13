@@ -52,6 +52,21 @@ function fmtRow(r: JournalRow): string {
   return JSON.stringify(merged);
 }
 
+function jsonRow(r: JournalRow): Record<string, unknown> {
+  return {
+    ...safeParseObject(r.payload_json),
+    createdAtMs: r.created_at_ms,
+    type: r.type,
+    domain: r.domain,
+    eventKey: r.event_key,
+    sessionId: r.session_id,
+    paneId: r.pane_id,
+    instanceId: r.instance_id,
+    beadId: r.bead_id,
+    correlationId: r.correlation_id,
+  };
+}
+
 function safeParseObject(s: string): Record<string, unknown> {
   try {
     const v = JSON.parse(s);
@@ -125,9 +140,11 @@ export function cliLogEmit(db: Db, argv: string[]): number {
 }
 
 export function cliLogTail(db: Db, argv: string[]): number {
-  const n = Number(argv[0] ?? 50);
-  const rows = journalTail(db, isNaN(n) ? 50 : n);
-  for (const r of [...rows].reverse()) process.stdout.write(fmtRow(r) + "\n");
+  const { positional, flags } = parseArgs(argv);
+  const n = Number(positional[0] ?? 50);
+  const rows = [...journalTail(db, isNaN(n) ? 50 : n)].reverse();
+  if (flags.get("json") === true) process.stdout.write(JSON.stringify(rows.map(jsonRow)) + "\n");
+  else for (const row of rows) process.stdout.write(fmtRow(row) + "\n");
   return 0;
 }
 
@@ -141,6 +158,8 @@ export function cliLogQuery(db: Db, argv: string[]): number {
     sinceMs: flags.has("since") ? Number(flags.get("since")) : undefined,
     limit: flags.has("limit") ? Number(flags.get("limit")) : undefined,
   });
-  for (const r of [...rows].reverse()) process.stdout.write(fmtRow(r) + "\n");
+  const ordered = [...rows].reverse();
+  if (flags.get("json") === true) process.stdout.write(JSON.stringify(ordered.map(jsonRow)) + "\n");
+  else for (const row of ordered) process.stdout.write(fmtRow(row) + "\n");
   return 0;
 }

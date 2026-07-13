@@ -4,11 +4,12 @@ import {
   heartbeat,
   kill,
   list,
+  listResults,
   MonitorNotFoundError,
   register,
   terminate,
 } from "../domains/monitors/store.ts";
-import type { TerminalStatus } from "../domains/monitors/terminal.ts";
+import { IllegalTransitionError, type TerminalStatus } from "../domains/monitors/terminal.ts";
 import { liveProbes } from "../tmux.ts";
 
 /**
@@ -69,19 +70,29 @@ export function monitorCommand(db: Db, sub: string, argv: string[], now: number)
       return 0;
     }
     case "list": {
-      for (const line of list(db, liveProbes, now)) process.stdout.write(line + "\n");
+      if (argv.includes("--json")) {
+        process.stdout.write(JSON.stringify(listResults(db, liveProbes, now)) + "\n");
+      } else {
+        for (const line of list(db, liveProbes, now)) process.stdout.write(line + "\n");
+      }
       return 0;
     }
     case "kill": {
-      const id = a["id"] ?? argv[0] ?? "";
+      const id = a["id"] ?? argv.find((arg) => !arg.startsWith("--")) ?? "";
+      const json = argv.includes("--json");
       try {
-        process.stdout.write(kill(db, liveProbes, id, now) + "\n");
+        kill(db, liveProbes, id, now);
+        process.stdout.write(json ? `${JSON.stringify({ monitorId: id, status: "killed" })}\n` : `killed\t${id}\n`);
         return 0;
       } catch (err) {
         if (err instanceof MonitorNotFoundError) {
-          // V1: `monitor-kill: not found: <id>` on stderr, exit 1.
-          process.stderr.write(`monitor-kill: not found: ${id}\n`);
+          if (json) process.stderr.write(JSON.stringify({ code: "XTMUX_MONITOR_NOT_FOUND", message: err.message, detail: { monitorId: id } }) + "\n");
+          else process.stderr.write(`monitor-kill: not found: ${id}\n`);
           return 1;
+        }
+        if (json && err instanceof IllegalTransitionError) {
+          process.stderr.write(JSON.stringify({ code: "XTMUX_MONITOR_TERMINAL", message: err.message, detail: { monitorId: id, terminalStatus: err.from } }) + "\n");
+          return 4;
         }
         throw err;
       }

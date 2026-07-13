@@ -95,7 +95,6 @@ export function sendMessage(db: Db, input: SendInput, now: () => number = Date.n
         sender_pane_id: input.senderPaneId,
         recipient_id: input.recipientId,
         target_pane_id: input.targetPaneId,
-        summary: input.summary,
         expects_reply: input.expectsReply ?? false,
       },
       createdAtMs,
