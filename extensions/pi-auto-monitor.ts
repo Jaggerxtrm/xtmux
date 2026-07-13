@@ -21,8 +21,8 @@
  *   XTMUX_AUTO_MONITOR_SKIP_TARGETS  (colon-separated; skip these targets. xtmux-3xs.29)
  *   XTMUX_PICKER                     (default /home/dawid/dev/xtmux/bin/tmux-session-picker)
  */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { spawnSync } from "node:child_process";
+import type { ExtensionAPI, ExecResult } from "@earendil-works/pi-coding-agent";
+import { coordinationResult } from "./coordination-json.ts";
 import xtmuxInboxReply, { recordOutboundExpectation } from "./pi-inbox-reply.ts";
 
 const PICKER =
@@ -39,60 +39,46 @@ const SKIP_TARGETS = new Set(
     .filter((s) => s.length > 0),
 );
 
-export function extractTarget(cmd: string): string | null {
-  // message-send --to <target>
-  let m = cmd.match(/message-send\b[^\n]*?(?:--to[= ]|--to\s+)['"]?([^\s'"]+)['"]?/);
-  if (m) return m[1] ?? null;
-
-  // safe-send-pointer [flags] <target> <pointer>
-  m = cmd.match(/safe-send-pointer\s+((?:--\S+\s+)*)([^\s'"]+)\s+\S+/);
-  if (m) return m[2] ?? null;
-
-  // raw tmux send-keys -t <target>
-  m = cmd.match(/tmux\s+send-keys\s+(?:-\S+\s+)*-t\s+['"]?([^\s'"]+)['"]?/);
-  if (m) return m[1] ?? null;
-
-  return null;
+function requireSuccess(result: ExecResult, command: string): string {
+  if (result.code !== 0) throw new Error(`${command} failed with exit code ${result.code}: ${result.stderr.trim()}`);
+  return result.stdout;
 }
 
 // xtmux-3xs.30: `tmux has-session -t <target>` precheck. Exit 1 = target
 // missing → skip. Anything else (exit 0, subprocess error, timeout) falls
 // through: better to spawn a monitor than silently drop a wake.
-function targetExists(target: string): boolean {
+async function targetExists(pi: ExtensionAPI, target: string): Promise<boolean> {
   try {
-    const r = spawnSync(TMUX, ["has-session", "-t", target], {
-      stdio: "ignore",
-      timeout: 2000,
-    });
-    return r.status !== 1;
+    return (await pi.exec(TMUX, ["has-session", "-t", target], { timeout: 2000 })).code !== 1;
   } catch {
     return true;
   }
 }
 
-function monitorIdFor(target: string): string | null {
-  const r = spawnSync(PICKER, ["monitor-list"], {
-    encoding: "utf8",
-    stdio: "pipe",
-  });
-  if (r.status !== 0) return null;
-  const lines = (r.stdout || "").trim().split("\n").filter(Boolean);
-  for (const l of lines) {
-    const parts = l.split("\t");
-    if (parts.length >= 5 && parts[3] === target) return parts[1] ?? null;
+async function monitorIdFor(pi: ExtensionAPI, target: string): Promise<string | null> {
+  const output = requireSuccess(await pi.exec(PICKER, ["monitor-list", "--json"], { timeout: 2000 }), "monitor-list");
+  const rows: unknown = JSON.parse(output);
+  if (!Array.isArray(rows)) throw new Error("Incompatible xtmux monitor-list JSON result");
+  for (const row of rows) {
+    if (!row || typeof row !== "object") throw new Error("Incompatible xtmux monitor-list JSON row");
+    const value = row as { monitorId?: unknown; target?: unknown };
+    if (typeof value.monitorId !== "string" || typeof value.target !== "string") throw new Error("Incompatible xtmux monitor-list JSON row");
+    if (value.target === target) return value.monitorId;
   }
   return null;
 }
 
-function fireMonitor(target: string): string | null {
-  const result = spawnSync(
+async function fireMonitor(pi: ExtensionAPI, target: string): Promise<string> {
+  const output = requireSuccess(await pi.exec(
     PICKER,
-    ["monitor-agent", target, "--wait-for-transition", "--timeout", TIMEOUT, "--interval", INTERVAL],
-    { encoding: "utf8", stdio: "pipe", timeout: 5000 },
-  );
-  if (result.status !== 0) return null;
-  const fields = (result.stdout || "").trim().split("\t");
-  return fields[0] === "monitor" ? fields[1] ?? null : null;
+    ["monitor-agent", target, "--json", "--wait-for-transition", "--timeout", TIMEOUT, "--interval", INTERVAL],
+    { timeout: 5000 },
+  ), "monitor-agent");
+  const result: unknown = JSON.parse(output);
+  if (!result || typeof result !== "object" || typeof (result as { monitorId?: unknown }).monitorId !== "string") {
+    throw new Error("Incompatible xtmux monitor-agent JSON result");
+  }
+  return (result as { monitorId: string }).monitorId;
 }
 
 export default function xtmuxAutoMonitor(pi: ExtensionAPI): void {
@@ -102,19 +88,15 @@ export default function xtmuxAutoMonitor(pi: ExtensionAPI): void {
   pi.on("tool_result", async (event) => {
     if (event.toolName !== "bash" || event.isError) return undefined;
 
-    const cmd = (event as unknown as { input?: { command?: string } }).input?.command ?? "";
-    // Skip commands that already manage monitors — avoids double-arm loops.
-    if (/monitor-(agent|list|kill)\b/.test(cmd)) return undefined;
-
-    const target = extractTarget(cmd);
-    if (!target) return undefined;
+    const action = coordinationResult(event.content);
+    if (!action || action.kind === "message-ack") return undefined;
+    const target = action.target;
     // xtmux-3xs.29: synthetic smoke-test targets never wake anyone — skip.
     if (SKIP_TARGETS.has(target)) return undefined;
     // xtmux-3xs.30: also skip when tmux confirms the target doesn't exist.
-    if (!targetExists(target)) return undefined;
-    const existing = monitorIdFor(target);
-    const monitorId = existing || fireMonitor(target);
-    if (!monitorId) return undefined;
+    if (!await targetExists(pi, target)) return undefined;
+    const existing = await monitorIdFor(pi, target);
+    const monitorId = existing || await fireMonitor(pi, target);
     if (process.env.TMUX && process.env.TMUX_PANE) recordOutboundExpectation(target, monitorId, process.env.TMUX_PANE);
 
     const note = `\n\n[auto-monitor] ${existing ? "tracking existing monitor" : "armed"} on ${target} (${TIMEOUT}, ${INTERVAL}) — waiting for its next work cycle.`;

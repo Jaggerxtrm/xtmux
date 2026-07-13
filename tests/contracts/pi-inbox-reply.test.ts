@@ -2,9 +2,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
-import xtmuxInboxReply, { commandAction, readObligations, recordOutboundExpectation } from "../../extensions/pi-inbox-reply.ts";
+import xtmuxInboxReply, { readObligations, recordOutboundExpectation } from "../../extensions/pi-inbox-reply.ts";
 
 type Handler = (event: any, ctx: any) => unknown | Promise<unknown>;
+const jsonResult = (value: object) => [{ type: "text", text: JSON.stringify(value) }];
 
 function harness() {
   const handlers = new Map<string, Handler[]>();
@@ -16,7 +17,7 @@ function harness() {
   let expectedReplies: Array<Record<string, unknown>> = [];
   const pickerCalls: string[][] = [];
   const sentUserMessages: string[] = [];
-  let monitorRows: string[] = [];
+  let monitorRows: Array<{ monitorId: string }> = [];
   let failPane = false;
   const ui = {
     setWidget(key: string, lines: string[] | undefined) {
@@ -26,29 +27,30 @@ function harness() {
     notify(message: string) { notifications.push(message); },
   };
   const ctx = { ui, hasUI: true };
+  const ok = (stdout: string) => ({ stdout, stderr: "", code: 0, killed: false });
   const pi = {
     on(name: string, handler: Handler) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
     async exec(command: string, args: string[]) {
       if (command === "tmux") {
         if (args.at(-1) === "#{pane_id}") {
           if (failPane) throw new Error("pane unavailable");
-          return { stdout: "%me\n", code: 0 };
+          return ok("%me\n");
         }
         const target = args[args.indexOf("-t") + 1];
-        return { stdout: target && target !== "display-message" ? `${target}\n` : "$me\n", code: 0 };
+        return ok(target && target !== "display-message" ? `${target}\n` : "$me\n");
       }
       pickerCalls.push(args);
-      if (args[0] === "message-list") return { stdout: JSON.stringify(expectedReplies) };
-      if (args[0] === "monitor-list") return { stdout: monitorRows.join("\n") };
+      if (args[0] === "message-list") return ok(JSON.stringify(expectedReplies));
+      if (args[0] === "monitor-list") return ok(JSON.stringify(monitorRows));
       if (args[0] === "message-ack") {
         expectedReplies = expectedReplies.filter((message) => message.messageKey !== args[1]);
-        return { stdout: `ack\t${args[1]}\t$me\n` };
+        return ok(JSON.stringify({ messageKey: args[1], status: "acked", acked: true, ackedBy: "$me" }));
       }
       if (args[0] === "unread-count") {
         if (failUnread) throw new Error("db unavailable");
-        return { stdout: JSON.stringify({ recipientId: "$me", unreadCount: unread, oldestUnackedAtMs: null }) };
+        return ok(JSON.stringify({ recipientId: "$me", unreadCount: unread, oldestUnackedAtMs: null }));
       }
-      if (args[0] === "message-status") return { stdout: JSON.stringify(statuses.get(args[1]!) ?? {}) };
+      if (args[0] === "message-status") return ok(JSON.stringify(statuses.get(args[1]!) ?? {}));
       throw new Error(`unexpected exec: ${command} ${args.join(" ")}`);
     },
     sendUserMessage(content: string) { sentUserMessages.push(content); },
@@ -61,7 +63,7 @@ function harness() {
     statuses,
     pickerCalls,
     setUnread(value: number) { unread = value; },
-    setMonitorRows(rows: string[]) { monitorRows = rows; },
+    setMonitorRows(rows: Array<{ monitorId: string }>) { monitorRows = rows; },
     setExpectedReplies(messages: Array<Record<string, unknown>>) { expectedReplies = messages; },
     setUnreadFailure(value: boolean) { failUnread = value; },
     setPaneFailure(value: boolean) { failPane = value; },
@@ -100,7 +102,8 @@ describe("Pi inbox widget (.22)", () => {
       ]);
 
       h.setUnread(0);
-      await h.emit("tool_result", { toolName: "bash", input: { command: "tmux-session-picker message-ack m1 --by $me" }, isError: false });
+      h.statuses.set("m1", { messageKey: "m1", senderId: "$sender", recipientId: "$me", beadId: null, summary: "", expectsReply: false, acked: true });
+      await h.emit("tool_result", { toolName: "bash", input: { command: "reworded ack" }, isError: false, content: jsonResult({ messageKey: "m1", status: "acked", acked: true, ackedBy: "$me" }) });
       expect(h.widgets.has("xtmux-inbox")).toBe(false);
 
       h.setUnread(3);
@@ -133,7 +136,7 @@ describe("Pi reply obligations (.26)", () => {
         messageKey: "task-1", senderId: "$sender", recipientId: "$me",
         beadId: "xtmux-42", summary: "do the work", expectsReply: true, acked: true,
       });
-      await h.emit("tool_result", { toolName: "bash", input: { command: "./bin/tmux-session-picker message-ack task-1 --by $me" }, isError: false });
+      await h.emit("tool_result", { toolName: "bash", input: { command: "reworded ack --different quoting" }, isError: false, content: jsonResult({ messageKey: "task-1", status: "acked", acked: true, ackedBy: "$me" }) });
       expect(readObligations()).toHaveLength(1);
       expect(h.widgets.get("xtmux-inbox")).toEqual(["Reply required: $sender (xtmux-42)"]);
 
@@ -143,14 +146,13 @@ describe("Pi reply obligations (.26)", () => {
         systemPrompt: expect.stringContaining("Before ending this turn, author and send the required coordination reply to: $sender (xtmux-42)"),
       });
 
-      await h.emit("tool_result", { toolName: "bash", input: { command: "tmux-session-picker message-send --to $other --text done" }, isError: false });
+      await h.emit("tool_result", { toolName: "bash", input: { command: "reworded send one" }, isError: false, content: jsonResult({ messageKey: "s1", duplicate: false, senderId: "$me", recipientId: "$other" }) });
       expect(readObligations()).toHaveLength(1);
 
-      await h.emit("tool_result", { toolName: "bash", input: { command: "tmux-session-picker message-send --to $sender --text done" }, isError: false });
+      await h.emit("tool_result", { toolName: "bash", input: { command: "reworded send two" }, isError: false, content: jsonResult({ messageKey: "s2", duplicate: false, senderId: "$me", recipientId: "$sender" }) });
       expect(readObligations()).toHaveLength(0);
       expect(h.widgets.has("xtmux-inbox")).toBe(false);
 
-      expect(commandAction("echo 'message-send --to $sender'").relevant).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -216,7 +218,7 @@ describe("Pi outbound wake (.38)", () => {
     try {
       recordOutboundExpectation("peer:1.1", "monitor-1", "%me");
       const h = harness();
-      h.setMonitorRows(["monitor\tmonitor-1\t123\tpeer:1.1\t%peer\tidle\t1\t10\t1\t1"]);
+      h.setMonitorRows([{ monitorId: "monitor-1" }]);
       await h.emit("session_start");
       await Bun.sleep(20);
       expect(h.sentUserMessages).toEqual([]);
