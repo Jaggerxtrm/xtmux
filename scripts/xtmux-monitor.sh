@@ -126,23 +126,47 @@ pane_log="tail -F $(q "$log_file")"
 
 tmux new-session -d -s "$session" -n monitor "$pane_dashboard"
 window_id="$(tmux display-message -p -t "$session" '#{window_id}')"
-tmux split-window -t "$window_id" -v "$pane_audit"
-tmux split-window -t "$window_id" -h "$pane_log"
+
+# We build the layout in a session nobody is attached to. tmux (3.5a) performs
+# such a split correctly but still reports `no current client` and exits 1,
+# because it cannot move focus to the new pane. Under `set -e` that killed this
+# script after the FIRST split, leaving a 2-pane "monitor" — silently, since the
+# panes it did create looked plausible. Older tmux exits 0, which is why CI never
+# saw it and every dev machine did.
+#
+# So: do not trust the exit status of a split into a clientless session. Ignore
+# it here and verify the real pane count below — an outcome check, not a guess.
+expected_panes=3   # dashboard + audit + log
+split() { tmux split-window -d "$@" 2>/dev/null || true; }
+
+split -t "$window_id" -v "$pane_audit"
+split -t "$window_id" -h "$pane_log"
 
 if [ -n "$messages_target" ]; then
   cmd="$picker message-list --for $(q "$messages_target") --unacked"
-  tmux split-window -t "$window_id" "$(watch_cmd 3 "$cmd")"
+  split -t "$window_id" "$(watch_cmd 3 "$cmd")"
+  expected_panes=$((expected_panes + 1))
 fi
 
 if [ "$add_turns" = 1 ]; then
   cmd="$picker log query --type agent.turn.done --since 2h --limit 30"
-  tmux split-window -t "$window_id" "$(watch_cmd 5 "$cmd")"
+  split -t "$window_id" "$(watch_cmd 5 "$cmd")"
+  expected_panes=$((expected_panes + 1))
 fi
 
 if [ "$add_telemetry" = 1 ]; then
   # Keep grep inside sh -c so no-match does not kill watch output.
   cmd="$picker log query --since 2h --limit 120 | grep -E '\"type\":\"(git\\.|bd\\.|gh\\.|git.pr)' || true"
-  tmux split-window -t "$window_id" "$(watch_cmd 5 "$cmd")"
+  split -t "$window_id" "$(watch_cmd 5 "$cmd")"
+  expected_panes=$((expected_panes + 1))
+fi
+
+# The splits swallowed their status, so prove the layout instead of assuming it.
+actual_panes="$(tmux list-panes -t "$window_id" 2>/dev/null | wc -l | tr -d ' ')"
+if [ "${actual_panes:-0}" -ne "$expected_panes" ]; then
+  printf 'xtmux-monitor: layout incomplete — expected %s panes, got %s (session %s)\n' \
+    "$expected_panes" "${actual_panes:-0}" "$session" >&2
+  exit 1
 fi
 
 tmux select-layout -t "$window_id" tiled >/dev/null

@@ -3074,6 +3074,79 @@ kill_target() {
   tmux command-prompt -p "kill session ${sname:-$sid}? [y/N]" "run-shell '$self kill-confirm $sid "%1"'"
 }
 
+# rename_target / rename_apply were called by the dispatcher and by the Alt-R
+# fzf binding but never existed: both exited 127 ("command not found"), so the
+# advertised inline rename has never worked. The contract tests for them failed
+# on every run, in a subshell that swallowed the count (xtmux-d0a.19).
+#
+# rename_target prompts; rename_apply performs. Splitting them is what lets the
+# tmux command-prompt hand the typed name back through `run-shell`.
+rename_apply() {
+  local type="${1:-}" handle="${2:-}" name="${3:-}"
+
+  [ -n "$type" ] && [ -n "$handle" ] || return 1
+  # An empty name is a cancelled prompt, not a request to blank the name.
+  if [ -z "$name" ]; then
+    tmux display-message 'tmux-picker: rename annullato' 2>/dev/null || true
+    return 0
+  fi
+
+  case "$type" in
+    session) tmux rename-session -t "$handle" "$name" ;;
+    # a pane row renames the window that holds it — panes have no name of their own
+    pane)    tmux rename-window -t "$handle" "$name" ;;
+    *)       return 1 ;;
+  esac
+}
+
+# The tmux command that command-prompt runs with %1 replaced by the typed name.
+# Split out from rename_target so it can be tested without an attached client.
+#
+# It renames with tmux's OWN commands and never reaches /bin/sh. The obvious
+# spelling routes the name through `run-shell '... rename-apply %1'`, and that is
+# a free-text field going through an unquoted shell expansion: tmux substitutes
+# the text, then sh word-splits it, so "new sprint board" arrives as "new" and a
+# name containing `;` or `$(...)` is EXECUTED. Quoting %1 for sh would only move
+# the hole (an apostrophe in the name reopens it). With no shell in the path,
+# tmux performs no command substitution and the name is inert text.
+#
+# %1 is single-quoted at the tmux parse level so spaces stay in one argument.
+# A typed apostrophe makes tmux fail to parse — it renames nothing and reports a
+# parse error. That is a safe failure, not an executed one.
+rename_prompt_command() {
+  local type="${1:-}" handle="${2:-}"
+  [ -n "$handle" ] || return 1
+  case "$type" in
+    # a pane row renames the window that holds it
+    pane)    printf "rename-window -t '%s' '%%1'" "$handle" ;;
+    session) printf "rename-session -t '%s' '%%1'" "$handle" ;;
+    *) return 1 ;;
+  esac
+}
+
+rename_target() {
+  local type="${1:-}" sid="${2:-}" target="${3:-}" handle current cmd
+
+  case "$type" in
+    pane)
+      handle="$target"
+      current="$(tmux display-message -p -t "$target" '#W' 2>/dev/null || true)"
+      ;;
+    session)
+      # the session ID, not its name: an id never needs quoting
+      handle="$sid"
+      current="$(tmux display-message -p -t "$sid" '#S' 2>/dev/null || true)"
+      ;;
+    *) return 1 ;;
+  esac
+  [ -n "$handle" ] || return 1
+
+  cmd="$(rename_prompt_command "$type" "$handle")" || return 1
+  # -I prefills the current name, so Enter on an unchanged prompt is a no-op.
+  # An emptied prompt renames nothing: tmux rejects an empty name.
+  tmux command-prompt -I "$current" -p "rename $type:" "$cmd"
+}
+
 # act_on_target <type> <sid> <target> <action>
 # act on a pane from the list without attaching. no-op on session rows (only
 # pane rows carry a usable target). cross-session safe: send-keys -t <pane>.

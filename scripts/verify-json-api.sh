@@ -34,6 +34,12 @@ fi
 printf 'build-freshness\t%s\t0\t0\tmtime(src)<=mtime(binary)\t%s\n' "${XTMUX_OBS_V2:-default-on}" "$root/bin/xtmux-obs" >> "$summary"
 run_check bun-tests bun test
 run_check typecheck bun run typecheck
+# Runs BEFORE the contract suite on purpose: it proves the suite can still fail.
+# The counters used to live in shell variables, so a failure inside a subshell
+# printed FAIL and counted nothing, and this gate reported PASS while the suite
+# printed failures (xtmux-d0a.19). A green contract run means nothing unless the
+# harness underneath it can go red.
+run_check harness-selftest bash test/harness-selftest.sh
 run_check shell-contracts bash test/contract.sh
 run_check v1-fixtures bash scripts/capture-v1-fixtures.sh --check
 run_check live-smoke bash scripts/smoke-json-api.sh
