@@ -1,27 +1,6 @@
-declare const process: { env: Record<string, string | undefined> };
+import type { AgentEndEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 type AgentState = "running" | "needs-input" | "done" | "idle" | "off";
-type PiEventName =
-  | "session_start"
-  | "before_agent_start"
-  | "agent_start"
-  | "message_update"
-  | "tool_execution_start"
-  | "turn_start"
-  | "turn_end"
-  | "agent_end"
-  | "session_shutdown";
-
-type SessionShutdownEvent = { reason?: string };
-type TurnEndEvent = { turnIndex?: number; message?: unknown; toolResults?: unknown };
-type AgentEndEvent = { messages?: unknown[] };
-type ExtensionAPI = {
-  on(event: "session_shutdown", handler: (event: SessionShutdownEvent, ctx?: unknown) => unknown | Promise<unknown>): void;
-  on(event: "turn_end", handler: (event: TurnEndEvent, ctx?: unknown) => unknown | Promise<unknown>): void;
-  on(event: "agent_end", handler: (event: AgentEndEvent, ctx?: unknown) => unknown | Promise<unknown>): void;
-  on(event: Exclude<PiEventName, "session_shutdown" | "turn_end" | "agent_end">, handler: (event?: unknown, ctx?: unknown) => unknown | Promise<unknown>): void;
-  exec(command: string, args?: string[], options?: { timeout?: number; signal?: AbortSignal }): Promise<unknown>;
-};
 
 const SCRIPT = process.env.XTMUX_AGENT_STATE_SCRIPT ?? `${process.env.HOME}/.tmux/scripts/agent-state.sh`;
 const PICKER = process.env.XTMUX_PICKER ?? `${process.env.HOME}/.local/bin/tmux-session-picker`;
