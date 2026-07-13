@@ -33,3 +33,4 @@ dist/
 .xtrm/skills/state.json
 .pi/skills/
 .xtrm/cache/
+.xtrm/statusline-claim
