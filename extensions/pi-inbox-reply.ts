@@ -59,6 +59,11 @@ function ttlMs(): number {
   return Number.isFinite(value) && value >= 0 ? value : 3_600_000;
 }
 
+export function pollIntervalMs(): number {
+  const seconds = Number(process.env.XTMUX_INBOX_POLL_INTERVAL_S || 30);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 30_000;
+}
+
 function markerPath(senderId: string, paneId = ""): string {
   const safe = (value: string) => value.replace(/[^A-Za-z0-9._:%$-]/g, "_");
   const pane = paneId ? `-for-${safe(paneId)}` : "";
@@ -144,6 +149,8 @@ function setWidget(ctx: ExtensionContext, lines: string[] | undefined): void {
 
 export default function xtmuxInboxReply(pi: ExtensionAPI): void {
   let ownPaneId = "";
+  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  let refreshing = false;
 
   async function sessionId(): Promise<string> {
     if (!process.env.TMUX) return "";
@@ -222,8 +229,14 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
   }
 
   const refresh = async (_event: unknown, ctx: ExtensionContext) => {
-    await syncExpectedReplies();
-    await render(ctx);
+    if (refreshing) return;
+    refreshing = true;
+    try {
+      await syncExpectedReplies();
+      await render(ctx);
+    } finally {
+      refreshing = false;
+    }
   };
   pi.on("session_start", async (_event, ctx) => {
     ownPaneId = "";
@@ -239,6 +252,9 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     }
     await syncExpectedReplies();
     await render(ctx);
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(() => void refresh({}, ctx), pollIntervalMs());
+    pollTimer.unref?.();
   });
   pi.on("agent_start", refresh);
 
@@ -264,5 +280,9 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     }
   });
 
-  pi.on("session_shutdown", (_event, ctx) => setWidget(ctx, undefined));
+  pi.on("session_shutdown", (_event, ctx) => {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = undefined;
+    setWidget(ctx, undefined);
+  });
 }

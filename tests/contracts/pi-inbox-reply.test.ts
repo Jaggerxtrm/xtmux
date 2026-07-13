@@ -67,11 +67,14 @@ function harness() {
 
 let oldRuntime = process.env.XDG_RUNTIME_DIR;
 let oldTmux = process.env.TMUX;
+let oldPollInterval = process.env.XTMUX_INBOX_POLL_INTERVAL_S;
 afterEach(() => {
   if (oldRuntime === undefined) delete process.env.XDG_RUNTIME_DIR;
   else process.env.XDG_RUNTIME_DIR = oldRuntime;
   if (oldTmux === undefined) delete process.env.TMUX;
   else process.env.TMUX = oldTmux;
+  if (oldPollInterval === undefined) delete process.env.XTMUX_INBOX_POLL_INTERVAL_S;
+  else process.env.XTMUX_INBOX_POLL_INTERVAL_S = oldPollInterval;
 });
 
 describe("Pi inbox widget (.22)", () => {
@@ -137,6 +140,33 @@ describe("Pi reply obligations (.26)", () => {
       expect(h.widgets.has("xtmux-inbox")).toBe(false);
 
       expect(commandAction("echo 'message-send --to $sender'").relevant).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Pi mid-idle inbox scan (.36)", () => {
+  test("poll records actionable work without another turn and stops on shutdown", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "xtmux-pi-idle-poll-"));
+    process.env.XDG_RUNTIME_DIR = dir;
+    process.env.TMUX = "/tmp/mock,1,0";
+    process.env.XTMUX_INBOX_POLL_INTERVAL_S = "0.01";
+    try {
+      const h = harness();
+      await h.emit("session_start");
+      h.setExpectedReplies([{
+        messageKey: "idle", senderId: "$sender", recipientId: "$me", targetPaneId: "%me",
+        beadId: "work-idle", summary: "arrived while idle", expectsReply: true, acked: false,
+      }]);
+      await Bun.sleep(35);
+      expect(readObligations().map((item) => item.messageKey)).toEqual(["idle"]);
+      expect(h.widgets.get("xtmux-inbox")).toEqual(["Reply required: $sender (work-idle)"]);
+
+      await h.emit("session_shutdown");
+      const calls = h.pickerCalls.length;
+      await Bun.sleep(25);
+      expect(h.pickerCalls).toHaveLength(calls);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
