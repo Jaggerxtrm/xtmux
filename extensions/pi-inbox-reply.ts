@@ -200,6 +200,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
   let ownPaneId = "";
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   let refreshing = false;
+  const seenMessageKeys = new Set<string>();
 
   async function sessionId(): Promise<string> {
     if (!process.env.TMUX) return "";
@@ -228,18 +229,21 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     }
   }
 
-  async function syncExpectedReplies(): Promise<void> {
+  async function syncExpectedReplies(): Promise<InboundMessage[]> {
     const id = await sessionId();
-    if (!id) return;
+    if (!id) return [];
+    const discovered: InboundMessage[] = [];
     const args = ["message-list", "--for", id, "--unacked", "--expects-reply", "--json", "--limit", "500"];
     if (ownPaneId) args.push("--pane", ownPaneId);
     try {
       const result = await pi.exec(PICKER, args, { timeout: 1500 });
       const messages = JSON.parse(stdoutOf(result)) as InboundMessage[];
-      if (!Array.isArray(messages)) return;
+      if (!Array.isArray(messages)) return [];
       for (const message of [...messages].reverse()) {
         if (!message.expectsReply || !message.beadId || message.recipientId !== id) continue;
         recordObligation(message, ownPaneId);
+        if (!seenMessageKeys.has(message.messageKey)) discovered.push(message);
+        seenMessageKeys.add(message.messageKey);
         try {
           await pi.exec(PICKER, ["message-ack", message.messageKey, "--by", id], { timeout: 1500 });
         } catch {
@@ -249,6 +253,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     } catch {
       // Best-effort boundary: retain existing markers and UI.
     }
+    return discovered;
   }
 
   async function consumeCompletedOutbound(): Promise<string[]> {
@@ -291,12 +296,13 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     return obligations;
   }
 
-  const refresh = async (_event: unknown, ctx: ExtensionContext) => {
-    if (refreshing) return;
+  const refresh = async (_event: unknown, ctx: ExtensionContext): Promise<InboundMessage[]> => {
+    if (refreshing) return [];
     refreshing = true;
     try {
-      await syncExpectedReplies();
+      const discovered = await syncExpectedReplies();
       await render(ctx);
+      return discovered;
     } finally {
       refreshing = false;
     }
@@ -317,7 +323,10 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     await render(ctx);
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(async () => {
-      await refresh({}, ctx);
+      const discovered = await refresh({}, ctx);
+      for (const message of discovered) {
+        pi.sendUserMessage(`You have a pending reply obligation: ${message.senderId} (${message.beadId}). Inspect the inbox and respond if needed.`, { deliverAs: "followUp" });
+      }
       const completed = await consumeCompletedOutbound();
       if (completed.length) {
         pi.sendUserMessage(`xtmux wake: ${completed.join(", ")} completed its monitored work cycle. Inspect the inbox and respond if needed.`, { deliverAs: "followUp" });

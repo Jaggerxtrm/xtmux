@@ -173,6 +173,29 @@ describe("Pi mid-idle inbox scan (.36)", () => {
       await Bun.sleep(35);
       expect(readObligations().map((item) => item.messageKey)).toEqual(["idle"]);
       expect(h.widgets.get("xtmux-inbox")).toEqual(["Reply required: $sender (work-idle)"]);
+      expect(h.sentUserMessages).toEqual([
+        "You have a pending reply obligation: $sender (work-idle). Inspect the inbox and respond if needed.",
+      ]);
+      await Bun.sleep(25);
+      expect(h.sentUserMessages).toHaveLength(1);
+
+      h.setExpectedReplies([{
+        messageKey: "active", senderId: "$active", recipientId: "$me", targetPaneId: "%me",
+        beadId: "work-active", summary: "arrived during a turn", expectsReply: true, acked: false,
+      }]);
+      await h.emit("agent_end");
+      await Bun.sleep(25);
+      expect(h.sentUserMessages).toHaveLength(1);
+
+      h.setExpectedReplies([{
+        messageKey: "idle-2", senderId: "$sender-2", recipientId: "$me", targetPaneId: "%me",
+        beadId: "work-idle-2", summary: "another idle arrival", expectsReply: true, acked: false,
+      }]);
+      await Bun.sleep(25);
+      expect(h.sentUserMessages).toEqual([
+        "You have a pending reply obligation: $sender (work-idle). Inspect the inbox and respond if needed.",
+        "You have a pending reply obligation: $sender-2 (work-idle-2). Inspect the inbox and respond if needed.",
+      ]);
 
       await h.emit("session_shutdown");
       const calls = h.pickerCalls.length;
