@@ -21,6 +21,9 @@ const source = "xtmux";
 const stateDir = join(home, ".local", "state", "xtmux");
 const statePath = join(stateDir, "installer.json");
 const claudeSettings = join(home, ".claude", "settings.json");
+const codexRoot = join(home, ".codex");
+const codexSettings = join(codexRoot, "hooks.json");
+const codexHooks = join(codexRoot, "hooks", "xtmux");
 const piSettings = join(home, ".pi", "agent", "settings.json");
 const piPackage = join(home, ".pi", "agent", "packages", "xtmux");
 const claudeHooks = join(home, ".claude", "hooks", "xtmux");
@@ -129,6 +132,32 @@ function mergeClaude(removeOnly = false) {
   writeJson(claudeSettings, settings);
 }
 
+function codexOwned(entry) {
+  const commands = Array.isArray(entry?.hooks) ? entry.hooks.map((hook) => hook?.command).filter(Boolean) : [];
+  return commands.length > 0 && commands.every((command) =>
+    command.includes("/.codex/hooks/xtmux/agent-state.sh") || command.includes("/.tmux/scripts/agent-state.sh")
+  );
+}
+
+function mergeCodex(removeOnly = false) {
+  if (!existsSync(codexRoot) || (removeOnly && !existsSync(codexSettings))) return;
+  const settings = readJson(codexSettings);
+  const current = settings.hooks && typeof settings.hooks === "object" ? settings.hooks : {};
+  const next = {};
+  for (const [event, entries] of Object.entries(current)) {
+    const kept = Array.isArray(entries) ? entries.filter((entry) => !codexOwned(entry)) : [];
+    if (kept.length) next[event] = kept;
+  }
+  if (!removeOnly) {
+    const script = join(codexHooks, "agent-state.sh");
+    next.SessionStart = [{ matcher: "startup|resume|clear", hooks: [{ type: "command", command: `bash "${script}" idle`, statusMessage: "marking pane idle" }] }, ...(next.SessionStart || [])];
+    next.UserPromptSubmit = [{ hooks: [{ type: "command", command: `bash "${script}" running`, statusMessage: "marking pane running" }] }, ...(next.UserPromptSubmit || [])];
+  }
+  settings.hooks = next;
+  if (existsSync(codexSettings)) copyFileSync(codexSettings, `${codexSettings}.pre-xtmux`);
+  writeJson(codexSettings, settings);
+}
+
 function mergePi(removeOnly = false) {
   const settings = readJson(piSettings);
   const packages = Array.isArray(settings.packages) ? settings.packages : [];
@@ -157,19 +186,25 @@ function install() {
   });
   mergePi();
 
-  console.log("3/5 Installing Claude hooks");
+  console.log("3/5 Installing Claude and existing Codex hooks");
   rmSync(claudeHooks, { recursive: true, force: true });
   mkdirSync(claudeHooks, { recursive: true });
   for (const name of ["agent-state.sh", "auto-monitor-on-send.mjs", "auto-monitor-on-send.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs"]) {
     const src = join(root, "hooks", "claude", name);
     copyFileSync(src, join(claudeHooks, name));
   }
+  if (existsSync(codexRoot)) {
+    rmSync(codexHooks, { recursive: true, force: true });
+    mkdirSync(codexHooks, { recursive: true });
+    copyFileSync(join(root, "scripts", "agent-state.sh"), join(codexHooks, "agent-state.sh"));
+  }
 
-  console.log("4/5 Updating Claude and Pi settings");
+  console.log("4/5 Updating Claude, Codex, and Pi settings");
   mergeClaude();
+  mergeCodex();
 
   console.log("5/5 Saving installer state");
-  writeJson(statePath, { source, version: pkg.version, packageRoot: root, piPackage, claudeHooks, installedAt: new Date().toISOString() });
+  writeJson(statePath, { source, version: pkg.version, packageRoot: root, piPackage, claudeHooks, codexHooks: existsSync(codexRoot) ? codexHooks : null, installedAt: new Date().toISOString() });
   if (installTmuxHooks) {
     const result = spawnSync(join(home, ".local", "bin", "xtmux"), ["install-hooks", join(home, ".local", "bin", "xtmux")], { stdio: "inherit" });
     if (result.status !== 0) throw new Error("tmux hook installation failed; is a tmux server running?");
@@ -187,9 +222,11 @@ function remove() {
   console.log("2/4 Removing grouped Pi extensions");
   mergePi(true);
   rmSync(piPackage, { recursive: true, force: true });
-  console.log("3/4 Removing Claude hooks and owned settings entries");
+  console.log("3/4 Removing Claude/Codex hooks and owned settings entries");
   mergeClaude(true);
+  mergeCodex(true);
   rmSync(claudeHooks, { recursive: true, force: true });
+  rmSync(codexHooks, { recursive: true, force: true });
   console.log("4/4 Removing installer state");
   rmSync(statePath, { force: true });
   console.log("Uninstall complete");

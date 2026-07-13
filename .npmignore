@@ -16,6 +16,7 @@ test/
 tests/
 docs/*.md
 !docs/INSTALL.md
+!docs/keys.md
 Makefile
 bun.lock
 CLAUDE.md

@@ -640,7 +640,7 @@ Remaining open roadmap in Beads:
   attention head
 - `xtmux-rib.15` general picker help overlay (distinct from the multiplexing
   `mux-help` cheatsheet)
-- `xtmux-team.5` `multiplexing-team` delegated-agent skill is installed in pi/Claude/xtrm skill locations
+- `xtmux-team.5` `multiplexing-team` delegated-agent skill is maintained by xtrm; the npm package does not install skills
 - `xtmux-team.6` pi runtime turn-done publishing via `agent.turn.done` + parent message
 - `xtmux-team.7` opt-in `git`/`bd`/`gh pr` telemetry wrappers
 - deeper Claude last-message hook integration remains future work if needed

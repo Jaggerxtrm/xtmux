@@ -13,8 +13,23 @@ The installer prints five plain progress lines and does not open Chrome or any b
 - commands in `~/.local/bin`
 - one grouped Pi package in `~/.pi/agent/packages/xtmux`, registered in `~/.pi/agent/settings.json`
 - Claude hooks in `~/.claude/hooks/xtmux`, registered in `~/.claude/settings.json`
+- agent-state hooks in `~/.codex/hooks/xtmux` when an existing `~/.codex` installation is detected; xtmux never installs Codex CLI
 
-Restart Pi or run `/reload` after installation. Start a new Claude Code session to load global hook changes.
+Restart Pi or run `/reload` after installation. Start new Claude Code and existing Codex CLI sessions to load hook changes; running sessions keep their startup hook configuration.
+
+### Add the tmux bindings
+
+The installer does not edit `~/.tmux.conf`. Add at least the picker popup binding, then reload tmux:
+
+```tmux
+bind s display-popup -E -w 99% -h 97% "$HOME/.local/bin/xtmux"
+```
+
+```sh
+tmux source-file ~/.tmux.conf
+```
+
+Optional compact picker and attention-jump bindings are in [`docs/keys.md`](keys.md), which is included in the npm package.
 
 ## Upgrade
 
@@ -31,7 +46,7 @@ xtmux-install --uninstall
 npm uninstall --global @jaggerxtrm/xtmux
 ```
 
-Run `xtmux-install --uninstall` first so npm has not yet removed the cleanup command. It removes only xtmux-owned links, the grouped Pi package, Claude hook files, and `_source: "xtmux"` settings entries.
+Run `xtmux-install --uninstall` first so npm has not yet removed the cleanup command. It removes only xtmux-owned links, the grouped Pi package, Claude/Codex hook files, and owned settings entries.
 
 ## Conflict avoidance and xtrm coexistence
 

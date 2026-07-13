@@ -127,3 +127,26 @@ test("xtmux-obs uses vendored Bun when system Bun is absent", () => {
   assert.deepEqual(JSON.parse(runtime.stdout), []);
   rmSync(home, { recursive: true, force: true });
 });
+
+test("merges hooks for existing Codex without installing Codex CLI", () => {
+  const home = mkdtempSync(join(tmpdir(), "xtmux-codex-"));
+  const hooks = join(home, ".codex", "hooks.json");
+  mkdirSync(join(home, ".codex"), { recursive: true });
+  writeFileSync(hooks, JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "foreign-codex-hook" }] }] } }));
+
+  const first = run(home);
+  assert.equal(first.status, 0, first.stderr);
+  const once = readFileSync(hooks, "utf8");
+  const installed = json(hooks);
+  assert.equal(installed.hooks.SessionStart.some((entry) => entry.hooks?.[0]?.command === "foreign-codex-hook"), true);
+  assert.equal(installed.hooks.SessionStart.some((entry) => entry.hooks?.[0]?.command.includes("/.codex/hooks/xtmux/agent-state.sh")), true);
+  assert.equal(installed.hooks.UserPromptSubmit.some((entry) => entry.hooks?.[0]?.command.includes("/.codex/hooks/xtmux/agent-state.sh")), true);
+  assert.ok(existsSync(join(home, ".codex/hooks/xtmux/agent-state.sh")));
+
+  assert.equal(run(home).status, 0);
+  assert.equal(readFileSync(hooks, "utf8"), once);
+  assert.equal(run(home, "--uninstall").status, 0);
+  assert.deepEqual(json(hooks).hooks, { SessionStart: [{ hooks: [{ type: "command", command: "foreign-codex-hook" }] }] });
+  assert.equal(existsSync(join(home, ".codex/hooks/xtmux")), false);
+  rmSync(home, { recursive: true, force: true });
+});

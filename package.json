@@ -41,6 +41,7 @@
     "bin/tmux-session-picker",
     "changelog/",
     "docs/INSTALL.md",
+    "docs/keys.md",
     "extensions/",
     "prompts/",
     "scripts/agent-state.sh",
