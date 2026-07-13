@@ -143,6 +143,7 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
           "--from", sessionId || pane,
           "--to", parent,
           "--bead", bead,
+          "--expects-reply", "false",
           "--text", `turn done: ${text}`,
         ], { timeout: 1500 });
       } catch {

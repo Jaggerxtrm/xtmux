@@ -43,6 +43,14 @@ function parseArgs(argv: string[]): Args {
 // `date -Is`, which is what the V1 shell picker emits). Byte-parity with V1
 // is required so XTMUX_OBS_V2=shadow doesn't record a false divergence on
 // every message-list call.
+function booleanFlag(flags: Map<string, string | boolean>, name: string, fallback: boolean): boolean | null {
+  const value = flags.get(name);
+  if (value === undefined) return fallback;
+  if (value === true || value === "true" || value === "1") return true;
+  if (value === "false" || value === "0") return false;
+  return null;
+}
+
 function fmtTsIso(epochMs: number): string {
   const d = new Date(epochMs);
   const pad = (n: number): string => String(n).padStart(2, "0");
@@ -99,6 +107,11 @@ export function cliMessageSend(db: Db, argv: string[]): number {
     (flags.get("id") as string | undefined) ??
     `msg-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
   const bead = (flags.get("bead") as string | undefined) ?? "";
+  const expectsReply = booleanFlag(flags, "expects-reply", Boolean(bead));
+  if (expectsReply === null) {
+    process.stderr.write("message-send: --expects-reply must be true or false\n");
+    return 2;
+  }
   sendMessage(db, {
     messageKey,
     senderId: from,
@@ -107,6 +120,7 @@ export function cliMessageSend(db: Db, argv: string[]): number {
     targetPaneId: (flags.get("to-pane") as string | undefined) ?? undefined,
     beadId: bead || undefined,
     summary: text,
+    expectsReply,
   });
   // Match V1 stdout: message\tid\tfrom\tto\tbead\ttext
   process.stdout.write(`message\t${messageKey}\t${from}\t${to}\t${bead}\t${text}\n`);
@@ -131,8 +145,23 @@ export function cliMessageList(db: Db, argv: string[]): number {
     senderId: (flags.get("from") as string | undefined) ?? undefined,
     sinceMs: flags.has("since") ? Number(flags.get("since")) : undefined,
     unackedOnly: flags.get("unacked") === true,
+    expectsReplyOnly: flags.get("expects-reply") === true,
     limit: flags.has("limit") ? Number(flags.get("limit")) : undefined,
   });
+  if (flags.get("json") === true) {
+    process.stdout.write(JSON.stringify(rows.map((r) => ({
+      messageKey: r.message_key,
+      senderId: r.sender_id,
+      recipientId: r.recipient_id,
+      targetPaneId: r.target_pane_id,
+      beadId: r.bead_id,
+      summary: r.summary,
+      createdAtMs: r.created_at_ms,
+      expectsReply: r.expects_reply === 1,
+      acked: r.acked_at_ms !== null,
+    }))) + "\n");
+    return 0;
+  }
   // V1 prints oldest-first when it drains rotated files; --limit implies newest.
   // Match V1: reverse so the tail (newest) shows last.
   for (const r of [...rows].reverse()) {

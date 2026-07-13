@@ -6,6 +6,7 @@ export interface MessageStatus {
   recipientId: string;
   beadId: string | null;
   summary: string;
+  expectsReply: boolean;
   acked: boolean;
   ackedAtMs: number | null;
   ackedBy: string | null;
@@ -19,11 +20,12 @@ export function messageStatus(db: Db, messageKey: string): MessageStatus | null 
       recipient_id: string;
       bead_id: string | null;
       summary: string;
+      expects_reply: number;
       acked_at_ms: number | null;
       acked_by: string | null;
     }, [string]>(
       `SELECT m.message_key, m.sender_id, m.recipient_id, m.bead_id, m.summary,
-              r.acked_at_ms, r.acked_by
+              m.expects_reply, r.acked_at_ms, r.acked_by
          FROM messages m
          LEFT JOIN message_receipts r ON r.message_id = m.id AND r.recipient_id = m.recipient_id
         WHERE m.message_key = ?`,
@@ -36,6 +38,7 @@ export function messageStatus(db: Db, messageKey: string): MessageStatus | null 
     recipientId: row.recipient_id,
     beadId: row.bead_id,
     summary: row.summary,
+    expectsReply: row.expects_reply === 1,
     acked: row.acked_at_ms !== null,
     ackedAtMs: row.acked_at_ms,
     ackedBy: row.acked_by,

@@ -22,8 +22,8 @@ commands:
   migrate                    apply pending schema migrations
   version                    print schema version
 
-  message-send --to <sid> --from <sid> [--to-pane %N] [--from-pane %N] --text T [--bead ID] [--message-key K]
-  message-list --for <sid> [--pane %N] [--from <sid>] [--since <ms>] [--unacked] [--limit N]
+  message-send --to <sid> --from <sid> [--to-pane %N] [--from-pane %N] --text T [--bead ID] [--expects-reply true|false] [--message-key K]
+  message-list --for <sid> [--pane %N] [--from <sid>] [--since <ms>] [--unacked] [--expects-reply] [--json] [--limit N]
   message-ack <message_id> --by <sid>
   message-status <message_key>        print JSON receipt state (V2 only)
   unread-count --for <sid> [--pane %N] print JSON unread summary; --pane scopes to that pane (xtmux-3xs.28)

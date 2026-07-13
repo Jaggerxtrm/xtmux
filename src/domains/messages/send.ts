@@ -10,6 +10,7 @@ export interface SendInput {
   beadId?: string | undefined;
   summary: string;
   payloadJson?: string | undefined;
+  expectsReply?: boolean | undefined;
 }
 
 export interface SendResult {
@@ -40,12 +41,13 @@ export function sendMessage(db: Db, input: SendInput, now: () => number = Date.n
       string,
       string | null,
       number,
+      number,
     ]
   >(
     `INSERT INTO messages
        (message_key, sender_id, sender_pane_id, recipient_id, target_pane_id,
-        bead_id, summary, payload_json, created_at_ms)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        bead_id, summary, payload_json, expects_reply, created_at_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      RETURNING id`,
   );
   const insertReceipt = db.raw.prepare<
@@ -74,6 +76,7 @@ export function sendMessage(db: Db, input: SendInput, now: () => number = Date.n
       input.beadId ?? null,
       input.summary,
       input.payloadJson ?? null,
+      input.expectsReply ? 1 : 0,
       createdAtMs,
     );
     messageId = row?.id ?? 0;
@@ -93,6 +96,7 @@ export function sendMessage(db: Db, input: SendInput, now: () => number = Date.n
         recipient_id: input.recipientId,
         target_pane_id: input.targetPaneId,
         summary: input.summary,
+        expects_reply: input.expectsReply ?? false,
       },
       createdAtMs,
     });

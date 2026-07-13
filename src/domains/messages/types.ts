@@ -8,6 +8,7 @@ export interface MessageRow {
   bead_id: string | null;
   summary: string;
   payload_json: string | null;
+  expects_reply: number;
   created_at_ms: number;
 }
 

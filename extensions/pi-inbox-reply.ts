@@ -27,12 +27,16 @@ interface Obligation {
   acceptedAtMs: number;
 }
 
-interface MessageStatus {
+interface InboundMessage {
   senderId: string;
   messageKey: string;
   recipientId: string;
   beadId: string | null;
   summary: string;
+  expectsReply: boolean;
+}
+
+interface MessageStatus extends InboundMessage {
   acked: boolean;
 }
 
@@ -72,7 +76,7 @@ export function readObligations(now = Date.now()): Obligation[] {
   return obligations.sort((a, b) => a.senderId.localeCompare(b.senderId));
 }
 
-function recordObligation(status: MessageStatus): void {
+function recordObligation(status: InboundMessage): void {
   const dir = stateDir();
   mkdirSync(dir, { recursive: true });
   const path = markerPath(status.senderId);
@@ -144,6 +148,29 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     }
   }
 
+  async function syncExpectedReplies(): Promise<void> {
+    const id = await sessionId();
+    if (!id) return;
+    const args = ["message-list", "--for", id, "--unacked", "--expects-reply", "--json", "--limit", "500"];
+    if (ownPaneId) args.push("--pane", ownPaneId);
+    try {
+      const result = await pi.exec(PICKER, args, { timeout: 1500 });
+      const messages = JSON.parse(stdoutOf(result)) as InboundMessage[];
+      if (!Array.isArray(messages)) return;
+      for (const message of [...messages].reverse()) {
+        if (!message.expectsReply || !message.beadId || message.recipientId !== id) continue;
+        recordObligation(message);
+        try {
+          await pi.exec(PICKER, ["message-ack", message.messageKey, "--by", id], { timeout: 1500 });
+        } catch {
+          // The durable marker is authoritative even if receipt projection fails.
+        }
+      }
+    } catch {
+      // Best-effort boundary: retain existing markers and UI.
+    }
+  }
+
   async function render(ctx: ExtensionContext): Promise<Obligation[]> {
     const obligations = readObligations();
     const id = await sessionId();
@@ -170,16 +197,23 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     return obligations;
   }
 
-  const refresh = async (_event: unknown, ctx: ExtensionContext) => { await render(ctx); };
+  const refresh = async (_event: unknown, ctx: ExtensionContext) => {
+    await syncExpectedReplies();
+    await render(ctx);
+  };
   pi.on("session_start", async (_event, ctx) => {
     ownPaneId = "";
     if (process.env.TMUX) {
       try {
-        ownPaneId = stdoutOf(await pi.exec("tmux", ["display-message", "-p", "#{pane_id}"], { timeout: 1000 })).trim();
+        const args = ["display-message", "-p"];
+        if (process.env.TMUX_PANE) args.push("-t", process.env.TMUX_PANE);
+        args.push("#{pane_id}");
+        ownPaneId = stdoutOf(await pi.exec("tmux", args, { timeout: 1000 })).trim();
       } catch {
         // Session-wide count is the safe fallback when pane identity is unavailable.
       }
     }
+    await syncExpectedReplies();
     await render(ctx);
   });
   pi.on("agent_start", refresh);
@@ -191,7 +225,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     if (!event.isError) {
       if (action.ackKey) {
         const [message, me] = await Promise.all([status(action.ackKey), sessionId()]);
-        if (message?.acked && message.beadId && message.recipientId === me) recordObligation(message);
+        if (message?.acked && message.expectsReply && message.beadId && message.recipientId === me) recordObligation(message);
       }
       if (action.sendTarget) clearObligation(await canonicalTarget(action.sendTarget));
     }
@@ -199,6 +233,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
   });
 
   pi.on("agent_end", async (_event, ctx) => {
+    await syncExpectedReplies();
     const obligations = await render(ctx);
     if (obligations.length && ctx.hasUI) {
       ctx.ui.notify(`Reply required: ${obligations.map((item) => `${item.senderId} (${item.beadId})`).join(", ")}`, "warning");

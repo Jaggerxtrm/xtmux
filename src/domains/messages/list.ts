@@ -7,6 +7,7 @@ export interface ListInput {
   senderId?: string | undefined;
   sinceMs?: number | undefined;
   unackedOnly?: boolean | undefined;
+  expectsReplyOnly?: boolean | undefined;
   limit?: number | undefined;
 }
 
@@ -34,12 +35,15 @@ export function listMessages(db: Db, input: ListInput): MessageWithReceipt[] {
   if (input.unackedOnly) {
     clauses.push("(r.acked_at_ms IS NULL)");
   }
+  if (input.expectsReplyOnly) {
+    clauses.push("m.expects_reply = 1");
+  }
   const limit = Math.max(1, Math.min(input.limit ?? 200, 5000));
 
   const sql = `
     SELECT m.id, m.message_key, m.sender_id, m.sender_pane_id,
            m.recipient_id, m.target_pane_id, m.bead_id,
-           m.summary, m.payload_json, m.created_at_ms,
+           m.summary, m.payload_json, m.expects_reply, m.created_at_ms,
            r.acked_at_ms, r.acked_by
       FROM messages m
       LEFT JOIN message_receipts r

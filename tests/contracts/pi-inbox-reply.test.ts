@@ -13,6 +13,7 @@ function harness() {
   let unread = 0;
   let failUnread = false;
   const statuses = new Map<string, object>();
+  let expectedReplies: Array<Record<string, unknown>> = [];
   const pickerCalls: string[][] = [];
   let failPane = false;
   const ui = {
@@ -35,6 +36,11 @@ function harness() {
         return { stdout: target && target !== "display-message" ? `${target}\n` : "$me\n", code: 0 };
       }
       pickerCalls.push(args);
+      if (args[0] === "message-list") return { stdout: JSON.stringify(expectedReplies) };
+      if (args[0] === "message-ack") {
+        expectedReplies = expectedReplies.filter((message) => message.messageKey !== args[1]);
+        return { stdout: `ack\t${args[1]}\t$me\n` };
+      }
       if (args[0] === "unread-count") {
         if (failUnread) throw new Error("db unavailable");
         return { stdout: JSON.stringify({ recipientId: "$me", unreadCount: unread, oldestUnackedAtMs: null }) };
@@ -50,6 +56,7 @@ function harness() {
     statuses,
     pickerCalls,
     setUnread(value: number) { unread = value; },
+    setExpectedReplies(messages: Array<Record<string, unknown>>) { expectedReplies = messages; },
     setUnreadFailure(value: boolean) { failUnread = value; },
     setPaneFailure(value: boolean) { failPane = value; },
     async emit(name: string, event: any = {}) {
@@ -113,7 +120,7 @@ describe("Pi reply obligations (.26)", () => {
       const h = harness();
       h.statuses.set("task-1", {
         messageKey: "task-1", senderId: "$sender", recipientId: "$me",
-        beadId: "xtmux-42", summary: "do the work", acked: true,
+        beadId: "xtmux-42", summary: "do the work", expectsReply: true, acked: true,
       });
       await h.emit("tool_result", { toolName: "bash", input: { command: "./bin/tmux-session-picker message-ack task-1 --by $me" }, isError: false });
       expect(readObligations()).toHaveLength(1);
@@ -130,6 +137,42 @@ describe("Pi reply obligations (.26)", () => {
       expect(h.widgets.has("xtmux-inbox")).toBe(false);
 
       expect(commandAction("echo 'message-send --to $sender'").relevant).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Pi sender-declared reply expectations (.33)", () => {
+  test("agent end records expected work without manual ack and restart preserves it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "xtmux-pi-expected-reply-"));
+    process.env.XDG_RUNTIME_DIR = dir;
+    process.env.TMUX = "/tmp/mock,1,0";
+    try {
+      const h = harness();
+      h.setExpectedReplies([
+        { messageKey: "new", senderId: "$sender", recipientId: "$me", targetPaneId: "%me",
+          beadId: "work-new", summary: "newest", expectsReply: true, acked: false },
+        { messageKey: "old", senderId: "$sender", recipientId: "$me", targetPaneId: "%me",
+          beadId: "work-old", summary: "older", expectsReply: true, acked: false },
+        { messageKey: "other", senderId: "$other", recipientId: "$me", targetPaneId: "%me",
+          beadId: "work-other", summary: "other", expectsReply: true, acked: false },
+      ]);
+
+      await h.emit("agent_end");
+      expect(readObligations().map((item) => [item.senderId, item.messageKey])).toEqual([
+        ["$other", "other"], ["$sender", "new"],
+      ]);
+      expect(h.notifications.at(-1)).toContain("Reply required:");
+      expect(h.pickerCalls.filter((args) => args[0] === "message-ack")).toHaveLength(3);
+
+      const restarted = harness();
+      await restarted.emit("session_start");
+      expect(restarted.widgets.get("xtmux-inbox")).toEqual([
+        "Reply required: $other (work-other)",
+        "Reply required: $sender (work-new)",
+      ]);
+      expect(readObligations(Date.now() + 3_600_001)).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -205,7 +205,8 @@ Invariants:
 - `target_pane_id` / `sender_pane_id` normalized to `#{pane_id}` when provided.
 - Message + receipt inserted in one transaction.
 - `message-list` is a pure read; `message-ack` is the sole ack mutation; ack is idempotent.
-- V2-only machine queries avoid formatted-message scans: `message-status <message_key>` returns sender, recipient, bead, summary, and durable ack state; `unread-count --for <recipient>` returns recipient-scoped count plus oldest unacked timestamp. Both emit one JSON row and reject V1 mode rather than inventing receipt data.
+- V2-only machine queries avoid formatted-message scans: `message-status <message_key>` returns sender, recipient, bead, summary, `expectsReply`, and durable ack state; `unread-count --for <recipient> [--pane %N]` returns recipient/pane-scoped count plus oldest unacked timestamp. `message-list --unacked --expects-reply --json` is the bounded structured inbox used by Pi reply obligations.
+- `message-send --expects-reply[=true|false]` stores sender intent. V2 defaults it to true when `--bead` is present; explicit false is the FYI opt-out. Pi converts discovered expected/unacked rows into durable local obligations before acknowledging receipt, so ack never fulfills the reply obligation and restart scans do not recreate fulfilled work.
 - Foreign key cascade: a receipt cannot exist without its message.
 - Retention never removes an unacked message (PRD §17).
 - tmux projection failure does NOT fail the durable mutation.

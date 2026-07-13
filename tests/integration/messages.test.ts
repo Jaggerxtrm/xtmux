@@ -83,6 +83,32 @@ describe("messages: send + list + ack", () => {
     }
   });
 
+  test("expected-reply filter is explicit and pane-scoped", () => {
+    const { db, cleanup, now } = setup();
+    try {
+      sendMessage(db, {
+        messageKey: "expected", senderId: "$s", recipientId: "$r",
+        targetPaneId: "%mine", beadId: "work-1", summary: "do it", expectsReply: true,
+      }, () => ++now.t);
+      sendMessage(db, {
+        messageKey: "fyi", senderId: "$s", recipientId: "$r",
+        targetPaneId: "%mine", beadId: "work-1", summary: "fyi", expectsReply: false,
+      }, () => ++now.t);
+      sendMessage(db, {
+        messageKey: "other-pane", senderId: "$s2", recipientId: "$r",
+        targetPaneId: "%other", beadId: "work-2", summary: "other", expectsReply: true,
+      }, () => ++now.t);
+
+      const rows = listMessages(db, {
+        recipientId: "$r", targetPaneId: "%mine", unackedOnly: true, expectsReplyOnly: true,
+      });
+      expect(rows.map((row) => row.message_key)).toEqual(["expected"]);
+      expect(rows[0]!.expects_reply).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
   test("list --unacked filters acked receipts", () => {
     const { db, cleanup, now } = setup();
     try {

@@ -39,6 +39,7 @@ describe("message status and unread-count queries", () => {
         recipientId: "$recipient",
         beadId: null,
         summary: "hello",
+        expectsReply: false,
         acked: false,
         ackedAtMs: null,
         ackedBy: null,
@@ -51,6 +52,24 @@ describe("message status and unread-count queries", () => {
       expect(JSON.parse(acked.stdout).ackedAtMs).toEqual(expect.any(Number));
     } finally {
       db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("beaded sends expect replies by default with explicit opt-out", () => {
+    const dir = mkdtempSync(join(tmpdir(), "xtmux-reply-expectation-"));
+    const dbPath = join(dir, "observability.db");
+    const db = openDb({ dbPath, mode: "on", busyTimeoutMs: 3000 });
+    migrate(db);
+    db.close();
+    try {
+      expect(run(dbPath, ["message-send", "--to", "$r", "--from", "$s", "--bead", "work-1", "--text", "task", "--message-key", "expected"]).exitCode).toBe(0);
+      expect(run(dbPath, ["message-send", "--to", "$r", "--from", "$s", "--bead", "work-1", "--expects-reply", "false", "--text", "fyi", "--message-key", "opt-out"]).exitCode).toBe(0);
+      expect(JSON.parse(run(dbPath, ["message-status", "expected"]).stdout).expectsReply).toBe(true);
+      expect(JSON.parse(run(dbPath, ["message-status", "opt-out"]).stdout).expectsReply).toBe(false);
+      const rows = JSON.parse(run(dbPath, ["message-list", "--for", "$r", "--unacked", "--expects-reply", "--json"]).stdout);
+      expect(rows.map((row: { messageKey: string }) => row.messageKey)).toEqual(["expected"]);
+    } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });

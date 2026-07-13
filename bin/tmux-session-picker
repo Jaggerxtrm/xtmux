@@ -875,7 +875,7 @@ log_cli() {
 }
 
 message_send() {
-  local to='' from='' bead='' text='' id='' arg
+  local to='' from='' bead='' text='' id='' expects_reply='' arg
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
@@ -889,10 +889,13 @@ message_send() {
       --text=*) text="${arg#--text=}" ;;
       --id) [ "$#" -gt 0 ] || return 2; id="$1"; shift ;;
       --id=*) id="${arg#--id=}" ;;
+      --expects-reply) expects_reply=true ;;
+      --expects-reply=*) expects_reply="${arg#--expects-reply=}" ;;
       *) text+="${text:+ }$arg" ;;
     esac
   done
-  [ -n "$to" ] && [ -n "$text" ] || { printf 'usage: message-send --to <session|pane> [--from x] [--bead id] --text <text>\n' >&2; return 2; }
+  [ -n "$to" ] && [ -n "$text" ] || { printf 'usage: message-send --to <session|pane> [--from x] [--bead id] [--expects-reply[=true|false]] --text <text>\n' >&2; return 2; }
+  case "$expects_reply" in ''|true|false|1|0) ;; *) printf 'message-send: --expects-reply must be true or false\n' >&2; return 2 ;; esac
   # Canonicalize target to session_id so message-list --for finds it regardless
   # of which alias (name/pane_id/session_id/shorthand) the recipient uses. For
   # $N/%N ids we require resolution (those are meaningful only as live tmux
@@ -935,8 +938,9 @@ message_send() {
     [ -n "$from" ] && from_pid="$(tmux display-message -p -t "$from" '#{pane_id}' 2>/dev/null || true)"
     obs_runtime_argv
     local cli_args=(message-send --to "$to_sid" --from "$from_sid" --id "$id" --text "$text")
-    [ -n "$bead" ]     && cli_args+=(--bead "$bead")
-    [ -n "$to_pid" ]   && cli_args+=(--to-pane   "$to_pid")
+    [ -n "$bead" ]          && cli_args+=(--bead "$bead")
+    [ -n "$expects_reply" ] && cli_args+=(--expects-reply "$expects_reply")
+    [ -n "$to_pid" ]        && cli_args+=(--to-pane   "$to_pid")
     [ -n "$from_pid" ] && cli_args+=(--from-pane "$from_pid")
     "${OBS_ARGV[@]}" "${cli_args[@]}" || return $?
     tmux display-message -t "$to_sid" "msg from ${from_sid}${bead:+ [$bead]}: ${text:0:80}" 2>/dev/null || true
@@ -952,8 +956,9 @@ message_send() {
     to_pid_s="$(tmux display-message -p -t "$to" '#{pane_id}' 2>/dev/null || true)"
     [ -n "$from" ] && from_pid_s="$(tmux display-message -p -t "$from" '#{pane_id}' 2>/dev/null || true)"
     local shadow_args=(message-send --to "$to_sid" --from "$from_sid" --id "$id" --text "$text")
-    [ -n "$bead" ]      && shadow_args+=(--bead "$bead")
-    [ -n "$to_pid_s" ]  && shadow_args+=(--to-pane   "$to_pid_s")
+    [ -n "$bead" ]          && shadow_args+=(--bead "$bead")
+    [ -n "$expects_reply" ] && shadow_args+=(--expects-reply "$expects_reply")
+    [ -n "$to_pid_s" ]      && shadow_args+=(--to-pane   "$to_pid_s")
     [ -n "$from_pid_s" ] && shadow_args+=(--from-pane "$from_pid_s")
     obs_call "${shadow_args[@]}"
   fi
@@ -1105,7 +1110,7 @@ _message_list_v1_body() {
 }
 
 message_list() {
-  local to='' since='' limit=100 unacked=0 arg
+  local to='' pane='' since='' limit=100 unacked=0 expects_reply=0 json=0 arg
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
@@ -1115,19 +1120,30 @@ message_list() {
       --since=*) parse_wait_duration "${arg#--since=}" || return 2; since="$REPLY" ;;
       --limit) [ "$#" -gt 0 ] || return 2; limit="$1"; shift ;;
       --limit=*) limit="${arg#--limit=}" ;;
+      --pane) [ "$#" -gt 0 ] || return 2; pane="$1"; shift ;;
+      --pane=*) pane="${arg#--pane=}" ;;
       --unacked) unacked=1 ;;
+      --expects-reply) expects_reply=1 ;;
+      --json) json=1 ;;
       *) printf 'message-list: unknown arg: %s\n' "$arg" >&2; return 2 ;;
     esac
   done
   obs_v2_mode; local mode="$REPLY"
+  if [ "$mode" != 'on' ] && { [ "$expects_reply" = 1 ] || [ "$json" = 1 ] || [ -n "$pane" ]; }; then
+    printf 'message-list: --pane/--expects-reply/--json require V2\n' >&2
+    return 2
+  fi
   if [ "$mode" = 'on' ]; then
     local to_sid_v2=''
     if [ -n "$to" ] && resolve_to_session_id "$to"; then to_sid_v2="$REPLY"; else to_sid_v2="$to"; fi
     [ -n "$to_sid_v2" ] || { printf 'usage: message-list --for <session|pane> [--unacked] [--limit N] [--since D]\n' >&2; return 2; }
     obs_runtime_argv
     local cli_args=(message-list --for "$to_sid_v2" --limit "$limit")
-    [ "$unacked" = 1 ] && cli_args+=(--unacked)
-    [ -n "$since" ] && cli_args+=(--since "$since")
+    [ "$unacked" = 1 ]       && cli_args+=(--unacked)
+    [ "$expects_reply" = 1 ] && cli_args+=(--expects-reply)
+    [ "$json" = 1 ]          && cli_args+=(--json)
+    [ -n "$pane" ]           && cli_args+=(--pane "$pane")
+    [ -n "$since" ]          && cli_args+=(--since "$since")
     exec "${OBS_ARGV[@]}" "${cli_args[@]}"
   fi
   if [ "$mode" = 'shadow' ]; then
