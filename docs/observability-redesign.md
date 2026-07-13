@@ -764,23 +764,26 @@ under the compiled binary. Fallback path (`bun run src/cli.ts`, used when
 `bin/xtmux-obs` is absent) remains FAIL on p99, PASS on p95 — the picker
 prefers the binary automatically when present.
 
-### 11.2 Cutover HOLD
+### 11.2 Cutover — done (xtmux-3xs.31)
 
-Phase 10 shipped with the cutover on HOLD pending the p99 result. That
-condition is now met via xtmux-3xs.11 (see §11.1). Remaining cutover checks
-before flipping the `XTMUX_OBS_V2` default:
+`XTMUX_OBS_V2` **defaults to on**. Explicit `XTMUX_OBS_V2=0` opts out.
+`shadow` retains its mirror-mode behavior for regression comparison.
 
-- Shadow-mode per-command comparator wiring (xtmux-3xs.12)
-- V1/V2 differential contract oracle (xtmux-3xs.19)
+Cutover gates, all met:
 
-Every other Phase 10 exit condition (PRD §24) is green:
-
-- Message correctness: 109/109 tests pass; concurrency test 100 sends → 100 distinct rows
+- Runtime p99 ≤ 100 ms (xtmux-3xs.11) ✅
+- Shadow-mode wiring correct (xtmux-3xs.12 + fc3195e REPLY-clobber fix) ✅
+- V1/V2 differential oracle green (xtmux-3xs.19) ✅
+- Timestamp column byte-parity (xtmux-3xs.27) ✅
+- Message correctness: 150 bun + 140 contract tests green
 - Migration idempotent: verified via runMigration rerun test
-- Retention preservation rules: 5 tests, all green (unacked never deleted, active instances/monitors/incomplete-runs/unresolved-findings preserved, agent-state compacts to latest per instance)
-- Rollback procedure: documented below (§13)
+- Retention preservation rules: all-green (unacked never deleted, active instances/monitors/incomplete-runs/unresolved-findings preserved, agent-state compacts to latest per instance)
+- Rollback procedure documented (§13)
 - No mandatory daemon or broker introduced
-- Runtime p99 under 100 ms (§11.1) ✅
+
+The "shadow-clean on production traffic sample" gate was retired: for a
+single-user tool the sample IS the operator, and gating on a burn-in window
+delivered nothing but delay.
 
 ---
 
@@ -800,10 +803,11 @@ Self-check surface: every domain phase's tests include a grep/query assertion ag
 
 ## 13. Cutover + rollback (Phase 10)
 
-**Current status: HOLD.** Shadow comparator wiring landed (xtmux-3xs.12); cutover
-now blocked on production traffic sample under `XTMUX_OBS_V2=shadow` returning
-zero unexplained divergences, and on the V1/V2 differential oracle (xtmux-3xs.19).
-Runtime p99 gate met via xtmux-3xs.11 compiled binary; other exit conditions green.
+**Current status: DONE (xtmux-3xs.31).** `obs_v2_mode()` in
+`bin/tmux-session-picker` and `parseMode` in `src/config.ts` both default to
+`on` when `XTMUX_OBS_V2` is unset. Explicit `XTMUX_OBS_V2=0` opts back to V1.
+The "production traffic sample" gate was retired: single-user tool, sample is
+the operator.
 
 Shadow-mode surface (xtmux-3xs.12):
 
@@ -818,12 +822,11 @@ Shadow-mode surface (xtmux-3xs.12):
   V1-vs-V2 comparison produces noise — `--stable` orders it, but a fixture-driven
   harness would be needed to compare content meaningfully).
 
-Cutover commit (deferred): sets `XTMUX_OBS_V2=1` as default in the picker +
-closes epic xtmux-3xs. Cutover proceeds only when: (a) message correctness
-passes ✅, (b) concurrency tests pass ✅, (c) migration idempotent ✅,
-(d) shadow comparison clean on production traffic sample (pending — Phase 10
-follow-up), (e) benchmark targets pass ✅ (p99=93 ms via compiled binary, §11.1),
-(f) rollback procedure documented ✅ (below).
+Cutover done (xtmux-3xs.31). All gates met: message correctness ✅,
+concurrency ✅, migration idempotent ✅, shadow-mode wiring correct ✅,
+benchmark targets pass ✅ (p99=93 ms via compiled binary, §11.1),
+rollback procedure documented ✅ (below), timestamp column byte-parity ✅
+(xtmux-3xs.27), V1/V2 differential oracle ✅ (xtmux-3xs.19).
 
 Rollback procedure (from XTMUX_OBS_V2=1 default):
 

@@ -16,9 +16,10 @@ export interface Config {
 const XDG_STATE = process.env["XDG_STATE_HOME"] ?? join(homedir(), ".local", "state");
 
 function parseMode(raw: string | undefined): ObsMode {
-  if (raw === undefined || raw === "" || raw === "0") return "off";
+  // xtmux-3xs.31: unset defaults to on (epic cutover). 0 explicit opts out.
+  if (raw === "0") return "off";
   if (raw === "shadow") return "shadow";
-  if (raw === "1") return "on";
+  if (raw === undefined || raw === "" || raw === "1") return "on";
   throw new Error(`XTMUX_OBS_V2 must be one of 0|shadow|1 (got ${JSON.stringify(raw)})`);
 }
 

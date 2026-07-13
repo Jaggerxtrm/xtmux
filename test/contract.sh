@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # xtmux contract tests. run: ./test/contract.sh  (regen: --regen)
 set -u
+# xtmux-3xs.31: picker now defaults to V2. Contract tests exercise the V1
+# byte-format explicitly (goldens are V1); force V1 for the whole suite.
+# Sub-tests that need V2 set XTMUX_OBS_V2 themselves.
+export XTMUX_OBS_V2=0
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
