@@ -59,4 +59,46 @@ describe("V2 commands on a virgin observability DB", () => {
       }
     });
   }
+
+  // Migrating on the picker's hot path means several processes can migrate a virgin
+  // DB at the same moment. migrate() used to read schema_migrations outside its
+  // transaction, so two processes both decided a migration was unapplied and the
+  // loser died on "UNIQUE constraint failed: schema_migrations.version" — or, worse,
+  // on a raw "database is locked", because SQLite will not honour busy_timeout when
+  // upgrading a deferred read lock to a write lock.
+  //
+  // Probabilistic, not deterministic: measured 17/20 at this size against the unfixed
+  // build, and 0/10 once migrate() took the write lock up front. It is a regression
+  // guard, not a proof — sized from a real measurement rather than a guess.
+  test("concurrent first-touch of a virgin DB does not corrupt or crash", async () => {
+    const ROUNDS = 3;
+    const CONCURRENCY = 16;
+
+    for (let round = 0; round < ROUNDS; round++) {
+      const dir = mkdtempSync(join(tmpdir(), "xtmux-race-"));
+      try {
+        const results = await Promise.all(
+          Array.from({ length: CONCURRENCY }, async () => {
+            const proc = Bun.spawn([PICKER, "monitor-list", "--json"], {
+              cwd: ROOT,
+              env: { ...process.env, XDG_STATE_HOME: dir, XTMUX_OBS_V2: "1" },
+              stdout: "pipe",
+              stderr: "pipe",
+            });
+            const stderr = await new Response(proc.stderr).text();
+            return { exitCode: await proc.exited, stderr };
+          }),
+        );
+
+        for (const { exitCode, stderr } of results) {
+          expect(stderr).not.toContain("database is locked");
+          expect(stderr).not.toContain("UNIQUE constraint failed");
+          expect(stderr).not.toContain("SQLiteError");
+          expect(exitCode).toBe(0);
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  }, 60_000);
 });

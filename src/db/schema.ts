@@ -60,13 +60,6 @@ export function migrate(db: Db, now: () => number = Date.now): MigrationResult {
     }
   }
 
-  const seen = db.raw
-    .query<{ version: number; checksum: string }, []>(
-      "SELECT version, checksum FROM schema_migrations",
-    )
-    .all();
-  const seenMap = new Map(seen.map((r) => [r.version, r.checksum]));
-
   const insertRow = db.raw.prepare<
     unknown,
     [number, string, number, string]
@@ -74,34 +67,62 @@ export function migrate(db: Db, now: () => number = Date.now): MigrationResult {
     "INSERT INTO schema_migrations (version, name, applied_at_ms, checksum) VALUES (?, ?, ?, ?)",
   );
 
-  for (const m of sortedMigrations) {
-    const cur = seenMap.get(m.version);
-    const expected = checksum(m.up);
-    if (cur !== undefined) {
-      if (cur !== expected) {
+  // Read the applied set and write the missing migrations in ONE transaction, and
+  // take the write lock up front with BEGIN IMMEDIATE.
+  //
+  // Several picker invocations can hit a virgin DB at once. Reading
+  // schema_migrations outside the transaction let two processes both decide a
+  // migration was unapplied; the loser then died on "UNIQUE constraint failed:
+  // schema_migrations.version". A *deferred* transaction does not fix that on its
+  // own: SQLite will not honour busy_timeout when upgrading a deferred read lock
+  // to a write lock (waiting could deadlock), so the loser failed instantly with a
+  // raw "database is locked" instead of waiting its turn. IMMEDIATE takes the
+  // write lock before reading, so the loser blocks for busy_timeout and then sees
+  // the winner's committed rows and skips them.
+  const runMigrations = db.raw.transaction(() => {
+    const seen = db.raw
+      .query<{ version: number; checksum: string }, []>(
+        "SELECT version, checksum FROM schema_migrations",
+      )
+      .all();
+    const seenMap = new Map(seen.map((r) => [r.version, r.checksum]));
+
+    for (const m of sortedMigrations) {
+      const cur = seenMap.get(m.version);
+      const expected = checksum(m.up);
+      if (cur !== undefined) {
+        if (cur !== expected) {
+          throw new DbError(
+            "XTMUX_DB_SCHEMA_MISMATCH",
+            `migration ${m.version} (${m.name}) already applied with different checksum`,
+            { expected, actual: cur },
+          );
+        }
+        skipped.push(m.version);
+        continue;
+      }
+      try {
+        db.raw.exec(m.up);
+        insertRow.run(m.version, m.name, now(), expected);
+      } catch (err) {
         throw new DbError(
-          "XTMUX_DB_SCHEMA_MISMATCH",
-          `migration ${m.version} (${m.name}) already applied with different checksum`,
-          { expected, actual: cur },
+          "XTMUX_DB_MIGRATION_FAILED",
+          `migration ${m.version} (${m.name}) failed`,
+          { cause: err instanceof Error ? err.message : String(err) },
         );
       }
-      skipped.push(m.version);
-      continue;
+      applied.push(m.version);
     }
-    const tx = db.raw.transaction(() => {
-      db.raw.exec(m.up);
-      insertRow.run(m.version, m.name, now(), expected);
+  });
+
+  try {
+    runMigrations.immediate();
+  } catch (err) {
+    // DbError is already the documented envelope — do not wrap it a second time.
+    if (err instanceof DbError) throw err;
+    throw new DbError("XTMUX_DB_MIGRATION_FAILED", "migration failed", {
+      cause: err instanceof Error ? err.message : String(err),
     });
-    try {
-      tx();
-    } catch (err) {
-      throw new DbError(
-        "XTMUX_DB_MIGRATION_FAILED",
-        `migration ${m.version} (${m.name}) failed`,
-        { cause: err instanceof Error ? err.message : String(err) },
-      );
-    }
-    applied.push(m.version);
   }
 
   const currentVersion = sortedMigrations[sortedMigrations.length - 1]?.version ?? 0;
