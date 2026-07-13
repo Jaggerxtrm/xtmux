@@ -60,7 +60,9 @@ function harness() {
     setUnreadFailure(value: boolean) { failUnread = value; },
     setPaneFailure(value: boolean) { failPane = value; },
     async emit(name: string, event: any = {}) {
-      for (const handler of handlers.get(name) ?? []) await handler(event, ctx);
+      let result: unknown;
+      for (const handler of handlers.get(name) ?? []) result = await handler(event, ctx);
+      return result;
     },
   };
 }
@@ -131,6 +133,9 @@ describe("Pi reply obligations (.26)", () => {
 
       await h.emit("agent_end");
       expect(h.notifications.at(-1)).toContain("Reply required: $sender (xtmux-42)");
+      expect(await h.emit("before_agent_start", { systemPrompt: "base" })).toEqual({
+        systemPrompt: expect.stringContaining("Before ending this turn, author and send the required coordination reply to: $sender (xtmux-42)"),
+      });
 
       await h.emit("tool_result", { toolName: "bash", input: { command: "tmux-session-picker message-send --to $other --text done" }, isError: false });
       expect(readObligations()).toHaveLength(1);
