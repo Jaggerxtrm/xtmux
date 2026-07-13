@@ -51,6 +51,17 @@ function booleanFlag(flags: Map<string, string | boolean>, name: string, fallbac
   return null;
 }
 
+function fail(json: boolean, code: string, message: string, exitCode: number, detail: Record<string, unknown> = {}): number {
+  process.stderr.write(json ? `${JSON.stringify({ code, message, detail })}\n` : `${message}\n`);
+  return exitCode;
+}
+
+function identityKind(id: string, paneId?: string | null): "session" | "pane" | "name" | "unknown" {
+  if (paneId || id.startsWith("%")) return "pane";
+  if (id.startsWith("$")) return "session";
+  return id && id !== "unknown" ? "name" : "unknown";
+}
+
 function fmtTsIso(epochMs: number): string {
   const d = new Date(epochMs);
   const pad = (n: number): string => String(n).padStart(2, "0");
@@ -95,35 +106,49 @@ export interface MessageSendArgs {
  */
 export function cliMessageSend(db: Db, argv: string[]): number {
   const { flags } = parseArgs(argv);
+  const json = flags.get("json") === true;
   const to = String(flags.get("to") ?? "");
   const from = String(flags.get("from") ?? "");
   const text = String(flags.get("text") ?? "");
-  if (!to || !from || !text) {
-    process.stderr.write("message-send: --to, --from, and --text are required\n");
-    return 2;
-  }
+  if (!to || !from || !text) return fail(json, "XTMUX_INVALID_ARGUMENT", "message-send: --to, --from, and --text are required", 2);
   const messageKey =
     (flags.get("message-key") as string | undefined) ??
     (flags.get("id") as string | undefined) ??
     `msg-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
   const bead = (flags.get("bead") as string | undefined) ?? "";
   const expectsReply = booleanFlag(flags, "expects-reply", Boolean(bead));
-  if (expectsReply === null) {
-    process.stderr.write("message-send: --expects-reply must be true or false\n");
-    return 2;
-  }
-  sendMessage(db, {
+  if (expectsReply === null) return fail(json, "XTMUX_INVALID_ARGUMENT", "message-send: --expects-reply must be true or false", 2);
+  const senderPaneId = (flags.get("from-pane") as string | undefined) ?? null;
+  const targetPaneId = (flags.get("to-pane") as string | undefined) ?? null;
+  const result = sendMessage(db, {
     messageKey,
     senderId: from,
-    senderPaneId: (flags.get("from-pane") as string | undefined) ?? undefined,
+    senderPaneId: senderPaneId ?? undefined,
     recipientId: to,
-    targetPaneId: (flags.get("to-pane") as string | undefined) ?? undefined,
+    targetPaneId: targetPaneId ?? undefined,
     beadId: bead || undefined,
     summary: text,
     expectsReply,
   });
-  // Match V1 stdout: message\tid\tfrom\tto\tbead\ttext
-  process.stdout.write(`message\t${messageKey}\t${from}\t${to}\t${bead}\t${text}\n`);
+  if (json) {
+    const createdAtMs = db.raw.query<{ created_at_ms: number }, [string]>("SELECT created_at_ms FROM messages WHERE message_key = ?").get(messageKey)?.created_at_ms ?? null;
+    process.stdout.write(JSON.stringify({
+      messageKey,
+      messageId: result.messageId,
+      duplicate: result.duplicate,
+      senderId: from,
+      senderPaneId,
+      senderKind: identityKind(from, senderPaneId),
+      recipientId: to,
+      targetPaneId,
+      recipientKind: identityKind(to, targetPaneId),
+      beadId: bead || null,
+      expectsReply,
+      createdAtMs,
+    }) + "\n");
+  } else {
+    process.stdout.write(`message\t${messageKey}\t${from}\t${to}\t${bead}\t${text}\n`);
+  }
   return 0;
 }
 
@@ -152,13 +177,18 @@ export function cliMessageList(db: Db, argv: string[]): number {
     process.stdout.write(JSON.stringify(rows.map((r) => ({
       messageKey: r.message_key,
       senderId: r.sender_id,
+      senderPaneId: r.sender_pane_id,
+      senderKind: identityKind(r.sender_id, r.sender_pane_id),
       recipientId: r.recipient_id,
       targetPaneId: r.target_pane_id,
+      recipientKind: identityKind(r.recipient_id, r.target_pane_id),
       beadId: r.bead_id,
       summary: r.summary,
       createdAtMs: r.created_at_ms,
       expectsReply: r.expects_reply === 1,
       acked: r.acked_at_ms !== null,
+      ackedAtMs: r.acked_at_ms,
+      ackedBy: r.acked_by,
     }))) + "\n");
     return 0;
   }
@@ -218,29 +248,26 @@ export function cliUnreadCount(db: Db, argv: string[]): number {
 
 export function cliMessageAck(db: Db, argv: string[]): number {
   const { positional, flags } = parseArgs(argv);
+  const json = flags.get("json") === true;
   const messageKey = positional[0] ?? "";
   const ackedBy = String(flags.get("by") ?? "");
-  if (!messageKey || !ackedBy) {
-    process.stderr.write("message-ack: <message_id> --by <session> required\n");
-    return 2;
-  }
+  if (!messageKey || !ackedBy) return fail(json, "XTMUX_INVALID_ARGUMENT", "message-ack: <message_id> --by <session> required", 2);
   const messageId = db.raw.query<{ id: number }, [string]>("SELECT id FROM messages WHERE message_key = ?").get(messageKey)?.id
     ?? Number(messageKey);
-  if (!messageId) {
-    process.stderr.write("message-ack: unknown message id\n");
-    return 5;
-  }
+  if (!messageId) return fail(json, "XTMUX_MESSAGE_NOT_FOUND", "message-ack: unknown message id", 5, { messageKey });
   const r = ackMessage(db, { messageId, ackedBy });
-  process.stdout.write(`ack\t${messageKey}\t${ackedBy}\n`);
-  switch (r.status) {
-    case "acked":
-    case "already-acked":
-      return 0;
-    case "wrong-recipient":
-      process.stderr.write("message-ack: wrong recipient (no mutation)\n");
-      return 4;
-    case "unknown-message":
-      process.stderr.write("message-ack: unknown message id\n");
-      return 5;
+  if (r.status === "wrong-recipient") return fail(json, "XTMUX_ACK_WRONG_RECIPIENT", "message-ack: wrong recipient (no mutation)", 4, { messageKey, ackedBy });
+  if (r.status === "unknown-message") return fail(json, "XTMUX_MESSAGE_NOT_FOUND", "message-ack: unknown message id", 5, { messageKey });
+  if (json) {
+    process.stdout.write(JSON.stringify({
+      messageKey,
+      status: r.status,
+      acked: true,
+      ackedAtMs: r.ackedAtMs ?? null,
+      ackedBy,
+    }) + "\n");
+  } else {
+    process.stdout.write(`ack\t${messageKey}\t${ackedBy}\n`);
   }
+  return 0;
 }

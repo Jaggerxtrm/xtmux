@@ -21,16 +21,18 @@ function usage(): string {
 commands:
   health                     print JSON health report and exit 0 if ok else 2
   migrate                    apply pending schema migrations
-  version                    print schema version
+  version [--json]           print schema version
 
-  message-send --to <sid> --from <sid> [--to-pane %N] [--from-pane %N] --text T [--bead ID] [--expects-reply true|false] [--message-key K]
+  message-send --to <sid> --from <sid> [--to-pane %N] [--from-pane %N] --text T [--bead ID] [--expects-reply true|false] [--message-key K] [--json]
   message-list --for <sid> [--pane %N] [--from <sid>] [--since <ms>] [--unacked] [--expects-reply] [--json] [--limit N]
-  message-ack <message_id> --by <sid>
+  message-ack <message_id> --by <sid> [--json]
   message-status <message_key>        print JSON receipt state (V2 only)
   unread-count --for <sid> [--pane %N] print JSON unread summary; --pane scopes to that pane (xtmux-3xs.28)
-  obligations list [--pane %N]     print JSON active reply obligations for current/selected pane
+  obligations list [--pane %N] [--json] print active reply obligations; JSON mode requires a pane
+  log-tail [N] [--json]             print NDJSON or one JSON event array
+  log-query [filters] [--json]      query NDJSON or one JSON event array
 
-  monitor register|adopt|heartbeat|terminate|list|kill   monitor registry (3xs.4)
+  monitor register|adopt|heartbeat|terminate|list|kill   monitor registry; list/kill accept --json (3xs.4)
   telemetry start|finish                                 correlated command runs (3xs.7)
   audit ingest [--partial]                               persist audit findings from stdin (3xs.8)
 
@@ -89,19 +91,24 @@ async function main(argv: string[]): Promise<number> {
         const db = openDb(cfg);
         try {
           const report = checkHealth(db, cfg.dbPath);
-          process.stdout.write(String(report.schemaVersion) + "\n");
+          process.stdout.write(argv.slice(3).includes("--json") ? JSON.stringify({ schemaVersion: report.schemaVersion }) + "\n" : String(report.schemaVersion) + "\n");
           return 0;
         } finally {
           db.close();
         }
       }
       case "obligations": {
+        const json = argv.slice(4).includes("--json");
         if (argv[3] !== "list") {
-          process.stderr.write("usage: xtmux-obs obligations list [--pane %N]\n");
+          process.stderr.write(json ? JSON.stringify({ code: "XTMUX_INVALID_ARGUMENT", message: "usage: xtmux-obs obligations list [--pane %N] [--json]", detail: {} }) + "\n" : "usage: xtmux-obs obligations list [--pane %N]\n");
           return 2;
         }
         const paneFlag = argv.indexOf("--pane", 4);
         const paneId = paneFlag >= 0 ? argv[paneFlag + 1] ?? "" : process.env.TMUX ? process.env.TMUX_PANE ?? "" : "";
+        if (json && !paneId) {
+          process.stderr.write(JSON.stringify({ code: "XTMUX_PANE_REQUIRED", message: "obligations list --json requires --pane or a tmux pane context", detail: {} }) + "\n");
+          return 2;
+        }
         process.stdout.write(JSON.stringify(listObligations(paneId)) + "\n");
         return paneId ? 0 : 2;
       }

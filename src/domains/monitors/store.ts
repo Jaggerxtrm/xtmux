@@ -284,11 +284,28 @@ interface ListRow {
   id: string;
   owner_pid: number | null;
   target: string;
+  session_id: string | null;
   pane_id: string;
   state: string;
   started_at_ms: number;
   timeout_ms: number | null;
   interval_ms: number;
+}
+
+export interface MonitorResult {
+  monitorId: string;
+  ownerPid: number | null;
+  target: string;
+  sessionId: string | null;
+  paneId: string;
+  state: string;
+  startedAtMs: number;
+  updatedAtMs: number;
+  timeoutMs: number | null;
+  intervalMs: number;
+  terminalStatus: null;
+  terminalAtMs: null;
+  terminalDetail: null;
 }
 
 const msToS = (ms: number): number => Math.floor(ms / 1000);
@@ -308,37 +325,47 @@ const msToS = (ms: number): number => Math.floor(ms / 1000);
  *   - `pid` prints `starting` until the poller is adopted; `timeout` prints 0 when
  *     there is none; sorted by start then id (V1: `sort -k6,6 -k2,2`, lexical).
  */
-export function list(db: Db, deps: ListDeps, nowMs: number): string[] {
-  reconcileAll(db, deps, nowMs); // a crashed poller must not linger
-
+export function listResults(db: Db, deps: ListDeps, nowMs: number): MonitorResult[] {
+  reconcileAll(db, deps, nowMs);
   const rows = db.raw
     .query<ListRow, []>(
-      `SELECT id, owner_pid, target, pane_id, state, started_at_ms, timeout_ms, interval_ms
+      `SELECT id, owner_pid, target, session_id, pane_id, state, started_at_ms, timeout_ms, interval_ms
          FROM monitors WHERE terminal_status IS NULL`,
     )
     .all();
-
-  const out = rows.map((r) => {
-    const state = deps.observe(r.pane_id) || r.state;
-    heartbeat(db, r.id, state, nowMs);
+  const results = rows.map((row) => {
+    const state = deps.observe(row.pane_id) || row.state;
+    heartbeat(db, row.id, state, nowMs);
     return {
-      sortStart: String(msToS(r.started_at_ms)),
-      sortId: r.id,
-      line: [
-        "monitor",
-        r.id,
-        r.owner_pid === null ? "starting" : String(r.owner_pid),
-        r.target,
-        r.pane_id,
-        state,
-        msToS(r.started_at_ms),
-        r.timeout_ms === null ? 0 : msToS(r.timeout_ms),
-        msToS(r.interval_ms),
-        msToS(nowMs),
-      ].join("\t"),
-    };
+      monitorId: row.id,
+      ownerPid: row.owner_pid,
+      target: row.target,
+      sessionId: row.session_id,
+      paneId: row.pane_id,
+      state,
+      startedAtMs: row.started_at_ms,
+      updatedAtMs: nowMs,
+      timeoutMs: row.timeout_ms,
+      intervalMs: row.interval_ms,
+      terminalStatus: null,
+      terminalAtMs: null,
+      terminalDetail: null,
+    } satisfies MonitorResult;
   });
+  return results.sort((a, b) => a.startedAtMs - b.startedAtMs || a.monitorId.localeCompare(b.monitorId));
+}
 
-  out.sort((a, b) => a.sortStart.localeCompare(b.sortStart) || a.sortId.localeCompare(b.sortId));
-  return out.map((o) => o.line);
+export function list(db: Db, deps: ListDeps, nowMs: number): string[] {
+  return listResults(db, deps, nowMs).map((row) => [
+    "monitor",
+    row.monitorId,
+    row.ownerPid === null ? "starting" : String(row.ownerPid),
+    row.target,
+    row.paneId,
+    row.state,
+    msToS(row.startedAtMs),
+    row.timeoutMs === null ? 0 : msToS(row.timeoutMs),
+    msToS(row.intervalMs),
+    msToS(row.updatedAtMs),
+  ].join("\t"));
 }

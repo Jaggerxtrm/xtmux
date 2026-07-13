@@ -532,7 +532,7 @@ preview_enrichment() {
   git_worktree_preview "$root"
 }
 
-worktree_collisions() {
+_worktree_collisions_tsv() {
   local sid sname pane_id path root key sessions panes n names pair
   declare -A root_sessions=()
   declare -A root_panes=()
@@ -557,6 +557,28 @@ worktree_collisions() {
     done
     printf 'shared-worktree\t%s\t%s\t%s\t%s\n' "$root" "$n" "${root_panes[$root]:-0}" "$names"
   done | sort -t $'\t' -k2,2nr -k1,1
+}
+
+worktree_collisions() {
+  local json=0 line type path sessions panes names first=1 name name_first count=0 started_ms="$(date +%s%3N)"
+  [ "${1:-}" = '--json' ] && json=1
+  if [ "$json" != 1 ]; then _worktree_collisions_tsv; return; fi
+  printf '['
+  while IFS=$'\t' read -r type path sessions panes names; do
+    [ "$type" = shared-worktree ] || continue
+    count=$(( count + 1 ))
+    [ "$first" = 1 ] || printf ','; first=0
+    printf '{"path":"%s","sessionCount":%s,"paneCount":%s,"sessionNames":[' "$(json_escape "$path")" "$sessions" "$panes"
+    name_first=1
+    IFS=',' read -ra _collision_names <<< "$names"
+    for name in "${_collision_names[@]}"; do
+      [ "$name_first" = 1 ] || printf ','; name_first=0
+      printf '"%s"' "$(json_escape "$name")"
+    done
+    printf ']}'
+  done < <(_worktree_collisions_tsv)
+  printf ']\n'
+  log_cli_emit query.completed command=worktree-collisions count="$count" duration_ms="$(( $(date +%s%3N) - started_ms ))" outcome=ok
 }
 
 tsv_clean() {
@@ -589,6 +611,10 @@ json_escape() {
   s="${s//$'\r'/\\r}"
   s="${s//$'\n'/\\n}"
   printf '%s' "$s"
+}
+
+json_nullable() {
+  case "${1:-}" in ''|-) printf 'null' ;; *) printf '"%s"' "$(json_escape "$1")" ;; esac
 }
 
 # V1 deliberately retains its historical best-effort default-server lookup.
@@ -714,6 +740,57 @@ obs_available() {
   [ -x "$binary" ] && return 0
   [ -f "$root/src/cli.ts" ] && command -v bun >/dev/null 2>&1
 }
+
+json_error() {
+  local code="$1" message="$2" command="$3"
+  printf '{"code":"%s","message":"%s","detail":{"command":"%s"}}\n' \
+    "$(json_escape "$code")" "$(json_escape "$message")" "$(json_escape "$command")" >&2
+}
+
+command_error() {
+  local json="$1" code="$2" message="$3" command="$4" exit_code="$5"
+  if [ "$json" = 1 ]; then json_error "$code" "$message" "$command"; else printf '%s\n' "$message" >&2; fi
+  return "$exit_code"
+}
+
+json_requested() {
+  local arg
+  for arg in "$@"; do [ "$arg" = '--json' ] && return 0; done
+  return 1
+}
+
+json_command_state() {
+  local command="$1" subcommand="${2:-}"
+  case "$command:$subcommand" in
+    message-list:*|message-status:*|unread-count:*|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|safe-send-pointer:*|handoff:*|message-send:*|message-ack:*|worktree-collisions:*|dashboard:*|audit:*|log:tail|log:query) REPLY='ready' ;;
+    *) REPLY='unsupported' ;;
+  esac
+}
+
+json_request_preflight() {
+  local command="$1" subcommand="${2:-}"
+  json_command_state "$command" "$subcommand"
+  case "$REPLY" in
+    unsupported)
+      json_error XTMUX_JSON_UNSUPPORTED "$command does not support --json" "$command"
+      return 2
+      ;;
+    planned)
+      json_error XTMUX_JSON_NOT_READY "$command --json is classified but not implemented" "$command"
+      return 2
+      ;;
+  esac
+  obs_v2_mode; local mode="$REPLY"
+  if [ "$mode" != 'on' ]; then
+    json_error XTMUX_JSON_REQUIRES_V2 "$command --json requires the V2 runtime" "$command"
+    return 2
+  fi
+  if ! obs_available; then
+    json_error XTMUX_JSON_BACKEND_UNAVAILABLE "$command --json backend is unavailable" "$command"
+    return 1
+  fi
+}
+
 obs_call() {
   obs_available || return 1
   obs_runtime_argv
@@ -779,11 +856,16 @@ log_cli_emit() {
 }
 
 log_cli_tail() {
-  local n="${1:-50}" file
+  local n=50 json=0 arg file
+  for arg in "$@"; do
+    case "$arg" in --json) json=1 ;; *[!0-9]*) return 2 ;; *) n="$arg" ;; esac
+  done
   obs_v2_mode
   if [ "$REPLY" = 'on' ]; then
     obs_runtime_argv
-    exec "${OBS_ARGV[@]}" log-tail "$n"
+    local args=(log-tail "$n")
+    [ "$json" = 1 ] && args+=(--json)
+    exec "${OBS_ARGV[@]}" "${args[@]}"
   fi
   event_log_file; file="$REPLY"
   [ -f "$file" ] || return 0
@@ -814,7 +896,7 @@ _log_cli_query_v1_body() {
 }
 
 log_cli_query() {
-  local type='' pane='' session='' bead='' since='' limit=100 arg
+  local type='' pane='' session='' bead='' since='' limit=100 json=0 arg
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
@@ -830,13 +912,15 @@ log_cli_query() {
       --since=*) parse_wait_duration "${arg#--since=}" || return 2; since="$REPLY" ;;
       --limit) [ "$#" -gt 0 ] || return 2; limit="$1"; shift ;;
       --limit=*) limit="${arg#--limit=}" ;;
-      *) printf 'log query: unknown arg: %s\n' "$arg" >&2; return 2 ;;
+      --json) json=1 ;;
+      *) command_error "$json" XTMUX_INVALID_ARGUMENT "log query: unknown arg: $arg" log 2; return $? ;;
     esac
   done
   obs_v2_mode; local mode="$REPLY"
   if [ "$mode" = 'on' ]; then
     obs_runtime_argv
     local cli_args=(log-query --limit "$limit")
+    [ "$json" = 1 ]   && cli_args+=(--json)
     [ -n "$type" ]    && cli_args+=(--type    "$type")
     [ -n "$session" ] && cli_args+=(--session "$session")
     [ -n "$pane" ]    && cli_args+=(--pane    "$pane")
@@ -868,14 +952,14 @@ log_cli() {
   local sub="${1:-}"; shift || true
   case "$sub" in
     emit) log_cli_emit "$@" ;;
-    tail) log_cli_tail "${1:-50}" ;;
+    tail) log_cli_tail "$@" ;;
     query) log_cli_query "$@" ;;
     *) printf 'usage: log <emit|tail|query> ...\n' >&2; return 2 ;;
   esac
 }
 
 message_send() {
-  local to='' from='' bead='' text='' id='' expects_reply='' arg
+  local to='' from='' bead='' text='' id='' expects_reply='' json=0 arg
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
@@ -891,11 +975,12 @@ message_send() {
       --id=*) id="${arg#--id=}" ;;
       --expects-reply) expects_reply=true ;;
       --expects-reply=*) expects_reply="${arg#--expects-reply=}" ;;
+      --json) json=1 ;;
       *) text+="${text:+ }$arg" ;;
     esac
   done
-  [ -n "$to" ] && [ -n "$text" ] || { printf 'usage: message-send --to <session|pane> [--from x] [--bead id] [--expects-reply[=true|false]] --text <text>\n' >&2; return 2; }
-  case "$expects_reply" in ''|true|false|1|0) ;; *) printf 'message-send: --expects-reply must be true or false\n' >&2; return 2 ;; esac
+  [ -n "$to" ] && [ -n "$text" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'usage: message-send --to <session|pane> [--from x] [--bead id] [--expects-reply[=true|false]] --text <text>' message-send 2; return $?; }
+  case "$expects_reply" in ''|true|false|1|0) ;; *) command_error "$json" XTMUX_INVALID_ARGUMENT 'message-send: --expects-reply must be true or false' message-send 2; return $? ;; esac
   # Canonicalize target to session_id so message-list --for finds it regardless
   # of which alias (name/pane_id/session_id/shorthand) the recipient uses. For
   # $N/%N ids we require resolution (those are meaningful only as live tmux
@@ -907,8 +992,8 @@ message_send() {
   else
     case "$to" in
       '$'*|'%'*|'@'*)
-        printf 'message-send: target does not exist: %s\n' "$to" >&2
-        log_event message.failed to="$to" reason=target_missing text="$text"
+        command_error "$json" XTMUX_TARGET_NOT_FOUND "message-send: target does not exist: $to" message-send 1
+        log_event message.failed to="$to" reason=target_missing
         return 1
         ;;
       *)
@@ -938,6 +1023,7 @@ message_send() {
     [ -n "$from" ] && from_pid="$(tmux display-message -p -t "$from" '#{pane_id}' 2>/dev/null || true)"
     obs_runtime_argv
     local cli_args=(message-send --to "$to_sid" --from "$from_sid" --id "$id" --text "$text")
+    [ "$json" = 1 ]         && cli_args+=(--json)
     [ -n "$bead" ]          && cli_args+=(--bead "$bead")
     [ -n "$expects_reply" ] && cli_args+=(--expects-reply "$expects_reply")
     [ -n "$to_pid" ]        && cli_args+=(--to-pane   "$to_pid")
@@ -977,13 +1063,13 @@ message_send() {
 }
 
 message_ack() {
-  local id="${1:-}" by=''
+  local id="${1:-}" by='' json=0
   shift || true
   while [ "$#" -gt 0 ]; do
-    case "$1" in --by) shift; by="${1:-}" ;; --by=*) by="${1#--by=}" ;; esac
+    case "$1" in --by) shift; by="${1:-}" ;; --by=*) by="${1#--by=}" ;; --json) json=1 ;; esac
     shift || true
   done
-  [ -n "$id" ] || { printf 'usage: message-ack <message-id> [--by session]\n' >&2; return 2; }
+  [ -n "$id" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'usage: message-ack <message-id> [--by session]' message-ack 2; return $?; }
   if [ -n "$by" ]; then
     resolve_to_session_id "$by" && by="$REPLY"
   else
@@ -993,7 +1079,9 @@ message_ack() {
   obs_v2_mode; local _mode="$REPLY"
   if [ "$_mode" = 'on' ]; then
     obs_runtime_argv
-    "${OBS_ARGV[@]}" message-ack "$id" --by "$by" || return $?
+    local ack_args=(message-ack "$id" --by "$by")
+    [ "$json" = 1 ] && ack_args+=(--json)
+    "${OBS_ARGV[@]}" "${ack_args[@]}" || return $?
     if [ "$by" != unknown ]; then
       local prev
       prev="$(tmux show-options -t "$by" -qv @agent_unread_count 2>/dev/null || printf '0')"
@@ -1343,8 +1431,8 @@ dashboard_choose_state() {
   if [ "$nr" -lt "$cr" ]; then REPLY="$candidate"; else REPLY="$current"; fi
 }
 
-dashboard() {
-  local mode="${1:-sessions-only}" now sid sname pane_id path activity root repo branch dirty idle shared state bead task
+_dashboard_tsv() {
+  local mode="${1:-sessions-only}" json_internal="${2:-0}" now sid sname pane_id path activity root repo branch dirty idle idle_ms shared state bead task
   local pane_sid pane_sname pane_cmd pane_path pane_state pane_bead pane_task pane_parent pane_pid pane_root pane_state_norm
   local tmp_panes _sid_list _sid
   case "$mode" in expanded|sessions-only) ;; *) mode='sessions-only' ;; esac
@@ -1400,17 +1488,59 @@ dashboard() {
     git_branch_name "$root"; branch="$REPLY"
     git_dirty_count "$root"; dirty="$REPLY"
     idle_label_plain "${sess_activity[$sid]:-}" "$now"; idle="$REPLY"
+    if [[ "${sess_activity[$sid]:-}" =~ ^[0-9]+$ ]]; then idle_ms="$(( (now - sess_activity[$sid]) * 1000 ))"; [ "$idle_ms" -lt 0 ] && idle_ms=0; else idle_ms=0; fi
     state="${sess_state[$sid]:-}"
     bead="${sess_bead[$sid]:-}"
     if [ -z "$bead" ]; then derive_bead_id "$sname" "$path" "$root"; bead="$REPLY"; fi
     task="${sess_task[$sid]:-}"
     shared="${sess_shared[$sid]:-0}"
-    printf 'session\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf 'session\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
       "$sid" "$(tsv_clean "$sname")" "${state:-}" "$(tsv_clean "$bead")" "$(tsv_clean "$task")" "$(tsv_clean "$repo")" "$(tsv_clean "$branch")" "$dirty" "$shared" "$idle" "$(tsv_clean "$path")"
+    [ "$json_internal" = 1 ] && printf '\t%s' "$idle_ms"
+    printf '\n'
     if [ "$mode" = expanded ]; then
       awk -F '\t' -v s="$sid" '$1=="pane" && $2==s {print}' "$tmp_panes"
     fi
   done | sort -t $'\t' -k1,1 -k2,2
+}
+
+dashboard() {
+  local mode='sessions-only' json=0 arg out line type first sid name state bead task repo branch dirty shared idle path idle_ms
+  local pane_id command session_count=0 pane_count=0 started_ms="$(date +%s%3N)"
+  for arg in "$@"; do
+    case "$arg" in expanded|sessions-only) mode="$arg" ;; --json) json=1 ;; *) return 2 ;; esac
+  done
+  if [ "$json" != 1 ]; then _dashboard_tsv "$mode"; return; fi
+  out="$(_dashboard_tsv "$mode" 1)"
+  printf '{"mode":"%s","sessions":[' "$mode"
+  first=1
+  while IFS= read -r line; do
+    type="$(audit_tsv_field "$line" 1)"; [ "$type" = session ] || continue
+    session_count=$(( session_count + 1 ))
+    sid="$(audit_tsv_field "$line" 2)"; name="$(audit_tsv_field "$line" 3)"; state="$(audit_tsv_field "$line" 4)"
+    bead="$(audit_tsv_field "$line" 5)"; task="$(audit_tsv_field "$line" 6)"; repo="$(audit_tsv_field "$line" 7)"
+    branch="$(audit_tsv_field "$line" 8)"; dirty="$(audit_tsv_field "$line" 9)"; shared="$(audit_tsv_field "$line" 10)"
+    idle="$(audit_tsv_field "$line" 11)"; path="$(audit_tsv_field "$line" 12)"; idle_ms="$(audit_tsv_field "$line" 13)"
+    [ "$first" = 1 ] || printf ','; first=0
+    printf '{"sessionId":"%s","sessionName":"%s","state":%s,"beadId":%s,"task":%s,"repo":%s,"branch":%s,"dirtyCount":%s,"sharedWorktree":%s,"idleMs":%s,"path":"%s"}' \
+      "$(json_escape "$sid")" "$(json_escape "$name")" "$(json_nullable "$state")" "$(json_nullable "$bead")" "$(json_nullable "$task")" \
+      "$(json_nullable "$repo")" "$(json_nullable "$branch")" "${dirty:-0}" "$([ "${shared:-0}" = 1 ] && printf true || printf false)" "${idle_ms:-0}" "$(json_escape "$path")"
+  done <<< "$out"
+  printf '],"panes":['
+  first=1
+  while IFS= read -r line; do
+    type="$(audit_tsv_field "$line" 1)"; [ "$type" = pane ] || continue
+    pane_count=$(( pane_count + 1 ))
+    sid="$(audit_tsv_field "$line" 2)"; name="$(audit_tsv_field "$line" 3)"; pane_id="$(audit_tsv_field "$line" 4)"
+    state="$(audit_tsv_field "$line" 5)"; bead="$(audit_tsv_field "$line" 6)"; task="$(audit_tsv_field "$line" 7)"
+    command="$(audit_tsv_field "$line" 8)"; path="$(audit_tsv_field "$line" 9)"
+    [ "$first" = 1 ] || printf ','; first=0
+    printf '{"sessionId":"%s","sessionName":"%s","paneId":"%s","state":%s,"beadId":%s,"task":%s,"command":%s,"path":"%s"}' \
+      "$(json_escape "$sid")" "$(json_escape "$name")" "$(json_escape "$pane_id")" "$(json_nullable "$state")" "$(json_nullable "$bead")" \
+      "$(json_nullable "$task")" "$(json_nullable "$command")" "$(json_escape "$path")"
+  done <<< "$out"
+  printf ']}\n'
+  log_cli_emit query.completed command=dashboard session_count="$session_count" pane_count="$pane_count" duration_ms="$(( $(date +%s%3N) - started_ms ))" outcome=ok
 }
 
 audit_tsv_field() {
@@ -1459,16 +1589,40 @@ cleanup rule of thumb
 EOF
 }
 
+audit_json() {
+  local input="$1" line severity kind sid name pane path repo state cmd dirty first=1 field
+  printf '['
+  while IFS= read -r line; do
+    IFS=$'\t' read -r severity kind sid name field _ <<< "$line"
+    case "$severity" in warning|cleanup) ;; *) continue ;; esac
+    pane=''; path=''; repo=''; state=''; cmd=''; dirty=''
+    IFS=$'\t' read -ra _audit_fields <<< "$line"
+    for field in "${_audit_fields[@]:4}"; do
+      case "$field" in %*) pane="$field" ;; path=*) path="${field#path=}" ;; repo=*) repo="${field#repo=}" ;; state=*) state="${field#state=}" ;; cmd=*) cmd="${field#cmd=}" ;; dirty=*) dirty="${field#dirty=}" ;; *) [ "$kind" = missing-path ] && [ -z "$path" ] && path="$field" ;; esac
+    done
+    [ "$first" = 1 ] || printf ','; first=0
+    printf '{"severity":"%s","kind":"%s","sessionId":%s,"sessionName":"%s","paneId":%s,"paneIndex":null,"path":%s,"repo":%s,"detail":{' \
+      "$severity" "$(json_escape "$kind")" "$(json_nullable "$sid")" "$(json_escape "$name")" "$(json_nullable "$pane")" "$(json_nullable "$path")" "$(json_nullable "$repo")"
+    local detail_first=1
+    if [ -n "$state" ]; then printf '"state":"%s"' "$(json_escape "$state")"; detail_first=0; fi
+    if [ -n "$cmd" ]; then [ "$detail_first" = 1 ] || printf ','; printf '"command":"%s"' "$(json_escape "$cmd")"; detail_first=0; fi
+    if [ -n "$dirty" ]; then [ "$detail_first" = 1 ] || printf ','; printf '"dirtyCount":%s' "$dirty"; fi
+    printf '}}'
+  done <<< "$input"
+  printf ']\n'
+}
+
 # audit_walk emits V1's human TSV. audit() wraps it so persistence is purely
 # additive: stdout is whatever the walk printed, byte for byte (PRD §20), and a
 # copy is piped to the runtime (xtmux-3xs.8).
 audit() {
-  local mode out display_out rc session stable=0 arg
+  local mode out display_out rc session stable=0 json=0 arg finding_count=0 started_ms="$(date +%s%3N)"
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
       --stable) stable=1 ;;
-      *) printf 'audit: unknown arg: %s\n' "$arg" >&2; return 2 ;;
+      --json) json=1 ;;
+      *) command_error "$json" XTMUX_INVALID_ARGUMENT "audit: unknown arg: $arg" audit 2; return $? ;;
     esac
   done
   obs_v2_mode; mode="$REPLY"
@@ -1482,7 +1636,11 @@ audit() {
     local header="${out%%$'\n'*}" body="${out#*$'\n'}"
     display_out="$header"$'\n'"$(printf '%s\n' "$body" | sort -t $'\t' -k1,1 -k2,2 -k4,4 -k5,5)"
   fi
-  [ -n "$display_out" ] && printf '%s\n' "$display_out"
+  if [ "$json" = 1 ]; then
+    audit_json "$display_out"
+    finding_count="$(printf '%s\n' "$display_out" | grep -Ec $'^(warning|cleanup)\t' || true)"
+    log_cli_emit query.completed command=audit count="$finding_count" duration_ms="$(( $(date +%s%3N) - started_ms ))" outcome="$([ "$rc" -eq 0 ] && printf ok || printf error)"
+  elif [ -n "$display_out" ]; then printf '%s\n' "$display_out"; fi
   current_tmux_session_id; session="$REPLY"
   # A walk that failed halfway is a PARTIAL run: it records what it saw but must
   # never resolve findings it simply never reached. Omit unknown optional
@@ -2061,7 +2219,7 @@ observe_agent_state() {
 }
 
 wait_agent() {
-  local target='' timeout=0 interval=30 wait_for_transition=0 arg pane state start now elapsed armed=1
+  local target='' timeout=0 interval=30 wait_for_transition=0 json=0 arg pane state start started_ms now elapsed armed=1
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
@@ -2070,14 +2228,16 @@ wait_agent() {
       --timeout) [ "$#" -gt 0 ] || return 2; parse_wait_duration "$1" || return 2; timeout="$REPLY"; shift ;;
       --interval=*) parse_wait_duration "${arg#--interval=}" || return 2; interval="$REPLY" ;;
       --interval) [ "$#" -gt 0 ] || return 2; parse_wait_duration "$1" || return 2; interval="$REPLY"; shift ;;
+      --json) json=1 ;;
       -h|--help) return 2 ;;
       *) [ -z "$target" ] || return 2; target="$arg" ;;
     esac
   done
-  [ -n "$target" ] || return 2
-  resolve_tmux_pane "$target" || { printf 'wait-agent: target not found: %s\n' "$target" >&2; return 1; }
+  [ -n "$target" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'wait-agent: target required' wait-agent 2; return $?; }
+  resolve_tmux_pane "$target" || { command_error "$json" XTMUX_TARGET_NOT_FOUND "wait-agent: target not found: $target" wait-agent 1; return $?; }
   pane="$REPLY"
   start="$(date +%s)"
+  started_ms="$(date +%s%3N)"
   if [ "$wait_for_transition" = 1 ]; then
     observe_agent_state "$pane"
     agent_state_is_working "$REPLY" || armed=0
@@ -2087,13 +2247,22 @@ wait_agent() {
     if [ "$armed" = 0 ]; then
       agent_state_is_working "$state" && armed=1
     elif ! agent_state_is_working "$state"; then
-      printf 'target=%s pane=%s state=%s\n' "$target" "$pane" "$state"
+      if [ "$json" = 1 ]; then
+        printf '{"target":"%s","sessionId":null,"paneId":"%s","state":"%s","status":"done","startedAtMs":%s,"completedAtMs":%s,"timeoutMs":%s,"intervalMs":%s}\n' \
+          "$(json_escape "$target")" "$(json_escape "$pane")" "$(json_escape "$state")" "$started_ms" "$(date +%s%3N)" "$(( timeout * 1000 ))" "$(( interval * 1000 ))"
+      else
+        printf 'target=%s pane=%s state=%s\n' "$target" "$pane" "$state"
+      fi
       return 0
     fi
     if [ "$timeout" -gt 0 ]; then
       now="$(date +%s)"; elapsed=$(( now - start ))
       if [ "$elapsed" -ge "$timeout" ]; then
-        printf 'wait-agent: timeout target=%s pane=%s state=%s elapsed=%ss\n' "$target" "$pane" "$state" "$elapsed" >&2
+        if [ "$json" = 1 ]; then
+          json_error XTMUX_WAIT_TIMEOUT "wait-agent: timeout target=$target pane=$pane state=$state elapsed=${elapsed}s" wait-agent
+        else
+          printf 'wait-agent: timeout target=%s pane=%s state=%s elapsed=%ss\n' "$target" "$pane" "$state" "$elapsed" >&2
+        fi
         return 124
       fi
     fi
@@ -2165,7 +2334,7 @@ monitor_run() {
 }
 
 monitor_agent() {
-  local target='' timeout=0 interval=30 wait_for_transition=0 arg pane state start id pid mode session
+  local target='' timeout=0 interval=30 wait_for_transition=0 json=0 arg pane state start id pid mode session
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
@@ -2174,12 +2343,13 @@ monitor_agent() {
       --timeout) [ "$#" -gt 0 ] || return 2; parse_wait_duration "$1" || return 2; timeout="$REPLY"; shift ;;
       --interval=*) parse_wait_duration "${arg#--interval=}" || return 2; interval="$REPLY" ;;
       --interval) [ "$#" -gt 0 ] || return 2; parse_wait_duration "$1" || return 2; interval="$REPLY"; shift ;;
+      --json) json=1 ;;
       -h|--help) return 2 ;;
       *) [ -z "$target" ] || return 2; target="$arg" ;;
     esac
   done
-  [ -n "$target" ] || { printf 'usage: monitor-agent <target> [--wait-for-transition] [--timeout 30m] [--interval 30s]\n' >&2; return 2; }
-  resolve_tmux_pane "$target" || { printf 'monitor-agent: target not found: %s\n' "$target" >&2; return 1; }
+  [ -n "$target" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'usage: monitor-agent <target> [--wait-for-transition] [--timeout 30m] [--interval 30s]' monitor-agent 2; return $?; }
+  resolve_tmux_pane "$target" || { command_error "$json" XTMUX_TARGET_NOT_FOUND "monitor-agent: target not found: $target" monitor-agent 1; return $?; }
   pane="$REPLY"
   observe_agent_state "$pane"; state="$REPLY"
   start="$(date +%s)"
@@ -2200,7 +2370,13 @@ monitor_agent() {
   # monitor from one that simply has not ticked yet.
   [ "$mode" = 'off' ] || obs_call monitor adopt --id "$id" --pid "$pid"
   log_event monitor.started id="$id" pid="$pid" target="$target" pane="$pane" state="$state" timeout="$timeout" interval="$interval"
-  printf 'monitor\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$pid" "$target" "$pane" "$state" "$start" "$timeout" "$interval" "$start"
+  if [ "$json" = 1 ]; then
+    printf '{"monitorId":"%s","target":"%s","sessionId":%s,"paneId":"%s","state":"%s","startedAtMs":%s,"timeoutMs":%s,"intervalMs":%s}\n' \
+      "$(json_escape "$id")" "$(json_escape "$target")" "$([ -n "$session" ] && printf '"%s"' "$(json_escape "$session")" || printf 'null')" \
+      "$(json_escape "$pane")" "$(json_escape "$state")" "$(( start * 1000 ))" "$(( timeout * 1000 ))" "$(( interval * 1000 ))"
+  else
+    printf 'monitor\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$pid" "$target" "$pane" "$state" "$start" "$timeout" "$interval" "$start"
+  fi
 }
 
 # _monitor_list_v1_body — V1 TSV scan of the monitor state dir; extracted so
@@ -2226,11 +2402,15 @@ _monitor_list_v1_body() {
 }
 
 monitor_list() {
+  local json=0
+  [ "${1:-}" = '--json' ] && json=1
   obs_v2_mode; local mode="$REPLY"
   # V2 authoritative: the table is the registry, and reconciliation of crashed
   # pollers happens inside the scan.
   if [ "$mode" = 'on' ]; then
-    obs_call_strict monitor list
+    local args=(monitor list)
+    [ "$json" = 1 ] && args+=(--json)
+    obs_call_strict "${args[@]}"
     return "$?"
   fi
   if [ "$mode" = 'shadow' ]; then
@@ -2247,13 +2427,18 @@ monitor_list() {
 }
 
 monitor_kill() {
-  local id="${1:-}" file type rid pid rest mode
+  local id='' json=0 arg file type rid pid rest mode
+  for arg in "$@"; do
+    case "$arg" in --json) json=1 ;; --*) return 2 ;; *) [ -z "$id" ] || return 2; id="$arg" ;; esac
+  done
   [ -n "$id" ] || { printf 'usage: monitor-kill <id>\n' >&2; return 2; }
   obs_v2_mode; mode="$REPLY"
   # V2 authoritative: the row is preserved with terminal_status=killed. V1 deleted
   # the TSV here, which is why a killed monitor left no history at all.
   if [ "$mode" = 'on' ]; then
-    obs_call_strict monitor kill --id "$id"
+    local args=(monitor kill --id "$id")
+    [ "$json" = 1 ] && args+=(--json)
+    obs_call_strict "${args[@]}"
     return "$?"
   fi
   monitor_file "$id"; file="$REPLY"
@@ -2273,12 +2458,13 @@ handoff_default_file() {
 }
 
 handoff() {
-  local execute=0 target='' bead='' note='' file='' parent='' arg pane state bead_line pointer qtarget qpointer
+  local execute=0 json=0 target='' bead='' note='' file='' parent='' arg pane state bead_line pointer qtarget qpointer
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
       --yes|--send) execute=1 ;;
       --dry-run) execute=0 ;;
+      --json) json=1 ;;
       --target) [ "$#" -gt 0 ] || return 2; target="$1"; shift ;;
       --target=*) target="${arg#--target=}" ;;
       --bead) [ "$#" -gt 0 ] || return 2; bead="$1"; shift ;;
@@ -2293,17 +2479,21 @@ handoff() {
       *) printf 'handoff: unknown arg: %s\n' "$arg" >&2; return 2 ;;
     esac
   done
-  [ -n "$target" ] && [ -n "$bead" ] || { printf 'usage: handoff --target <pane/session> --bead <id> [--note text] [--file /tmp/x] [--yes]\n' >&2; return 2; }
-  resolve_tmux_pane "$target" || { printf 'handoff: target not found: %s\n' "$target" >&2; return 1; }
+  [ -n "$target" ] && [ -n "$bead" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'usage: handoff --target <pane/session> --bead <id> [--note text] [--file /tmp/x] [--yes]' handoff 2; return $?; }
+  resolve_tmux_pane "$target" || { command_error "$json" XTMUX_TARGET_NOT_FOUND "handoff: target not found: $target" handoff 1; return $?; }
   pane="$REPLY"
   observe_agent_state "$pane"; state="$REPLY"
   if agent_state_is_working "$state"; then
-    printf 'handoff: refused target=%s pane=%s state=%s\n' "$target" "$pane" "$state" >&2
+    if [ "$json" = 1 ]; then
+      json_error XTMUX_TARGET_WORKING "handoff: refused target=$target pane=$pane state=$state" handoff
+    else
+      printf 'handoff: refused target=%s pane=%s state=%s\n' "$target" "$pane" "$state" >&2
+    fi
     return 75
   fi
   if command -v bd >/dev/null 2>&1; then
     bead_line="$(bd show "$bead" 2>/dev/null | head -1 || true)"
-    [ -n "$bead_line" ] || { printf 'handoff: bead not found: %s\n' "$bead" >&2; return 1; }
+    [ -n "$bead_line" ] || { command_error "$json" XTMUX_BEAD_NOT_FOUND "handoff: bead not found: $bead" handoff 1; return $?; }
   else
     bead_line="$bead"
   fi
@@ -2325,17 +2515,24 @@ handoff() {
   printf -v qtarget '%q' "$target"
   printf -v qpointer '%q' "$pointer"
   log_event handoff.created target="$target" pane="$pane" bead="$bead" prompt_file="$file" parent="$parent" state="$state"
-  printf 'prompt-file\t%s\n' "$file"
-  printf 'bead\t%s\n' "$bead"
-  printf 'pointer\t%s\n' "$pointer"
-  printf 'command\t%s safe-send-pointer --yes %s %s\n' "$self" "$qtarget" "$qpointer"
+  if [ "$json" != 1 ]; then
+    printf 'prompt-file\t%s\n' "$file"
+    printf 'bead\t%s\n' "$bead"
+    printf 'pointer\t%s\n' "$pointer"
+    printf 'command\t%s safe-send-pointer --yes %s %s\n' "$self" "$qtarget" "$qpointer"
+  fi
   if [ "$execute" = 1 ]; then
     tmux set-option -p -t "$pane" -q @agent_bead "$bead" 2>/dev/null || true
     tmux set-option -p -t "$pane" -q @agent_prompt_file "$file" 2>/dev/null || true
     [ -n "$parent" ] && tmux set-option -p -t "$pane" -q @agent_parent_session "$parent" 2>/dev/null || true
     [ -n "$bead_line" ] && tmux set-option -p -t "$pane" -q @agent_task "$(tsv_clean "$bead_line")" 2>/dev/null || true
     log_event handoff.sent target="$target" pane="$pane" bead="$bead" prompt_file="$file" parent="$parent"
-    safe_send_pointer --yes "$target" "$pointer"
+    safe_send_pointer --yes "$target" "$pointer" >/dev/null
+  fi
+  if [ "$json" = 1 ]; then
+    printf '{"target":"%s","paneId":"%s","beadId":"%s","promptFile":"%s","sent":%s,"createdAtMs":%s}\n' \
+      "$(json_escape "$target")" "$(json_escape "$pane")" "$(json_escape "$bead")" "$(json_escape "$file")" \
+      "$([ "$execute" = 1 ] && printf true || printf false)" "$(date +%s%3N)"
   fi
 }
 
@@ -2370,7 +2567,7 @@ pane_is_claude_code() {
 }
 
 safe_send_pointer() {
-  local execute=0 double_enter=-1 force_freeform=0 target='' payload='' arg pane state qpane qpayload cmd
+  local execute=0 double_enter=-1 force_freeform=0 json=0 target='' payload='' arg pane state qpane qpayload cmd
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
@@ -2379,6 +2576,7 @@ safe_send_pointer() {
       --double-enter) double_enter=1 ;;
       --no-double-enter) double_enter=0 ;;
       --force-freeform) force_freeform=1 ;;
+      --json) json=1 ;;
       -h|--help) return 2 ;;
       --*) printf 'safe-send-pointer: unknown option: %s\n' "$arg" >&2; return 2 ;;
       *)
@@ -2390,13 +2588,21 @@ safe_send_pointer() {
         ;;
     esac
   done
-  [ -n "$target" ] && [ -n "$payload" ] || { printf 'usage: safe-send-pointer [--yes] [--double-enter|--no-double-enter] [--force-freeform] <target> <slash-command|/tmp pointer>\n' >&2; return 2; }
-  safe_pointer_payload "$payload" "$force_freeform" || return 2
-  resolve_tmux_pane "$target" || { printf 'safe-send-pointer: target not found: %s\n' "$target" >&2; return 1; }
+  [ -n "$target" ] && [ -n "$payload" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'usage: safe-send-pointer [--yes] [--double-enter|--no-double-enter] [--force-freeform] <target> <slash-command|/tmp pointer>' safe-send-pointer 2; return $?; }
+  if [ "$json" = 1 ]; then
+    safe_pointer_payload "$payload" "$force_freeform" 2>/dev/null || { command_error 1 XTMUX_POINTER_REJECTED 'safe-send-pointer: payload rejected' safe-send-pointer 2; return $?; }
+  else
+    safe_pointer_payload "$payload" "$force_freeform" || return 2
+  fi
+  resolve_tmux_pane "$target" || { command_error "$json" XTMUX_TARGET_NOT_FOUND "safe-send-pointer: target not found: $target" safe-send-pointer 1; return $?; }
   pane="$REPLY"
   observe_agent_state "$pane"; state="$REPLY"
   if agent_state_is_working "$state"; then
-    printf 'safe-send-pointer: refused target=%s pane=%s state=%s\n' "$target" "$pane" "$state" >&2
+    if [ "$json" = 1 ]; then
+      json_error XTMUX_TARGET_WORKING "safe-send-pointer: refused target=$target pane=$pane state=$state" safe-send-pointer
+    else
+      printf 'safe-send-pointer: refused target=%s pane=%s state=%s\n' "$target" "$pane" "$state" >&2
+    fi
     return 75
   fi
 
@@ -2408,7 +2614,7 @@ safe_send_pointer() {
 
   # --force-freeform without --yes prints a confirmation banner so the operator sees
   # exactly what is being bypassed before they re-run with --yes.
-  if [ "$force_freeform" = 1 ] && [ "$execute" != 1 ]; then
+  if [ "$force_freeform" = 1 ] && [ "$execute" != 1 ] && [ "$json" != 1 ]; then
     printf 'safe-send-pointer: --force-freeform bypasses the slash/tmp payload check.\n'
     printf '  payload guards STILL enforced: no newlines, no `...`, no $(...).\n'
     printf '  Re-run with --yes to send. Target=%s state=%s double_enter=%s\n' "$target" "${state:-unknown}" "$double_enter"
@@ -2416,9 +2622,11 @@ safe_send_pointer() {
 
   printf -v qpane '%q' "$pane"
   printf -v qpayload '%q' "$payload"
-  printf 'tmux send-keys -t %s %s Enter\n' "$qpane" "$qpayload"
-  if [ "$double_enter" = 1 ]; then
-    printf '# followed by second Enter after 2s (Claude Code paste-detection auto-double-Enter)\n'
+  if [ "$json" != 1 ]; then
+    printf 'tmux send-keys -t %s %s Enter\n' "$qpane" "$qpayload"
+    if [ "$double_enter" = 1 ]; then
+      printf '# followed by second Enter after 2s (Claude Code paste-detection auto-double-Enter)\n'
+    fi
   fi
   if [ "$execute" = 1 ]; then
     tmux send-keys -t "$pane" "$payload" Enter
@@ -2446,7 +2654,12 @@ safe_send_pointer() {
     else
       log_event message.sent via=safe-send-pointer from="${_from_session:-unknown}" to="$target" pane="$pane" text="$payload" state="${state:-unknown}" double_enter="$double_enter" force_freeform="$force_freeform"
     fi
-    printf 'sent target=%s pane=%s state=%s double_enter=%s\n' "$target" "$pane" "${state:-unknown}" "$double_enter"
+    [ "$json" = 1 ] || printf 'sent target=%s pane=%s state=%s double_enter=%s\n' "$target" "$pane" "${state:-unknown}" "$double_enter"
+  fi
+  if [ "$json" = 1 ]; then
+    printf '{"target":"%s","paneId":"%s","state":"%s","doubleEnter":%s,"sent":%s}\n' \
+      "$(json_escape "$target")" "$(json_escape "$pane")" "$(json_escape "${state:-unknown}")" \
+      "$([ "$double_enter" = 1 ] && printf true || printf false)" "$([ "$execute" = 1 ] && printf true || printf false)"
   fi
 }
 
@@ -2781,6 +2994,18 @@ act_on_target() {
   [ -n "$toast" ] && tmux display-message "tmux-picker: $toast"
 }
 
+if json_requested "${@:2}"; then
+  json_request_preflight "${1:-}" "${2:-}" || exit $?
+  case "${1:-}" in
+    message-status|unread-count)
+      _json_args=("$1")
+      shift
+      for _json_arg in "$@"; do [ "$_json_arg" = '--json' ] || _json_args+=("$_json_arg"); done
+      set -- "${_json_args[@]}"
+      ;;
+  esac
+fi
+
 case "${1:-}" in
   list)
     # Output cache removed (xtmux-rib.17): it froze agent-derived sort/badges
@@ -2830,8 +3055,8 @@ case "${1:-}" in
     ;;
   monitor-list)
     shift
-    monitor_list
-    exit 0
+    monitor_list "$@"
+    exit $?
     ;;
   monitor-kill)
     shift
@@ -2845,13 +3070,13 @@ case "${1:-}" in
     ;;
   worktree-collisions)
     shift
-    worktree_collisions
-    exit 0
+    worktree_collisions "$@"
+    exit $?
     ;;
   dashboard)
     shift
-    dashboard "${1:-sessions-only}"
-    exit 0
+    dashboard "$@"
+    exit $?
     ;;
   audit)
     shift
@@ -3025,7 +3250,7 @@ case "${1:-}" in
   "")
     ;;
   *)
-    printf 'usage: %s [list [all|waiting|running|repo:..|branch:..|cmd:..|grep:..]|preview <type> <sid> <name> <target>|popup <type> <sid> <target>|jump <type> <sid> <target>|kill <type> <sid> <target>|act <type> <sid> <target> <approve|interrupt|message>|attn-jump <n>|jump-back|kill-confirm <sid> <answer>|bulk-kill <rows...>|bulk-kill-confirm <answer> <sid...>|rename <type> <sid> <target>|rename-apply <type> <target> <name>|list-active|dashboard [sessions-only|expanded]|audit|handoff --target <target> --bead <id> [--note text] [--yes]|mux-help|log <emit|tail|query>|message-send --to <target> --text <text>|message-list --for <target>|message-ack <id>|message-status <message_key>|unread-count --for <recipient>|telemetry <git|bd|gh> -- <args...>|wait-agent <target> [--wait-for-transition] [--timeout 30m] [--interval 30s]|monitor-agent <target> [--wait-for-transition] [--timeout 30m] [--interval 30s]|monitor-list|monitor-kill <id>|safe-send-pointer [--yes] [--double-enter|--no-double-enter] [--force-freeform] <target> <slash-command|/tmp pointer>|worktree-collisions|mode-toggle|border-label|filter-menu|filter-clear|prompt-label|clear-cache|install-hooks [picker-path]]\n' "$0" >&2
+    printf 'usage: %s [list [all|waiting|running|repo:..|branch:..|cmd:..|grep:..]|preview <type> <sid> <name> <target>|popup <type> <sid> <target>|jump <type> <sid> <target>|kill <type> <sid> <target>|act <type> <sid> <target> <approve|interrupt|message>|attn-jump <n>|jump-back|kill-confirm <sid> <answer>|bulk-kill <rows...>|bulk-kill-confirm <answer> <sid...>|rename <type> <sid> <target>|rename-apply <type> <target> <name>|list-active|dashboard [sessions-only|expanded]|audit|handoff --target <target> --bead <id> [--note text] [--yes] [--json]|mux-help|log <emit|tail|query>|message-send --to <target> --text <text> [--json]|message-list --for <target> [--json]|message-ack <id> [--json]|message-status <message_key> [--json]|unread-count --for <recipient> [--json]|telemetry <git|bd|gh> -- <args...>|wait-agent <target> [--wait-for-transition] [--timeout 30m] [--interval 30s] [--json]|monitor-agent <target> [--wait-for-transition] [--timeout 30m] [--interval 30s] [--json]|monitor-list [--json]|monitor-kill <id> [--json]|safe-send-pointer [--yes] [--json] [--double-enter|--no-double-enter] [--force-freeform] <target> <slash-command|/tmp pointer>|worktree-collisions|mode-toggle|border-label|filter-menu|filter-clear|prompt-label|clear-cache|install-hooks [picker-path]]\n' "$0" >&2
     exit 2
     ;;
 esac
