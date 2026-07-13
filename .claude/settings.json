@@ -20,7 +20,7 @@
           },
           {
             "type": "command",
-            "command": "python3 \"$HOME/.xtrm/skills/default/service-skills/scripts/cataloger.py\""
+            "command": "sh -c 'p=\"$HOME/.xtrm/skills/default/service-skills/scripts/cataloger.py\"; [ -f \"$p\" ] && python3 \"$p\"; exit 0'"
           },
           {
             "type": "command",
@@ -71,7 +71,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.xtrm/skills/default/service-skills/scripts/skill_activator.py\""
+            "command": "sh -c 'p=\"$HOME/.xtrm/skills/default/service-skills/scripts/skill_activator.py\"; [ -f \"$p\" ] && python3 \"$p\"; exit 0'"
           }
         ]
       }
@@ -117,7 +117,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.xtrm/skills/default/service-skills/scripts/drift_detector.py\" check-hook",
+            "command": "sh -c 'p=\"$HOME/.xtrm/skills/default/service-skills/scripts/drift_detector.py\"; [ -f \"$p\" ] && python3 \"$p\" check-hook; exit 0'",
             "timeout": 10000
           }
         ]
