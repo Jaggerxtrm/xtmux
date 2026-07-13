@@ -127,9 +127,14 @@ Live paths:
 
 - `~/.local/bin/xtmux` -> `bin/tmux-session-picker` (canonical name)
 - `~/.local/bin/tmux-session-picker` -> `bin/tmux-session-picker` (compatibility name)
+- `~/.local/bin/xtmux-obs` -> `bin/xtmux-obs` (V2 observability backend)
 - `~/.tmux/scripts/git-pane-status.sh` -> `scripts/git-pane-status.sh`
 - `~/.tmux/scripts/agent-state.sh` -> `scripts/agent-state.sh`
 - `~/.local/bin/xtmux-monitor` -> `scripts/xtmux-monitor.sh`
+
+`bin/xtmux-obs` is a compiled artifact and is not tracked in git. `install.sh` builds
+it (`bun run build`) when it is missing, and refuses to install without it rather than
+leaving you with a setup where every `--json` command fails.
 
 ### The `xtmux` name
 

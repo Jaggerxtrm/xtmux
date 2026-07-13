@@ -1098,6 +1098,44 @@ case "$_misplaced" in
 esac
 
 echo
+echo "== install.sh (fresh machine) =="
+# The section above stubs xtmux-obs to prove root RESOLUTION. A stub cannot see
+# the artifact MISSING, which is exactly how install.sh shipped for months without
+# ever linking bin/xtmux-obs. So run the REAL installer into a throwaway HOME and
+# require that the entrypoints it places reach the REAL compiled backend.
+fresh="$WORK/freshhome"
+mkdir -p "$fresh"
+if HOME="$fresh" bash "$ROOT/install.sh" >"$WORK/install.out" 2>&1; then
+  ok "install: completes"
+  # every binary the picker needs at runtime must be placed, xtmux-obs included
+  for _e in xtmux tmux-session-picker xtmux-obs xtmux-monitor; do
+    if [ -x "$fresh/.local/bin/$_e" ]; then
+      ok "install: links $_e"
+    else
+      nok "install: links $_e"
+    fi
+  done
+  # no stub anywhere on this path: this only passes if install.sh actually placed
+  # the compiled backend where ${self%/bin/*} looks for it.
+  _fresh_json="$(HOME="$fresh" XDG_STATE_HOME="$fresh/.local/state" XTMUX_OBS_V2=1 \
+    "$fresh/.local/bin/xtmux" log query --type query.completed --limit 1 --json 2>&1)"
+  # NB: the failure IS json ({"error":"XTMUX_JSON_BACKEND_UNAVAILABLE"...}), so
+  # "parses as json" is not the assertion — a missing backend must not look like
+  # a pass. Require the query's own array result, and no error payload.
+  case "$_fresh_json" in
+    *XTMUX_JSON_BACKEND_UNAVAILABLE*|*'"error"'*)
+       nok "install: fresh install reaches a real V2 backend (no stub)"
+       printf '      actual: %s\n' "$_fresh_json" ;;
+    '['*) ok "install: fresh install reaches a real V2 backend (no stub)" ;;
+    *) nok "install: fresh install reaches a real V2 backend (no stub)"
+       printf '      actual: %s\n' "$_fresh_json" ;;
+  esac
+else
+  nok "install: completes"
+  sed 's/^/      /' "$WORK/install.out" | head -5
+fi
+
+echo
 printf '== %s pass, %s fail ==\n' "$pass" "$fail"
 [ "$fail" -gt 0 ] && { printf 'FAILED:%s\n' "$failed"; exit 1; }
 exit 0
