@@ -14,23 +14,12 @@ PICKER="$ROOT/bin/tmux-session-picker"
 AGENT_STATE="$ROOT/scripts/agent-state.sh"
 . "$HERE/lib/fixtures.sh"
 
-pass=0
-fail=0
-failed=""
-
-ok()   { printf '  \033[32mok\033[0m   %s\n' "$1"; pass=$((pass+1)); }
-nok()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); failed="$failed\n  - $1"; }
-assert_eq() { # assert_eq <name> <expected> <actual>
-  if [ "$2" = "$3" ]; then ok "$1"; else
-    nok "$1"; printf '      expected: %s\n      actual:   %s\n' "$2" "$3"
-  fi
-}
-assert_golden() { # assert_golden <name> <actual-file> <golden-file>
-  if diff -u "$3" "$2" >/tmp/xt.diff.$$ 2>&1; then ok "$1"; else
-    nok "$1"; sed 's/^/      /' </tmp/xt.diff.$$ | head -25
-  fi
-  rm -f /tmp/xt.diff.$$
-}
+# ok/nok/assert_eq/assert_golden live in lib/harness.sh. They record to a FILE,
+# not to shell variables: several suites below run inside `( ... )` subshells
+# (to scope a `tmux()` override), and variable counters silently lose every
+# result a subshell produces. See lib/harness.sh, and test/harness-selftest.sh
+# which proves a subshell failure still fails the suite.
+. "$HERE/lib/harness.sh"
 snapshot() { cp "$2" "$GOLDEN/$1.golden"; printf '  \033[36msnap\033[0m %s\n' "$1"; }
 
 REGEN=0
@@ -46,6 +35,7 @@ norm() {
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$GOLDEN"
+harness_init "$WORK/results.tsv"
 
 echo "== grouping helper contract =="
 fn_file="$WORK/picker-functions.sh"
@@ -1305,7 +1295,5 @@ grep -q 'mux-help' "$WORK/help.out" \
   && ok "help: cross-references mux-help" \
   || nok "help: cross-references mux-help"
 
-echo
-printf '== %s pass, %s fail ==\n' "$pass" "$fail"
-[ "$fail" -gt 0 ] && { printf 'FAILED:%s\n' "$failed"; exit 1; }
-exit 0
+harness_summary
+exit $?
