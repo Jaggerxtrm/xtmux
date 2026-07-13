@@ -21,6 +21,12 @@ Types belong beside the owning implementation in `.2`–`.4`; adding an unused u
 
 These are domain result models, not a common envelope.
 
+`xtmux help` documents the same field names per command, because agents read the CLI and
+not this file — that is how `id`/`text` came to be guessed for messages instead of
+`messageKey`/`summary`. The two are kept honest by `test/contract.sh`, which checks the
+help text against **live** `--json` output and against the Message row below. Change a
+field name here or there and the contract test fails.
+
 | Result | Stable fields |
 |---|---|
 | Message | `messageKey`, `senderId`, `senderPaneId`, `senderKind`, `recipientId`, `targetPaneId`, `recipientKind`, `beadId`, `summary`, `createdAtMs`, `expectsReply`, `acked`, `ackedAtMs`, `ackedBy` |
@@ -56,6 +62,9 @@ Categories are closed: **agent-json** gains/retains structured output for agents
 | `picker:audit` | agent-json | TSV findings → audit finding array | .3 |
 | `picker:handoff` | guarded-admin | creates prompt file and may inject pointer; explicit confirmation | .2 |
 | `picker:mux-help` | interactive-only | human cheatsheet | — |
+| `picker:help` | interactive-only | grouped command reference incl. `--json` output field names; text by design — a `--json` help would just be a second surface to keep in sync | .15 |
+| `picker:--help` | interactive-only | alias of `help` | .15 |
+| `picker:-h` | interactive-only | alias of `help` | .15 |
 | `picker:log` | agent-json | split below; tail/query become arrays, emit stays guarded | .4 |
 | `picker:log emit` | guarded-admin | internal event write; later typed events own normal writes | .4 |
 | `picker:log tail` | agent-json | NDJSON → event array | .4 |
