@@ -28,3 +28,7 @@
 node_modules/
 dist/
 *.tsbuildinfo
+
+# xtrm runtime state (per-machine, do not track)
+.xtrm/skills/state.json
+.pi/skills/
