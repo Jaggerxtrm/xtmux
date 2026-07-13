@@ -691,6 +691,46 @@ else
 
       rename_apply session xtmux-renamed-session "" >/dev/null 2>&1
       if tmux has-session -t xtmux-renamed-session 2>/dev/null; then ok "rename: empty name cancels"; else nok "rename: empty name cancels"; fi
+
+      # The INTERACTIVE path (xtmux-d0a.19, Codex): tmux replaces %1 with the typed
+      # text and then runs the command through its own parser. Reproduce exactly
+      # that — substitute, then let tmux parse it via source-file. Routing the name
+      # through `run-shell` instead makes sh word-split it ("new sprint board" ->
+      # "new") and EXECUTE metacharacters; both assertions below fail against that.
+      rn_sid="$(tmux display-message -p -t xtmux-renamed-session '#{session_id}' 2>/dev/null || true)"
+      rn_tpl="$(rename_prompt_command session "$rn_sid")"
+
+      # Substitute %1 the way tmux does: a literal splice. NOT ${tpl//%1/$name} —
+      # bash 5.2 expands `&` in a substitution's replacement to the matched text,
+      # so a name containing `&&` comes back as `%1%1` and the test lies about
+      # what tmux would have seen.
+      rn_subst() { # rn_subst <template> <value>
+        printf '%s%s%s' "${1%%%1*}" "$2" "${1#*%1}"
+      }
+
+      rn_subst "$rn_tpl" 'new sprint board' >"$WORK/rn-space.tmux"
+      tmux source-file "$WORK/rn-space.tmux" 2>/dev/null || true
+      assert_eq "rename: typed name keeps its spaces (no shell word-splitting)" \
+        "new sprint board" "$(tmux display-message -p -t "$rn_sid" '#S' 2>/dev/null || true)"
+
+      # a name that WOULD run a command if it ever reached a shell
+      rn_evil="evil; touch $WORK/pwned"
+      rn_subst "$rn_tpl" "$rn_evil" >"$WORK/rn-evil.tmux"
+      tmux source-file "$WORK/rn-evil.tmux" 2>/dev/null || true
+      if [ ! -e "$WORK/pwned" ]; then
+        ok "rename: shell metacharacters in a typed name are inert, not executed"
+      else
+        nok "rename: shell metacharacters in a typed name are inert, not executed"
+      fi
+
+      # ...and the metacharacters survive as text. No dots or colons in this one:
+      # tmux itself rewrites those in a session name, which is tmux's business,
+      # not a shell-expansion question.
+      rn_meta='weird; $(echo boom) && echo done'
+      rn_subst "$rn_tpl" "$rn_meta" >"$WORK/rn-meta.tmux"
+      tmux source-file "$WORK/rn-meta.tmux" 2>/dev/null || true
+      assert_eq "rename: metacharacter name is stored literally" \
+        "$rn_meta" "$(tmux display-message -p -t "$rn_sid" '#S' 2>/dev/null || true)"
     )
     command tmux -L "$rename_sock" kill-server >/dev/null 2>&1 || true
   else
