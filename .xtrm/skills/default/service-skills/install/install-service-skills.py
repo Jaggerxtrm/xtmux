@@ -122,15 +122,28 @@ def install_git_hooks(project_root: Path) -> None:
     print(f"{GREEN}  ✓{NC} activated in .git/hooks/")
 
 
+RESERVED_PACK_NAMES = {"default", "optional", "user", "active", "local-legacy"}
+
+
+def _pack_roots(project_root: Path) -> list[Path]:
+    skills_root = project_root / ".xtrm" / "skills"
+    return [skills_root, skills_root / "user" / "packs"]
+
+
 def _packs_with_registry(project_root: Path) -> list[Path]:
-    """Packs that carry a service registry (umbrella or legacy flat location)."""
-    packs_root = project_root / ".xtrm" / "skills" / "user" / "packs"
-    if not packs_root.exists():
-        return []
-    out = []
-    for pack in sorted(p for p in packs_root.iterdir() if p.is_dir()):
-        if (pack / "service-skills" / "service-registry.json").exists() or (pack / "service-registry.json").exists():
-            out.append(pack)
+    """Packs that carry a service registry; v2 root wins over v1 shim."""
+    out: list[Path] = []
+    seen: set[Path] = set()
+    for packs_root in _pack_roots(project_root):
+        if not packs_root.exists():
+            continue
+        for pack in sorted(p for p in packs_root.iterdir() if p.is_dir() and p.name not in RESERVED_PACK_NAMES):
+            resolved = pack.resolve()
+            if resolved in seen:
+                continue
+            if (pack / "service-skills" / "service-registry.json").exists() or (pack / "service-registry.json").exists():
+                seen.add(resolved)
+                out.append(pack)
     return out
 
 
@@ -208,15 +221,13 @@ def generate_umbrellas(project_root: Path) -> None:
     Idempotent — prints only when a file actually changes."""
     print("\n── Umbrella ────────────────────────────")
     generator = project_root / ".claude" / "skills" / "service-skills" / "scripts" / "umbrella_generator.py"
-    packs_root = project_root / ".xtrm" / "skills" / "user" / "packs"
-    if not generator.exists() or not packs_root.exists():
+    packs = _packs_with_registry(project_root)
+    if not generator.exists() or not packs:
         print(f"{YELLOW}  ○{NC} nothing to generate (no generator or packs)")
         return
     repo_name = project_root.name
     wrote = 0
-    for pack in sorted(p for p in packs_root.iterdir() if p.is_dir()):
-        if not (pack / "service-registry.json").exists() and not (pack / "service-skills" / "service-registry.json").exists():
-            continue
+    for pack in packs:
         env = {**os.environ, "XTRM_PACK": pack.name}
         r = subprocess.run(["python3", str(generator), repo_name],
                            cwd=str(project_root), env=env, capture_output=True, text=True, check=False)

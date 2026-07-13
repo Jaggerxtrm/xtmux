@@ -166,7 +166,7 @@ def main() -> None:
     repo_name = args[0] if args else Path(project_root).name
     pack = get_pack_path(project_root)
     if pack is None:
-        print("Error: unable to resolve pack path. Set XTRM_PACK or leave only one pack under .xtrm/skills/user/packs.", file=sys.stderr)
+        print("Error: unable to resolve pack path. Set XTRM_PACK or leave only one pack under .xtrm/skills.", file=sys.stderr)
         sys.exit(1)
     registry = load_registry(project_root)
     umbrella_path = pack / "service-skills" / "SKILL.md"

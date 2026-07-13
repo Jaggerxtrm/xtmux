@@ -35,7 +35,7 @@ We use `pybreaker` or the internal `ResiliencyClient` wrapper.
 
 ```python
 import pybreaker
-from mercury.core.resiliency import circuit_breaker
+from myapp.core.resiliency import circuit_breaker
 
 # Define breaker
 api_breaker = pybreaker.CircuitBreaker(

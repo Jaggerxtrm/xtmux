@@ -12,25 +12,27 @@ import os
 import sys
 from pathlib import Path
 
+# bootstrap.py is a sibling in this consolidated scripts/ dir (no cross-skill hop).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bootstrap import get_project_root, get_registry_path  # type: ignore[import-not-found]  # noqa: E402
+
 
 def find_registry() -> Path | None:
-    # 1. CLAUDE_PROJECT_DIR env var (set by Claude Code hooks)
-    project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
-    if project_dir:
-        p = Path(project_dir) / ".claude" / "skills" / "service-registry.json"
-        if p.exists():
-            return p
+    """Resolve the registry via bootstrap's canonical resolver.
 
-    # 2. Walk up from CWD until .git boundary
-    cwd = Path.cwd()
-    for parent in [cwd, *cwd.parents]:
-        p = parent / ".claude" / "skills" / "service-registry.json"
-        if p.exists():
-            return p
-        if (parent / ".git").exists():
-            break
+    Precedence (see bootstrap.get_registry_path):
+      1. $SERVICE_REGISTRY_PATH override
+      2. <root>/.xtrm/skills/<pack>/service-skills/service-registry.json  (canonical)
+      3. <root>/.xtrm/skills/<pack>/service-registry.json                 (pre-umbrella)
+      4. <root>/service-registry.json                                                (root symlink)
+      5. <root>/.claude/skills/service-registry.json                                  (legacy)
 
-    return None
+    Project root: $CLAUDE_PROJECT_DIR if set, else bootstrap's git-walkup.
+    Pack: $XTRM_PACK if set, else single-pack auto-detect.
+    """
+    project_root = os.environ.get("CLAUDE_PROJECT_DIR") or get_project_root()
+    registry = get_registry_path(project_root)
+    return registry if registry.exists() else None
 
 
 def main() -> None:

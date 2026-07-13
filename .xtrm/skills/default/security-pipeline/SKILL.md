@@ -5,9 +5,9 @@ description: Bootstrap a complete security pipeline (Dependabot + OSV + Semgrep 
 
 # Security Pipeline
 
-Wires a 4-layer security baseline onto any GitHub repo. Originally proven on
-the Mercury infra stack but the templates and bootstrap script are
-project-agnostic — adapt the allowlists and dependabot ecosystems per repo.
+Wires a 4-layer security baseline onto any GitHub repo. Templates and
+bootstrap script are project-agnostic — adapt the allowlists and dependabot
+ecosystems per repo.
 
 ## When to use
 
@@ -90,9 +90,8 @@ detected ecosystems.
 
 ## Adapting allowlists per project
 
-The shipped `.gitleaks.toml` and `.semgrepignore` contain Mercury-specific
-paths as **examples**. When applying to a non-Mercury repo, prune what
-doesn't apply.
+The shipped `.gitleaks.toml` and `.semgrepignore` contain example paths.
+Prune whatever your project doesn't ship.
 
 ### `.gitleaks.toml` — common allowlist patterns
 
@@ -101,10 +100,10 @@ doesn't apply.
 paths = [
     '''^\.env$''',           # gitignored secrets (no-git scan walks fs)
     '''^\.env\..*''',
-    # Project-specific machine-generated dirs (drop what doesn't apply):
-    '''^\.beads/.*''',       # Mercury-only — issue tracker exports
-    '''^\.specialists/.*''', # Mercury-only — specialist runtime state
-    '''^\.dolt/.*''',        # Mercury-only — Dolt SQL storage
+    # xtrm-managed machine-generated dirs (skip if your repo doesn't use them):
+    '''^\.beads/.*''',       # beads issue-tracker exports
+    '''^\.specialists/.*''', # specialists runtime state
+    '''^\.dolt/.*''',        # Dolt SQL storage (used by beads)
     # Add your own:
     '''^vendor/.*''',        # Go vendoring
     '''^node_modules/.*''',  # NPM (usually gitignored anyway)
@@ -187,6 +186,7 @@ for r in d.get('reviews', []):
 
 ## Reference doc
 
-Full pipeline narrative + UI screenshots + per-feature rationale lives in
-the Mercury reference at `mercury-infra/SECURITY-PIPELINE.md`, also mirrored
-in `~/second-mind/3-resources/github/SECURITY-PIPELINE.md`.
+Full pipeline narrative + UI screenshots + per-feature rationale live in the
+reference at `SECURITY-PIPELINE.md` in whatever repo first adopted this
+skill; carry the file forward alongside the bootstrap script if you want the
+long-form context.

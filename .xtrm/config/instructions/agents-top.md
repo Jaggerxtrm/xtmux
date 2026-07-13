@@ -22,14 +22,22 @@
 - Ask before destructive, irreversible, production-impacting, or history-rewriting actions.
 - Do not ask repetitive “Proceed?” confirmations for normal implementation once scope is clear.
 
+## Code restraint (when implementing directly)
+
+- YAGNI first. Lazy solution that actually works: reuse existing → stdlib → native → one line → minimum. Prefer deletion. No unrequested abstractions. Match existing project conventions; never invent a new style mid-file.
+- Never simplify away: input validation at trust boundaries, error handling preventing data loss, security, accessibility, explicitly requested behavior. Never lazy about understanding the problem.
+- Mark deliberate shortcuts `// SIMPLIFIED: <ceiling>. upgrade when <trigger>.` Unmarked shortcuts silently rot.
+
 ## Essential command surface
 
 Use these as the minimal operational surface; use `--help` for full syntax.
 
 - `bd prime`, `bd ready`, `bd list --status=in_progress`, `bd show <id>`
 - `bd update <id> --claim`, `bd remember "<insight>"`, `bd close <id> --reason="..."`
+- `bd set-state <id> <dim>=<val> --reason="..."`, `bd state <id> <dim>` — operational state labels (e.g. `contract=ready`, `patrol=muted`, `health=healthy`)
 - `bv --robot-triage --format toon`, `bv --robot-next` — never bare `bv`
 - `xt report list` / latest report file, `xt update --apply`, `xt end`
+- `xt worktree --help` — PR/branch/restart audit primitives (`audit-prs`, `branch-gc`, `restart-audit`); pair with specialists `doctor --pr-drift` / `doctor --reap-dead-jobs`. Details: `/using-xtrm`.
 - `gh pr list --state merged --limit 5` or equivalent host CLI when PR context matters
 - `sp --help`, `sp list` / `specialists list`, `sp ps`, `sp feed <job-id>`, `sp result <job-id>`
 
@@ -38,7 +46,7 @@ Use these as the minimal operational surface; use `--help` for full syntax.
 | Need | Use |
 |---|---|
 | xtrm/beads workflow | `/using-xtrm`; `bd --help`; `xt --help` |
-| Specialist orchestration | latest `/using-specialists-*`, prefer `/using-specialists-v3`; check `sp --help` + `sp list` first |
+| Specialist orchestration | latest `/using-specialists-*`, prefer `/using-specialists`; check `sp --help` + `sp list` first |
 | Service/docs/project context | canonical service-skills skill set: `/scope`, `/using-service-skills` |
 | Planning/tests/docs | `/planning`, `/test-planning`, `/sync-docs` |
 | Board unclear/backlog messy | `/issue-triage`; `bv --robot-triage --format toon`; `bv --robot-plan` |
@@ -51,11 +59,17 @@ Use these as the minimal operational surface; use `--help` for full syntax.
 - For unfamiliar code, inspect execution flows before broad grep-heavy reads.
 - Before commit or handoff, verify affected scope.
 - Prefer targeted symbol/file reads and precise edits over whole-tree dumps.
+- When Serena is available, prefer symbolic tools (`find_symbol` → `get_symbols_overview` → `replace_symbol_body`; `find_referencing_symbols`/`rename_symbol` for LSP-accurate references) over grep-read-sed for code reads and edits.
+
+## Context and output management
+
+- Use context-mode automatically to keep command/file output compact: `ctx_execute` for logs, tests, large command output, and structured data processing; `ctx_execute_file` for deriving facts from files without dumping contents; `ctx_batch_execute` for multi-command research; `ctx_search` for previously indexed material.
+- Use normal read/edit tools only when exact file text is needed for a patch. Do not `cat`/dump large outputs into the conversation when a context-mode tool can summarize or index them.
+- Use background process tooling for long-running servers, watchers, and log tails instead of shell backgrounding.
 
 ## Quality gates
 
 - Run targeted tests/build/typecheck relevant to changed files.
-- Use background process tooling for long-running servers, watchers, and log tails.
 - Fix quality failures before commit.
 
 ## Worktree sessions

@@ -5,6 +5,8 @@
 
 # Compiled Bun binary — build locally via `bun run build` (xtmux-3xs.11)
 /bin/xtmux-obs
+/bin/*.map
+.xtrm/hooks/tsconfig-cache.json
 
 # Beads / Dolt files (added by bd init)
 .dolt/

@@ -6,7 +6,7 @@ Phase 1 of the two-phase workflow: generates a structural skeleton for a new
 service skill by parsing docker-compose.yml, Dockerfiles, and dependency files.
 The skeleton contains [PENDING RESEARCH] markers for the agent to fill in Phase 2.
 
-Output location: .xtrm/skills/user/packs/<pack>/<service-id>/
+Output location: .xtrm/skills/<pack>/<service-id>/
 """
 
 import json
@@ -98,7 +98,7 @@ def scaffold_service_skill(service_id: str, compose_data: dict) -> Path:
 
     pack_path = get_pack_path(project_root)
     if pack_path is None:
-        print("Error: unable to resolve pack path. Set XTRM_PACK or leave only one pack under .xtrm/skills/user/packs.")
+        print("Error: unable to resolve pack path. Set XTRM_PACK or leave only one pack under .xtrm/skills.")
         sys.exit(1)
 
     # New layout: <pack>/service-skills/services/<service_id> (single source: bootstrap).

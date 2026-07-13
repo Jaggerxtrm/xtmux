@@ -238,6 +238,29 @@ If cleanup is needed after `xt end --yes`:
 git worktree remove <path> --force
 ```
 
+Before destructive branch cleanup, use the safe audit/GC primitives rather than
+manually deleting refs:
+
+```bash
+xt worktree branch-gc --prefix xt/ --json      # dry-run by default
+xt worktree branch-gc --prefix xt/ --apply --yes
+```
+
+`branch-gc` must stay dry-run unless deletion is explicitly intended. Apply mode
+requires `--apply` plus confirmation/`--yes`; it should only delete merged/closed
+managed PR branches and skip open, unknown, no-PR, checked-out, or non-matching refs.
+
+For restart or handoff hygiene, run the read-only audit when local worktree state
+looks suspicious or after interrupted sessions:
+
+```bash
+xt worktree restart-audit --json
+```
+
+`restart-audit` is non-destructive: it reports orphaned managed dirs, branches
+without worktrees, closed-PR cleanup suggestions, and PRs needing operator
+attention. It must not delete directories/branches or replay hooks.
+
 Keep the worktree only if an explicit keep policy exists (for example, known immediate follow-up work on the same branch).
 
 ---
@@ -250,6 +273,7 @@ Always report:
 - linked or inferred issues
 - whether anomalies were auto-remediated
 - whether the worktree was removed
+- any branch-GC or restart-audit findings if those checks were run
 - reminder: monitor CI and merge when green; no auto-merge assumption
 
 If linkage had to be inferred from commits rather than detected by `xt end`, say so explicitly.

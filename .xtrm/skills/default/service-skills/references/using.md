@@ -3,7 +3,7 @@
 
 > Detailed **discover / activate** flow for the `service-skills` router.
 >
-> **Path model:** `.claude/skills/<service>/SKILL.md` shown below is the **Claude-Code view** (a symlink). The canonical home for per-service skills is under `.xtrm/skills/user/packs/<pack>/` — scripts resolve it via `bootstrap.get_service_skill_path_str`. Machinery scripts live at `.claude/skills/service-skills/scripts/` (the active view of this skill).
+> **Path model:** `.claude/skills/<service>/SKILL.md` shown below is the **Claude-Code view** (a symlink). The canonical home for per-service skills is under `.xtrm/skills/<pack>/` — scripts resolve it via `bootstrap.get_service_skill_path_str`. Machinery scripts live at `.claude/skills/service-skills/scripts/` (the active view of this skill).
 
 ## Role: The Concierge
 
@@ -127,4 +127,4 @@ Read-only — no write access:
 
 ## Per-repo umbrella (load first for cross-service tasks)
 
-Each repo has a generated umbrella skill `<repo>-services` at `.xtrm/skills/user/packs/<pack>/service-skills/SKILL.md` — the service map + cross-service health story. When a task spans services, load the umbrella first; it links every per-service skill. It is regenerated from the registry (`umbrella_generator.py`); only its `<!-- SEMANTIC_START -->` block is hand-edited.
+Each repo has a generated umbrella skill `<repo>-services` at `.xtrm/skills/<pack>/service-skills/SKILL.md` — the service map + cross-service health story. When a task spans services, load the umbrella first; it links every per-service skill. It is regenerated from the registry (`umbrella_generator.py`); only its `<!-- SEMANTIC_START -->` block is hand-edited.

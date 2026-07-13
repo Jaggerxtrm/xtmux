@@ -1,8 +1,12 @@
 {
-  "schemaVersion": "1",
+  "schemaVersion": "2",
   "enabledPacks": {
     "claude": [],
     "pi": []
+  },
+  "managedLinks": {
+    "claude": {},
+    "pi": {}
   }
 }
 

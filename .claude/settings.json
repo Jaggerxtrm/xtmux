@@ -20,7 +20,7 @@
           },
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/skills/service-skills/scripts/cataloger.py\""
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.xtrm/skills/default/service-skills/scripts/cataloger.py\""
           },
           {
             "type": "command",
@@ -71,7 +71,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/skills/service-skills/scripts/skill_activator.py\""
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.xtrm/skills/default/service-skills/scripts/skill_activator.py\""
           }
         ]
       }
@@ -87,7 +87,7 @@
           },
           {
             "type": "command",
-            "command": "bash \"/home/dawid/dev/xtmux/.xtrm/hooks/auto-monitor-on-send.sh\"",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/auto-monitor-on-send.sh\"",
             "timeout": 3000
           }
         ]
@@ -97,7 +97,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"/home/dawid/dev/xtmux/.xtrm/hooks/auto-monitor-consumed.sh\"",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/auto-monitor-consumed.sh\"",
             "timeout": 3000
           }
         ]
@@ -132,7 +132,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/skills/service-skills/scripts/drift_detector.py\" check-hook",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.xtrm/skills/default/service-skills/scripts/drift_detector.py\" check-hook",
             "timeout": 10000
           }
         ]
@@ -162,7 +162,7 @@
           },
           {
             "type": "command",
-            "command": "node \"/home/dawid/dev/xtmux/.xtrm/hooks/auto-monitor-drain-stop.mjs\"",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.xtrm/hooks/auto-monitor-drain-stop.mjs\"",
             "timeout": 3000
           }
         ]

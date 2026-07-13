@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bootstrap the Mercury security pipeline on a target repo.
+# Bootstrap the security pipeline on a target repo.
 # Reference doc: SECURITY-PIPELINE.md
 #
 # Usage:  ./scripts/security-bootstrap.sh <target-repo-path>
@@ -59,7 +59,7 @@ git checkout -b "$BRANCH" 2>/dev/null || git checkout "$BRANCH"
 # ── 3. Copy files (conflict-aware) ────────────────────────────────────────
 copy_file() {
     local rel="$1"
-    # Try templates/ first (skill layout), then SOURCE root (mercury-infra layout)
+    # Try templates/ first (skill layout), then SOURCE root (legacy layout)
     local src="$SOURCE/templates/$rel"
     [ -f "$src" ] || src="$SOURCE/$rel"
     local dst="$TARGET/$rel"
@@ -254,10 +254,10 @@ git add .github .gitleaks.toml .semgrepignore .pre-commit-config.yaml scripts/ .
 if git diff --cached --quiet; then
     echo "── No changes to commit ──"
 else
-    git commit -m "feat(security): bootstrap Mercury security pipeline
+    git commit -m "feat(security): bootstrap security pipeline
 
-Mirrors mercury-infra security baseline. See SECURITY-PIPELINE.md in
-mercury-infra for the full reference.
+Applies the xtrm security-pipeline baseline. See SECURITY-PIPELINE.md (in
+whichever repo carries the long-form reference) for the full narrative.
 
 Includes: dependabot, osv-scanner, semgrep, gitleaks, pre-commit hooks,
 anti-direct-main-push, local audit scripts.

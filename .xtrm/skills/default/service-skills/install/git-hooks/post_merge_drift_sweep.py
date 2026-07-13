@@ -16,14 +16,23 @@ This hook is the proactive backstop. On a default-branch merge it:
   3. on drift: prints a prominent, actionable notice and drops a pending marker
      at `.xtrm/.service-skills-drift-pending` so the next agent session / operator
      runs the reconciliation (`/updating-service-skills`, the service-skills-sync
-     specialist) — a git hook must NOT auto-run a model-backed specialist.
+     specialist).
+  4. opt-in auto-reconcile (xtrm-tg33i): if `XTRM_AUTO_RECONCILE_DRIFT=1` is set
+     AND `sp` is on PATH AND a pack is resolvable, the hook invokes
+     `sp script service-skills-sync` with `--allow-local-scripts
+     --allow-write-capable` and lets the specialist remove the marker on success.
+     This is gated behind an env var because earlier policy forbade git hooks
+     from running model-backed specialists; the explicit opt-in flips that for
+     repos whose owners have evaluated the cost/risk tradeoff.
 
 It NEVER fails the merge (post-merge cannot abort anyway) and is silent when there
 is no registry, the branch is not default, or there is no drift.
 """
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -36,6 +45,10 @@ _SCRIPTS_DIR = _HOOK_DIR.parent.parent / "scripts"
 
 MARKER_REL = Path(".xtrm") / ".service-skills-drift-pending"
 DEFAULT_BRANCHES = {"main", "master"}
+AUTO_RECONCILE_ENV = "XTRM_AUTO_RECONCILE_DRIFT"
+AUTO_RECONCILE_TIMEOUT_MS_ENV = "XTRM_AUTO_RECONCILE_TIMEOUT_MS"
+AUTO_RECONCILE_TIMEOUT_MS_DEFAULT = 600_000
+RUNLOG_REL = Path(".xtrm") / ".service-skills-auto-reconcile.log"
 
 
 def _project_root() -> Path:
@@ -82,14 +95,112 @@ def _default_branch(root: Path) -> str:
     return ""
 
 
-def _has_registry(root: Path) -> bool:
-    packs = root / ".xtrm" / "skills" / "user" / "packs"
-    if packs.is_dir():
-        for pack in packs.iterdir():
-            if not pack.is_dir():
+def _run_sp_subprocess(cmd: list[str], env: dict[str, str], timeout_s: float) -> subprocess.CompletedProcess[str]:
+    """Thin wrapper around subprocess.run so tests can patch ONLY the sp-script call site
+    without breaking drift_detector's own subprocess usage (which shares the global module)."""
+    return subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=timeout_s, check=False)
+
+
+def _resolve_pack(root: Path) -> str | None:
+    """Return first v2 pack, with v1 user/packs fallback, owning a service registry."""
+    packs_roots = [
+        root / ".xtrm" / "skills",
+        root / ".xtrm" / "skills" / "user" / "packs",
+    ]
+    for packs in packs_roots:
+        if not packs.is_dir():
+            continue
+        for pack in sorted(packs.iterdir()):
+            if not pack.is_dir() or pack.name in {"default", "optional", "user", "active", "local-legacy"}:
                 continue
             if (pack / "service-skills" / "service-registry.json").exists() or (pack / "service-registry.json").exists():
-                return True
+                return pack.name
+    return None
+
+
+def _auto_reconcile(root: Path) -> tuple[bool, str]:
+    """Invoke `sp script service-skills-sync` to reconcile drift. Returns (success, message).
+
+    Gates: opt-in via XTRM_AUTO_RECONCILE_DRIFT=1, `sp` on PATH, resolvable pack.
+    Failure modes return (False, reason) — the caller logs but does NOT remove the marker so
+    operator/agent can pick up where the automation left off.
+    """
+    if os.environ.get(AUTO_RECONCILE_ENV, "").lower() not in {"1", "true", "yes", "on"}:
+        return (False, "opt-in disabled (set %s=1 to enable)" % AUTO_RECONCILE_ENV)
+
+    sp = shutil.which("sp")
+    if not sp:
+        return (False, "`sp` not on PATH; specialists CLI not installed")
+
+    pack = _resolve_pack(root)
+    if not pack:
+        return (False, "no pack with service-registry resolvable under .xtrm/skills")
+
+    try:
+        timeout_ms = int(os.environ.get(AUTO_RECONCILE_TIMEOUT_MS_ENV, AUTO_RECONCILE_TIMEOUT_MS_DEFAULT))
+    except ValueError:
+        timeout_ms = AUTO_RECONCILE_TIMEOUT_MS_DEFAULT
+
+    cmd = [
+        sp, "script", "service-skills-sync",
+        "--template-field", "script_template",
+        "--vars", "repo=%s" % root.name,
+        "--vars", "pack=%s" % pack,
+        "--vars", "cwd=%s" % str(root),
+        "--allow-local-scripts",
+        "--allow-write-capable",
+        "--json",
+        "--timeout-ms", str(timeout_ms),
+    ]
+
+    env = os.environ.copy()
+    env["CLAUDE_PROJECT_DIR"] = str(root)
+
+    try:
+        r = _run_sp_subprocess(cmd, env, (timeout_ms / 1000) + 60)
+    except subprocess.TimeoutExpired:
+        return (False, "sp script timed out after %ds" % (timeout_ms // 1000))
+    except Exception as exc:
+        return (False, "sp script invocation failed: %s" % exc)
+
+    if r.returncode != 0:
+        return (False, "sp script exit=%d stderr=%s" % (r.returncode, r.stderr.strip()[:300]))
+
+    try:
+        payload = json.loads(r.stdout)
+    except json.JSONDecodeError as exc:
+        return (False, "sp script returned non-JSON stdout: %s" % exc)
+
+    if not payload.get("success"):
+        err = payload.get("error", "unspecified")
+        return (False, "sp script success=false error=%s" % err)
+
+    return (True, "sp script success: %s" % payload.get("meta", {}).get("trace_id", "(no trace)"))
+
+
+def _append_runlog(root: Path, line: str) -> None:
+    """Append one line to the auto-reconcile runlog; best-effort, swallow IO errors."""
+    log = root / RUNLOG_REL
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(line.rstrip("\n") + "\n")
+    except Exception:
+        pass
+
+
+def _has_registry(root: Path) -> bool:
+    packs_roots = [
+        root / ".xtrm" / "skills",
+        root / ".xtrm" / "skills" / "user" / "packs",
+    ]
+    for packs in packs_roots:
+        if packs.is_dir():
+            for pack in packs.iterdir():
+                if not pack.is_dir() or pack.name in {"default", "optional", "user", "active", "local-legacy"}:
+                    continue
+                if (pack / "service-skills" / "service-registry.json").exists() or (pack / "service-registry.json").exists():
+                    return True
     return (root / "service-registry.json").exists() or (root / ".claude" / "skills" / "service-registry.json").exists()
 
 
@@ -145,9 +256,18 @@ def main() -> int:
     print("")
     print("⚠  service-skills drift detected at the post-merge reconciliation point.")
     print("   %d drifted file(s) across service(s): %s" % (len(drift), ", ".join(services)))
-    print("   Reconcile with /updating-service-skills (the service-skills-sync specialist),")
-    print("   which syncs the drifted SKILL.md and advances last_sync_ref.")
-    print("   (pending marker: %s)" % MARKER_REL)
+
+    ok, msg = _auto_reconcile(root)
+    if ok:
+        print("   ✓ auto-reconcile via sp script service-skills-sync — %s" % msg)
+        print("   the specialist removes the pending marker on success.")
+        _append_runlog(root, "OK %s | services=%s | %s" % (branch or default or "-", ",".join(services), msg))
+    else:
+        print("   Reconcile with /updating-service-skills (the service-skills-sync specialist),")
+        print("   which syncs the drifted SKILL.md and advances last_sync_ref.")
+        print("   (pending marker: %s)" % MARKER_REL)
+        print("   (auto-reconcile skipped: %s)" % msg)
+        _append_runlog(root, "SKIP %s | services=%s | %s" % (branch or default or "-", ",".join(services), msg))
     print("")
     return 0
 

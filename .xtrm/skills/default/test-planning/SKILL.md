@@ -62,7 +62,7 @@ Code that glues core + boundary together into user-facing features. Examples:
 - Command handlers
 - Workflow coordinators
 
-**Signals**: "command", "CLI", "subcommand", "mercury <verb>", user-facing behavior described, combines multiple components.
+**Signals**: "command", "CLI", "subcommand", "<cli> <verb>", user-facing behavior described, combines multiple components.
 
 ### Operational / agentic layer — deploy, hooks, observability, autonomous workflows
 Code or configuration that makes agents, hooks, CI/CD, deploy, monitoring, or runtime operations work. Examples:

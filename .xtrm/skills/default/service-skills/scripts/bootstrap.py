@@ -5,23 +5,17 @@ Bootstrap module for Service Skill Trinity.
 Provides root-discovery and registry CRUD operations shared across all
 service-skill workflow scripts. All scripts in the trinity import from here.
 
-Path model: the canonical home for service skills + registry is under .xtrm
-(``.xtrm/skills/user/packs/<pack>/...``). ``.claude/skills`` is a Claude-Code
-VIEW only — kept solely as a legacy READ fallback for pre-migration installs.
-No code path EMITS a ``.claude/skills`` path for cross-tool consumption; use the
-resolver helpers (get_service_skill_dir / get_service_skill_path_str) instead.
+Path model: the canonical home for service skills + registry is under
+``.xtrm/skills/<pack>/``. ``.claude/skills`` is a Claude-Code VIEW only — kept
+solely as a legacy READ fallback for pre-migration installs.
 
 Registry resolution order:
   1) $SERVICE_REGISTRY_PATH override
   2) <root>/service-registry.json
-  3) <root>/.claude/skills/service-registry.json   (legacy Claude-view read; back-compat)
-  4) <root>/.xtrm/skills/user/packs/*/service-registry.json
+  3) <root>/.claude/skills/service-registry.json (legacy view)
+  4) <root>/.xtrm/skills/*/service-registry.json
 
-For pack glob, first hit wins after disambiguation:
-- If active pack discoverable, matching pack registry preferred
-- Else lexicographically first registry used with stderr warning
-
-Skills location: .xtrm/skills/user/packs/<pack>/<service-id>/
+Skills location: .xtrm/skills/<pack>/service-skills/services/<service-id>/
 """
 
 import json
@@ -33,7 +27,8 @@ from pathlib import Path
 from typing import Any
 
 SERVICE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-_]{0,63}$")
-PACKS_ROOT_SUFFIX = Path(".xtrm") / "skills" / "user" / "packs"
+SKILLS_ROOT_SUFFIX = Path(".xtrm") / "skills"
+RESERVED_PACK_NAMES = {"default", "optional", "user", "active", "local-legacy"}
 
 
 class BootstrapError(Exception):
@@ -71,10 +66,20 @@ def get_skills_root(project_root: str | None = None) -> Path:
     return Path(project_root) / ".claude" / "skills"
 
 
+def resolveRepoPackRoot(project_root: str, pack_name: str) -> Path:
+    if not SERVICE_ID_PATTERN.fullmatch(pack_name) or pack_name in RESERVED_PACK_NAMES:
+        raise RootResolutionError(f"Invalid or reserved pack name: {pack_name}")
+    return (Path(project_root) / SKILLS_ROOT_SUFFIX / pack_name).resolve(strict=False)
+
+
+def resolve_repo_pack_root(project_root: str, pack_name: str) -> Path:
+    return resolveRepoPackRoot(project_root, pack_name)
+
+
 def _packs_root(project_root: str | None = None) -> Path:
     if project_root is None:
         project_root = get_project_root()
-    return Path(project_root) / PACKS_ROOT_SUFFIX
+    return Path(project_root) / SKILLS_ROOT_SUFFIX
 
 
 def _ensure_within_root(candidate: Path, root: Path, label: str) -> Path:
@@ -94,16 +99,24 @@ def get_pack_path(project_root: str | None = None) -> Path | None:
     packs_root = _packs_root(project_root)
     env_pack = os.environ.get("XTRM_PACK")
 
+    legacy_packs_root = packs_root / "user" / "packs"
     if env_pack:
         pack_path = Path(env_pack)
         if not pack_path.is_absolute():
             pack_path = packs_root / env_pack
-        return _ensure_within_root(pack_path, packs_root, "XTRM_PACK path")
+            if not pack_path.exists():
+                pack_path = legacy_packs_root / env_pack
+        validation_root = packs_root if pack_path.parent == packs_root else legacy_packs_root
+        return _ensure_within_root(pack_path, validation_root, "XTRM_PACK path")
 
-    if not packs_root.exists():
-        return None
-
-    pack_dirs = [path for path in packs_root.iterdir() if path.is_dir()]
+    pack_dirs = []
+    for candidate_root in (packs_root, legacy_packs_root):
+        if not candidate_root.exists():
+            continue
+        pack_dirs.extend(
+            path for path in candidate_root.iterdir()
+            if path.is_dir() and path.name not in RESERVED_PACK_NAMES
+        )
     if len(pack_dirs) == 1:
         return pack_dirs[0].resolve()
 
@@ -114,8 +127,8 @@ def get_service_skill_dir(service_id: str, project_root: str | None = None) -> P
     """Resolve a service's skill-package directory (absolute, under .xtrm — never .claude).
 
     Single source of truth for *where a service skill lives*. Today that is
-    ``<pack>/<service_id>`` under ``.xtrm/skills/user/packs``. Child .4 (layout
-    migrator) re-points this to ``<pack>/service-skills/services/<service_id>``;
+    ``<pack>/<service_id>`` under ``.xtrm/skills``. Service skills live under
+    ``<pack>/service-skills/services/<service_id>``;
     every emitter (scaffolder bodies, activator/cataloger fallbacks, registry
     skill_path) routes through here, so they all follow automatically — no
     emitter hardcodes a path.
@@ -154,9 +167,15 @@ def get_umbrella_dir(project_root: str | None = None) -> Path | None:
 def _select_pack_registry(pack_registries: list[Path], project_root: str) -> Path:
     active_pack = get_pack_path(project_root)
     if active_pack is not None:
-        active_candidate = active_pack / "service-registry.json"
-        if active_candidate in pack_registries:
-            return active_candidate
+        active_resolved = active_pack.resolve()
+        # Match either the umbrella layout (<pack>/service-skills/service-registry.json)
+        # or the pre-umbrella flat layout (<pack>/service-registry.json).
+        for candidate in pack_registries:
+            try:
+                if active_resolved in candidate.resolve().parents:
+                    return candidate
+            except OSError:
+                continue
 
     chosen = sorted(pack_registries)[0]
     if len(pack_registries) > 1:
@@ -187,11 +206,11 @@ def get_registry_path(project_root: str | None = None) -> Path:
     #   2) flat pack-root registry           (pre-migration .xtrm layout)
     #   3) <root>/service-registry.json      (legacy back-compat)
     #   4) .claude/skills/service-registry.json  (legacy Claude-view back-compat)
-    umbrella_registries = sorted(root.glob(".xtrm/skills/user/packs/*/service-skills/service-registry.json"))
+    umbrella_registries = sorted(root.glob(".xtrm/skills/*/service-skills/service-registry.json"))
     if umbrella_registries:
         return _select_pack_registry(umbrella_registries, project_root)
 
-    pack_registries = sorted(root.glob(".xtrm/skills/user/packs/*/service-registry.json"))
+    pack_registries = sorted(root.glob(".xtrm/skills/*/service-registry.json"))
     if pack_registries:
         return _select_pack_registry(pack_registries, project_root)
 

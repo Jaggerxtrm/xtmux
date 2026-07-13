@@ -73,7 +73,7 @@ OUTPUT: TBD — needs exploration"
 
 **No one-liners, ever — draft mode included.** PROBLEM must be real prose, SCOPE must be a real guess, and every other section must explicitly say `TBD — needs exploration` rather than being silently absent. Draft state lowers the bar on completeness, never on honesty about what's still unknown.
 
-**A draft bead cannot be dispatched.** `using-specialists-v3` rule #15 hard-refuses any specialist run against a `contract:draft` bead. Promoting it later means coming back to this skill and actually running Phases 2–4 (explore, structure, rewrite) against the real bead, then `bd set-state <id> contract=ready --reason "..."`. Draft mode defers the work, not the eventual rigor.
+**A draft bead cannot be dispatched.** `using-specialists` rule #15 hard-refuses any specialist run against a `contract:draft` bead. Promoting it later means coming back to this skill and actually running Phases 2–4 (explore, structure, rewrite) against the real bead, then `bd set-state <id> contract=ready --reason "..."`. Draft mode defers the work, not the eventual rigor.
 
 ---
 
@@ -220,9 +220,9 @@ under it with `--parent=<existing-epic-id>` and skip creating a new epic.
 
 If this is genuinely new work with no parent, create the epic first.
 
-### Bead contract format (aligned with `using-specialists-v3`)
+### Bead contract format (aligned with `using-specialists`)
 
-Planner-created beads use the same 7-section contract that `using-specialists-v3` SKILL.md requires for orchestrator-written beads. Downstream executor / debugger / reviewer / code-sanity / security-auditor specialists read the bead via `bd show <id>` and expect this exact shape. Any drift between this template and the using-specialists-v3 contract creates partial contracts and weakens downstream specialist output.
+Planner-created beads use the same 7-section contract that `using-specialists` SKILL.md requires for orchestrator-written beads. Downstream executor / debugger / reviewer / code-sanity / security-auditor specialists read the bead via `bd show <id>` and expect this exact shape. Any drift between this template and the using-specialists contract creates partial contracts and weakens downstream specialist output.
 
 The seven sections — `PROBLEM / SUCCESS / SCOPE / NON_GOALS / CONSTRAINTS / VALIDATION / OUTPUT` — are mandatory for every task and every epic. Optional auxiliary sections (`REFERENCES`, `APPROACH NOTES`) may follow at the bottom.
 
@@ -404,7 +404,7 @@ Every task and epic description must fill all seven mandatory sections:
 
 If you cannot fill all seven, the scope is still unclear — go back to Phase 1.
 
-**Why this matters**: the bead description is the only contract the executor / debugger / reviewer / code-sanity / security-auditor specialist sees via `bd show <id>`. The `using-specialists-v3` SKILL.md in the specialists project teaches the human orchestrator to write 7-section contracts; the planner must produce the same so the contract surface is uniform across human-orchestrated and planner-orchestrated chains. If this template drifts from `using-specialists-v3`, downstream specialists work against weaker contracts and produce noisier output. Any change to either skill must be mirrored in the other.
+**Why this matters**: the bead description is the only contract the executor / debugger / reviewer / code-sanity / security-auditor specialist sees via `bd show <id>`. The `using-specialists` SKILL.md in the specialists project teaches the human orchestrator to write 7-section contracts; the planner must produce the same so the contract surface is uniform across human-orchestrated and planner-orchestrated chains. If this template drifts from `using-specialists`, downstream specialists work against weaker contracts and produce noisier output. Any change to either skill must be mirrored in the other.
 
 ---
 

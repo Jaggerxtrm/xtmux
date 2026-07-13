@@ -3,11 +3,11 @@
 layout_migrator.py — one-time migration of a service-skills pack from the FLAT
 layout to the UMBRELLA layout.
 
-    FROM:  .xtrm/skills/user/packs/<pack>/<svc>/SKILL.md
-           .xtrm/skills/user/packs/<pack>/service-registry.json
-    TO:    .xtrm/skills/user/packs/<pack>/service-skills/services/<svc>/SKILL.md
-           .xtrm/skills/user/packs/<pack>/service-skills/service-registry.json
-           .xtrm/skills/user/packs/<pack>/service-skills/SKILL.md   (generated umbrella)
+    FROM:  .xtrm/skills/<pack>/<svc>/SKILL.md
+           .xtrm/skills/<pack>/service-registry.json
+    TO:    .xtrm/skills/<pack>/service-skills/services/<svc>/SKILL.md
+           .xtrm/skills/<pack>/service-skills/service-registry.json
+           .xtrm/skills/<pack>/service-skills/SKILL.md   (generated umbrella)
 
 This is DISTINCT from skill_migrator.py: that edits a SKILL.md's headings; this
 *moves files* and *relocates/rewrites the registry*, then generates the umbrella.
@@ -69,39 +69,6 @@ def _new_skill_dir_str(project_root: Path, pack: Path, service_id: str) -> str:
         return str(new_dir.resolve(strict=False).relative_to(project_root.resolve())).replace(os.sep, "/")
     except ValueError:
         return str(new_dir).replace(os.sep, "/")
-
-
-def _sync_pack_json(pack: Path) -> str | None:
-    """Sync ``PACK.json`` ``skills[]`` to the post-migration filesystem (xtrm-x8b5g).
-
-    The active-view materializer validates a pack's ``PACK.json`` ``skills[]`` against the
-    filesystem: an entry is a *direct child dir of the pack that contains a SKILL.md* (dir name
-    is the identity). After migration the moved per-service dirs live under
-    ``service-skills/services/`` (no longer direct children) and the new ``service-skills``
-    umbrella is a direct child — so a stale ``PACK.json`` lists ghost services (metadata-only) and
-    omits the umbrella (filesystem-only), tripping ``PACK_METADATA_MISMATCH`` which BLOCKS the
-    active-view rebuild. Recompute ``skills[]`` from the filesystem (idempotent). Returns a note,
-    or None when there is no ``PACK.json`` or it is already in sync.
-    """
-    pack_json = pack / "PACK.json"
-    if not pack_json.exists():
-        return None
-    try:
-        data = json.loads(pack_json.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-    fs_skills = sorted(
-        child.name for child in pack.iterdir()
-        if child.is_dir() and (child / "SKILL.md").exists()
-    )
-    if data.get("skills") == fs_skills:
-        return None
-    data["skills"] = fs_skills
-    try:
-        pack_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    except OSError:
-        return None
-    return f"pack-json: synced PACK.json skills -> {', '.join(fs_skills) or '(none)'}"
 
 
 def _rewrite_claude_refs(body: str, new_dir_for: Any) -> tuple[str, int, set[str]]:
@@ -217,9 +184,10 @@ def migrate_pack(project_root: Path, pack: Path, repo_name: str) -> dict[str, An
     # Generate the umbrella (preserves any existing SEMANTIC block).
     umbrella_changed = write_umbrella(umbrella_dir / "SKILL.md", registry, repo_name)
 
-    # Sync PACK.json AFTER the umbrella exists + services have moved, so the recomputed
-    # skills[] reflects the final layout (umbrella in, ghost services out) — xtrm-x8b5g.
-    pack_json_note = _sync_pack_json(pack)
+    # PACK.json is retired; discovery derives skills from filesystem shape.
+    pack_json = pack / "PACK.json"
+    if pack_json.exists():
+        pack_json.unlink()
 
     return {
         "pack": pack.name,
@@ -229,7 +197,6 @@ def migrate_pack(project_root: Path, pack: Path, repo_name: str) -> dict[str, An
         "registry": str(new_registry),
         "refs_rewritten": refs_rewritten,
         "stale_refs": sorted(stale_refs),
-        "pack_json_note": pack_json_note,
     }
 
 
@@ -268,7 +235,7 @@ def main() -> None:
 
     pack = get_pack_path(project_root_str)
     if pack is None:
-        print("Error: unable to resolve pack path. Set XTRM_PACK or leave only one pack under .xtrm/skills/user/packs.", file=sys.stderr)
+        print("Error: unable to resolve pack path. Set XTRM_PACK or leave only one pack under .xtrm/skills.", file=sys.stderr)
         sys.exit(1)
 
     try:
@@ -285,8 +252,6 @@ def main() -> None:
         print(f"{prefix}: {sid} ({outcome})")
     print(f"registry: {result['registry']}")
     print(f"umbrella: {'written' if result['umbrella_written'] else 'unchanged'}")
-    if result.get("pack_json_note"):
-        print(result["pack_json_note"])
     if result.get("refs_rewritten"):
         print(f"refs: rewrote {result['refs_rewritten']} legacy .claude/skills path(s) in SKILL.md bodies")
     for seg in result.get("stale_refs", []):

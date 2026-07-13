@@ -7,7 +7,7 @@ domain: [data, sql, performance]
 ---
 
 ## Purpose
-Reference guide for standard SQL query patterns used in the Mercury project to ensure performance and maintainability.
+Reference guide for standard SQL query patterns used in the project to ensure performance and maintainability.
 
 ## Naming Conventions
 

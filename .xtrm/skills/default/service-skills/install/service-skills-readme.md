@@ -1,6 +1,6 @@
 # Service Skills
 
-> **Path model:** the canonical home for per-service skills is `.xtrm/skills/user/packs/<pack>/<service>/`; `.claude/skills/<service>/` is a Claude-Code **view** (symlink). Scripts resolve real paths via `bootstrap` (`get_service_skill_path_str`) — they never hardcode `.claude/skills`. The machinery skill itself is at `.claude/skills/service-skills/` (active view) ↔ `.xtrm/skills/default/service-skills/`.
+> **Path model:** the canonical home for per-service skills is `.xtrm/skills/<pack>/<service>/`; `.claude/skills/<service>/` is a Claude-Code **view** (symlink). Scripts resolve real paths via `bootstrap` (`get_service_skill_path_str`) — they never hardcode `.claude/skills`. The machinery skill itself is at `.claude/skills/service-skills/` (active view) ↔ `.xtrm/skills/default/service-skills/`.
 
 A system that gives Claude persistent, project-specific operational knowledge about your Docker services. Instead of re-explaining your architecture every session, each service has a dedicated skill package that Claude loads on demand.
 

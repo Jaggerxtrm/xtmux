@@ -1,36 +1,36 @@
 ---
 name: update-xt
 description: >
-  Update an xtrm-initialized project to match the current canonical install state.
-  Use this skill whenever the user asks to update, upgrade, repair, or re-sync xtrm
-  in a project — or when they say something like "xt is out of date", "skills aren't
-  loading", "hooks aren't firing", "the install looks wrong", or "I just pulled new
-  xtrm changes". Also triggers when the agent detects stale paths like
-  .claude/skills → active/claude (old structure) or .pi/settings.json pointing to
-  active/pi (old structure). Proactively suggest running this skill after any
-  xtrm-tools upgrade.
+  Update an xtrm-initialized project to match the current canonical install state,
+  and run one-time migrations to the global scope. Use this skill whenever the user
+  asks to update, upgrade, repair, or re-sync xtrm in a project — or when they say
+  "xt is out of date", "skills aren't loading", "hooks aren't firing", "the install
+  looks wrong", or "I just pulled new xtrm changes". Also covers `xt migrate` (move
+  per-repo skills/hooks into the global tree), `xt migrate --restore`, the
+  source-repo guard, and repairing broken `local-legacy` packs. Triggers when the
+  agent detects stale paths like .claude/skills → active/claude or .pi/settings.json
+  pointing to active/pi. Proactively suggest after any xtrm-tools upgrade.
 ---
 
 # update-xt
 
-Reconcile a project's xtrm installation against the current canonical state. Detect
-drift, apply targeted fixes, verify everything is wired correctly.
+Reconcile project's xtrm installation against canonical state. Detect drift, apply targeted fixes, verify wiring.
+
+## Upgrade note
+
+This release retires `active/`. `xt update --apply` reconciles `.claude/skills/` and `.pi/skills/` automatically.
 
 ## Canonical State (current)
-
-This is what a correctly installed project looks like. Check each item.
 
 ### Skills wiring
 
 | Check | Expected value |
 |-------|----------------|
-| `.claude/skills` symlink target | `../.xtrm/skills/active` |
-| `.xtrm/skills/active/` | Flat directory of symlinks to `../default/<skill>` |
-| `active/pi/` subdirectory | Must NOT exist (stale — old runtime split) |
-| `active/claude/` subdirectory | Must NOT exist (stale — old runtime split) |
-| `.pi/settings.json` `.skills` array | Must include `"../.xtrm/skills/active"` (project-local, wins) |
-| `.pi/settings.json` `.skills` array | Must include `"~/.xtrm/skills/default"` (user-level fallback — xtrm-4h6u) |
-| `.pi/settings.json` `.skills` array | Must NOT include `"../.xtrm/skills/active/pi"` (old path) |
+| `~/.claude/skills` symlink target | `~/.xtrm/skills/default` |
+| `~/.pi/agent/skills` symlink target | `~/.xtrm/skills/default` |
+| project `.claude/skills` | Real directory with managed per-skill symlinks |
+| project `.pi/skills` | Real directory with managed per-skill symlinks |
+| project `.pi/settings.json` `.skills` array | User entries only |
 
 ### Hooks wiring
 
@@ -129,6 +129,9 @@ Two commands cover almost all drift. Know which fixes what:
 | `xt update --apply --repo .` | Registry-managed assets, bd auto-stage patch, bd/GitNexus maintenance, Pi package assurance |
 | `xt update --apply --all-repos` | Standard local fleet sweep (`~/dev` + `~/projects`), with per-repo commits for changed repos |
 | `xt init -y` | Skills symlink, active/ view rebuild, Pi settings, all phases |
+| `xt migrate skills --apply --repo .` | Move per-repo skills payload into `~/.xtrm/skills`, preserving diverged files as a `local-legacy` override |
+| `xt migrate hooks --apply --repo .` | Same for hooks (`~/.xtrm/hooks`) |
+| `xt migrate --restore <backup.tgz> --apply --repo .` | Undo a migrate from the tarball at `~/.xtrm/migration-backups/` |
 
 ### Fix: Skills symlink stale or active/ view wrong
 
@@ -254,7 +257,7 @@ locally or pulled a new tag.
 ```bash
 xt update --all-repos                # standard local sweep: ~/dev + ~/projects
 xt update --root ~/dev               # walk one explicit tree
-xt update --root ~/projects/mercury  # walk another explicit tree
+xt update --root ~/projects/<your-fleet>  # walk another explicit tree
 ```
 
 Output classifies each discovered repo by `.xtrm/` state:
@@ -275,7 +278,7 @@ refresh.
 ```bash
 xt update --apply --all-repos
 xt update --apply --root ~/dev
-xt update --apply --root ~/projects/mercury
+xt update --apply --root ~/projects/<your-fleet>
 ```
 
 What `--apply` does for each managed repo:
@@ -316,8 +319,116 @@ Common failure modes and fixes:
 | Error | Cause | Fix |
 |-------|-------|-----|
 | `Source and destination must not be the same` | `npm link`'d xtrm-tools + repo has symlinked `.xtrm/skills/default → xtrm-tools` (link chain collapses to same canonical path) | Functionally fine — repo is already in sync via the live symlinks, not a real failure. If you want to **fully decouple** the project from the dev tree, follow the migration recipe below. |
-| `PACK_METADATA_MISMATCH: metadata-only: X, filesystem-only: Y` | A user-skill-pack (`.xtrm/skills/user/packs/<name>/PACK.json`) lists a skill that has been renamed on disk | Edit `PACK.json` so the listed skill names match the directory names; re-run. |
+| `PACK_METADATA_MISMATCH: metadata-only: X, filesystem-only: Y` | Either a user pack renamed a skill without updating `PACK.json`, or a pre-fix `xt migrate` created an invalid `local-legacy` pack (wrong `name` and/or `skills[]` listing dirs that lack `SKILL.md`) | For a hand-authored user pack: edit `PACK.json` so the listed skill names match the directory names, re-run. For `local-legacy`: see the repair recipe under "Migration to global scope" below. |
 | `Cannot read properties of null (reading 'dolt')` | Repo's `.beads/config.yaml` is comments-only (fresh `bd init` default); pre-`xtrm-16ec` xtrm crashes parsing it | Upgrade xtrm-tools to ≥ 0.7.18; the parse result is coerced to `{}` defensively now. |
+
+## Migration to global scope (`xt migrate`)
+
+Move per-repo `.xtrm/skills` and `.xtrm/hooks` payloads into the global tree
+(`~/.xtrm/skills`, `~/.xtrm/hooks`) so consumer repos only carry pointers.
+This is a **one-time destructive** operation per repo; every run creates a
+tarball backup at `~/.xtrm/migration-backups/`.
+
+### Feature-flag gates
+
+- `XTRM_GLOBAL_SKILLS=1` — opts into the global-skills model at runtime.
+- `XTRM_GLOBAL_HOOKS=1` — opts into the global-hooks model at runtime.
+- `xt migrate` runs without the flags but warns that migration "may be
+  premature" — global runtime resolution still needs the flag to activate.
+
+### Commands
+
+```bash
+xt migrate skills --dry-run --repo <path>              # preview only
+xt migrate skills --apply --yes --repo <path>          # execute (destructive)
+xt migrate hooks --apply --yes --repo <path>           # same for hooks
+xt migrate all --apply --yes --repo <path>             # both targets
+xt migrate --restore <backup.tgz> --apply --repo <path>  # undo one component
+xt migrate --restore <backup.tgz> --apply --force --repo <path>  # overwrite existing target
+```
+
+Restoring a `hooks-*.tgz` also rewrites `.claude/settings.json` and
+`.pi/agent/settings.json` from the sidecar `<tgz>.settings.json` that
+`xt migrate hooks --apply` wrote alongside the tarball — no separate
+settings restore is needed.
+
+### What `xt migrate skills --apply` does
+
+1. SHA-256 verifies each file under `.xtrm/skills/{default,optional}` against
+   the corresponding file under `~/.xtrm/skills`.
+2. Files that differ or are absent globally are copied into
+   `.xtrm/skills/user/packs/local-legacy/` with their **full nested path
+   preserved** (`default/foo/SKILL.md` → `local-legacy/foo/SKILL.md`).
+   Top-level source-pack `PACK.json` files are skipped so they never
+   overwrite the authoritative one.
+3. Writes an authoritative `local-legacy/PACK.json` with
+   `name: "local-legacy"`, `schemaVersion: "1"`, and `skills[]` filtered to
+   only those top-level dirs that actually contain a `SKILL.md`.
+4. Tarballs the whole `.xtrm/skills/` tree to
+   `~/.xtrm/migration-backups/skills-<repo>-<ts>.tgz`.
+5. Removes `.xtrm/skills/default` and `.xtrm/skills/optional`. Leaves
+   `active/`, `user/`, `state.json` alone.
+6. Records the migration in `~/.xtrm/known-repos.json` and appends
+   `skills.migrate.ok` (or `skills.migrate.diverged`) events to
+   `~/.xtrm/logs/skills-migration.jsonl`.
+
+`xt migrate hooks --apply` is the same shape targeting `.xtrm/hooks/` plus
+the settings.json sidecar.
+
+### Source-repo guard
+
+`xt migrate --apply` refuses to run on the `xtrm-tools` source repo itself:
+
+- `package.json.name === 'xtrm-tools'`, OR
+- `scripts/gen-registry.mjs` exists, OR
+- `scripts/vendor-specialists-skills.mjs` exists
+
+Failure mode is `exit 1` with an explicit refusal message naming the marker.
+Dry-run is always permitted. Maintainer escape hatch: `--force-source`
+(undocumented; do not use on the real source tree — you will corrupt the
+canonical payload).
+
+### Ordering caveat: restore only reverses migrate
+
+`migrate` → `restore` is a clean roundtrip: the tarball snapshots the
+pre-migrate `.xtrm/skills/` and extracts it back verbatim.
+
+`migrate` → `xt update --apply` → `restore` is **not** clean: the update
+between the two operations refreshes canonical `default/` with the current
+package payload, so a subsequent restore drops the older tarball on top
+and leaves a mixed working tree. If you need to fully revert after
+running an update, use `git checkout -- .xtrm/skills && git clean -fd
+.xtrm/skills` instead of `--restore`.
+
+### Repairing a broken `local-legacy` pack
+
+Repos migrated by an older `xt migrate` may have a `local-legacy/PACK.json`
+with the source pack's `name` (e.g. `"xt-optional"`), a flattened tree
+(all files collapsed to the pack root, only the last of each name
+surviving), and/or a `skills[]` listing dirs that lack a `SKILL.md`.
+Symptom: `xt update --apply` fails with `PACK_METADATA_MISMATCH` or
+"Invalid pack metadata: name must match directory 'local-legacy'".
+
+Surgical repair (no re-migrate needed):
+
+```bash
+LEGACY=<repo>/.xtrm/skills/user/packs/local-legacy
+SKILLS=$(for d in "$LEGACY"/*/; do
+  n=$(basename "$d")
+  [ -f "$d/SKILL.md" ] && echo "$n"
+done | jq -R . | jq -s .)
+jq --argjson skills "$SKILLS" \
+   '.name = "local-legacy"
+    | .schemaVersion = "1"
+    | .version = (.version // "0.0.0")
+    | .skills = $skills' \
+   "$LEGACY/PACK.json" > "$LEGACY/PACK.json.new"
+mv "$LEGACY/PACK.json.new" "$LEGACY/PACK.json"
+xt update --repo <repo>   # dry-run — expect clean, then --apply
+```
+
+New migrations (xtrm-tools ≥ this release) author the pack correctly on
+first run; the recipe above is only for pre-fix state on the disk.
 
 ## Migrating a dev-linked project to a real consumer install
 
@@ -413,7 +524,7 @@ Classification:
   is unaffected.
 - `UNSET` — no hooks wired anywhere; same outcome as `OTHER`.
 
-Survey across `~/dev` + `~/projects/mercury` on 2026-05-12 returned **0 repos
+A fleet survey across `~/dev` + `~/projects/<your-fleet>` returned **0 repos
 needing the fix**. The safety net in `launchWorktreeSession` /
 `provisionWorktree` (`normalizeParentHooksPath`) auto-rewrites on next worktree
 creation if a relative `.beads/hooks` ever does appear, so the survey is mostly
@@ -476,7 +587,7 @@ npm link
 xt update --all-repos
 # or target explicit roots:
 xt update --root ~/dev
-xt update --root ~/projects/mercury
+xt update --root ~/projects/<your-fleet>
 
 # 4. Identify failed/incomplete rows. Fix any real bugs in xtrm-tools FIRST,
 #    then re-build + re-link + re-sweep.
@@ -485,7 +596,7 @@ xt update --root ~/projects/mercury
 xt update --apply --all-repos
 # or target explicit roots:
 xt update --apply --root ~/dev
-xt update --apply --root ~/projects/mercury
+xt update --apply --root ~/projects/<your-fleet>
 
 # 6. Cut the public release only after the local apply succeeds end-to-end.
 ```

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xtrm.dev/schemas/upgrade_dossier.v0.schema.json",
+  "title": "upgrade_dossier (v0)",
+  "description": "The skill's primary output. Stable sections an agent MUST fill when invoking updating-dependencies. spec: dependencies-updating.md §8.",
+  "type": "object",
+  "required": ["schema", "case_id", "summary", "package_version_diff", "source_matrix", "security_context", "supply_chain_context", "compatibility_migration", "local_usage_map", "service_skill_impact", "tests", "verdict", "required_gates", "deploy_notes", "post_deploy_watch", "follow_up_tasks"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "xtrm.upgrade_dossier.v0" },
+    "case_id": { "type": "string", "description": "Refs dependency_update_case.case_id" },
+    "summary": { "type": "string" },
+    "package_version_diff": { "type": "string" },
+    "source_matrix": {
+      "type": "object",
+      "required": ["authoritative", "migration_semantics", "threat_intel", "community"],
+      "properties": {
+        "authoritative": { "type": "array", "items": { "type": "string" } },
+        "migration_semantics": { "type": "array", "items": { "type": "string" } },
+        "threat_intel": { "type": "array", "items": { "type": "string" } },
+        "community": { "type": "array", "items": { "type": "string" }, "description": "Never blocks alone" }
+      }
+    },
+    "security_context": { "type": "string" },
+    "supply_chain_context": { "type": "string" },
+    "compatibility_migration": { "type": "string" },
+    "local_usage_map": { "type": "string" },
+    "service_skill_impact": { "type": "string" },
+    "tests": { "type": "string" },
+    "verdict": { "enum": ["PASS", "PASS_WITH_NOTES", "COOLDOWN", "SECURITY_FORCED", "NEEDS_CHANGES", "BLOCKED", "ESCALATE_SECURITY", "ESCALATE_DEPLOYER", "ESCALATE_SRE"] },
+    "verdict_reason": { "type": "string" },
+    "required_gates": { "type": "array", "items": { "type": "string" } },
+    "deploy_notes": { "type": "string" },
+    "post_deploy_watch": { "type": "string", "description": "Refs post-deploy watch spec handoff" },
+    "follow_up_tasks": { "type": "array", "items": { "type": "string" } }
+  }
+}

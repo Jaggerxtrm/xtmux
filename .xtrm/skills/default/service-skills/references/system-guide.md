@@ -179,7 +179,7 @@ Classify before writing scripts. The service type determines which scripts to wr
 
 > **Runtime views are managed, not hand-synced.** Per-runtime skill views
 > (`.claude/skills`, `.agent/skills`, `.gemini/skills`, `.qwen/skills`) are derived
-> from `.xtrm/skills/default` + `.xtrm/skills/user/packs` and rebuilt by
+> from `.xtrm/skills/default` + `.xtrm/skills/<pack>` and rebuilt by
 > `xt update --apply` (or `xt init`). Never `cp` skills into them by hand — that
 > drifts from what the materializer produces.
 

@@ -47,7 +47,7 @@ def _print_missing_registry_hint(project_root: str | None = None) -> None:
     root = Path(project_root)
     # Diagnostic only: lists the registry search order. The .claude/skills entry
     # is the legacy Claude-view read (back-compat); the canonical home is .xtrm packs.
-    print(f"Registry not found. Expected one of: {root / 'service-registry.json'}, {root / '.claude/skills/service-registry.json (legacy view)'}, {root / '.xtrm/skills/user/packs/*/service-registry.json'}", file=sys.stderr)
+    print(f"Registry not found. Expected one of: {root / 'service-registry.json'}, {root / '.claude/skills/service-registry.json (legacy view)'}, {root / '.xtrm/skills/*/service-registry.json'}", file=sys.stderr)
 
 def update_sync_time(service_id: str, project_root: str | None = None) -> bool:
     try:

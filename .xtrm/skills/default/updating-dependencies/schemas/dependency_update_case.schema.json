@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xtrm.dev/schemas/dependency_update_case.v0.schema.json",
+  "title": "dependency_update_case (v0)",
+  "description": "Deterministic, model-independent case emitted by the inspector before the skill reasons over it. spec: dependencies-updating.md §7. NEVER contain secrets/tokens.",
+  "type": "object",
+  "required": ["schema", "case_id", "trigger", "package", "supply_chain", "security", "usage", "preliminary_verdict"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "xtrm.dependency_update_case.v0" },
+    "case_id": { "type": "string", "description": "Opaque stable id for this case" },
+    "trigger": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["dependabot_pr", "renovate_pr", "manual_bump", "advisory", "scheduled_sweep"] },
+        "repo": { "type": "string" },
+        "pr": { "type": ["integer", "null"] },
+        "branch": { "type": ["string", "null"] }
+      }
+    },
+    "package": {
+      "type": "object",
+      "required": ["name", "ecosystem", "from_version", "to_version", "update_kind", "dependency_kind", "scope"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "ecosystem": { "enum": ["npm", "pypi", "maven", "cargo", "go", "docker", "github-actions", "other"] },
+        "from_version": { "type": "string" },
+        "to_version": { "type": "string" },
+        "update_kind": { "enum": ["patch", "minor", "major", "digest", "sha", "unknown"] },
+        "dependency_kind": { "enum": ["direct", "transitive"] },
+        "scope": { "enum": ["runtime", "dev", "build", "test", "ci", "container", "unknown"] }
+      }
+    },
+    "supply_chain": {
+      "type": "object",
+      "required": ["release_age_hours", "cooldown_status", "registry_status", "maintainer_change_detected", "install_script_changed", "artifact_repo_mismatch"],
+      "additionalProperties": false,
+      "properties": {
+        "release_age_hours": { "type": ["number", "null"] },
+        "cooldown_status": { "enum": ["cleared", "active", "bypass_security", "blocked", "unknown"] },
+        "registry_status": { "enum": ["normal", "yanked", "deprecated", "suspicious", "unknown"] },
+        "maintainer_change_detected": { "type": "boolean" },
+        "install_script_changed": { "type": "boolean" },
+        "artifact_repo_mismatch": { "enum": ["none", "warning", "unknown"] }
+      }
+    },
+    "security": {
+      "type": "object",
+      "required": ["advisories", "known_exploited", "public_exploit_available", "epss_bucket", "malicious_package_signal"],
+      "additionalProperties": false,
+      "properties": {
+        "advisories": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "source", "severity_cvss", "security_forced"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "description": "GHSA-*/CVE-*/OSV-* id" },
+              "source": { "enum": ["osv", "ghsa", "cve_nvd", "cisa_kev", "registry", "maintainer", "other"] },
+              "severity_cvss": { "type": ["number", "null"], "minimum": 0, "maximum": 10 },
+              "security_forced": { "type": "boolean", "description": "True if meets dependency-bump-policy §4.1" },
+              "fixed_in": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "known_exploited": { "type": "boolean" },
+        "public_exploit_available": { "type": "boolean" },
+        "epss_bucket": { "enum": ["low", "medium", "high", "unknown"] },
+        "malicious_package_signal": { "enum": ["none", "weak", "strong", "unknown"] }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "required": ["affected_services", "affected_files", "runtime_reachable", "publicly_exposed_path", "github_actions_blast_radius"],
+      "additionalProperties": false,
+      "properties": {
+        "affected_services": { "type": "array", "items": { "type": "string" } },
+        "affected_files": { "type": "array", "items": { "type": "string" } },
+        "runtime_reachable": { "enum": ["yes", "no", "unknown"] },
+        "publicly_exposed_path": { "enum": ["yes", "no", "unknown"] },
+        "github_actions_blast_radius": { "enum": ["low", "medium", "high", "n/a", "unknown"] }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "existing_tests_relevant": { "type": "array", "items": { "type": "string" } },
+        "missing_tests": { "type": "array", "items": { "type": "string" } },
+        "recommended_commands": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "service_skills": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "paths": { "type": "array", "items": { "type": "string" } },
+        "dependency_surface_present": { "type": "boolean" },
+        "health_checks": { "type": "array", "items": { "type": "string" } },
+        "post_update_watch_signals": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "preliminary_verdict": {
+      "type": "object",
+      "required": ["status", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "enum": ["research_required", "cooldown", "safe_candidate", "security_forced", "blocked", "unknown"] },
+        "reason": { "type": "string" }
+      }
+    }
+  }
+}

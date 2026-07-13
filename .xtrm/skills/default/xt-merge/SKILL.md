@@ -82,6 +82,18 @@ pop it when done in Stage 6.
 
 ## Stage 1 — Build the queue
 
+Prefer the xt audit primitive first; it gives PR-state classifications (`clean`,
+`needs-rebase`, `conflict`, `blocked`, `closed`, `merged`) and JSON suitable for
+automation:
+
+```bash
+xt worktree audit-prs --json
+```
+
+Stop before merging if any queued PR reports `conflict`, `blocked`, or an
+unexpected/unknown state. For `needs-rebase`, run the rebase cascade before trusting
+CI or merging that PR. The audit is read-only; it must not rebase, push, or delete.
+
 List all open PRs from xt worktree branches:
 
 ```bash
@@ -94,8 +106,8 @@ This sorts by creation time. The top row is the **head of the queue** — merge 
 
 If there are draft PRs in the list, skip them. Drafts are not ready to merge.
 
-If `gh pr list` returns an error (network, auth, wrong repo), stop and report the
-error. Do not continue with stale or incomplete data.
+If `gh pr list` or `xt worktree audit-prs` returns an error (network, auth, wrong
+repo), stop and report the error. Do not continue with stale or incomplete data.
 
 Present the sorted queue to the user before proceeding:
 ```
@@ -255,10 +267,12 @@ When the queue is empty:
 git stash pop   # report any conflicts — do not discard silently
 
 gh pr list --state open
+xt worktree audit-prs --json
 git log origin/main --oneline -5
 ```
 
-Confirm no open xt/ PRs remain and show the user the final state of main.
+Confirm no open xt/ PRs remain, no xt PRs still need rebase/conflict attention,
+and show the user the final state of main.
 
 ---
 

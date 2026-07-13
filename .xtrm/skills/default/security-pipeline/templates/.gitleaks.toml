@@ -5,7 +5,7 @@
 useDefault = true
 
 [allowlist]
-description = "Mercury allowlist"
+description = "Project allowlist"
 # Historical fingerprints already triaged — kept as acknowledgments so CI's
 # full-history scan stays green. New leaks still trip; only these specific
 # (commit, file, rule, line) tuples are exempt.

@@ -17,7 +17,7 @@ machinery skill):
 Output format (per-service Path resolves under .xtrm packs, not .claude/skills):
   <project_service_catalog>
   Available expert personas:
-  - db-expert: SQL & schema expert (Path: .xtrm/skills/user/packs/<pack>/db-expert/SKILL.md)
+  - db-expert: SQL & schema expert (Path: .xtrm/skills/<pack>/db-expert/SKILL.md)
   </project_service_catalog>
   <instruction>To activate an expert, read its SKILL.md from the provided path.</instruction>
 """

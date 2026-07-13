@@ -2,22 +2,42 @@
 
 ## Budgets
 
+Line budgets apply primarily to routing/managed boilerplate, not to current repo-identity prose. Split the file before judging size:
+
 | Metric | Good | Warning | Rewrite |
 |---|---:|---:|---:|
-| Lines | <=300 | 301-500 | >500 |
-| Command refs | <=20 | 21-60 | >60 |
+| Routing + managed lines, excluding Stack Overview / Repo Identity | <=300 | 301-500 | >500 |
+| Command refs outside concise operational-entry sections | <=20 | 21-60 | >60 |
 | Code fences | <=8 | 9-20 | >20 |
 | Table lines | <=30 | 31-80 | >80 |
 
-These are heuristics. A short but stale file still needs cleanup.
+These are heuristics. A short but stale file still needs cleanup, and a longer file may be correct when the extra lines are substantive repo identity.
+
+## Repo-identity check
+
+The first 20-30 lines must answer what the repo is. Flag a doc when:
+
+- the first substantive line is `<!-- xtrm:start -->`, `<!-- gitnexus:start -->`, or another managed block marker;
+- no H1/H2 appears before the first managed block;
+- the leading heading has no plain-language prose explaining role, services, or platform context.
+
+Recommend a `Stack Overview` / `Repo Identity` section, not trimming, when this is missing.
 
 ## Bloat signals
 
-- Headings named `Command Reference`, `Quick Reference`, `Common Query Patterns`, `Docker Operations`, `Testing` with many commands.
+- Headings named `Command Reference`, `Common Query Patterns`, `Docker Operations`, `Testing` with many commands.
+- `Quick Reference` only when it becomes a long inline manual (>30 command refs or >80 section lines); a 5-10 command essentials list is good.
 - More than 10 consecutive lines inside a shell code fence.
 - Multiple managed blocks for the same system.
 - Generic xtrm/beads/GitNexus instructions repeated before and after project-specific sections.
-- Old project names that do not match the repo/package.
+- Old project names that do not match the repo/package. Extend stale-term checks per repo with `.xtrm/agent-docs.toml`, for example:
+
+```toml
+stale_terms = ["OldPlatform", "LegacyService"]
+# or:
+[audit]
+stale_terms = ["OldPlatform", "LegacyService"]
+```
 
 ## Rewrite priorities
 

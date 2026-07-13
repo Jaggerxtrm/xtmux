@@ -126,7 +126,7 @@ Install machinery (hooks + settings + git-hooks) lives under `install/`; see
 ## Per-Repo Umbrella (generated)
 
 Each repo gets **one** umbrella skill — `name: <repo>-services` — at
-`.xtrm/skills/user/packs/<pack>/service-skills/SKILL.md`. It is **generated from
+`.xtrm/skills/<pack>/service-skills/SKILL.md`. It is **generated from
 `service-registry.json`** (service table + cross-service health + navigation) so it
 can never drift from the registered services. The human cross-service narrative lives
 in a `<!-- SEMANTIC_START -->` / `<!-- SEMANTIC_END -->` block preserved verbatim across
