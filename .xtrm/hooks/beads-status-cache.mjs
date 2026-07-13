@@ -145,7 +145,10 @@ export function fetchCompact(cwd) {
   const blockedList = bdJson(cwd, 'bd list --status=blocked --json') ?? [];
   const counts = { open: openList.length, in_progress: progressList.length, blocked: blockedList.length };
   const activeIssues = progressList.slice(0, 3).map(i => ({
-    id: i.id, title: i.title ?? null, status: 'in_progress',
+    id: i.id,
+    title: i.title ?? null,
+    status: 'in_progress',
+    parent: typeof i.parent === 'string' ? i.parent : typeof i.parent_id === 'string' ? i.parent_id : undefined,
   }));
 
   let activeEpic = null;

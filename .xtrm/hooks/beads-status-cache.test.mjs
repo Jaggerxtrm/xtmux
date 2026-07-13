@@ -104,6 +104,7 @@ esac
   assert.equal(compact.activeEpic.id, 'xtrm-epic');
   assert.equal(compact.activeEpic.closed, 1);
   assert.equal(compact.activeEpic.total, 2);
+  assert.equal(compact.activeIssues.find(issue => issue.id === 'xtrm-epic.1.1').parent, 'xtrm-epic.1');
 });
 
 test('formatCompact: zero-issue', () => {
