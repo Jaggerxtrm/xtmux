@@ -16,6 +16,7 @@ type ToolResultEvent = { toolName: string; input: Record<string, unknown>; isErr
 type BeforeAgentStartEvent = { systemPrompt: string };
 type ExtensionAPI = {
   exec(command: string, args: string[], options?: { timeout?: number }): Promise<ExecResult>;
+  sendUserMessage(content: string, options?: { deliverAs?: "steer" | "followUp" }): void;
   on(event: "session_start" | "agent_start" | "agent_end" | "session_shutdown", handler: (event: unknown, ctx: ExtensionContext) => unknown | Promise<unknown>): void;
   on(event: "before_agent_start", handler: (event: BeforeAgentStartEvent, ctx: ExtensionContext) => unknown | Promise<unknown>): void;
   on(event: "tool_result", handler: (event: ToolResultEvent, ctx: ExtensionContext) => unknown | Promise<unknown>): void;
@@ -39,6 +40,13 @@ export interface ListedObligation {
   expiresAtMs: number;
 }
 
+interface OutboundExpectation {
+  target: string;
+  monitorId: string;
+  paneId: string;
+  createdAtMs: number;
+}
+
 interface InboundMessage {
   senderId: string;
   messageKey: string;
@@ -56,6 +64,10 @@ function stateDir(): string {
   return join(process.env.XDG_RUNTIME_DIR || "/tmp", "xtmux-reply-obligations");
 }
 
+function outboundDir(): string {
+  return join(process.env.XDG_RUNTIME_DIR || "/tmp", "xtmux-outbound-expectations");
+}
+
 function ttlMs(): number {
   const value = Number(process.env.XTMUX_REPLY_OBLIGATION_TTL_MS || 3_600_000);
   return Number.isFinite(value) && value >= 0 ? value : 3_600_000;
@@ -66,10 +78,45 @@ export function pollIntervalMs(): number {
   return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 30_000;
 }
 
+function safeName(value: string): string {
+  return value.replace(/[^A-Za-z0-9._:%$-]/g, "_");
+}
+
 function markerPath(senderId: string, paneId = ""): string {
-  const safe = (value: string) => value.replace(/[^A-Za-z0-9._:%$-]/g, "_");
-  const pane = paneId ? `-for-${safe(paneId)}` : "";
-  return join(stateDir(), `reply-to-${safe(senderId)}${pane}_pending`);
+  const pane = paneId ? `-for-${safeName(paneId)}` : "";
+  return join(stateDir(), `reply-to-${safeName(senderId)}${pane}_pending`);
+}
+
+export function recordOutboundExpectation(target: string, monitorId: string, paneId: string): void {
+  if (!target || !monitorId || !paneId) return;
+  const dir = outboundDir();
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `wait-for-${safeName(target)}-from-${safeName(paneId)}_pending`);
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, JSON.stringify({ target, monitorId, paneId, createdAtMs: Date.now() } satisfies OutboundExpectation));
+  renameSync(tmp, path);
+}
+
+function readOutboundExpectations(paneId: string, now = Date.now()): Array<OutboundExpectation & { path: string }> {
+  const dir = outboundDir();
+  if (!paneId || !existsSync(dir)) return [];
+  const ttl = 28_800_000;
+  const rows: Array<OutboundExpectation & { path: string }> = [];
+  for (const name of readdirSync(dir)) {
+    if (!name.startsWith("wait-for-") || !name.endsWith("_pending")) continue;
+    const path = join(dir, name);
+    try {
+      const value = JSON.parse(readFileSync(path, "utf8")) as OutboundExpectation;
+      if (!value.target || !value.monitorId || value.paneId !== paneId || now - value.createdAtMs > ttl) {
+        if (value.paneId === paneId || now - value.createdAtMs > ttl) rmSync(path, { force: true });
+        continue;
+      }
+      rows.push({ ...value, path });
+    } catch {
+      rmSync(path, { force: true });
+    }
+  }
+  return rows;
 }
 
 export function readObligations(now = Date.now(), paneId = ""): Obligation[] {
@@ -204,6 +251,20 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     }
   }
 
+  async function consumeCompletedOutbound(): Promise<string[]> {
+    const expected = readOutboundExpectations(ownPaneId);
+    if (!expected.length) return [];
+    try {
+      const result = await pi.exec(PICKER, ["monitor-list"], { timeout: 1500 });
+      const active = new Set(stdoutOf(result).split("\n").map((line) => line.split("\t")[1]).filter(Boolean));
+      const completed = expected.filter((item) => !active.has(item.monitorId));
+      for (const item of completed) rmSync(item.path, { force: true });
+      return completed.map((item) => item.target);
+    } catch {
+      return [];
+    }
+  }
+
   async function render(ctx: ExtensionContext): Promise<Obligation[]> {
     const obligations = readObligations(Date.now(), ownPaneId);
     const id = await sessionId();
@@ -255,7 +316,13 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     await syncExpectedReplies();
     await render(ctx);
     if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(() => void refresh({}, ctx), pollIntervalMs());
+    pollTimer = setInterval(async () => {
+      await refresh({}, ctx);
+      const completed = await consumeCompletedOutbound();
+      if (completed.length) {
+        pi.sendUserMessage(`xtmux wake: ${completed.join(", ")} completed its monitored work cycle. Inspect the inbox and respond if needed.`, { deliverAs: "followUp" });
+      }
+    }, pollIntervalMs());
     pollTimer.unref?.();
   });
   pi.on("before_agent_start", (event) => {

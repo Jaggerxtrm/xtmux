@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
-import xtmuxInboxReply, { commandAction, readObligations } from "../../extensions/pi-inbox-reply.ts";
+import xtmuxInboxReply, { commandAction, readObligations, recordOutboundExpectation } from "../../extensions/pi-inbox-reply.ts";
 
 type Handler = (event: any, ctx: any) => unknown | Promise<unknown>;
 
@@ -15,6 +15,8 @@ function harness() {
   const statuses = new Map<string, object>();
   let expectedReplies: Array<Record<string, unknown>> = [];
   const pickerCalls: string[][] = [];
+  const sentUserMessages: string[] = [];
+  let monitorRows: string[] = [];
   let failPane = false;
   const ui = {
     setWidget(key: string, lines: string[] | undefined) {
@@ -37,6 +39,7 @@ function harness() {
       }
       pickerCalls.push(args);
       if (args[0] === "message-list") return { stdout: JSON.stringify(expectedReplies) };
+      if (args[0] === "monitor-list") return { stdout: monitorRows.join("\n") };
       if (args[0] === "message-ack") {
         expectedReplies = expectedReplies.filter((message) => message.messageKey !== args[1]);
         return { stdout: `ack\t${args[1]}\t$me\n` };
@@ -48,14 +51,17 @@ function harness() {
       if (args[0] === "message-status") return { stdout: JSON.stringify(statuses.get(args[1]!) ?? {}) };
       throw new Error(`unexpected exec: ${command} ${args.join(" ")}`);
     },
+    sendUserMessage(content: string) { sentUserMessages.push(content); },
   };
   xtmuxInboxReply(pi as any);
   return {
     widgets,
     notifications,
+    sentUserMessages,
     statuses,
     pickerCalls,
     setUnread(value: number) { unread = value; },
+    setMonitorRows(rows: string[]) { monitorRows = rows; },
     setExpectedReplies(messages: Array<Record<string, unknown>>) { expectedReplies = messages; },
     setUnreadFailure(value: boolean) { failUnread = value; },
     setPaneFailure(value: boolean) { failPane = value; },
@@ -172,6 +178,33 @@ describe("Pi mid-idle inbox scan (.36)", () => {
       const calls = h.pickerCalls.length;
       await Bun.sleep(25);
       expect(h.pickerCalls).toHaveLength(calls);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Pi outbound wake (.38)", () => {
+  test("monitor completion consumes pane-owned expectation and wakes Pi", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "xtmux-pi-outbound-wake-"));
+    process.env.XDG_RUNTIME_DIR = dir;
+    process.env.TMUX = "/tmp/mock,1,0";
+    process.env.XTMUX_INBOX_POLL_INTERVAL_S = "0.01";
+    try {
+      recordOutboundExpectation("peer:1.1", "monitor-1", "%me");
+      const h = harness();
+      h.setMonitorRows(["monitor\tmonitor-1\t123\tpeer:1.1\t%peer\tidle\t1\t10\t1\t1"]);
+      await h.emit("session_start");
+      await Bun.sleep(20);
+      expect(h.sentUserMessages).toEqual([]);
+
+      h.setMonitorRows([]);
+      await Bun.sleep(25);
+      expect(h.sentUserMessages).toEqual([
+        "xtmux wake: peer:1.1 completed its monitored work cycle. Inspect the inbox and respond if needed.",
+      ]);
+      expect(h.pickerCalls.filter((args) => args[0] === "monitor-list").length).toBeGreaterThan(1);
+      await h.emit("session_shutdown");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

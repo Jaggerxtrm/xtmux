@@ -22,14 +22,14 @@
  *   XTMUX_PICKER                     (default /home/dawid/dev/xtmux/bin/tmux-session-picker)
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isBashToolResult } from "@earendil-works/pi-coding-agent";
-import { spawn, spawnSync } from "node:child_process";
-import xtmuxInboxReply from "./pi-inbox-reply.ts";
+import { spawnSync } from "node:child_process";
+import xtmuxInboxReply, { recordOutboundExpectation } from "./pi-inbox-reply.ts";
 
 const PICKER =
   process.env.XTMUX_PICKER || "/home/dawid/dev/xtmux/bin/tmux-session-picker";
 const TIMEOUT = process.env.XTMUX_AUTO_MONITOR_TIMEOUT || "8h";
 const INTERVAL = process.env.XTMUX_AUTO_MONITOR_INTERVAL || "60s";
+const TMUX = process.env.XTMUX_TMUX || "tmux";
 // xtmux-3xs.29: colon-separated list of targets to skip entirely (no monitor
 // spawn). Same shape as PATH. Set in smoke-test env so synthetic recipients
 // (alice, dst, smoke:1.99, ...) don't spawn useless monitor-agent daemons.
@@ -39,7 +39,7 @@ const SKIP_TARGETS = new Set(
     .filter((s) => s.length > 0),
 );
 
-function extractTarget(cmd: string): string | null {
+export function extractTarget(cmd: string): string | null {
   // message-send --to <target>
   let m = cmd.match(/message-send\b[^\n]*?(?:--to[= ]|--to\s+)['"]?([^\s'"]+)['"]?/);
   if (m) return m[1] ?? null;
@@ -60,7 +60,7 @@ function extractTarget(cmd: string): string | null {
 // through: better to spawn a monitor than silently drop a wake.
 function targetExists(target: string): boolean {
   try {
-    const r = spawnSync("tmux", ["has-session", "-t", target], {
+    const r = spawnSync(TMUX, ["has-session", "-t", target], {
       stdio: "ignore",
       timeout: 2000,
     });
@@ -70,27 +70,29 @@ function targetExists(target: string): boolean {
   }
 }
 
-function alreadyMonitored(target: string): boolean {
+function monitorIdFor(target: string): string | null {
   const r = spawnSync(PICKER, ["monitor-list"], {
     encoding: "utf8",
     stdio: "pipe",
   });
-  if (r.status !== 0) return false;
+  if (r.status !== 0) return null;
   const lines = (r.stdout || "").trim().split("\n").filter(Boolean);
   for (const l of lines) {
     const parts = l.split("\t");
-    if (parts.length >= 5 && parts[3] === target) return true;
+    if (parts.length >= 5 && parts[3] === target) return parts[1] ?? null;
   }
-  return false;
+  return null;
 }
 
-function fireMonitor(target: string): void {
-  const child = spawn(
+function fireMonitor(target: string): string | null {
+  const result = spawnSync(
     PICKER,
     ["monitor-agent", target, "--wait-for-transition", "--timeout", TIMEOUT, "--interval", INTERVAL],
-    { detached: true, stdio: "ignore" },
+    { encoding: "utf8", stdio: "pipe", timeout: 5000 },
   );
-  child.unref();
+  if (result.status !== 0) return null;
+  const fields = (result.stdout || "").trim().split("\t");
+  return fields[0] === "monitor" ? fields[1] ?? null : null;
 }
 
 export default function xtmuxAutoMonitor(pi: ExtensionAPI): void {
@@ -98,8 +100,7 @@ export default function xtmuxAutoMonitor(pi: ExtensionAPI): void {
   if (process.env.XTMUX_AUTO_MONITOR_DISABLE === "1") return;
 
   pi.on("tool_result", async (event) => {
-    if (!isBashToolResult(event)) return undefined;
-    if (event.isError) return undefined;
+    if (event.toolName !== "bash" || event.isError) return undefined;
 
     const cmd = (event as unknown as { input?: { command?: string } }).input?.command ?? "";
     // Skip commands that already manage monitors — avoids double-arm loops.
@@ -111,11 +112,12 @@ export default function xtmuxAutoMonitor(pi: ExtensionAPI): void {
     if (SKIP_TARGETS.has(target)) return undefined;
     // xtmux-3xs.30: also skip when tmux confirms the target doesn't exist.
     if (!targetExists(target)) return undefined;
-    if (alreadyMonitored(target)) return undefined;
+    const existing = monitorIdFor(target);
+    const monitorId = existing || fireMonitor(target);
+    if (!monitorId) return undefined;
+    if (process.env.TMUX && process.env.TMUX_PANE) recordOutboundExpectation(target, monitorId, process.env.TMUX_PANE);
 
-    fireMonitor(target);
-
-    const note = `\n\n[auto-monitor] armed on ${target} (${TIMEOUT}, ${INTERVAL}) — waiting for its next work cycle.`;
+    const note = `\n\n[auto-monitor] ${existing ? "tracking existing monitor" : "armed"} on ${target} (${TIMEOUT}, ${INTERVAL}) — waiting for its next work cycle.`;
     return { content: [...event.content, { type: "text", text: note }] };
   });
 }
