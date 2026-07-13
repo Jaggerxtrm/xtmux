@@ -25,6 +25,16 @@ interface Obligation {
   beadId: string;
   summary: string;
   acceptedAtMs: number;
+  paneId?: string;
+}
+
+export interface ListedObligation {
+  sender: string;
+  beadId: string;
+  messageKey: string;
+  summary: string;
+  createdAtMs: number;
+  expiresAtMs: number;
 }
 
 interface InboundMessage {
@@ -49,12 +59,13 @@ function ttlMs(): number {
   return Number.isFinite(value) && value >= 0 ? value : 3_600_000;
 }
 
-function markerPath(senderId: string): string {
-  const safe = senderId.replace(/[^A-Za-z0-9._:%$-]/g, "_");
-  return join(stateDir(), `reply-to-${safe}_pending`);
+function markerPath(senderId: string, paneId = ""): string {
+  const safe = (value: string) => value.replace(/[^A-Za-z0-9._:%$-]/g, "_");
+  const pane = paneId ? `-for-${safe(paneId)}` : "";
+  return join(stateDir(), `reply-to-${safe(senderId)}${pane}_pending`);
 }
 
-export function readObligations(now = Date.now()): Obligation[] {
+export function readObligations(now = Date.now(), paneId = ""): Obligation[] {
   const dir = stateDir();
   if (!existsSync(dir)) return [];
   const obligations: Obligation[] = [];
@@ -68,7 +79,7 @@ export function readObligations(now = Date.now()): Obligation[] {
       }
       const value = JSON.parse(readFileSync(path, "utf8")) as Obligation;
       if (!value.senderId || !value.messageKey || !value.beadId) throw new Error("invalid marker");
-      obligations.push(value);
+      if (!paneId || value.paneId === paneId) obligations.push(value);
     } catch {
       rmSync(path, { force: true });
     }
@@ -76,10 +87,22 @@ export function readObligations(now = Date.now()): Obligation[] {
   return obligations.sort((a, b) => a.senderId.localeCompare(b.senderId));
 }
 
-function recordObligation(status: InboundMessage): void {
+export function listObligations(paneId: string, now = Date.now()): ListedObligation[] {
+  if (!paneId) return [];
+  return readObligations(now, paneId).map((item) => ({
+    sender: item.senderId,
+    beadId: item.beadId,
+    messageKey: item.messageKey,
+    summary: item.summary,
+    createdAtMs: item.acceptedAtMs,
+    expiresAtMs: item.acceptedAtMs + ttlMs(),
+  }));
+}
+
+function recordObligation(status: InboundMessage, paneId: string): void {
   const dir = stateDir();
   mkdirSync(dir, { recursive: true });
-  const path = markerPath(status.senderId);
+  const path = markerPath(status.senderId, paneId);
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tmp, JSON.stringify({
     senderId: status.senderId,
@@ -87,12 +110,13 @@ function recordObligation(status: InboundMessage): void {
     beadId: status.beadId,
     summary: status.summary.replace(/\s+/g, " ").trim().slice(0, 240),
     acceptedAtMs: Date.now(),
+    paneId,
   }));
   renameSync(tmp, path);
 }
 
-function clearObligation(senderId: string): void {
-  rmSync(markerPath(senderId), { force: true });
+function clearObligation(senderId: string, paneId: string): void {
+  rmSync(markerPath(senderId, paneId), { force: true });
 }
 
 function commandMatch(command: string, subcommand: string): RegExpMatchArray | null {
@@ -159,7 +183,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
       if (!Array.isArray(messages)) return;
       for (const message of [...messages].reverse()) {
         if (!message.expectsReply || !message.beadId || message.recipientId !== id) continue;
-        recordObligation(message);
+        recordObligation(message, ownPaneId);
         try {
           await pi.exec(PICKER, ["message-ack", message.messageKey, "--by", id], { timeout: 1500 });
         } catch {
@@ -172,7 +196,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
   }
 
   async function render(ctx: ExtensionContext): Promise<Obligation[]> {
-    const obligations = readObligations();
+    const obligations = readObligations(Date.now(), ownPaneId);
     const id = await sessionId();
     if (!id) {
       setWidget(ctx, undefined);
@@ -225,9 +249,9 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     if (!event.isError) {
       if (action.ackKey) {
         const [message, me] = await Promise.all([status(action.ackKey), sessionId()]);
-        if (message?.acked && message.expectsReply && message.beadId && message.recipientId === me) recordObligation(message);
+        if (message?.acked && message.expectsReply && message.beadId && message.recipientId === me) recordObligation(message, ownPaneId);
       }
-      if (action.sendTarget) clearObligation(await canonicalTarget(action.sendTarget));
+      if (action.sendTarget) clearObligation(await canonicalTarget(action.sendTarget), ownPaneId);
     }
     await render(ctx);
   });

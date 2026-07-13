@@ -14,6 +14,7 @@ import { applyRetention } from "./db/retention.ts";
 import { monitorCommand } from "./commands/monitors.ts";
 import { telemetryCommand } from "./commands/telemetry.ts";
 import { auditCommand } from "./commands/audit.ts";
+import { listObligations } from "../extensions/pi-inbox-reply.ts";
 
 function usage(): string {
   return `usage: xtmux-obs <command>
@@ -27,6 +28,7 @@ commands:
   message-ack <message_id> --by <sid>
   message-status <message_key>        print JSON receipt state (V2 only)
   unread-count --for <sid> [--pane %N] print JSON unread summary; --pane scopes to that pane (xtmux-3xs.28)
+  obligations list [--pane %N]     print JSON active reply obligations for current/selected pane
 
   monitor register|adopt|heartbeat|terminate|list|kill   monitor registry (3xs.4)
   telemetry start|finish                                 correlated command runs (3xs.7)
@@ -92,6 +94,16 @@ async function main(argv: string[]): Promise<number> {
         } finally {
           db.close();
         }
+      }
+      case "obligations": {
+        if (argv[3] !== "list") {
+          process.stderr.write("usage: xtmux-obs obligations list [--pane %N]\n");
+          return 2;
+        }
+        const paneFlag = argv.indexOf("--pane", 4);
+        const paneId = paneFlag >= 0 ? argv[paneFlag + 1] ?? "" : process.env.TMUX ? process.env.TMUX_PANE ?? "" : "";
+        process.stdout.write(JSON.stringify(listObligations(paneId)) + "\n");
+        return paneId ? 0 : 2;
       }
       case "obs-migrate": {
         const db = openDb(cfg);

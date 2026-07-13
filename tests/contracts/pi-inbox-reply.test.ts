@@ -150,6 +150,7 @@ describe("Pi sender-declared reply expectations (.33)", () => {
     process.env.TMUX = "/tmp/mock,1,0";
     try {
       const h = harness();
+      await h.emit("session_start");
       h.setExpectedReplies([
         { messageKey: "new", senderId: "$sender", recipientId: "$me", targetPaneId: "%me",
           beadId: "work-new", summary: "newest", expectsReply: true, acked: false },
