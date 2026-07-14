@@ -617,31 +617,6 @@ json_nullable() {
   case "${1:-}" in ''|-) printf 'null' ;; *) printf '"%s"' "$(json_escape "$1")" ;; esac
 }
 
-topology_host_id() {
-  local file="${XTMUX_HOST_ID_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/host-id}" value
-  if [ -s "$file" ]; then
-    REPLY="$(head -n 1 "$file")"
-    return 0
-  fi
-  mkdir -p "$(dirname -- "$file")" 2>/dev/null || true
-  if [ -r /proc/sys/kernel/random/uuid ]; then
-    value="$(cat /proc/sys/kernel/random/uuid)"
-  elif command -v uuidgen >/dev/null 2>&1; then
-    value="$(uuidgen)"
-  else
-    value="$(printf '%08x-%04x-4%03x-%04x-%012x' \
-      "$(date +%s)" "$((RANDOM & 0xffff))" "$((RANDOM & 0xfff))" \
-      "$((0x8000 | (RANDOM & 0x3fff)))" "$RANDOM$(date +%N 2>/dev/null || printf '0')")"
-  fi
-  if (set -C; printf '%s\n' "$value" > "$file") 2>/dev/null; then
-    REPLY="$value"
-  elif [ -s "$file" ]; then
-    REPLY="$(head -n 1 "$file")"
-  else
-    REPLY="$value"
-  fi
-}
-
 topology_number() {
   case "${1:-}" in
     ''|-) printf 'null' ;;
@@ -1646,7 +1621,13 @@ topology_json() {
   done
   [ "$json" = 1 ] || { printf 'usage: topology --json\n' >&2; return 2; }
 
-  topology_host_id
+  local picker_source host_id_source
+  picker_source="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+  host_id_source="$(cd -- "$(dirname -- "$picker_source")/../scripts" && pwd)/xtmux-host-id.sh"
+  source "$host_id_source"
+  unset host_id_source picker_source
+
+  host_id
   local host_id="$REPLY" generated_at_ms="$(date +%s%3N)"
   # One list-panes pass supplies every session, window and pane field. Do not
   # add display-message/show-options calls here: Console needs one coherent

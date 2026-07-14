@@ -45,6 +45,12 @@ done
 target="${TMUX_PANE:-}"
 [ -n "$target" ] || exit 0
 
+host_id_source="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+host_id_source="$(cd -- "$(dirname -- "$host_id_source")" && pwd)/xtmux-host-id.sh"
+[ -r "$host_id_source" ] || host_id_source="$HOME/.tmux/scripts/xtmux-host-id.sh"
+source "$host_id_source"
+unset host_id_source
+
 json_escape() {
   local s="${1:-}"
   s="${s//\\/\\\\}"
@@ -61,43 +67,6 @@ event_log_file() {
   else
     REPLY="${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/events.jsonl"
   fi
-}
-
-gen_uuid() {
-  # Ordered by availability, cheapest first. The last rung is a composite: no
-  # UUID tooling must ever fail an agent turn, and a colliding instance id is
-  # still better than a missing one (it degrades to pane-level precision).
-  if [ -r /proc/sys/kernel/random/uuid ]; then
-    REPLY="$(cat /proc/sys/kernel/random/uuid)"
-  elif command -v uuidgen >/dev/null 2>&1; then
-    REPLY="$(uuidgen)"
-  else
-    REPLY="$(printf '%08x-%04x-4%03x-%04x-%012x' \
-      "$(date +%s)" "$((RANDOM & 0xffff))" "$((RANDOM & 0xfff))" \
-      "$((0x8000 | (RANDOM & 0x3fff)))" "$$$(date +%N 2>/dev/null || printf '0')")"
-  fi
-}
-
-# host_id namespaces every tmux identifier across machines. It is a generated
-# UUID persisted in xtmux's own state dir — never derived from /etc/machine-id,
-# which would leak a stable public fingerprint of the host.
-host_id() {
-  local dir file
-  dir="${XDG_STATE_HOME:-$HOME/.local/state}/xtmux"
-  file="${XTMUX_HOST_ID_FILE:-$dir/host-id}"
-  if [ -s "$file" ]; then
-    REPLY="$(cat "$file")"
-    return 0
-  fi
-  mkdir -p "${file%/*}" 2>/dev/null || true
-  gen_uuid
-  # noclobber makes the create atomic: two panes starting at once agree on the
-  # id written by whichever won, instead of one overwriting the other's.
-  if (set -C; printf '%s\n' "$REPLY" > "$file") 2>/dev/null; then
-    return 0
-  fi
-  [ -s "$file" ] && REPLY="$(cat "$file")"
-  return 0
 }
 
 log_agent_state_event() {
@@ -160,7 +129,7 @@ clear_optional_meta() {
 # id: rotating it per-idle would make every turn look like a new agent, and a
 # pane's Specialists jobs would scatter across phantom instances.
 if [ "$new_instance" = 1 ]; then
-  gen_uuid
+  xtmux_gen_uuid
   set_pane_option @agent_instance_id "$REPLY"
 fi
 
