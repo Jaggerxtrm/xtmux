@@ -953,10 +953,15 @@ _log_cli_query_v1_body() {
 }
 
 log_cli_query() {
-  local type='' pane='' session='' bead='' since='' limit=100 json=0 arg
+  local type='' pane='' session='' bead='' since='' limit=100 json=0 after_id='' arg
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
+      # The cursor. Only meaningful under V2 (it IS the committed SQLite rowid),
+      # so V1 refuses it rather than ignoring it — silently dropping a cursor
+      # would hand the caller a full unpaged dump it would mistake for its page.
+      --after-id) [ "$#" -gt 0 ] || return 2; after_id="$1"; shift ;;
+      --after-id=*) after_id="${arg#--after-id=}" ;;
       --type) [ "$#" -gt 0 ] || return 2; type="$1"; shift ;;
       --type=*) type="${arg#--type=}" ;;
       --pane) [ "$#" -gt 0 ] || return 2; pane="$1"; shift ;;
@@ -974,9 +979,14 @@ log_cli_query() {
     esac
   done
   obs_v2_mode; local mode="$REPLY"
+  if [ -n "$after_id" ] && [ "$mode" != 'on' ]; then
+    command_error "$json" XTMUX_JSON_REQUIRES_V2 "log query --after-id requires the V2 runtime: the cursor is the committed SQLite journal id, which the legacy JSONL store does not have" log 2
+    return $?
+  fi
   if [ "$mode" = 'on' ]; then
     obs_runtime_argv
     local cli_args=(log-query --limit "$limit")
+    [ -n "$after_id" ] && cli_args+=(--after-id "$after_id")
     [ "$json" = 1 ]   && cli_args+=(--json)
     [ -n "$type" ]    && cli_args+=(--type    "$type")
     [ -n "$session" ] && cli_args+=(--session "$session")
@@ -1847,13 +1857,10 @@ DELEGATION — hand work to another pane without fragmenting its prompt.
 
 IDENTITY — who is this pane, for cross-tool job attribution.
   context --current [--json]   the runtime origin of the INVOKING pane, as
-                               xtrm.runtime-origin.v1. Read-only: it never
-                               creates an agent instance. Requires a real tmux
-                               context (both TMUX and TMUX_PANE); outside tmux,
+                               xtrm.runtime-origin.v1. Read-only. Outside tmux,
                                or when the pane cannot be verified against the
-                               live server, it exits non-zero with a structured
-                               error and prints nothing on stdout — never a
-                               guessed binding.
+                               live server, exits non-zero with a structured
+                               error and prints nothing — never a guessed binding.
 
   json output:
     context        schema_version, kind, host_id, tmux_session_id/window_id/
@@ -1861,10 +1868,8 @@ IDENTITY — who is this pane, for cross-tool job attribution.
                    agent_instance_id?, bead_id?, parent_session_id?,
                    captured_at_ms, capture_source, verified
 
-    Specialists calls this on `sp run` to record which pane spawned a job.
-    Absent optional fields are omitted, never emitted as "" — a missing
-    agent_instance_id means pane-level precision, which is honest; an empty
-    string would look like a real binding.
+    Absent optional fields are omitted, never emitted as "": a missing
+    agent_instance_id honestly means pane-level precision; "" would look bound.
 
 SESSIONS & DASHBOARD — inventory for orchestrators.
   dashboard [sessions-only|expanded] [json]   agent-readable inventory
@@ -1899,19 +1904,26 @@ PANE CONTENT — bounded, on-demand terminal preview.
                    returned_lines, max_lines, truncated, content
 
     --lines above max_lines is CLAMPED, never silently honored. truncated means
-    only "there is more above what you were given". Content is opaque to xtmux:
-    never parsed, never journalled.
+    only "there is more above what you were given". Content is never journalled.
 
 OBSERVABILITY — the local event log and command telemetry.
   log emit  <type> [key=value ...]
   log tail  [n]
   log query [--type <t>] [--session <s>] [--pane <%id>] [--bead <id>]
-            [--since <dur>] [--limit <n>] [json]
+            [--since <dur>] [--limit <n>] [--after-id <n>] [json]
   telemetry <git|bd|gh> -- <args ...>          run a command and record it
 
   json output:
     log query      createdAtMs, type, domain, eventKey, sessionId, paneId,
                    beadId, correlationId, plus type-specific detail keys
+
+    --after-id <n> cursor-paged envelope for stream consumers
+                   (xtrm.xtmux.journal-page.v1): journal_id per item, plus
+                   next_after_id / oldest_available_id / latest_available_id /
+                   has_more. The cursor is the committed SQLite journal id;
+                   EXCLUSIVE, strictly ascending — never page by timestamp. A
+                   cursor older than retained history returns a structured
+                   XTMUX_CURSOR_EXPIRED with oldest_available_id to re-anchor on.
 
 HYGIENE — end-of-session cleanup.
   audit                [json]   read-only report: `warning` rows need judgment,

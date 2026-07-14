@@ -35,6 +35,7 @@ field name here or there and the contract test fails.
 | Monitor mutation | arm: `monitorId`, `target`, `sessionId`, `paneId`, `state`, `startedAtMs`; kill: `monitorId`, `status` |
 | Session inventory | `{ "mode", "sessions", "panes" }`; rows retain dashboard concepts as camelCase: IDs/names, state, bead/task, repo/branch, dirty/shared-worktree flags, idle age in milliseconds, and path |
 | Topology snapshot | `schema_version`, `generated_at_ms`, `host`, `sessions[]` → `windows[]` → `panes[]`; snake_case is intentional cross-repository contract `xtrm.xtmux.topology.v1`, with stable `$N`/`@N`/`%N` IDs and optional `agent` metadata |
+| Journal page | `schema_version`, `items[]`, `next_after_id`, `oldest_available_id`, `latest_available_id`, `has_more`; snake_case cross-repository contract `xtrm.xtmux.journal-page.v1`. Each item carries `journal_id` (the committed SQLite rowid — the only monotonic cursor; never page by timestamp or `event_key`), `event_type`, `occurred_at_ms`, `recorded_at_ms`, `host_id`, optional `session_id`/`pane_id`/`agent_instance_id`/`bead_id`/`correlation_id`, and `payload`. `--after-id` is **exclusive**; ordering is strictly `journal_id` ASC; an empty page echoes the requested cursor rather than rewinding to 0. A cursor predating retained history returns `XTMUX_CURSOR_EXPIRED` with `oldest_available_id` to re-anchor on — never a silent jump to the next surviving page |
 | Pane capture | `schema_version`, `pane_id`, `captured_at_ms`, `requested_lines`, `returned_lines`, `max_lines`, `truncated`, `content`; snake_case cross-repository contract `xtrm.xtmux.pane-capture.v1`. `truncated` means only "there is more above what you were given" — a request clamped to `max_lines` against a shorter buffer still returns everything and is not truncated |
 | Audit finding | `severity`, `kind`, `sessionId`, `sessionName`, `paneId`, `paneIndex`, `path`, `repo`, `detail` |
 | Worktree collision | `path`, `sessionCount`, `paneCount`, `sessionNames` |
@@ -73,7 +74,7 @@ Categories are closed: **agent-json** gains/retains structured output for agents
 | `picker:log` | agent-json | split below; tail/query become arrays, emit stays guarded | .4 |
 | `picker:log emit` | guarded-admin | internal event write; later typed events own normal writes | .4 |
 | `picker:log tail` | agent-json | NDJSON → event array | .4 |
-| `picker:log query` | agent-json | NDJSON → filtered event array | .4 |
+| `picker:log query` | agent-json | NDJSON → filtered event array; `--after-id <n>` switches to the cursor-paged `xtrm.xtmux.journal-page.v1` envelope (V2-only — the cursor IS the committed SQLite rowid, which the legacy JSONL store does not have). Without `--after-id` the legacy array shape is unchanged | .4 / j46.5 |
 | `picker:message-send` | agent-json | TSV mutation result → message mutation object | .2 |
 | `picker:message-list` | agent-json | existing `--json` array retained and completed additively | .2 |
 | `picker:message-status` | agent-json | existing `MessageStatus` object retained | .2 |

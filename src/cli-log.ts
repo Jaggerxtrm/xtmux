@@ -6,6 +6,7 @@
  */
 import type { Db } from "./db/connection.ts";
 import { emitEvent, query as journalQuery, tail as journalTail } from "./domains/events/query.ts";
+import { journalPage } from "./domains/events/page.ts";
 import type { JournalRow } from "./domains/events/query.ts";
 import { closeInstance, openInstance } from "./domains/agents/instance.ts";
 import { insertEnvelope } from "./db/journal.ts";
@@ -211,6 +212,45 @@ export function cliLogTail(db: Db, argv: string[]): number {
 
 export function cliLogQuery(db: Db, argv: string[]): number {
   const { flags } = parseArgs(argv);
+
+  // --after-id opts into the cursor-paged envelope (xtrm.xtmux.journal-page.v1).
+  // Without it, the legacy array shape is returned unchanged: existing consumers
+  // and the V1 goldens both depend on it, and a cursor is meaningless to a caller
+  // that never sends one.
+  if (flags.has("after-id")) {
+    const afterId = Number(flags.get("after-id"));
+    if (!Number.isInteger(afterId) || afterId < 0) {
+      process.stderr.write(JSON.stringify({
+        code: "XTMUX_INVALID_ARGUMENT",
+        message: "log query --after-id requires a non-negative integer journal id",
+        detail: { after_id: String(flags.get("after-id")) },
+      }) + "\n");
+      return 2;
+    }
+    const result = journalPage(db, {
+      afterId,
+      limit: flags.has("limit") ? Number(flags.get("limit")) : undefined,
+      type: flags.get("type") as string | undefined,
+      sessionId: flags.get("session") as string | undefined,
+      paneId: flags.get("pane") as string | undefined,
+      beadId: flags.get("bead") as string | undefined,
+    });
+    if (!result.ok) {
+      // A protocol outcome, not a crash: the consumer needs oldest_available_id
+      // to re-anchor, which a stack trace would never give it.
+      process.stderr.write(JSON.stringify(result.error) + "\n");
+      return 2;
+    }
+    if (flags.get("json") === true) {
+      process.stdout.write(JSON.stringify(result.page) + "\n");
+    } else {
+      for (const item of result.page.items) {
+        process.stdout.write(`${item.journal_id}\t${item.event_type}\t${item.recorded_at_ms}\n`);
+      }
+    }
+    return 0;
+  }
+
   const rows = journalQuery(db, {
     type: flags.get("type") as string | undefined,
     sessionId: flags.get("session") as string | undefined,

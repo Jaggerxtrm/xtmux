@@ -1123,6 +1123,108 @@ fi
 
 
 echo
+echo "== journal cursor: log query --after-id (xtmux-j46.5) =="
+
+# Console reconnects and asks "what have I not seen?". It cannot ask by timestamp
+# (two events share a millisecond, clocks move) and cannot ask by event_key (it is
+# optional). The committed rowid is the only honest cursor.
+jc_state="$(mktemp -d)"
+jc_db="$jc_state/xtmux/observability.db"
+jc_obs() { env XDG_STATE_HOME="$jc_state" XTMUX_OBS_DB_PATH="$jc_db" "$ROOT/bin/xtmux-obs" "$@" 2>/dev/null; }
+jc_q() { python3 -c "
+import sqlite3,sys
+try: c=sqlite3.connect(sys.argv[1]); print(c.execute(sys.argv[2]).fetchone()[0])
+except Exception: print('ERR')" "$jc_db" "$1" 2>/dev/null; }
+
+i=1
+while [ "$i" -le 12 ]; do jc_obs log-emit "cursor.probe" seq="$i" >/dev/null; i=$((i+1)); done
+
+# Page the whole journal in chunks and prove every row is seen EXACTLY once, in
+# ascending id order. A DESC page, an inclusive cursor, or an off-by-one in
+# next_after_id all produce either a duplicate or a hole; this walk catches all three.
+page_walk="$(python3 - "$ROOT" "$jc_state" "$jc_db" <<'PY'
+import json,subprocess,sys
+root,state,db=sys.argv[1],sys.argv[2],sys.argv[3]
+env={"XDG_STATE_HOME":state,"XTMUX_OBS_DB_PATH":db,"PATH":"/usr/bin:/bin"}
+seen,cursor,pages=[],0,0
+while True:
+    out=subprocess.run([f"{root}/bin/xtmux-obs","log-query","--after-id",str(cursor),"--limit","5","--json"],
+                       capture_output=True,text=True,env=env).stdout
+    p=json.loads(out); pages+=1
+    seen+=[i["journal_id"] for i in p["items"]]
+    cursor=p["next_after_id"]
+    if not p["has_more"] or pages>20: break
+asc = seen==sorted(seen)
+uniq = len(seen)==len(set(seen))
+print(f"{len(seen)} {asc} {uniq} {cursor}")
+PY
+)"
+set -- $page_walk
+# Compare against what the journal ACTUALLY holds, not the 12 rows this test
+# seeded: the runtime also journals its own migration events, and a hardcoded
+# count would make this assertion track the test's assumptions instead of the
+# store's contents.
+jc_total="$(jc_q "SELECT count(*) FROM event_journal")"
+{ [ "$1" = "$jc_total" ] && [ "$2" = True ] && [ "$3" = True ]; } \
+  && ok "journal cursor: paging returns every row exactly once, ascending, no holes" \
+  || nok "journal cursor: paging returns every row exactly once (got count=$1/$jc_total asc=$2 uniq=$3)"
+
+first_id="$(jc_q "SELECT MIN(id) FROM event_journal")"
+last_id="$(jc_q "SELECT MAX(id) FROM event_journal")"
+
+# Exclusive: the cursor names the last row you HANDLED, not the next one you want.
+# An inclusive cursor redelivers that row on every reconnect, forever.
+excl="$(jc_obs log-query --after-id "$first_id" --limit 1 --json | python3 -c "import json,sys; print(json.load(sys.stdin)['items'][0]['journal_id'])" 2>/dev/null)"
+[ "$excl" = "$((first_id + 1))" ] \
+  && ok "journal cursor: --after-id is exclusive" \
+  || nok "journal cursor: --after-id is exclusive (got $excl, want $((first_id + 1)))"
+
+# Caught up. next_after_id must echo the cursor the caller SENT — returning 0 would
+# rewind a caught-up consumer to the head of the journal and replay everything.
+tail_json="$(jc_obs log-query --after-id "$last_id" --limit 5 --json)"
+tail_probe="$(printf '%s' "$tail_json" | python3 -c "
+import json,sys; p=json.load(sys.stdin)
+print(len(p['items']), p['next_after_id'], p['has_more'], p['oldest_available_id'], p['latest_available_id'])" 2>/dev/null)"
+set -- $tail_probe
+{ [ "$1" = 0 ] && [ "$2" = "$last_id" ] && [ "$3" = False ]; } \
+  && ok "journal cursor: an empty page echoes the requested cursor, never rewinds to 0" \
+  || nok "journal cursor: an empty page echoes the requested cursor (got items=$1 next=$2 has_more=$3)"
+
+{ [ "$4" = "$first_id" ] && [ "$5" = "$last_id" ]; } \
+  && ok "journal cursor: watermarks match MIN/MAX(id) of the journal" \
+  || nok "journal cursor: watermarks match MIN/MAX(id) (got oldest=$4 latest=$5, want $first_id/$last_id)"
+
+# Retention ate the consumer's position. It has a hole it can NEVER fill, so it
+# must be told — silently serving the next surviving page would look like a clean
+# resume while the consumer's state was quietly missing rows forever.
+python3 -c "
+import sqlite3,sys
+c=sqlite3.connect(sys.argv[1]); c.execute('DELETE FROM event_journal WHERE id <= ?', (int(sys.argv[2])+5,)); c.commit()" "$jc_db" "$first_id"
+exp_out="$(jc_obs log-query --after-id "$first_id" --limit 5 --json)"; exp_rc=$?
+exp_err="$(env XDG_STATE_HOME="$jc_state" XTMUX_OBS_DB_PATH="$jc_db" "$ROOT/bin/xtmux-obs" log-query --after-id "$first_id" --limit 5 --json 2>&1 >/dev/null)"
+{ [ "$exp_rc" -ne 0 ] && [ -z "$exp_out" ] \
+    && case "$exp_err" in *XTMUX_CURSOR_EXPIRED*oldest_available_id*) true ;; *) false ;; esac; } \
+  && ok "journal cursor: an expired cursor is a structured refusal carrying oldest_available_id" \
+  || nok "journal cursor: an expired cursor is a structured refusal (rc=$exp_rc out='$exp_out' err='$exp_err')"
+
+# ...but a cursor that merely sits AT the new boundary is still perfectly valid.
+# Treating "oldest-1" as expired would spuriously reset a consumer that lost nothing.
+new_oldest="$(jc_q "SELECT MIN(id) FROM event_journal")"
+ok_out="$(jc_obs log-query --after-id "$((new_oldest - 1))" --limit 5 --json)"; ok_rc=$?
+{ [ "$ok_rc" -eq 0 ] && case "$ok_out" in *'"journal_id":'*) true ;; *) false ;; esac; } \
+  && ok "journal cursor: a cursor at the retention boundary is served, not expired" \
+  || nok "journal cursor: a cursor at the retention boundary is served (rc=$ok_rc)"
+
+# The legacy array shape is what every current consumer and every V1 golden reads.
+# Adding a cursor must not change the answer for a caller that never sends one.
+legacy="$(jc_obs log-query --limit 3 --json)"
+case "$legacy" in
+  \[*) ok "journal cursor: log query without --after-id keeps the legacy array shape" ;;
+  *)   nok "journal cursor: log query without --after-id keeps the legacy array shape (got '$legacy')" ;;
+esac
+rm -rf "$jc_state"
+
+echo
 echo "== rename contract =="
 
 if ! command -v tmux >/dev/null 2>&1; then
