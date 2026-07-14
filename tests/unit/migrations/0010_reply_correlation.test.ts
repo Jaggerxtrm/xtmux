@@ -52,6 +52,12 @@ function createPre0010Fixture(db: ReturnType<typeof openDb>): void {
     ) VALUES
       ('message', '$recipient-a', 101, 1030, 1),
       ('message', '$recipient-b', 102, 1031, 0);
+    INSERT INTO handoffs (
+      id, source_session_id, target_session_id, target_pane_id, bead_id,
+      prompt_file, state, created_at_ms, sent_at_ms, delivery_attempt_id
+    ) VALUES
+      ('handoff-101', '$sender-a', '$recipient-a', '%target-a', 'bead-101',
+       '/tmp/handoff-101.md', 'sent', 1040, 1041, 1);
     INSERT INTO agent_turns (
       id, session_id, pane_id, summary, completed_at_ms, parent_message_id
     ) VALUES
@@ -70,6 +76,7 @@ describe("migration 0010 reply correlation", () => {
         messages: db.raw.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM messages").get()?.n,
         receipts: db.raw.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM message_receipts").get()?.n,
         deliveries: db.raw.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM delivery_attempts").get()?.n,
+        handoffs: db.raw.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM handoffs").get()?.n,
         turns: db.raw.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM agent_turns").get()?.n,
       };
       const beforeReceipts = db.raw.query<{ message_id: number; recipient_id: string; acked_by: string | null }, []>(
@@ -77,6 +84,9 @@ describe("migration 0010 reply correlation", () => {
       ).all();
       const beforeDeliveries = db.raw.query<{ id: number; related_message_id: number | null }, []>(
         "SELECT id, related_message_id FROM delivery_attempts ORDER BY id",
+      ).all();
+      const beforeHandoffs = db.raw.query<{ id: string; delivery_attempt_id: number | null }, []>(
+        "SELECT id, delivery_attempt_id FROM handoffs ORDER BY id",
       ).all();
       const beforeTurns = db.raw.query<{ id: number; parent_message_id: number | null }, []>(
         "SELECT id, parent_message_id FROM agent_turns ORDER BY id",
@@ -90,11 +100,25 @@ describe("migration 0010 reply correlation", () => {
         messages: db.raw.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM messages").get()?.n,
         receipts: db.raw.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM message_receipts").get()?.n,
         deliveries: db.raw.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM delivery_attempts").get()?.n,
+        handoffs: db.raw.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM handoffs").get()?.n,
         turns: db.raw.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM agent_turns").get()?.n,
       }).toEqual(beforeCounts);
       expect(db.raw.query("SELECT message_id, recipient_id, acked_by FROM message_receipts ORDER BY message_id").all()).toEqual(beforeReceipts);
       expect(db.raw.query("SELECT id, related_message_id FROM delivery_attempts ORDER BY id").all()).toEqual(beforeDeliveries);
+      expect(db.raw.query("SELECT id, delivery_attempt_id FROM handoffs ORDER BY id").all()).toEqual(beforeHandoffs);
       expect(db.raw.query("SELECT id, parent_message_id FROM agent_turns ORDER BY id").all()).toEqual(beforeTurns);
+      expect(db.raw.query<{ handoff_id: string; message_id: number }, []>(`
+        SELECT h.id AS handoff_id, d.related_message_id AS message_id
+          FROM handoffs h
+          JOIN delivery_attempts d ON d.id = h.delivery_attempt_id
+         WHERE h.id = 'handoff-101'
+      `).get()).toEqual({ handoff_id: "handoff-101", message_id: 101 });
+      expect(db.raw.query<{ turn_id: number; message_id: number }, []>(`
+        SELECT t.id AS turn_id, m.id AS message_id
+          FROM agent_turns t
+          JOIN messages m ON m.id = t.parent_message_id
+         WHERE t.id = 201
+      `).get()).toEqual({ turn_id: 201, message_id: 101 });
 
       const columns = db.raw.query<{ name: string }, []>("PRAGMA table_info(messages)").all().map((row) => row.name);
       expect(columns).toEqual(expect.arrayContaining([

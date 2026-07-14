@@ -1,4 +1,5 @@
 import type { Db } from "../../db/connection.ts";
+import { DbError, isBusyError } from "../../db/errors.ts";
 import { insertEnvelope } from "../../db/journal.ts";
 import { MessageError } from "./errors.ts";
 
@@ -40,7 +41,7 @@ interface ExistingMessage {
   reply_to_message_id: number | null;
 }
 
-function rejectEnvelope(db: Db, input: SendInput, error: MessageError, nowMs: number): void {
+function rejectEnvelope(db: Db, input: SendInput, error: MessageError | DbError, nowMs: number): void {
   insertEnvelope(db, {
     type: input.replyToMessageId === undefined ? "messages.send.rejected" : "messages.reply.rejected",
     domain: "messages",
@@ -101,6 +102,9 @@ export function sendMessage(db: Db, input: SendInput, now: () => number = Date.n
   const fulfillOriginal = db.raw.prepare<unknown, [number, number, number]>(
     "UPDATE messages SET fulfilled_by_message_id = ?, fulfilled_at_ms = ? WHERE id = ? AND fulfilled_at_ms IS NULL AND cancelled_at_ms IS NULL",
   );
+  const findFulfilledOriginal = db.raw.prepare<{ fulfilled_by_message_id: number | null }, [number]>(
+    "SELECT fulfilled_by_message_id FROM messages WHERE id = ?",
+  );
 
   let result: SendResult = {
     messageId: 0,
@@ -111,7 +115,7 @@ export function sendMessage(db: Db, input: SendInput, now: () => number = Date.n
     replyToMessageId: input.replyToMessageId ?? null,
     fulfilledMessageKey: input.replyToMessageId === undefined ? null : input.messageKey,
   };
-  let rejection: MessageError | null = null;
+  let rejection: MessageError | DbError | null = null;
   let rejectionEnvelopeWritten = false;
   const tx = db.raw.transaction(() => {
     if (expectsReply && input.replyToMessageId != null) {
@@ -264,12 +268,34 @@ export function sendMessage(db: Db, input: SendInput, now: () => number = Date.n
       rejection = new MessageError("XTMUX_ALREADY_FULFILLED", "reply target already fulfilled", {
         messageId: input.replyToMessageId,
       });
+    } else if (input.replyToMessageId != null && isBusyError(error)) {
+      try {
+        const target = findFulfilledOriginal.get(input.replyToMessageId);
+        rejection = target?.fulfilled_by_message_id != null
+          ? new MessageError("XTMUX_ALREADY_FULFILLED", "reply target already fulfilled", {
+            messageId: input.replyToMessageId,
+          })
+          : new DbError("XTMUX_DB_BUSY", "database busy while sending correlated reply", {
+            messageId: input.replyToMessageId,
+          });
+      } catch (reReadError) {
+        if (!isBusyError(reReadError)) throw reReadError;
+        rejection = new DbError("XTMUX_DB_BUSY", "database busy while re-reading correlated reply", {
+          messageId: input.replyToMessageId,
+        });
+      }
     } else {
       throw error;
     }
   }
   if (rejection) {
-    if (!rejectionEnvelopeWritten) rejectEnvelope(db, input, rejection, now());
+    if (!rejectionEnvelopeWritten) {
+      try {
+        rejectEnvelope(db, input, rejection, now());
+      } catch (error) {
+        if (!isBusyError(error)) throw error;
+      }
+    }
     throw rejection;
   }
   return result;

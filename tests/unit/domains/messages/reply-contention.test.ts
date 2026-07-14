@@ -10,32 +10,47 @@ import type { Config } from "../../../../src/config.ts";
 const WORKER_SCRIPT = String.raw`
   import { existsSync, readFileSync, writeFileSync } from "node:fs";
   import { openDb } from "./src/db/connection.ts";
+  import { DbError } from "./src/db/errors.ts";
   import { MessageError } from "./src/domains/messages/errors.ts";
   import { replyMessage } from "./src/domains/messages/reply.ts";
+  import { sendMessage } from "./src/domains/messages/send.ts";
 
   const dbPath = process.env["XTMUX_REPLY_DB"];
   const readyPath = process.env["XTMUX_REPLY_READY"];
   const startPath = process.env["XTMUX_REPLY_START"];
   const resultPath = process.env["XTMUX_REPLY_RESULT"];
   const messageKey = process.env["XTMUX_REPLY_KEY"];
+  const attemptPath = process.env["XTMUX_REPLY_ATTEMPT"];
+  const busyTimeoutMs = Number(process.env["XTMUX_REPLY_BUSY_TIMEOUT_MS"] ?? "3000");
+  const useSendMessage = process.env["XTMUX_REPLY_USE_SEND_MESSAGE"] === "1";
   if (!dbPath || !readyPath || !startPath || !resultPath || !messageKey) {
     throw new Error("contention worker missing environment");
   }
-  const db = openDb({ dbPath, mode: "off", busyTimeoutMs: 3000 });
+  const db = openDb({ dbPath, mode: "off", busyTimeoutMs });
   writeFileSync(readyPath, "ready");
   while (!existsSync(startPath)) await Bun.sleep(2);
+  writeFileSync(attemptPath ?? resultPath + ".attempt", "attempting");
   try {
-    const result = replyMessage(db, {
-      messageKey,
-      replyToMessageKey: "pending-request",
-      senderId: "$target",
-      summary: "reply from " + messageKey,
-    }, () => 2000);
+    const result = useSendMessage
+      ? sendMessage(db, {
+        messageKey,
+        senderId: "$target",
+        recipientId: "$requester",
+        summary: "reply from " + messageKey,
+        replyToMessageId: 1,
+      }, () => 2000)
+      : replyMessage(db, {
+        messageKey,
+        replyToMessageKey: "pending-request",
+        senderId: "$target",
+        summary: "reply from " + messageKey,
+      }, () => 2000);
     writeFileSync(resultPath, JSON.stringify({ ok: true, messageId: result.messageId }));
   } catch (error) {
     writeFileSync(resultPath, JSON.stringify({
       ok: false,
-      code: error instanceof MessageError ? error.code : null,
+      code: error instanceof MessageError || error instanceof DbError ? error.code : null,
+      name: error instanceof Error ? error.name : null,
       message: error instanceof Error ? error.message : String(error),
     }));
   } finally {
@@ -47,6 +62,7 @@ interface WorkerResult {
   ok: boolean;
   messageId?: number;
   code?: string | null;
+  name?: string | null;
   message?: string;
 }
 
@@ -144,6 +160,76 @@ describe("message reply contention", () => {
       }
     } finally {
       if (firstDb) firstDb.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  test("normalizes held write lock while preserving rejection envelope shape", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "xtmux-reply-busy-"));
+    const dbPath = join(dir, "test.db");
+    const readyPath = join(dir, "busy.ready");
+    const startPath = join(dir, "busy.start");
+    const attemptPath = join(dir, "busy.attempt");
+    const resultPath = join(dir, "busy.result");
+    const cfg: Config = { dbPath, mode: "off", busyTimeoutMs: 3000 };
+    const lockDb = openDb(cfg);
+    try {
+      migrate(lockDb);
+      const pending = sendMessage(lockDb, {
+        messageKey: "pending-request",
+        senderId: "$requester",
+        recipientId: "$target",
+        summary: "pending request",
+        expectsReply: true,
+      }, () => 1000);
+      const worker = Bun.spawn([process.execPath, "--eval", WORKER_SCRIPT], {
+        cwd: process.cwd(),
+        env: {
+          XTMUX_REPLY_DB: dbPath,
+          XTMUX_REPLY_READY: readyPath,
+          XTMUX_REPLY_START: startPath,
+          XTMUX_REPLY_ATTEMPT: attemptPath,
+          XTMUX_REPLY_RESULT: resultPath,
+          XTMUX_REPLY_KEY: "busy-reply",
+          XTMUX_REPLY_BUSY_TIMEOUT_MS: "75",
+          XTMUX_REPLY_USE_SEND_MESSAGE: "1",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      await waitForFiles([readyPath]);
+      lockDb.raw.exec("BEGIN IMMEDIATE");
+      writeFileSync(startPath, "go");
+      await waitForFiles([attemptPath]);
+      await Bun.sleep(125);
+      lockDb.raw.exec("COMMIT");
+      expect(await worker.exited).toBe(0);
+
+      const result = readWorkerResult(resultPath);
+      expect(result).toMatchObject({
+        ok: false,
+        code: "XTMUX_DB_BUSY",
+        name: "DbError",
+      });
+      expect(result.message).not.toMatch(/SQLiteError|database is locked|SQLITE_BUSY/i);
+      expect(lockDb.raw.query<{ n: number }, [string]>(
+        "SELECT COUNT(*) AS n FROM messages WHERE message_key = ?",
+      ).get("busy-reply")?.n).toBe(0);
+      expect(lockDb.raw.query<{ n: number }, [number]>(
+        "SELECT COUNT(*) AS n FROM messages WHERE reply_to_message_id = ?",
+      ).get(pending.messageId)?.n).toBe(0);
+      const rejected = lockDb.raw.query<{ payload_json: string }, [string]>(
+        "SELECT payload_json FROM event_journal WHERE type = 'messages.reply.rejected' AND correlation_id = ?",
+      ).get("busy-reply");
+      expect(rejected).toBeDefined();
+      expect(JSON.parse(rejected?.payload_json ?? "{}"))
+        .toEqual({
+          outcome: "rejected",
+          error_code: "XTMUX_DB_BUSY",
+          reply_to_message_id: pending.messageId,
+        });
+    } finally {
+      lockDb.close();
       rmSync(dir, { recursive: true, force: true });
     }
   }, 15_000);
