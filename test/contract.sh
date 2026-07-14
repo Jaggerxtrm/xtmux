@@ -1601,6 +1601,18 @@ except Exception: print('ERR')" "$br_state/xtmux/observability.db" 2>/dev/null)"
     && ok "bridge: an unknown method is refused, never dispatched to the local CLI" \
     || nok "bridge: unknown method refused (got '$unk')"
 
+  # Per-connection request-rate cap: a flood of VALID requests is turned away
+  # before doing work, so a peer cannot pin the event loop with subprocess-backed
+  # calls. All frames here arrive in one window (one process invocation), so once
+  # the cap is reached the rest are refused with a resource-limit error.
+  flood="$(python3 -c "
+for i in range(40): print('{\"id\":%d,\"method\":\"bridge.hello\"}' % i)" | br)"
+  flood_ok="$(printf '%s' "$flood" | grep -c '\"schema_version\":\"xtrm.xtmux.bridge.v1\"' || true)"
+  flood_lim="$(printf '%s' "$flood" | grep -o XTMUX_BRIDGE_RESOURCE_LIMIT | wc -l | tr -d ' ')"
+  { [ "$flood_ok" -ge 1 ] && [ "$flood_lim" -ge 1 ] && [ $((flood_ok + flood_lim)) -eq 40 ]; } \
+    && ok "bridge: a request flood is rate-capped per connection, not all served" \
+    || nok "bridge: request-rate cap (accepted=$flood_ok limited=$flood_lim)"
+
   # Survival. A peer that can kill the server with one bad byte owns a
   # denial-of-service primitive; the NEXT request is what proves we are alive.
   garbage="$(printf '%s\n' 'not json at all' '{"id":"after1","method":"bridge.hello"}' | br)"
