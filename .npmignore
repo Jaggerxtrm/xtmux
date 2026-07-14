@@ -1,0 +1,24 @@
+# package.json files[] is authoritative; keep development-only dot paths excluded.
+.*
+.agents/
+.beads/
+.claude/
+.codex/
+.github/
+.gitnexus/
+.mcp.json
+.pi/
+.serena/
+.specialists/
+.xtrm/
+node_modules/
+test/
+tests/
+docs/*.md
+!docs/INSTALL.md
+!docs/keys.md
+Makefile
+bun.lock
+CLAUDE.md
+AGENTS.md
+tsconfig.json

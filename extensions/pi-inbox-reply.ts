@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, s
 import { join } from "node:path";
 import { coordinationResult } from "./coordination-json.ts";
 
-const PICKER = process.env.XTMUX_PICKER || "/home/dawid/dev/xtmux/bin/tmux-session-picker";
+const PICKER = process.env.XTMUX_PICKER || `${process.env.HOME}/.local/bin/xtmux`;
 const WIDGET = "xtmux-inbox";
 
 interface Obligation {

@@ -2,9 +2,9 @@
 
 Epic: **xtmux-3xs** (supersedes xtmux-ihu).
 PRD: [`docs/ts-sqlite.md`](./ts-sqlite.md) — normative for scope, non-goals, phase sequence.
-This document is the Phase 1 deliverable: architecture decision + Channels audit + schema + identity + output contracts + retention + feature modes + migration + compatibility + benchmark plan.
+This began as the Phase 1 design record and now documents the shipped post-cutover runtime. V2 is default-on; set `XTMUX_OBS_V2=0` only for rollback or compatibility testing. The architecture, schema, identity, migration, compatibility, and benchmark decisions below remain the implementation record.
 
-Anything not stated here inherits the PRD by reference. Anything in conflict — the PRD wins until this doc is amended and reviewed.
+Anything not stated here inherits the PRD by reference. Shipped amendments in this document supersede earlier phase language.
 
 ---
 

@@ -19,14 +19,14 @@
  *   XTMUX_AUTO_MONITOR_INTERVAL      (default 60s)
  *   XTMUX_AUTO_MONITOR_DISABLE=1     (bypass entirely)
  *   XTMUX_AUTO_MONITOR_SKIP_TARGETS  (colon-separated; skip these targets. xtmux-3xs.29)
- *   XTMUX_PICKER                     (default /home/dawid/dev/xtmux/bin/tmux-session-picker)
+ *   XTMUX_PICKER                     (default $HOME/.local/bin/xtmux)
  */
 import type { ExtensionAPI, ExecResult } from "@earendil-works/pi-coding-agent";
 import { coordinationResult } from "./coordination-json.ts";
 import xtmuxInboxReply, { recordOutboundExpectation } from "./pi-inbox-reply.ts";
 
 const PICKER =
-  process.env.XTMUX_PICKER || "/home/dawid/dev/xtmux/bin/tmux-session-picker";
+  process.env.XTMUX_PICKER || `${process.env.HOME}/.local/bin/xtmux`;
 const TIMEOUT = process.env.XTMUX_AUTO_MONITOR_TIMEOUT || "8h";
 const INTERVAL = process.env.XTMUX_AUTO_MONITOR_INTERVAL || "60s";
 const TMUX = process.env.XTMUX_TMUX || "tmux";
