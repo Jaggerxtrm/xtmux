@@ -46,6 +46,24 @@ function hasCoordinationShape(text: string): boolean {
     || has("injection");
 }
 
+function hasAdditionalJsonValue(text: string): boolean {
+  const lines = text.split(/\r?\n/);
+  for (let line = 0; line < lines.length; line++) {
+    const tail = lines.slice(line).join("\n").trimStart();
+    if (tail.startsWith("{")) return true;
+    if (!tail.startsWith("[")) continue;
+    for (let end = 1; end < tail.length; end++) {
+      if (tail[end] !== "]") continue;
+      try {
+        if (Array.isArray(JSON.parse(tail.slice(0, end + 1)))) return true;
+      } catch {
+        // Bracketed diagnostics such as [done] are plain text, not JSON.
+      }
+    }
+  }
+  return false;
+}
+
 function malformedJsonResult(error: unknown): Error {
   return new Error(`Malformed xtmux JSON result: ${error instanceof Error ? error.message : String(error)}`);
 }
@@ -62,7 +80,7 @@ export function coordinationResult(content: unknown): CoordinationResult | null 
     if (hasCoordinationShape(text)) throw malformedJsonResult("incomplete JSON object");
     return null;
   }
-  if (text.slice(objectEnd).split(/\r?\n/).some((line) => /^[\s]*[\[{]/.test(line))) return null;
+  if (hasAdditionalJsonValue(text.slice(objectEnd))) return null;
 
   let value: Record<string, unknown>;
   try {

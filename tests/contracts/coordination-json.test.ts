@@ -6,6 +6,7 @@ test("ignores unrelated JSON, NDJSON, and multi-command JSON", () => {
     '{"status":"running","items":[]}',
     '{"items":[]}\n{"other":"output"}',
     '{"messageKey":"m1","duplicate":false,"senderId":"$s","recipientId":"$r"}\n{"other":"output"}',
+    '{"messageKey":"m1","duplicate":false,"senderId":"$s","recipientId":"$r"}\n["other"]',
     '[{"messageKey":"m1"}]',
   ];
   for (const value of values) {
@@ -29,6 +30,11 @@ test("recognizes exactly one coordination envelope before non-JSON middleware te
     injection: { target: "%recipient", sent: true, doubleEnter: true },
     fulfilment: { messageKey: "reply-m1", replyToMessageKey: "m1", fulfilled: true },
   }))).toEqual({ kind: "safe-send-pointer", target: "%recipient", replyToMessageKey: "m1" });
+  const send = JSON.stringify({ messageKey: "m2", duplicate: false, senderId: "$sender", recipientId: "$recipient" });
+  expect(coordinationResult(`${send}\n[done]`)).toEqual({ kind: "message-send", messageKey: "m2", target: "$recipient" });
+  expect(coordinationResult(`${send}\n[auto-monitor] armed on $recipient`)).toEqual({
+    kind: "message-send", messageKey: "m2", target: "$recipient",
+  });
 });
 
 test("retains actionable errors only for xtmux-shaped malformed output", () => {
