@@ -35,8 +35,15 @@ function baseEnv(session = "$owner-a", pane = "%100"): NodeJS.ProcessEnv {
   };
 }
 
-function run(command: string, args: string[], env = baseEnv(), input?: string) {
-  const result = spawnSync(command, args, { cwd: ROOT, env, input, encoding: "utf8" });
+function run(command: "bash" | "bun" | "node" | "sh", args: string[], env = baseEnv(), input?: string) {
+  const options = { cwd: ROOT, env, input, encoding: "utf8" as const };
+  let result;
+  switch (command) {
+    case "bash": result = spawnSync("bash", args, options); break;
+    case "bun": result = spawnSync("bun", args, options); break;
+    case "node": result = spawnSync("node", args, options); break;
+    case "sh": result = spawnSync("sh", args, options); break;
+  }
   return { status: result.status ?? 1, stdout: String(result.stdout ?? ""), stderr: String(result.stderr ?? "") };
 }
 function cli(args: string[], env = baseEnv()) { return run("bun", [CLI, ...args], env); }
