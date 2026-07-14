@@ -1214,7 +1214,42 @@ else
     && ok "pane capture: a non-%id target is refused, never resolved by name" \
     || nok "pane capture: a non-%id target is refused (rc=$rc out='$out')"
 
+  # Terminal content is the most sensitive payload xtmux touches, and capture is
+  # the one command that returns it. It must stay EPHEMERAL: journaling it would
+  # persist whatever was on screen (tokens, keys, someone else's diff) into an
+  # append-only store that other repos consume as forensic input.
+  cap_sentinel="XTMUXCAPSENTINEL$$"
+  cap_state="$WORK/cap-journal-state"
+  mkdir -p "$cap_state"
+  command tmux -L "$cap_sock" new-window -d -t xtmux-cap "printf '%s\\n' $cap_sentinel; sleep 100" 2>/dev/null
+  cap_sent_pane="$(command tmux -L "$cap_sock" list-panes -a -F '#{pane_id}' | tail -1)"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    command tmux -L "$cap_sock" capture-pane -p -t "$cap_sent_pane" 2>/dev/null \
+      | grep -q "^$cap_sentinel\$" && break
+    sleep 0.2
+  done
+  cap_env() {
+    env XDG_STATE_HOME="$cap_state" XTMUX_OBS_V2=1 \
+      TMUX="$(command tmux -L "$cap_sock" display-message -p '#{socket_path},0,0')" "$@"
+  }
+  # Seed the store first, with a SECOND sentinel. Two reasons this is not one
+  # sentinel and one store: against an absent store, "the content is not there"
+  # passes for the wrong reason; and searching only the SQLite journal misses a
+  # leak into the legacy events.jsonl, which is still written under the same
+  # XDG_STATE_HOME. So: grep the whole state tree (-a: the DB is binary), and let
+  # the probe sentinel prove the tree is the live store the writes actually reach.
+  cap_probe="XTMUXCAPPROBE$$"
+  cap_env "$PICKER" log emit capture.probe "marker=$cap_probe" >/dev/null 2>&1
+  cap_sent_json="$(cap_env "$PICKER" pane capture --pane "$cap_sent_pane" --lines 50 --json 2>/dev/null)"
+  case "$cap_sent_json" in *"$cap_sentinel"*) cap_returned=1 ;; *) cap_returned=0 ;; esac
+  grep -rasq "$cap_probe" "$cap_state" && cap_store_live=1 || cap_store_live=0
+  grep -rasq "$cap_sentinel" "$cap_state" && cap_leaked=1 || cap_leaked=0
+  { [ "$cap_returned" = 1 ] && [ "$cap_store_live" = 1 ] && [ "$cap_leaked" = 0 ]; } \
+    && ok "pane capture: content is returned to the caller and never persisted" \
+    || nok "pane capture: content never persisted (returned=$cap_returned store_live=$cap_store_live leaked=$cap_leaked)"
+
   command tmux -L "$cap_sock" kill-server >/dev/null 2>&1 || true
+  rm -rf "$cap_state"
 fi
 
 
@@ -1559,6 +1594,42 @@ else
       && case "$to_err" in *XTMUX_READY_TIMEOUT*) true ;; *) false ;; esac; } \
     && ok "handoff: --wait-ready times out as a structured refusal, never hangs" \
     || nok "handoff: --wait-ready times out as a structured refusal (rc=$to_rc elapsed=${elapsed}s err='$to_err')"
+
+  # Dry-run is the default, and it must be a REHEARSAL: the whole point of typing
+  # the command without --yes is to see what would happen without any of it having
+  # happened. A dry run that quietly wrote the durable record would make the next
+  # real run a no-op replay of a delegation nobody ever approved.
+  dry_before_h="$(hd_q "SELECT count(*) FROM handoffs")"
+  dry_before_d="$(hd_q "SELECT count(*) FROM delivery_attempts")"
+  dry_out="$(hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$hd_prompt" --handoff-key k-dry --json 2>/dev/null)"
+  { [ "$(hd_q "SELECT count(*) FROM handoffs")" = "$dry_before_h" ] \
+      && [ "$(hd_q "SELECT count(*) FROM delivery_attempts")" = "$dry_before_d" ] \
+      && [ "$(hd_q "SELECT count(*) FROM handoffs WHERE handoff_key='k-dry'")" = 0 ]; } \
+    && ok "handoff: without --yes nothing is sent and nothing is written" \
+    || nok "handoff: without --yes nothing is written (handoffs $dry_before_h -> $(hd_q "SELECT count(*) FROM handoffs"), out='$dry_out')"
+
+  # The handoff row and its monitor are ONE fact: "this delegation is being watched".
+  # If the monitor insert fails and the handoff row survives, the delegation is
+  # durably recorded but nothing is watching it — it hangs forever and no consumer
+  # can tell that from a healthy one. Fault-inject at the store: rename the monitors
+  # table so the second insert throws inside the transaction, and assert the FIRST
+  # insert rolled back with it.
+  hd_sql() { python3 -c "
+import sqlite3,sys
+try:
+  c=sqlite3.connect(sys.argv[1]); c.execute(sys.argv[2]); c.commit(); print('OK')
+except Exception as e: print('ERR', e)" "$hd_db" "$1" 2>/dev/null; }
+  tx_before="$(hd_q "SELECT count(*) FROM handoffs")"
+  hd_sql "ALTER TABLE monitors RENAME TO monitors_faultinject" >/dev/null
+  hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$hd_prompt" --handoff-key k-tx --monitor --yes --json >/dev/null 2>&1
+  tx_rc=$?
+  hd_sql "ALTER TABLE monitors_faultinject RENAME TO monitors" >/dev/null
+  { [ "$tx_rc" -ne 0 ] \
+      && [ "$(hd_q "SELECT count(*) FROM handoffs")" = "$tx_before" ] \
+      && [ "$(hd_q "SELECT count(*) FROM handoffs WHERE handoff_key='k-tx'")" = 0 ] \
+      && [ "$(hd_q "SELECT count(*) FROM monitors WHERE target='$hd_pane'")" != ERR ]; } \
+    && ok "handoff: a failed monitor insert rolls the handoff back — never a watched-by-nobody record" \
+    || nok "handoff: a failed monitor insert rolls the handoff back (rc=$tx_rc handoffs $tx_before -> $(hd_q "SELECT count(*) FROM handoffs"))"
 
   command tmux -L "$hd_sock" kill-server >/dev/null 2>&1 || true
 fi
@@ -1905,6 +1976,10 @@ else
   tmux new-session -d -s "$topo_a" -x 100 -y 30 'sleep 100' 2>/dev/null
   tmux new-session -d -s "$topo_b" -x 90 -y 25 'sleep 100' 2>/dev/null
   tmux split-window -h -t "$topo_a" 'sleep 100' 2>/dev/null
+  # A SECOND window in topo_a. With one window per session, a snapshot that
+  # flattened every pane of a session into a single synthetic window would satisfy
+  # every other assertion here — the window rung has to be forced to carry weight.
+  tmux new-window -d -t "$topo_a" 'sleep 100' 2>/dev/null
   topo_sid="$(tmux display-message -p -t "$topo_a" '#{session_id}' 2>/dev/null)"
   topo_parent_pane="$(tmux list-panes -t "$topo_a" -F '#{pane_id}' 2>/dev/null | tail -1)"
   topo_b_pane="$(tmux list-panes -t "$topo_b" -F '#{pane_id}' 2>/dev/null | head -1)"
@@ -1912,25 +1987,37 @@ else
   tmux set-option -p -t "$topo_parent_pane" @agent_instance_id topology-instance 2>/dev/null || true
   tmux set-option -p -t "$topo_parent_pane" @agent_state running 2>/dev/null || true
   topo_json="$(XDG_STATE_HOME="$WORK/topology-state" XTMUX_OBS_V2=0 "$PICKER" topology --json 2>/dev/null)"
+  # topo_a is 2 windows holding 2 + 1 panes. The per-window pane COUNTS and the
+  # global uniqueness of every pane_id are what pin the shape: a graph that hung
+  # every pane under every window would still satisfy a "find pane P under window
+  # W" lookup for each pane, and only these two catch it.
   printf '%s\n' "$topo_json" | jq -e --arg a "$topo_a" --arg b "$topo_b" \
-    '[.sessions[] | select(.name == $a or .name == $b)] | length == 2 and all(.[]; (.windows | length) == 1)' >/dev/null \
+    '([.sessions[] | select(.name == $a or .name == $b)] | length == 2) and
+     ([.sessions[] | select(.name == $a) | .windows[] | .panes | length] | sort == [1, 2]) and
+     ([.sessions[] | select(.name == $b) | .windows] | flatten | length == 1) and
+     ([.sessions[].windows[].panes[].pane_id] | (length == (unique | length)))' >/dev/null \
     && ok "topology: host -> sessions -> windows nesting" || nok "topology: host -> sessions -> windows nesting"
   printf '%s\n' "$topo_json" | jq -e --arg a "$topo_a" --arg p "$topo_parent_pane" --arg sid "$topo_sid" \
     '(.schema_version == "xtrm.xtmux.topology.v1") and (.host.host_id | length > 0) and
-     ([.sessions[] | select(.name == $a) | .windows[].panes[]] | length == 2) and
+     ([.sessions[] | select(.name == $a) | .windows[].panes[]] | length == 3) and
      ([.sessions[] | select(.name == $a) | .windows[].panes[] | select(.pane_id == $p and .agent.parent_session_id == $sid)] | length == 1)' >/dev/null \
     && ok "topology: stable IDs and parent session metadata" || nok "topology: stable IDs and parent session metadata"
   # ANSI-C quoting makes tabs real; tmux leaves \t literal inside single-quoted formats.
-  topo_expected="$(tmux list-panes -t "$topo_a" -F $'#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_pid}' 2>/dev/null)"
+  # -s widens list-panes from the session's CURRENT window to every pane it owns —
+  # without it the second window's pane is never compared against anything.
+  topo_expected="$(tmux list-panes -s -t "$topo_a" -F $'#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_pid}\t#{window_id}\t#{window_index}' 2>/dev/null)"
   topo_geometry_ok=1
-  while IFS=$'\t' read -r ep ei ea ew eh el et epid; do
+  while IFS=$'\t' read -r ep ei ea ew eh el et epid ewid ewidx; do
     [ -n "$ep" ] || continue
-    if ! printf '%s\n' "$topo_json" | jq -e --arg p "$ep" --argjson i "${ei:-0}" --argjson a "${ea:-0}" --argjson w "${ew:-0}" --argjson h "${eh:-0}" --argjson l "${el:-0}" --argjson t "${et:-0}" --argjson pid "${epid:-0}" \
-      '[.sessions[].windows[].panes[] | select(.pane_id == $p and .pane_index == $i and .active == ($a == 1) and .width == $w and .height == $h and .left == $l and .top == $t and .pid == $pid)] | length == 1' >/dev/null; then
+    # The pane is looked up THROUGH its window: a graph that put the right pane
+    # under the wrong window would pass a flat `.. | .panes[]` scan.
+    if ! printf '%s\n' "$topo_json" | jq -e --arg p "$ep" --argjson i "${ei:-0}" --argjson a "${ea:-0}" --argjson w "${ew:-0}" --argjson h "${eh:-0}" --argjson l "${el:-0}" --argjson t "${et:-0}" --argjson pid "${epid:-0}" --arg wid "${ewid:-}" --argjson widx "${ewidx:-0}" \
+      '[.sessions[].windows[] | select(.window_id == $wid and .window_index == $widx) | .panes[]
+        | select(.pane_id == $p and .pane_index == $i and .active == ($a == 1) and .width == $w and .height == $h and .left == $l and .top == $t and .pid == $pid)] | length == 1' >/dev/null; then
       topo_geometry_ok=0
     fi
   done <<< "$topo_expected"
-  [ "$topo_geometry_ok" = 1 ] && ok "topology: pane geometry/index/active matches tmux" || nok "topology: pane geometry/index/active matches tmux"
+  [ "$topo_geometry_ok" = 1 ] && ok "topology: each pane sits under its own window, with tmux's geometry" || nok "topology: each pane sits under its own window, with tmux's geometry"
   printf '%s\n' "$topo_json" | jq -e --arg b "$topo_b_pane" \
     '[.sessions[].windows[].panes[] | select(.pane_id == $b and ((has("agent") | not) or .agent == null))] | length == 1 and ([.. | objects | keys[]] | any(. == "content" or . == "env" or . == "environment") | not)' >/dev/null \
     && ok "topology: absent agent metadata and no pane content/env" || nok "topology: absent agent metadata and no pane content/env"
