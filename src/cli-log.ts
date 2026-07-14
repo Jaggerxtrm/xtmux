@@ -25,6 +25,16 @@ function parseArgs(argv: string[]): Args {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a.startsWith("--")) {
+      // --flag=value, not just --flag value. The picker accepts both forms on
+      // every command it parses itself, so a runtime command that only accepts
+      // the space form silently rejects a call the rest of the CLI takes — which
+      // is exactly what `log follow --after-id=0` did. Split at the FIRST `=`
+      // so a value may contain one.
+      const eq = a.indexOf("=");
+      if (eq > 2) {
+        flags.set(a.slice(2, eq), a.slice(eq + 1));
+        continue;
+      }
       const key = a.slice(2);
       const next = argv[i + 1];
       if (next !== undefined && !next.startsWith("--")) {

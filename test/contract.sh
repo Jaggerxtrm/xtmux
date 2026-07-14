@@ -1303,6 +1303,17 @@ set -- $live
   && ok "follow: a live follower receives rows committed after it started, once each, in order" \
   || nok "follow: a live follower receives post-start rows (got $2 rows, ordered/unique=$3)"
 
+# --flag=value is accepted everywhere else in the CLI, so a log command that took
+# only the space form would reject a call the rest of the tool accepts. Assert BOTH
+# forms on both cursor commands: the equals form used to die in the runtime's arg
+# parser while the picker happily forwarded it.
+eqf="$(jf_obs log-follow --after-id=0 --once --json | head -1)"
+eqq="$(jf_obs log-query --after-id=0 --limit 1 --json)"
+{ case "$eqf" in *'"journal_id"'*) true ;; *) false ;; esac \
+  && case "$eqq" in *'"journal_id"'*) true ;; *) false ;; esac; } \
+  && ok "follow/query: --after-id=N is accepted, not just --after-id N" \
+  || nok "follow/query: --after-id=N is accepted (follow='$eqf' query='$eqq')"
+
 # A stream with no cursor cannot resume and would dump unbounded history.
 noc="$(jf_obs log-follow --once --json)"; noc_rc=$?
 { [ "$noc_rc" -ne 0 ] && [ -z "$noc" ]; } \
