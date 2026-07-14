@@ -12,6 +12,13 @@ import type { Config } from "../../../../src/config.ts";
 function withDb<T>(fn: (db: ReturnType<typeof openDb>) => T): T {
   const dir = mkdtempSync(join(tmpdir(), "xtmux-page-"));
   const cfg: Config = { dbPath: join(dir, "test.db"), mode: "on", busyTimeoutMs: 3000 };
+  // journalPage() stamps every item with the host id, and resolving that MINTS the
+  // host-id file if it is absent. Isolating only the SQLite path would leave the
+  // test writing into the operator's real ~/.local/state — a unit test that
+  // creates durable identity on the machine running it is a unit test with a side
+  // effect, and on a fresh CI box it would be the thing that defines the host id.
+  const prevHostIdFile = process.env["XTMUX_HOST_ID_FILE"];
+  process.env["XTMUX_HOST_ID_FILE"] = join(dir, "host-id");
   const db = openDb(cfg);
   try {
     migrate(db);
@@ -22,6 +29,8 @@ function withDb<T>(fn: (db: ReturnType<typeof openDb>) => T): T {
     return fn(db);
   } finally {
     db.close();
+    if (prevHostIdFile === undefined) delete process.env["XTMUX_HOST_ID_FILE"];
+    else process.env["XTMUX_HOST_ID_FILE"] = prevHostIdFile;
     rmSync(dir, { recursive: true, force: true });
   }
 }
