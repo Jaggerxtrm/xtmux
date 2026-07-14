@@ -53,6 +53,7 @@ function main() {
     if (!Array.isArray(obligations)) throw new Error("Incompatible obligations list JSON result");
     const invalid = obligations.filter((row) => typeof row?.messageKey !== "string"
       || typeof row?.senderId !== "string" || typeof row?.recipientId !== "string"
+      || typeof row?.createdAtMs !== "number" || !Number.isFinite(row.createdAtMs)
       || monitorTarget(row) === null);
     if (invalid.length > 0) {
       block(`Auto-monitor rejected ${invalid.length} noncanonical target value(s). Inspect or cancel the affected obligations with: xtmux obligations list --json`);
@@ -72,7 +73,9 @@ function main() {
         && monitor?.requesterPaneId === obligation.senderPaneId;
       const sameTarget = monitor?.sessionId === obligation.recipientId
         && (obligation.targetPaneId === null || obligation.targetPaneId === undefined || monitor?.paneId === obligation.targetPaneId);
-      return sameRequester && sameTarget && (monitor.terminalStatus === null || monitor.wakeConsumed === true);
+      const fresh = typeof monitor?.startedAtMs === "number" && Number.isFinite(monitor.startedAtMs)
+        && monitor.startedAtMs >= obligation.createdAtMs;
+      return sameRequester && sameTarget && fresh && (monitor.terminalStatus === null || monitor.wakeConsumed === true);
     }));
     if (unarmed.length === 0) return;
 

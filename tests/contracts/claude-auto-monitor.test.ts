@@ -86,6 +86,7 @@ case "$target" in
   %102|'$102') pane='%102'; session='$102' ;;
   %202|'$202') pane='%202'; session='$202' ;;
   %103|'$103') pane='%103'; session='$103' ;;
+  %104|'$104') pane='%104'; session='$104' ;;
 esac
 format="\${!#}"
 case "$1" in
@@ -100,7 +101,7 @@ case "$1" in
 esac
 `);
   chmodSync(join(BIN, "tmux"), 0o755);
-  for (const pane of ["%100", "%200", "%101", "%201", "%102", "%202", "%103"]) setState(pane, "done");
+  for (const pane of ["%100", "%200", "%101", "%201", "%102", "%202", "%103", "%104"]) setState(pane, "done");
 });
 afterAll(() => rmSync(TEST_ROOT, { recursive: true, force: true }));
 
@@ -156,6 +157,30 @@ describe("Claude SQLite auto-monitor hooks", () => {
     const db = new Database(DB, { readonly: true });
     expect(db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM event_journal WHERE type = 'wait.wake.consumed' AND pane_id = '%200'").get()).toEqual({ count: 1 });
     db.close();
+  });
+
+  test("a later same-target obligation requires a wait created after it", async () => {
+    sendExpected("fresh-a", "$104", "%104");
+    const first = spawn("bun", [CLI, "wait-agent", "%104", "--wait-for-transition", "--consume", "--timeout", "5s", "--interval", "10ms", "--json"], { cwd: ROOT, env: baseEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    await waitUntil(() => monitorRows().some((row) => row.paneId === "%104" && row.terminalStatus === null));
+    expect(stop().stdout).toBe("");
+    setState("%104", "working"); await Bun.sleep(80); setState("%104", "done");
+    expect(await new Promise<number | null>((resolve) => first.on("close", resolve))).toBe(0);
+    expect(stop().stdout).toBe("");
+
+    await Bun.sleep(5);
+    const later = sendExpected("fresh-b", "$104", "%104");
+    const blocked = JSON.parse(stop().stdout);
+    expect(blocked.reason).toContain("wait-agent %104");
+
+    const previousCount = monitorRows().filter((row) => row.paneId === "%104").length;
+    const fresh = spawn("bun", [CLI, "wait-agent", "%104", "--wait-for-transition", "--consume", "--timeout", "5s", "--interval", "10ms", "--json"], { cwd: ROOT, env: baseEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    await waitUntil(() => monitorRows().filter((row) => row.paneId === "%104").length > previousCount);
+    expect(monitorRows().filter((row) => row.paneId === "%104").at(-1)).toMatchObject({ terminalStatus: null });
+    expect(stop().stdout).toBe("");
+    setState("%104", "working"); await Bun.sleep(80); setState("%104", "done");
+    expect(await new Promise<number | null>((resolve) => fresh.on("close", resolve))).toBe(0);
+    expect(later.createdAtMs).toBeLessThanOrEqual(Number(monitorRows().filter((row) => row.paneId === "%104").at(-1)?.startedAtMs));
   });
 
   test("Stop is pane-isolated and loop-safe across stale sessions", () => {
