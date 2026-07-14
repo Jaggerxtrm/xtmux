@@ -164,6 +164,12 @@ const WAIT_COLUMNS = `
   wake_delivered_at_ms, wake_consumed_at_ms, created_at_ms, updated_at_ms, expires_at_ms
 `;
 
+const QUALIFIED_WAIT_COLUMNS = `
+  w.id, w.requester_session_id, w.requester_pane_id, w.target_session_id, w.target_pane_id,
+  w.related_message_id, w.monitor_id, w.state, w.terminal_status, w.terminal_at_ms,
+  w.wake_delivered_at_ms, w.wake_consumed_at_ms, w.created_at_ms, w.updated_at_ms, w.expires_at_ms
+`;
+
 function findWait(db: Db, waitId: string): WaitRow | null {
   return db.raw
     .query<WaitRow, [string]>(`SELECT ${WAIT_COLUMNS} FROM outbound_waits WHERE id = ?`)
@@ -407,7 +413,7 @@ export function replayOutboundWakes(db: Db, nowMs: number): number {
   const tx = db.raw.transaction(() => {
     const rows = db.raw
       .query<WaitRow, []>(
-        `SELECT ${WAIT_COLUMNS}
+        `SELECT ${QUALIFIED_WAIT_COLUMNS}
            FROM outbound_waits AS w
            JOIN monitors AS m ON m.id = w.monitor_id
           WHERE w.state = 'armed' AND m.terminal_status IS NOT NULL`,
