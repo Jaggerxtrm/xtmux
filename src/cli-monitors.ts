@@ -197,27 +197,29 @@ export function cliWaitAgent(db: Db, argv: string[], nowMs: number): number {
     const created = existing?.monitorId
       ? { monitorId: existing.monitorId, waitId: existing.waitId, requester, target, state: liveProbes.observe(target.paneId) }
       : createMonitorAndWait(db, targetName, timeoutMs, intervalMs, nowMs);
-    adopt(db, created.monitorId, process.pid, Date.now());
-    let state = created.state;
-    const transitionRequired = flags.get("wait-for-transition") === true;
-    const startedAtMs = Date.now();
-    let observedWorking = !transitionRequired || isWorking(state);
-    while (true) {
-      if (!observedWorking) {
-        if (isWorking(state)) observedWorking = true;
-      } else if (!isWorking(state)) {
-        finishIfTerminal(db, created.monitorId, state, Date.now());
-        break;
+    if (!existing || existing.terminalStatus === null) {
+      adopt(db, created.monitorId, process.pid, Date.now());
+      let state = created.state;
+      const transitionRequired = flags.get("wait-for-transition") === true;
+      const startedAtMs = Date.now();
+      let observedWorking = !transitionRequired || isWorking(state);
+      while (true) {
+        if (!observedWorking) {
+          if (isWorking(state)) observedWorking = true;
+        } else if (!isWorking(state)) {
+          finishIfTerminal(db, created.monitorId, state, Date.now());
+          break;
+        }
+        if (!transitionRequired && !isWorking(state)) break;
+        if (timeoutMs > 0 && Date.now() - startedAtMs >= timeoutMs) {
+          terminate(db, created.monitorId, "timeout", Date.now());
+          terminalizeOutboundWait(db, created.monitorId, "timeout", Date.now());
+          replayOutboundWakes(db, Date.now());
+          break;
+        }
+        if (intervalMs > 0) spawnSync("sleep", [String(intervalMs / 1000)], { stdio: "ignore" });
+        state = liveProbes.observe(created.target.paneId);
       }
-      if (!transitionRequired && !isWorking(state)) break;
-      if (timeoutMs > 0 && Date.now() - startedAtMs >= timeoutMs) {
-        terminate(db, created.monitorId, "timeout", Date.now());
-        terminalizeOutboundWait(db, created.monitorId, "timeout", Date.now());
-        replayOutboundWakes(db, Date.now());
-        break;
-      }
-      if (intervalMs > 0) spawnSync("sleep", [String(intervalMs / 1000)], { stdio: "ignore" });
-      state = liveProbes.observe(created.target.paneId);
     }
     let wait = listAllWaits(db).find((row) => row.waitId === created.waitId);
     if (!wait) throw new Error("wait registration disappeared");
