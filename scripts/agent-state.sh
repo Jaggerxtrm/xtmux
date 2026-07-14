@@ -135,6 +135,14 @@ if [ "$new_instance" = 1 ]; then
   set_pane_option @agent_instance_id "$REPLY"
 fi
 
+# BEFORE any emit, because emit_v2 reads these from the pane options. A delegated
+# agent is launched as `XTMUX_AGENT_BEAD=... agent-state.sh idle --new-instance`,
+# so with this call left until after the lifecycle emits — where it used to be —
+# the one launch that most needs a bead binding is exactly the one that opens its
+# durable instance without one. openInstance is idempotent, so no later
+# transition can repair that row.
+set_meta_from_env
+
 # Feed the durable agent domain (agent_instances / agent_state_transitions /
 # event_journal). Best-effort and bounded: a hook must never fail an agent turn,
 # and `xtmux` may not be on PATH at all in a bare environment.
@@ -144,16 +152,31 @@ fi
 # process spawns per tool call to discover; the pane option already knows.
 emit_v2() {
   command -v xtmux >/dev/null 2>&1 || return 0
+  # `xtmux log emit` is mode-dependent: with the store set to the legacy JSONL
+  # (XTMUX_OBS_V2=0) it appends to events.jsonl, and in shadow mode it appends
+  # there AND tees to SQLite. But log_agent_state_event below already writes the
+  # V1 journal itself, so routing through it would give every transition a
+  # duplicate agent.state row and inject agent.instance.* / agent.ready rows the
+  # V1 journal has never carried — polluting tail/query and the JSONL->SQLite
+  # migration input. So: skip entirely when the operator has opted out of V2, and
+  # otherwise force the V2-only branch. This feed exists to fill the SQLite agent
+  # domain; it has no business in the legacy store.
+  case "${XTMUX_OBS_V2:-}" in
+    '' | 1 | shadow) ;;
+    *) return 0 ;;
+  esac
   local instance host
   instance="$(tmux show-options -p -t "$target" -qv @agent_instance_id 2>/dev/null || true)"
   host_id; host="$REPLY"
-  timeout 2s xtmux log emit "$@" \
+  XTMUX_OBS_V2=1 timeout 2s xtmux log emit "$@" \
     pane="$target" \
     session="$(tmux display-message -p -t "$target" '#{session_id}' 2>/dev/null || true)" \
     session_name="$(tmux display-message -p -t "$target" '#S' 2>/dev/null || true)" \
     instance_id="$instance" \
     host_id="$host" \
     bead="$(tmux show-options -p -t "$target" -qv @agent_bead 2>/dev/null || true)" \
+    task="$(tmux show-options -p -t "$target" -qv @agent_task 2>/dev/null || true)" \
+    prompt_file="$(tmux show-options -p -t "$target" -qv @agent_prompt_file 2>/dev/null || true)" \
     parent="$(tmux show-options -p -t "$target" -qv @agent_parent_session 2>/dev/null || true)" \
     >/dev/null 2>&1 || true
 }
@@ -172,7 +195,6 @@ fi
 # the picker just renders no badge if the option can't be written.
 tmux set-option -p -t "$target" -q @agent_state "$state" 2>/dev/null || true
 tmux set-option -p -t "$target" -q @agent_last_transition "$(date -Is)" 2>/dev/null || true
-set_meta_from_env
 # off is the explicit lifecycle end marker: keep @agent_state=off for backward
 # compatibility, but clear optional task metadata so previews do not show stale
 # bead/task pointers for a reused pane. @agent_instance_id deliberately survives
