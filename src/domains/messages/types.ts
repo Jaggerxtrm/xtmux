@@ -22,11 +22,6 @@ export interface MessageRow {
   payload_json: string | null;
   expects_reply: number;
   created_at_ms: number;
-  reply_to_message_id: number | null;
-  fulfilled_by_message_id: number | null;
-  fulfilled_at_ms: number | null;
-  cancelled_at_ms: number | null;
-  cancel_reason: string | null;
 }
 
 export interface ReceiptRow {
@@ -40,6 +35,14 @@ export interface ReceiptRow {
 export interface MessageWithReceipt extends MessageRow {
   acked_at_ms: number | null;
   acked_by: string | null;
+}
+
+export interface MessageWithReplyState extends MessageWithReceipt {
+  reply_to_message_id: number | null;
+  fulfilled_by_message_id: number | null;
+  fulfilled_at_ms: number | null;
+  cancelled_at_ms: number | null;
+  cancel_reason: string | null;
   reply_status: ReplyStatus;
   fulfilled_by_message_key: string | null;
   correlated_reply_key: string | null;
