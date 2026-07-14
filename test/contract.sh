@@ -838,9 +838,67 @@ c=sqlite3.connect(sys.argv[1]); print(c.execute(\"SELECT instance_id FROM event_
     && ok "readiness: a pane with no agent emits no agent.ready" \
     || nok "readiness: a pane with no agent emits no agent.ready"
 
+  # A DELEGATED agent is launched exactly like this: the bead lives in the
+  # environment, and agent-state.sh is what copies it into the pane options. If
+  # the lifecycle emits run before that copy, the instance row opens with no bead
+  # — and openInstance is idempotent, so no later transition ever repairs it. That
+  # silently breaks the one binding Specialists needs: job -> pane -> bead.
+  env TMUX="$rl_tmuxenv" TMUX_PANE="$bare" XDG_STATE_HOME="$rl_state" \
+    XTMUX_OBS_V2=1 PATH="$rl_bin:$PATH" \
+    XTMUX_AGENT_BEAD=xtmux-j46.7 XTMUX_AGENT_TASK='delegated task' \
+    "$AGENT_STATE" idle --new-instance >/dev/null 2>&1
+  d_bead="$(rl_q "SELECT bead_id FROM agent_instances WHERE pane_id='$bare'")"
+  d_task="$(rl_q "SELECT task FROM agent_instances WHERE pane_id='$bare'")"
+  { [ "$d_bead" = xtmux-j46.7 ] && [ "$d_task" = 'delegated task' ]; } \
+    && ok "readiness: a delegated launch binds bead/task to the instance it opens" \
+    || nok "readiness: a delegated launch binds bead/task to the instance (got bead='$d_bead' task='$d_task')"
+
+  [ "$(rl_q "SELECT count(*) FROM event_journal WHERE type='agent.ready' AND bead_id='xtmux-j46.7'")" = 1 ] \
+    && ok "readiness: the agent.ready envelope carries the bead the agent was launched for" \
+    || nok "readiness: the agent.ready envelope carries the bead the agent was launched for"
+
   command tmux -L "$rl_sock" kill-server >/dev/null 2>&1 || true
 fi
 rm -rf "$rl_state" "$rl_bin"
+
+# The V2 feed must stay out of the LEGACY journal. agent-state.sh already writes
+# events.jsonl itself, and `xtmux log emit` is store-dependent: with V2 off it
+# appends there too. Routing the feed through it gives every transition a
+# duplicate agent.state row and injects agent.instance.*/agent.ready rows the V1
+# journal has never carried — which pollutes tail/query and, worse, becomes input
+# to the JSONL->SQLite migration.
+v1_sock="xtmux-v1feed-$$"
+v1_state="$(mktemp -d)"
+v1_bin="$(mktemp -d)"
+printf '#!/bin/sh\nexec %s/bin/tmux-session-picker "$@"\n' "$ROOT" > "$v1_bin/xtmux"
+chmod +x "$v1_bin/xtmux"
+if ! command tmux -L "$v1_sock" -f /dev/null new-session -d -s xtmux-v1feed 'sleep 100' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m legacy-journal isolation (cannot start isolated tmux server)\n'
+else
+  v1_pane="$(command tmux -L "$v1_sock" list-panes -a -F '#{pane_id}' | head -1)"
+  v1_env="$(command tmux -L "$v1_sock" display-message -p '#{socket_path},0,0')"
+  v1_log="$v1_state/xtmux/events.jsonl"
+  v1() {
+    env TMUX="$v1_env" TMUX_PANE="$v1_pane" XDG_STATE_HOME="$v1_state" \
+      XTMUX_OBS_V2=0 PATH="$v1_bin:$PATH" "$AGENT_STATE" "$@" >/dev/null 2>&1
+  }
+  v1 idle --new-instance; v1 running; v1 off
+
+  # grep -c prints 0 AND exits 1 on no-match, so `|| echo 0` would append a
+  # SECOND zero and the comparison would never match. Take the count only.
+  n_state="$(grep -c '"type":"agent.state"' "$v1_log" 2>/dev/null || true)"
+  [ "$n_state" = 3 ] \
+    && ok "legacy journal: one agent.state row per transition, not two" \
+    || nok "legacy journal: one agent.state row per transition, not two (got $n_state)"
+
+  n_life="$(grep -c 'agent\.instance\.\|agent\.ready' "$v1_log" 2>/dev/null || true)"
+  [ "$n_life" = 0 ] \
+    && ok "legacy journal: V2-only lifecycle events never leak into events.jsonl" \
+    || nok "legacy journal: V2-only lifecycle events never leak into events.jsonl (got $n_life)"
+
+  command tmux -L "$v1_sock" kill-server >/dev/null 2>&1 || true
+fi
+rm -rf "$v1_state" "$v1_bin"
 
 echo
 echo "== runtime-origin contract: xtmux context --current --json (xtmux-j46.2) =="
