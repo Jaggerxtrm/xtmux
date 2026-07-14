@@ -93,7 +93,7 @@ describe("migration 0010 reply correlation", () => {
       ).all();
 
       expect(db.raw.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()?.foreign_keys).toBe(1);
-      expect(migrate(db).applied).toEqual([10]);
+      expect(migrate(db).applied).toEqual([10, 11]);
       expect(db.raw.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()?.foreign_keys).toBe(1);
       expect(db.raw.query("PRAGMA foreign_key_check").all()).toEqual([]);
       expect({
