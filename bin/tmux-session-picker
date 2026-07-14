@@ -810,7 +810,7 @@ json_requested() {
 json_command_state() {
   local command="$1" subcommand="${2:-}"
   case "$command:$subcommand" in
-    message-list:*|message-status:*|unread-count:*|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|safe-send-pointer:*|handoff:*|message-send:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|context:--current|pane:capture) REPLY='ready' ;;
+    message-list:*|message-status:*|unread-count:*|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|safe-send-pointer:*|handoff:*|message-send:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|log:follow|context:--current|pane:capture) REPLY='ready' ;;
     *) REPLY='unsupported' ;;
   esac
 }
@@ -1021,8 +1021,31 @@ log_cli() {
     emit) log_cli_emit "$@" ;;
     tail) log_cli_tail "$@" ;;
     query) log_cli_query "$@" ;;
-    *) printf 'usage: log <emit|tail|query> ...\n' >&2; return 2 ;;
+    follow) log_cli_follow "$@" ;;
+    *) printf 'usage: log <emit|tail|query|follow> ...\n' >&2; return 2 ;;
   esac
+}
+
+# log follow --after-id N — the committed-event stream (gaps doc 6.4).
+#
+# V2-only, for the same reason as the cursor: the id being followed IS the
+# committed SQLite rowid. exec into the runtime rather than capturing it — this is
+# an unbounded stream, and a command substitution would buffer it forever and
+# swallow the SIGINT/SIGTERM that is the normal way a follower ends.
+log_cli_follow() {
+  local json=0 arg
+  for arg in "$@"; do [ "$arg" = '--json' ] && json=1; done
+  obs_v2_mode
+  if [ "$REPLY" != 'on' ]; then
+    command_error "$json" XTMUX_JSON_REQUIRES_V2 "log follow requires the V2 runtime: the stream cursor is the committed SQLite journal id, which the legacy JSONL store does not have" log 2
+    return $?
+  fi
+  if ! obs_available; then
+    command_error "$json" XTMUX_JSON_BACKEND_UNAVAILABLE "log follow backend is unavailable" log 1
+    return $?
+  fi
+  obs_runtime_argv
+  exec "${OBS_ARGV[@]}" log-follow "$@"
 }
 
 # context --current [--json] — the runtime-origin DTO Specialists reads on every
@@ -1867,9 +1890,8 @@ IDENTITY — who is this pane, for cross-tool job attribution.
                    pane_id (stable $N/@N/%N ids, never names or indexes),
                    agent_instance_id?, bead_id?, parent_session_id?,
                    captured_at_ms, capture_source, verified
-
-    Absent optional fields are omitted, never emitted as "": a missing
-    agent_instance_id honestly means pane-level precision; "" would look bound.
+                   absent optional fields are OMITTED, never "" (see
+                   docs/json-command-api.md)
 
 SESSIONS & DASHBOARD — inventory for orchestrators.
   dashboard [sessions-only|expanded] [json]   agent-readable inventory
@@ -1896,32 +1918,33 @@ SESSIONS & DASHBOARD — inventory for orchestrators.
 
 PANE CONTENT — bounded, on-demand terminal preview.
   pane capture --pane <%id> [--lines N] [--json]
-                   the last N lines of one pane, ANSI escapes intact. Kept out
-                   of topology: topology is identity and stays cheap to poll.
+                   the last N lines of one pane, ANSI escapes intact
 
   json output:
     pane capture   schema_version, pane_id, captured_at_ms, requested_lines,
                    returned_lines, max_lines, truncated, content
 
     --lines above max_lines is CLAMPED, never silently honored. truncated means
-    only "there is more above what you were given". Content is never journalled.
+    only "there is more above what you were given". Never journalled.
 
 OBSERVABILITY — the local event log and command telemetry.
   log emit  <type> [key=value ...]
   log tail  [n]
   log query [--type <t>] [--session <s>] [--pane <%id>] [--bead <id>]
             [--since <dur>] [--limit <n>] [--after-id <n>] [json]
+  log follow --after-id <n> [--interval <ms>] [--once] [json]
+            NDJSON stream of committed journal items — same envelope as the
+            log query page items, not a second schema. SIGINT/SIGTERM exit 0.
   telemetry <git|bd|gh> -- <args ...>          run a command and record it
 
   json output:
     log query      createdAtMs, type, domain, eventKey, sessionId, paneId,
                    beadId, correlationId, plus type-specific detail keys
 
-    --after-id <n> cursor-paged envelope for stream consumers
-                   (xtrm.xtmux.journal-page.v1): journal_id per item, plus
-                   next_after_id / oldest_available_id / latest_available_id /
-                   has_more. The cursor is the committed SQLite journal id;
-                   EXCLUSIVE, strictly ascending — never page by timestamp. A
+    --after-id <n> cursor-paged envelope (xtrm.xtmux.journal-page.v1): journal_id
+                   per item, plus next_after_id / oldest_available_id /
+                   latest_available_id / has_more. Cursor = committed SQLite
+                   journal id; EXCLUSIVE, ascending; never page by timestamp. A
                    cursor older than retained history returns a structured
                    XTMUX_CURSOR_EXPIRED with oldest_available_id to re-anchor on.
 

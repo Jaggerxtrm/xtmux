@@ -74,6 +74,7 @@ Categories are closed: **agent-json** gains/retains structured output for agents
 | `picker:log` | agent-json | split below; tail/query become arrays, emit stays guarded | .4 |
 | `picker:log emit` | guarded-admin | internal event write; later typed events own normal writes | .4 |
 | `picker:log tail` | agent-json | NDJSON → event array | .4 |
+| `picker:log follow` | agent-json | NDJSON stream of committed journal items, each identical to a `log query` page item — deliberately NOT a second event schema. V2-only (the cursor is the committed SQLite rowid). Requires `--after-id`: a stream with no cursor cannot resume and would dump unbounded history. SIGINT/SIGTERM exit 0 | j46.6 |
 | `picker:log query` | agent-json | NDJSON → filtered event array; `--after-id <n>` switches to the cursor-paged `xtrm.xtmux.journal-page.v1` envelope (V2-only — the cursor IS the committed SQLite rowid, which the legacy JSONL store does not have). Without `--after-id` the legacy array shape is unchanged | .4 / j46.5 |
 | `picker:message-send` | agent-json | TSV mutation result → message mutation object | .2 |
 | `picker:message-list` | agent-json | existing `--json` array retained and completed additively | .2 |
@@ -125,6 +126,7 @@ Compiled plumbing remains documented even when it is not exposed as a picker or 
 | `obs:log-query` | agent-json | NDJSON → array in JSON mode | .4 |
 | `obs:delivery-record` | guarded-admin | picker-internal delivery evidence | .4 |
 | `obs:context` | agent-json | resolves the invoking pane → `xtrm.runtime-origin.v1`; cross-repo contract consumed by xtrm-dev/specialists; opens no DB | j46.2 |
+| `obs:log-follow` | agent-json | polling stream over `journalPage()` — one item per line, same envelope as the page. Advances its cursor only AFTER a row is written, so a crash mid-line replays a row (absorbed by `event_key`) rather than skipping it | j46.6 |
 | `obs:pane` | agent-json | `pane capture` → `xtrm.xtmux.pane-capture.v1`; bounded at `max_lines`, over-large requests clamped not rejected; opens no DB; content never journalled | j46.4 |
 | `obs:monitor` | agent-json | mixed dispatcher; only list is a normal query | .2 |
 | `obs:monitor:register` | guarded-admin | poller-internal mutation | .2 |

@@ -6,7 +6,7 @@ import { checkHealth } from "./db/health.ts";
 import { DbError } from "./db/errors.ts";
 import { MessageError } from "./domains/messages/errors.ts";
 import { cliMessageAck, cliMessageList, cliMessageSend, cliMessageStatus, cliUnreadCount } from "./cli-messages.ts";
-import { cliLogEmit, cliLogTail, cliLogQuery } from "./cli-log.ts";
+import { cliLogEmit, cliLogTail, cliLogQuery, cliLogFollow } from "./cli-log.ts";
 import { recordDelivery } from "./domains/deliveries/attempt.ts";
 import type { DeliveryKind } from "./domains/deliveries/attempt.ts";
 import { runMigration } from "./migration/runner.ts";
@@ -34,6 +34,7 @@ commands:
   obligations list [--pane %N] [--json] print active reply obligations; JSON mode requires a pane
   log-tail [N] [--json]             print NDJSON or one JSON event array
   log-query [filters] [--json]      query NDJSON or one JSON event array
+  log-follow --after-id <n>         stream committed journal items (NDJSON)
 
   monitor register|adopt|heartbeat|terminate|list|kill   monitor registry; list/kill accept --json (3xs.4)
   telemetry start|finish                                 correlated command runs (3xs.7)
@@ -247,6 +248,7 @@ async function main(argv: string[]): Promise<number> {
       case "log-emit":
       case "log-tail":
       case "log-query":
+      case "log-follow":
       case "delivery-record": {
         const db = openDb(cfg);
         try {
@@ -261,6 +263,7 @@ async function main(argv: string[]): Promise<number> {
             case "log-emit":         return cliLogEmit(db, rest);
             case "log-tail":         return cliLogTail(db, rest);
             case "log-query":        return cliLogQuery(db, rest);
+            case "log-follow":       return await cliLogFollow(db, rest);
             case "delivery-record":  return cliDeliveryRecord(db, rest);
           }
         } finally {
