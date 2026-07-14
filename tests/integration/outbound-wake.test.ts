@@ -1,6 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../../src/config.ts";
 import { openDb, type Db } from "../../src/db/connection.ts";
@@ -19,10 +18,41 @@ import {
   OutboundWaitOwnershipError,
   OutboundWaitTargetMismatchError,
 } from "../../src/domains/monitors/outbound-wake.ts";
-import { register, terminate } from "../../src/domains/monitors/store.ts";
+import {
+  adopt,
+  kill,
+  reconcileAll,
+  register,
+  terminate,
+} from "../../src/domains/monitors/store.ts";
+import type { TerminalStatus } from "../../src/domains/monitors/terminal.ts";
+
+const TEST_ROOT = mkdtempSync("/tmp/xtmux-outbound-wake-");
+const ISOLATED_ENV_KEYS = [
+  "HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_STATE_HOME",
+  "XDG_RUNTIME_DIR",
+  "TMPDIR",
+  "TMUX_TMPDIR",
+] as const;
+const previousEnv = new Map<string, string | undefined>(
+  ISOLATED_ENV_KEYS.map((key) => [key, process.env[key]]),
+);
+for (const key of ISOLATED_ENV_KEYS) process.env[key] = TEST_ROOT;
+
+afterAll(() => {
+  for (const key of ISOLATED_ENV_KEYS) {
+    const value = previousEnv.get(key);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  rmSync(TEST_ROOT, { recursive: true, force: true });
+});
 
 function setup(): { db: Db; path: string; closeDb: () => void; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "xtmux-outbound-wake-"));
+  const dir = mkdtempSync(join(TEST_ROOT, "case-"));
   const path = join(dir, "test.db");
   const cfg: Config = { dbPath: path, mode: "off", busyTimeoutMs: 3000 };
   const db = openDb(cfg);
@@ -68,6 +98,30 @@ function makeMonitor(db: Db, monitorId = "monitor-1"): void {
   });
 }
 
+function armMonitorWait(db: Db, monitorId = "monitor-1"): void {
+  makeWait(db);
+  makeMonitor(db, monitorId);
+  armOutboundWait(db, {
+    waitId: "wait-1",
+    monitorId,
+    requesterSessionId: "$requester",
+    requesterPaneId: "%requester",
+    nowMs: 2000,
+  });
+}
+
+function expectTerminalUnconsumed(
+  db: Db,
+  terminalStatus: TerminalStatus,
+  nowMs: number,
+): void {
+  expect(replayOutboundWakes(db, nowMs)).toBe(1);
+  expect(getOutboundWait(db, "wait-1", "$requester", "%requester")).toMatchObject({
+    state: "terminal-unconsumed",
+    terminalStatus,
+  });
+}
+
 describe("outbound wake migration", () => {
   test("creates requester-owned state table and idempotent indexes", () => {
     const { db, cleanup } = setup();
@@ -85,6 +139,53 @@ describe("outbound wake migration", () => {
         )
         .get();
       expect(indexes?.n).toBe(5);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("terminal monitor outbound wakes", () => {
+  test("killed monitor becomes terminal-unconsumed", () => {
+    const { db, cleanup } = setup();
+    try {
+      armMonitorWait(db);
+      const signalled: number[] = [];
+      adopt(db, "monitor-1", 4321, 2500);
+      expect(kill(db, {
+        signal: (pid) => signalled.push(pid),
+      }, "monitor-1", 3000)).toBe("killed\tmonitor-1");
+      expect(signalled).toEqual([4321]);
+      expectTerminalUnconsumed(db, "killed", 3001);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("target-gone monitor becomes terminal-unconsumed", () => {
+    const { db, cleanup } = setup();
+    try {
+      armMonitorWait(db);
+      expect(reconcileAll(db, {
+        pidAlive: () => true,
+        paneAlive: () => false,
+      }, 3000)).toEqual([{ id: "monitor-1", status: "target_gone" }]);
+      expectTerminalUnconsumed(db, "target_gone", 3001);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("process-gone monitor becomes terminal-unconsumed", () => {
+    const { db, cleanup } = setup();
+    try {
+      armMonitorWait(db);
+      adopt(db, "monitor-1", 4321, 2500);
+      expect(reconcileAll(db, {
+        pidAlive: () => false,
+        paneAlive: () => true,
+      }, 3000)).toEqual([{ id: "monitor-1", status: "process_gone" }]);
+      expectTerminalUnconsumed(db, "process_gone", 3001);
     } finally {
       cleanup();
     }

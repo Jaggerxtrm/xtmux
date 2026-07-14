@@ -13,6 +13,7 @@ import { migration as m0007 } from "./migrations/0007_handoffs.ts";
 import { migration as m0008 } from "./migrations/0008_migration_and_shadow.ts";
 import { migration as m0009 } from "./migrations/0009_message_reply_expectation.ts";
 import { migration as m0010 } from "./migrations/0010_reply_correlation.ts";
+import { migration as m0011 } from "./migrations/0011_outbound_wake_ownership.ts";
 
 export interface Migration {
   readonly version: number;
@@ -20,7 +21,7 @@ export interface Migration {
   readonly up: string;
 }
 
-export const MIGRATIONS: readonly Migration[] = [m0001, m0002, m0003, m0004, m0007, m0008, m0009, m0010];
+export const MIGRATIONS: readonly Migration[] = [m0001, m0002, m0003, m0004, m0007, m0008, m0009, m0010, m0011];
 
 const SCHEMA_MIGRATIONS_DDL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
