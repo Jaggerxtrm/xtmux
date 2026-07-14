@@ -23,7 +23,7 @@ function pickerJson(args, command) {
 }
 
 function targetExists(target) {
-  const result = spawnSync("tmux", ["has-session", "-t", target], { stdio: "ignore", timeout: 2000 });
+  const result = spawnSync("tmux", ["display-message", "-p", "-t", target, "#{pane_id}"], { stdio: "ignore", timeout: 2000 });
   return result.status !== 1;
 }
 
@@ -31,8 +31,15 @@ function block(reason) {
   process.stdout.write(JSON.stringify({ decision: "block", reason: reason.slice(0, 1000) }) + "\n");
 }
 
-function commandFor(obligation) {
-  const target = obligation.targetPaneId || obligation.recipientId;
+const CANONICAL_TMUX_HANDLE = /^[$%][0-9]+$/;
+
+function monitorTarget(obligation) {
+  const target = obligation?.targetPaneId || obligation?.recipientId;
+  return typeof target === "string" && CANONICAL_TMUX_HANDLE.test(target) ? target : null;
+}
+
+function commandFor(target) {
+  if (!CANONICAL_TMUX_HANDLE.test(target)) throw new Error("noncanonical monitor target");
   return `Monitor(command: "xtmux wait-agent ${target} --wait-for-transition --consume --timeout 30m --interval 30s", description: "reply from ${target}", timeout_ms: 1800000)`;
 }
 
@@ -44,11 +51,17 @@ function main() {
   try {
     const obligations = pickerJson(["obligations", "list", "--json"], "obligations list");
     if (!Array.isArray(obligations)) throw new Error("Incompatible obligations list JSON result");
+    const invalid = obligations.filter((row) => typeof row?.messageKey !== "string"
+      || typeof row?.senderId !== "string" || typeof row?.recipientId !== "string"
+      || monitorTarget(row) === null);
+    if (invalid.length > 0) {
+      block(`Auto-monitor rejected ${invalid.length} noncanonical target value(s). Inspect or cancel the affected obligations with: xtmux obligations list --json`);
+      return;
+    }
     const pending = obligations.filter((row) => {
-      const target = row?.targetPaneId || row?.recipientId;
-      return typeof row?.messageKey === "string" && typeof row?.senderId === "string"
-        && typeof row?.recipientId === "string" && typeof target === "string"
-        && !SKIP_TARGETS.has(row.recipientId) && !SKIP_TARGETS.has(target) && targetExists(target);
+      const target = monitorTarget(row);
+      return target !== null && !SKIP_TARGETS.has(row.recipientId)
+        && !SKIP_TARGETS.has(target) && targetExists(target);
     });
     if (pending.length === 0) return;
 
@@ -63,11 +76,11 @@ function main() {
     }));
     if (unarmed.length === 0) return;
 
-    const unique = [...new Map(unarmed.map((row) => [row.targetPaneId || row.recipientId, row])).values()];
+    const targets = [...new Set(unarmed.map(monitorTarget))];
     block([
-      `Durable replies are expected for ${unique.map((row) => row.targetPaneId || row.recipientId).join(", ")}, but this pane has no active or consumed SQLite wait.`,
+      `Durable replies are expected for ${targets.join(", ")}, but this pane has no active or consumed SQLite wait.`,
       "Arm each native Claude wake exactly as follows:",
-      ...unique.map(commandFor),
+      ...targets.map(commandFor),
       "For a one-way message, send it with --expects-reply=false instead of bypassing this gate.",
     ].join("\n\n"));
   } catch (error) {

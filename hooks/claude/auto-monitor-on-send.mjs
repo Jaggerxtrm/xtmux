@@ -50,7 +50,7 @@ function expectedMessage(response) {
 }
 
 function targetExists(target) {
-  const result = spawnSync("tmux", ["has-session", "-t", target], { stdio: "ignore", timeout: 2000 });
+  const result = spawnSync("tmux", ["display-message", "-p", "-t", target, "#{pane_id}"], { stdio: "ignore", timeout: 2000 });
   return result.status !== 1;
 }
 

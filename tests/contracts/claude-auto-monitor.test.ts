@@ -22,7 +22,7 @@ function statePath(pane: string): string {
 }
 function setState(pane: string, state: string): void { writeFileSync(statePath(pane), state); }
 
-function baseEnv(session = "$owner-a", pane = "%owner-a"): NodeJS.ProcessEnv {
+function baseEnv(session = "$owner-a", pane = "%100"): NodeJS.ProcessEnv {
   return {
     ...process.env,
     PATH: `${BIN}:${process.env.PATH ?? ""}`,
@@ -70,19 +70,19 @@ beforeAll(() => {
 set -u
 target="" previous=""
 for arg in "$@"; do [ "$previous" = -t ] && target="$arg"; previous="$arg"; done
-pane="\${MOCK_PANE:-%owner-a}"; session="\${MOCK_SESSION:-\$owner-a}"
+pane="\${MOCK_PANE:-%100}"; session="\${MOCK_SESSION:-\$owner-a}"
 case "$target" in
-  %owner-a|'$owner-a') pane='%owner-a'; session='$owner-a' ;;
-  %owner-b|'$owner-b') pane='%owner-b'; session='$owner-b' ;;
-  %target-a|'$target-a') pane='%target-a'; session='$target-a' ;;
-  %target-b|'$target-b') pane='%target-b'; session='$target-b' ;;
-  %isolated-a|'$isolated-a') pane='%isolated-a'; session='$isolated-a' ;;
-  %isolated-b|'$isolated-b') pane='%isolated-b'; session='$isolated-b' ;;
-  %fyi|'$fyi') pane='%fyi'; session='$fyi' ;;
+  %100|'$owner-a') pane='%100'; session='$owner-a' ;;
+  %200|'$owner-b') pane='%200'; session='$owner-b' ;;
+  %101|'$101') pane='%101'; session='$101' ;;
+  %201|'$201') pane='%201'; session='$201' ;;
+  %102|'$102') pane='%102'; session='$102' ;;
+  %202|'$202') pane='%202'; session='$202' ;;
+  %103|'$103') pane='%103'; session='$103' ;;
 esac
 format="\${!#}"
 case "$1" in
-  has-session) exit 0 ;;
+  has-session) case "$target" in %*) exit 1 ;; *) exit 0 ;; esac ;;
   display-message) case "$format" in
     *'#{session_id}'*'#{window_id}'*'#{pane_id}'*) printf '%s\t@window\t%s\t\t\t\t1\n' "$session" "$pane" ;;
     '#{session_id}') printf '%s\n' "$session" ;; '#{pane_id}') printf '%s\n' "$pane" ;;
@@ -93,14 +93,14 @@ case "$1" in
 esac
 `);
   chmodSync(join(BIN, "tmux"), 0o755);
-  for (const pane of ["%owner-a", "%owner-b", "%target-a", "%target-b", "%isolated-a", "%isolated-b", "%fyi"]) setState(pane, "done");
+  for (const pane of ["%100", "%200", "%101", "%201", "%102", "%202", "%103"]) setState(pane, "done");
 });
 afterAll(() => rmSync(TEST_ROOT, { recursive: true, force: true }));
 
 describe("Claude SQLite auto-monitor hooks", () => {
   test("expected sends are durable gates; FYI and correlated pointers create no marker", () => {
-    expect(postSend(sendExpected("expected-a", "$target-a", "%target-a")).stderr).toContain("durable reply expected");
-    const fyi = cli(["message-send", "--to", "$fyi", "--to-pane", "%fyi", "--from", "$owner-a", "--from-pane", "%owner-a",
+    expect(postSend(sendExpected("expected-a", "$101", "%101")).stderr).toContain("durable reply expected");
+    const fyi = cli(["message-send", "--to", "$103", "--to-pane", "%103", "--from", "$owner-a", "--from-pane", "%100",
       "--expects-reply", "false", "--text", "FYI", "--message-key", "fyi-a", "--json"]);
     expect(fyi.status).toBe(0);
     expect(postSend(JSON.parse(fyi.stdout)).stderr).toBe("");
@@ -109,18 +109,18 @@ describe("Claude SQLite auto-monitor hooks", () => {
   });
 
   test("Stop blocks with exact native Monitor command until this pane has a durable arm", async () => {
-    sendExpected("expected-a", "$target-a", "%target-a");
+    sendExpected("expected-a", "$101", "%101");
     const payload = JSON.parse(stop().stdout);
     expect(payload.decision).toBe("block");
-    expect(payload.reason).toContain("wait-agent %target-a --wait-for-transition --consume --timeout 30m --interval 30s");
+    expect(payload.reason).toContain("wait-agent %101 --wait-for-transition --consume --timeout 30m --interval 30s");
     expect(payload.reason).not.toContain("rm -f");
 
-    const child = spawn("bun", [CLI, "wait-agent", "%target-a", "--wait-for-transition", "--consume", "--timeout", "5s", "--interval", "10ms", "--json"], { cwd: ROOT, env: baseEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("bun", [CLI, "wait-agent", "%101", "--wait-for-transition", "--consume", "--timeout", "5s", "--interval", "10ms", "--json"], { cwd: ROOT, env: baseEnv(), stdio: ["ignore", "pipe", "pipe"] });
     let childOut = "", childErr = "";
     child.stdout!.on("data", (chunk) => childOut += chunk); child.stderr!.on("data", (chunk) => childErr += chunk);
-    await waitUntil(() => monitorRows().some((row) => row.requesterPaneId === "%owner-a" && row.paneId === "%target-a" && row.terminalStatus === null));
+    await waitUntil(() => monitorRows().some((row) => row.requesterPaneId === "%100" && row.paneId === "%101" && row.terminalStatus === null));
     expect(stop().stdout).toBe("");
-    setState("%target-a", "working"); await Bun.sleep(80); setState("%target-a", "done");
+    setState("%101", "working"); await Bun.sleep(80); setState("%101", "done");
     expect(await new Promise<number | null>((resolve) => child.on("close", resolve))).toBe(0);
     expect(childErr).toBe("");
     expect(JSON.parse(childOut)).toMatchObject({ terminalStatus: "done", wakeDelivered: true, wakeConsumed: true });
@@ -134,33 +134,55 @@ describe("Claude SQLite auto-monitor hooks", () => {
   });
 
   test("terminal wake consumption is requester-owned and occurs once after restart", async () => {
-    const envB = baseEnv("$owner-b", "%owner-b");
-    sendExpected("expected-b", "$target-b", "%target-b", envB);
-    const child = spawn("bun", [CLI, "wait-agent", "%target-b", "--wait-for-transition", "--timeout", "5s", "--interval", "10ms", "--json"], { cwd: ROOT, env: envB, stdio: ["ignore", "pipe", "pipe"] });
+    const envB = baseEnv("$owner-b", "%200");
+    sendExpected("expected-b", "$201", "%201", envB);
+    const child = spawn("bun", [CLI, "wait-agent", "%201", "--wait-for-transition", "--timeout", "5s", "--interval", "10ms", "--json"], { cwd: ROOT, env: envB, stdio: ["ignore", "pipe", "pipe"] });
     let output = ""; child.stdout!.on("data", (chunk) => output += chunk);
-    await waitUntil(() => monitorRows(envB).some((row) => row.requesterPaneId === "%owner-b" && row.paneId === "%target-b"));
-    setState("%target-b", "working"); await Bun.sleep(80); setState("%target-b", "done");
+    await waitUntil(() => monitorRows(envB).some((row) => row.requesterPaneId === "%200" && row.paneId === "%201"));
+    setState("%201", "working"); await Bun.sleep(80); setState("%201", "done");
     expect(await new Promise<number | null>((resolve) => child.on("close", resolve))).toBe(0);
     expect(JSON.parse(output)).toMatchObject({ wakeDelivered: true, wakeConsumed: false });
-    const input = { tool_name: "Bash", tool_input: { command: "xtmux wait-agent %target-b --wait-for-transition" }, tool_response: { exitCode: 0, stdout: output } };
+    const input = { tool_name: "Bash", tool_input: { command: "xtmux wait-agent %201 --wait-for-transition" }, tool_response: { exitCode: 0, stdout: output } };
     expect(hook(CONSUMED, input, envB).status).toBe(0);
     expect(hook(CONSUMED, input, envB).status).toBe(0);
-    expect(monitorRows(envB).filter((row) => row.requesterPaneId === "%owner-b" && row.paneId === "%target-b").at(-1)).toMatchObject({ wakeConsumed: true });
+    expect(monitorRows(envB).filter((row) => row.requesterPaneId === "%200" && row.paneId === "%201").at(-1)).toMatchObject({ wakeConsumed: true });
     const db = new Database(DB, { readonly: true });
-    expect(db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM event_journal WHERE type = 'wait.wake.consumed' AND pane_id = '%owner-b'").get()).toEqual({ count: 1 });
+    expect(db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM event_journal WHERE type = 'wait.wake.consumed' AND pane_id = '%200'").get()).toEqual({ count: 1 });
     db.close();
   });
 
   test("Stop is pane-isolated and loop-safe across stale sessions", () => {
-    const envA = baseEnv("$owner-a", "%owner-a"), envB = baseEnv("$owner-b", "%owner-b");
-    sendExpected("isolated-a", "$isolated-a", "%isolated-a", envA);
-    sendExpected("isolated-b", "$isolated-b", "%isolated-b", envB);
+    const envA = baseEnv("$owner-a", "%100"), envB = baseEnv("$owner-b", "%200");
+    sendExpected("isolated-a", "$102", "%102", envA);
+    sendExpected("isolated-b", "$202", "%202", envB);
     const a = stop(false, envA).stdout;
     const b = stop(false, envB).stdout;
-    expect(a).toContain("%isolated-a"); expect(a).not.toContain("%isolated-b");
-    expect(b).toContain("%isolated-b"); expect(b).not.toContain("%isolated-a");
+    expect(a).toContain("%102"); expect(a).not.toContain("%202");
+    expect(b).toContain("%202"); expect(b).not.toContain("%102");
     expect(stop(true).stdout).toBe("");
     expect(stop(false, baseEnv("$stale", "%stale")).stdout).toBe("");
+  });
+
+  test("hostile persisted targets are rejected without reflection or command execution", () => {
+    const sentinel = join(TEST_ROOT, "injected-sentinel");
+    const hostile = [
+      `%1\" touch ${sentinel}`,
+      `%1' touch ${sentinel}`,
+      `%1$(touch ${sentinel})`,
+      `%1\`touch ${sentinel}\``,
+      `%1;touch ${sentinel}`,
+      `%1\ntouch ${sentinel}`,
+    ];
+    hostile.forEach((target, index) => sendExpected(`hostile-${index}`, "$999", target));
+
+    const payload = JSON.parse(stop().stdout);
+    expect(payload.decision).toBe("block");
+    expect(payload.reason).toMatch(/rejected.*noncanonical target/i);
+    expect(payload.reason).not.toContain("Monitor(command");
+    for (const target of hostile) expect(payload.reason).not.toContain(target);
+    run("sh", ["-c", payload.reason], baseEnv());
+    expect(existsSync(sentinel)).toBe(false);
+    expect(JSON.stringify(payload).length).toBeLessThan(1200);
   });
 
   test("CLI absence and corrupt DB produce bounded actionable diagnostics without a Stop loop", () => {
