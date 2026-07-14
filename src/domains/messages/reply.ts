@@ -37,7 +37,7 @@ function replyErrorEvent(db: Db, input: ReplyInput, error: MessageError, nowMs: 
     sessionId: input.senderId,
     paneId: input.senderPaneId,
     correlationId: input.messageKey ?? input.replyToMessageKey ?? input.inReplyTo,
-    payload: { outcome: "rejected", code: error.code },
+    payload: { outcome: "rejected", error_code: error.code },
     createdAtMs: nowMs,
   });
 }

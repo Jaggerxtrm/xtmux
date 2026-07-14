@@ -145,6 +145,7 @@ describe("message reply lifecycle", () => {
       expect(rejection?.type).toBe("messages.reply.rejected");
       expect(JSON.parse(rejection?.payload_json ?? "")).toEqual({
         outcome: "rejected",
+        error_code: "XTMUX_INVALID_CORRELATION",
         reply_to_message_id: original.messageId,
       });
       expect(rejection?.payload_json.includes("secret body")).toBe(false);
@@ -195,8 +196,17 @@ describe("message reply lifecycle", () => {
       expectCode(() => replyMessage(db, { messageKey: "bad-3", replyToMessageKey: "missing", senderId: "$r", summary: "x" }, now), "XTMUX_INVALID_CORRELATION");
       expectCode(() => replyMessage(db, { messageKey: "request-1", replyToMessageKey: "request-1", senderId: "$r", senderPaneId: "%r", summary: "x" }, now), "XTMUX_MESSAGE_KEY_CONFLICT");
       expectCode(() => replyMessage(db, { messageKey: "bad-4", replyToMessageKey: "request-1", senderId: "$r", senderPaneId: "%r", recipientId: "$s", summary: "x" }, now), "XTMUX_ENDPOINT_OVERRIDE");
-      const rejected = db.raw.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM event_journal WHERE type = 'messages.reply.rejected'").get();
-      expect(rejected?.n).toBe(5);
+      const rejected = db.raw.query<{ payload_json: string }, []>(
+        "SELECT payload_json FROM event_journal WHERE type = 'messages.reply.rejected'",
+      ).all();
+      expect(rejected).toHaveLength(5);
+      expect(rejected.every(({ payload_json }) => {
+        const payload = JSON.parse(payload_json) as Record<string, unknown>;
+        return typeof payload.error_code === "string"
+          && !("code" in payload)
+          && !("body" in payload)
+          && !("payload" in payload);
+      })).toBe(true);
     } finally {
       cleanup();
     }

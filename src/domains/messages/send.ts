@@ -40,7 +40,7 @@ interface ExistingMessage {
   reply_to_message_id: number | null;
 }
 
-function rejectEnvelope(db: Db, input: SendInput, _error: MessageError, nowMs: number): void {
+function rejectEnvelope(db: Db, input: SendInput, error: MessageError, nowMs: number): void {
   insertEnvelope(db, {
     type: input.replyToMessageId === undefined ? "messages.send.rejected" : "messages.reply.rejected",
     domain: "messages",
@@ -49,6 +49,7 @@ function rejectEnvelope(db: Db, input: SendInput, _error: MessageError, nowMs: n
     correlationId: input.messageKey,
     payload: {
       outcome: "rejected",
+      error_code: error.code,
       reply_to_message_id: input.replyToMessageId ?? null,
     },
     createdAtMs: nowMs,
@@ -253,7 +254,7 @@ export function sendMessage(db: Db, input: SendInput, now: () => number = Date.n
   });
 
   try {
-    tx();
+    tx.immediate();
   } catch (error) {
     if (error instanceof MessageError) {
       rejection = error;
