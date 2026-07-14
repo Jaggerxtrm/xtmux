@@ -74,14 +74,6 @@ function sameMessage(existing: ExistingMessage, input: SendInput, expectsReply: 
  */
 export function sendMessage(db: Db, input: SendInput, now: () => number = Date.now): SendResult {
   const expectsReply = input.expectsReply ?? false;
-  if (expectsReply && input.replyToMessageId != null) {
-    const rejection = new MessageError("XTMUX_INVALID_CORRELATION", "reply target cannot itself expect reply", {
-      replyToMessageId: input.replyToMessageId,
-    });
-    rejectEnvelope(db, input, rejection, now());
-    throw rejection;
-  }
-
   const findByKey = db.raw.prepare<ExistingMessage, [string]>(
     "SELECT id, message_key, sender_id, sender_pane_id, recipient_id, target_pane_id, bead_id, summary, payload_json, expects_reply, created_at_ms, reply_to_message_id FROM messages WHERE message_key = ?",
   );
@@ -119,7 +111,17 @@ export function sendMessage(db: Db, input: SendInput, now: () => number = Date.n
     fulfilledMessageKey: input.replyToMessageId === undefined ? null : input.messageKey,
   };
   let rejection: MessageError | null = null;
+  let rejectionEnvelopeWritten = false;
   const tx = db.raw.transaction(() => {
+    if (expectsReply && input.replyToMessageId != null) {
+      rejection = new MessageError("XTMUX_INVALID_CORRELATION", "reply target cannot itself expect reply", {
+        replyToMessageId: input.replyToMessageId,
+      });
+      rejectEnvelope(db, input, rejection, now());
+      rejectionEnvelopeWritten = true;
+      return;
+    }
+
     const existing = findByKey.get(input.messageKey);
     if (existing) {
       if (!sameMessage(existing, input, expectsReply)) {
@@ -266,8 +268,7 @@ export function sendMessage(db: Db, input: SendInput, now: () => number = Date.n
     }
   }
   if (rejection) {
-    const t = now();
-    rejectEnvelope(db, input, rejection, t);
+    if (!rejectionEnvelopeWritten) rejectEnvelope(db, input, rejection, now());
     throw rejection;
   }
   return result;
