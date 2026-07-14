@@ -1045,9 +1045,9 @@ above are declarative; implementation MUST use the SQLite table-rebuild pattern:
 (1) CREATE new table with the target schema; (2) INSERT ... SELECT from the old
 table; (3) DROP the old table; (4) RENAME the new table; (5) recreate all
 dependent indexes/triggers. This applies to both the `messages` extension for
-`reply_to_message_id` / `fulfilled_by_message_key` and to `outbound_waits`.
+`reply_to_message_id` / `fulfilled_by_message_id` and to `outbound_waits`.
 Foreign-key consistency between `reply_to_message_id` (`messages.id`) and
-`fulfilled_by_message_key` (`messages.message_key`) MUST be verified in the same
+`fulfilled_by_message_id` (`messages.id`) MUST be verified in the same
 migration transaction; a rebuild that leaves them inconsistent is an
 implementation defect. Existing unique `message_key` remains send idempotency
 key.
@@ -1132,7 +1132,7 @@ and pane identities, and one-reply uniqueness before inserting. No text or bead
 matching is permitted.
 
 **Decision (v1): one reply per pending message.** A UNIQUE constraint on
-`(reply_to_message_id)` (or the equivalent on `messages.fulfilled_by_message_key`
+`(reply_to_message_id)` (or the equivalent on `messages.fulfilled_by_message_id`
 per §17.2) enforces exactly one fulfilling reply per pending message. A second
 attempted reply to the same `messageKey` returns a structured
 `XTMUX_ALREADY_FULFILLED` error. Multi-reply / streaming / correction semantics
