@@ -9,7 +9,7 @@ import {
   terminalizeOutboundWait,
   type OutboundWait,
 } from "./domains/monitors/outbound-wake.ts";
-import { heartbeat, reconcileAll, register, terminate } from "./domains/monitors/store.ts";
+import { adopt, heartbeat, reconcileAll, register, terminate } from "./domains/monitors/store.ts";
 import { liveProbes } from "./tmux.ts";
 import type { TerminalStatus } from "./domains/monitors/terminal.ts";
 
@@ -58,8 +58,9 @@ function requesterIdentity(): Identity {
 
 interface Target { sessionId: string; paneId: string; }
 function resolveTarget(target: string): Target {
-  const paneId = tmuxValue(target, "#{pane_id}") ?? target;
-  const sessionId = tmuxValue(paneId, "#{session_id}") ?? target;
+  const paneId = tmuxValue(target, "#{pane_id}");
+  const sessionId = paneId && tmuxValue(paneId, "#{session_id}");
+  if (!paneId || !sessionId) throw Object.assign(new Error(`target not found: ${target}`), { code: "XTMUX_TARGET_NOT_FOUND" });
   return { sessionId, paneId };
 }
 
@@ -122,7 +123,7 @@ function operationError(error: unknown, command: string): number {
   for (const key of ["waitId", "monitorId", "expectedSessionId", "expectedPaneId", "actualSessionId", "actualPaneId"]) {
     if (typeof error === "object" && error !== null && key in error) detail[key] = (error as Record<string, unknown>)[key];
   }
-  return jsonError(mapped, message, detail, mapped === "XTMUX_WAIT_NOT_FOUND" ? 5 : mapped === "XTMUX_WAIT_NOT_OWNER" ? 4 : 2);
+  return jsonError(mapped, message, detail, mapped === "XTMUX_WAIT_NOT_FOUND" ? 5 : mapped === "XTMUX_WAIT_NOT_OWNER" ? 4 : mapped === "XTMUX_TARGET_NOT_FOUND" ? 1 : 2);
 }
 
 function createMonitorAndWait(db: Db, targetName: string, timeoutMs: number, intervalMs: number, nowMs: number): {
@@ -196,6 +197,7 @@ export function cliWaitAgent(db: Db, argv: string[], nowMs: number): number {
     const created = existing?.monitorId
       ? { monitorId: existing.monitorId, waitId: existing.waitId, requester, target, state: liveProbes.observe(target.paneId) }
       : createMonitorAndWait(db, targetName, timeoutMs, intervalMs, nowMs);
+    adopt(db, created.monitorId, process.pid, Date.now());
     let state = created.state;
     const transitionRequired = flags.get("wait-for-transition") === true;
     const startedAtMs = Date.now();
@@ -229,6 +231,11 @@ export function cliWaitAgent(db: Db, argv: string[], nowMs: number): number {
     }
     if (flags.get("consume") === true && wait.wakeDelivered) {
       wait = consumeOutboundWake(db, { waitId: wait.waitId, requesterSessionId: created.requester.sessionId, requesterPaneId: created.requester.paneId, nowMs: Date.now() }).wait;
+    }
+    if (wait.terminalStatus === "timeout") {
+      if (json) return jsonError("XTMUX_WAIT_TIMEOUT", `wait-agent: timeout target=${targetName}`, { command: "wait-agent", waitId: wait.waitId, monitorId: wait.monitorId }, 124);
+      process.stderr.write(`wait-agent: timeout target=${targetName}\n`);
+      return 124;
     }
     const result = waitProjection(wait, targetName);
     result.intervalMs = intervalMs;

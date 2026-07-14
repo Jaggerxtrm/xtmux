@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -112,12 +112,21 @@ describe("coordination JSON", () => {
     }
   });
 
-  test("picker wait-agent emits epoch-ms JSON without changing completion semantics", () => {
+  test("picker wait-agent emits durable wake JSON with epoch-ms timestamps", () => {
     const ctx = setup();
     try {
-      const result = run(PICKER, ["wait-agent", "%mock", "--json", "--interval", "1"], ctx.env);
+      const result = run(PICKER, ["wait-agent", "%mock", "--json", "--interval", "1s"], ctx.env);
       expect(result.exitCode).toBe(0);
-      expect(JSON.parse(result.stdout)).toMatchObject({ target: "%mock", paneId: "%mock", state: "done", status: "done", intervalMs: 1000 });
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        target: "%mock",
+        targetPaneId: "%mock",
+        requesterPaneId: "%mock",
+        state: "terminal",
+        terminalStatus: "done",
+        wakeDelivered: true,
+        wakeConsumed: false,
+        intervalMs: 1000,
+      });
       expect(typeof JSON.parse(result.stdout).startedAtMs).toBe("number");
       expect(typeof JSON.parse(result.stdout).completedAtMs).toBe("number");
     } finally {
@@ -155,7 +164,7 @@ describe("coordination JSON", () => {
     }
   });
 
-  test("cancelling a wait leaves no coordination state", async () => {
+  test("a killed durable wait reconciles as process-gone", async () => {
     const ctx = setup();
     try {
       const proc = Bun.spawn([PICKER, "wait-agent", "%mock", "--json", "--interval", "5"], {
@@ -164,10 +173,25 @@ describe("coordination JSON", () => {
         stdout: "pipe",
         stderr: "pipe",
       });
-      await Bun.sleep(100);
+      let registered = false;
+      for (let i = 0; i < 100 && !registered; i++) {
+        try {
+          const db = new Database(ctx.env.XTMUX_OBS_DB_PATH as string, { readonly: true });
+          registered = (db.query<{ count: number }, [number]>(
+            "SELECT COUNT(*) AS count FROM monitors m JOIN outbound_waits w ON w.monitor_id = m.id WHERE m.owner_pid = ?",
+          ).get(proc.pid)?.count ?? 0) > 0;
+          db.close();
+        } catch {}
+        if (!registered) await Bun.sleep(10);
+      }
+      expect(registered).toBe(true);
       proc.kill("SIGTERM");
       expect(await proc.exited).not.toBe(0);
-      expect(existsSync(ctx.env.XTMUX_OBS_DB_PATH as string)).toBe(false);
+      const reconciled = cli(["monitor-list", "--json"], ctx.env);
+      expect(reconciled.exitCode).toBe(0);
+      expect(JSON.parse(reconciled.stdout)).toEqual([
+        expect.objectContaining({ terminalStatus: "process_gone", wakeDelivered: true, wakeConsumed: false }),
+      ]);
     } finally {
       ctx.cleanup();
     }
