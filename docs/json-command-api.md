@@ -60,6 +60,7 @@ Categories are closed: **agent-json** gains/retains structured output for agents
 | `picker:worktree-collisions` | agent-json | TSV → collision array | .3 |
 | `picker:dashboard` | agent-json | TSV header/rows → session inventory object | .3 |
 | `picker:audit` | agent-json | TSV findings → audit finding array | .3 |
+| `picker:context` | agent-json | `context --current --json` → `xtrm.runtime-origin.v1` for the invoking pane; read-only; exempt from the V2-mode gate (reads tmux + host-id file, not the store) | j46.2 |
 | `picker:handoff` | guarded-admin | creates prompt file and may inject pointer; explicit confirmation | .2 |
 | `picker:mux-help` | interactive-only | human cheatsheet | — |
 | `picker:help` | interactive-only | grouped command reference incl. `--json` output field names; text by design — a `--json` help would just be a second surface to keep in sync | .15 |
@@ -118,6 +119,7 @@ Compiled plumbing remains documented even when it is not exposed as a picker or 
 | `obs:log-tail` | agent-json | NDJSON → array in JSON mode | .4 |
 | `obs:log-query` | agent-json | NDJSON → array in JSON mode | .4 |
 | `obs:delivery-record` | guarded-admin | picker-internal delivery evidence | .4 |
+| `obs:context` | agent-json | resolves the invoking pane → `xtrm.runtime-origin.v1`; cross-repo contract consumed by xtrm-dev/specialists; opens no DB | j46.2 |
 | `obs:monitor` | agent-json | mixed dispatcher; only list is a normal query | .2 |
 | `obs:monitor:register` | guarded-admin | poller-internal mutation | .2 |
 | `obs:monitor:adopt` | guarded-admin | poller-internal mutation | .2 |
