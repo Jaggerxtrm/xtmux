@@ -20,6 +20,6 @@ export class MessageError extends Error {
   }
 
   toJSON(): Record<string, unknown> {
-    return { code: this.code, message: this.message, detail: this.detail };
+    return { code: this.code, error_code: this.code, message: this.message, detail: this.detail };
   }
 }

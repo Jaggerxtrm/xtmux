@@ -8,10 +8,13 @@
  */
 import type { Db } from "./db/connection.ts";
 import { ackMessage } from "./domains/messages/ack.ts";
+import { insertEnvelope } from "./db/journal.ts";
 import { listMessages } from "./domains/messages/list.ts";
+import { replyMessage } from "./domains/messages/reply.ts";
 import { sendMessage } from "./domains/messages/send.ts";
 import { computeUnread } from "./domains/messages/reconcile-unread.ts";
 import { messageStatus } from "./domains/messages/status.ts";
+import { MessageError } from "./domains/messages/errors.ts";
 
 interface Args {
   positional: string[];
@@ -51,8 +54,8 @@ function booleanFlag(flags: Map<string, string | boolean>, name: string, fallbac
   return null;
 }
 
-function fail(json: boolean, code: string, message: string, exitCode: number, detail: Record<string, unknown> = {}): number {
-  process.stderr.write(json ? `${JSON.stringify({ code, message, detail })}\n` : `${message}\n`);
+function fail(json: boolean, code: string, message: string, exitCode: number, detail: Record<string, unknown> = {}, includeErrorCode = false): number {
+  process.stderr.write(json ? `${JSON.stringify({ code, ...(includeErrorCode ? { error_code: code } : {}), message, detail })}\n` : `${message}\n`);
   return exitCode;
 }
 
@@ -96,6 +99,7 @@ export interface MessageSendArgs {
   bead?: string;
   text: string;
   messageKey?: string;
+  replyTo?: string;
 }
 
 /**
@@ -120,6 +124,16 @@ export function cliMessageSend(db: Db, argv: string[]): number {
   if (expectsReply === null) return fail(json, "XTMUX_INVALID_ARGUMENT", "message-send: --expects-reply must be true or false", 2);
   const senderPaneId = (flags.get("from-pane") as string | undefined) ?? null;
   const targetPaneId = (flags.get("to-pane") as string | undefined) ?? null;
+  const replyTo = flags.get("reply-to") as string | undefined;
+  let replyToMessageId: number | undefined;
+  if (replyTo) {
+    replyToMessageId = db.raw.query<{ id: number }, [string]>(
+      "SELECT id FROM messages WHERE message_key = ?",
+    ).get(replyTo)?.id;
+    if (replyToMessageId === undefined) {
+      return fail(json, "XTMUX_MESSAGE_NOT_FOUND", "message-send: reply target was not found", 5, { replyToMessageKey: replyTo });
+    }
+  }
   const result = sendMessage(db, {
     messageKey,
     senderId: from,
@@ -129,6 +143,7 @@ export function cliMessageSend(db: Db, argv: string[]): number {
     beadId: bead || undefined,
     summary: text,
     expectsReply,
+    replyToMessageId,
   });
   if (json) {
     const createdAtMs = db.raw.query<{ created_at_ms: number }, [string]>("SELECT created_at_ms FROM messages WHERE message_key = ?").get(messageKey)?.created_at_ms ?? null;
@@ -172,7 +187,7 @@ export function cliMessageList(db: Db, argv: string[]): number {
     unackedOnly: flags.get("unacked") === true,
     expectsReplyOnly: flags.get("expects-reply") === true,
     limit: flags.has("limit") ? Number(flags.get("limit")) : undefined,
-  });
+  }, { includeReplyState: true });
   if (flags.get("json") === true) {
     process.stdout.write(JSON.stringify(rows.map((r) => ({
       messageKey: r.message_key,
@@ -189,6 +204,12 @@ export function cliMessageList(db: Db, argv: string[]): number {
       acked: r.acked_at_ms !== null,
       ackedAtMs: r.acked_at_ms,
       ackedBy: r.acked_by,
+      ...(flags.get("expects-reply") === true ? {
+        replyStatus: r.replyStatus,
+        fulfilledAtMs: r.fulfilledAtMs,
+        fulfilledByMessageKey: r.fulfilled_by_message_key,
+        correlatedReply: r.correlatedReply,
+      } : {}),
     }))) + "\n");
     return 0;
   }
@@ -216,14 +237,14 @@ export function cliMessageList(db: Db, argv: string[]): number {
  * downstream test can branch on it.
  */
 export function cliMessageStatus(db: Db, argv: string[]): number {
-  const { positional } = parseArgs(argv);
+  const { positional, flags } = parseArgs(argv);
   const key = positional[0] ?? "";
-  if (!key) {
-    process.stderr.write("message-status: <message_key> required\n");
-    return 2;
-  }
-  const status = messageStatus(db, key);
+  const json = flags.get("json") === true;
+  if (!key) return fail(json, "XTMUX_INVALID_ARGUMENT", "message-status: <message_key> required", 2, {}, true);
+  const includeReplyState = json;
+  const status = includeReplyState ? messageStatus(db, key, { includeReplyState: true }) : messageStatus(db, key);
   if (!status) {
+    if (json) return fail(true, "XTMUX_MESSAGE_NOT_FOUND", "message-status: unknown message key", 5, { messageKey: key }, true);
     process.stderr.write("message-status: unknown message key\n");
     return 5;
   }
@@ -243,6 +264,68 @@ export function cliUnreadCount(db: Db, argv: string[]): number {
   const paneFlag = flags.get("pane");
   const paneId = typeof paneFlag === "string" && paneFlag ? paneFlag : undefined;
   process.stdout.write(JSON.stringify(computeUnread(db, recipientId, paneId)) + "\n");
+  return 0;
+}
+
+export function cliMessageReply(db: Db, argv: string[]): number {
+  const { flags } = parseArgs(argv);
+  const json = flags.get("json") === true;
+  const replyToMessageKey = String(flags.get("in-reply-to") ?? "");
+  const text = String(flags.get("text") ?? "");
+  const messageKey = flags.get("message-key") as string | undefined;
+  if (!replyToMessageKey || !text) {
+    return fail(json, "XTMUX_INVALID_ARGUMENT", "message-reply: --in-reply-to and --text are required", 2, {}, true);
+  }
+  const target = db.raw.query<{ recipient_id: string; target_pane_id: string | null }, [string]>(
+    "SELECT recipient_id, target_pane_id FROM messages WHERE message_key = ?",
+  ).get(replyToMessageKey);
+  if (!target) return fail(json, "XTMUX_MESSAGE_NOT_FOUND", "message-reply: reply target was not found", 5, { replyToMessageKey }, true);
+  try {
+    const result = replyMessage(db, {
+      messageKey,
+      replyToMessageKey,
+      senderId: target.recipient_id,
+      senderPaneId: target.target_pane_id ?? undefined,
+      summary: text,
+    });
+    if (json) process.stdout.write(JSON.stringify(result) + "\n");
+    else process.stdout.write(`reply\t${result.messageKey}\t${result.replyToMessageKey}\t${result.fulfilled}\n`);
+    return 0;
+  } catch (error) {
+    if (!(error instanceof MessageError)) throw error;
+    return fail(json, error.code, error.message, 4, error.detail, true);
+  }
+}
+
+export function cliMessageCancel(db: Db, argv: string[]): number {
+  const { flags } = parseArgs(argv);
+  const json = flags.get("json") === true;
+  const messageKey = String(flags.get("message-key") ?? "");
+  if (!messageKey) return fail(json, "XTMUX_INVALID_ARGUMENT", "message-cancel: --message-key is required", 2, {}, true);
+  const row = db.raw.query<{ id: number; expects_reply: number; fulfilled_at_ms: number | null; cancelled_at_ms: number | null }, [string]>(
+    "SELECT id, expects_reply, fulfilled_at_ms, cancelled_at_ms FROM messages WHERE message_key = ?",
+  ).get(messageKey);
+  if (!row) return fail(json, "XTMUX_MESSAGE_NOT_FOUND", "message-cancel: message was not found", 5, { messageKey }, true);
+  if (row.fulfilled_at_ms !== null) return fail(json, "XTMUX_ALREADY_FULFILLED", "message-cancel: message was already fulfilled", 4, { messageKey }, true);
+  if (row.cancelled_at_ms !== null) {
+    const result = { messageKey, cancelled: false, cancelledAtMs: row.cancelled_at_ms };
+    if (json) process.stdout.write(JSON.stringify(result) + "\n"); else process.stdout.write(`cancelled\t${messageKey}\t${row.cancelled_at_ms}\n`);
+    return 0;
+  }
+  const cancelledAtMs = Date.now();
+  db.raw.transaction(() => {
+    db.raw.query("UPDATE messages SET cancelled_at_ms = ?, cancel_reason = ? WHERE id = ? AND cancelled_at_ms IS NULL")
+      .run(cancelledAtMs, "requested", row.id);
+    insertEnvelope(db, {
+      type: "messages.cancelled",
+      domain: "messages",
+      correlationId: messageKey,
+      payload: { message_id: row.id, outcome: "cancelled" },
+      createdAtMs: cancelledAtMs,
+    });
+  }).immediate();
+  const result = { messageKey, cancelled: true, cancelledAtMs };
+  if (json) process.stdout.write(JSON.stringify(result) + "\n"); else process.stdout.write(`cancelled\t${messageKey}\t${cancelledAtMs}\n`);
   return 0;
 }
 

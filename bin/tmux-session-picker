@@ -810,7 +810,7 @@ json_requested() {
 json_command_state() {
   local command="$1" subcommand="${2:-}"
   case "$command:$subcommand" in
-    message-list:*|message-status:*|unread-count:*|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|safe-send-pointer:*|handoff:*|message-send:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|context:--current|pane:capture) REPLY='ready' ;;
+    message-list:*|message-status:*|unread-count:*|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|safe-send-pointer:*|handoff:*|message-send:*|message-reply:*|message-cancel:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|context:--current|pane:capture) REPLY='ready' ;;
     *) REPLY='unsupported' ;;
   esac
 }
@@ -1056,7 +1056,7 @@ pane_cli() {
 }
 
 message_send() {
-  local to='' from='' bead='' text='' id='' expects_reply='' json=0 arg
+  local to='' from='' bead='' text='' id='' expects_reply='' reply_to='' to_pane='' from_pane='' json=0 arg
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
@@ -1064,6 +1064,12 @@ message_send() {
       --to=*) to="${arg#--to=}" ;;
       --from) [ "$#" -gt 0 ] || return 2; from="$1"; shift ;;
       --from=*) from="${arg#--from=}" ;;
+      --to-pane) [ "$#" -gt 0 ] || return 2; to_pane="$1"; shift ;;
+      --to-pane=*) to_pane="${arg#--to-pane=}" ;;
+      --from-pane) [ "$#" -gt 0 ] || return 2; from_pane="$1"; shift ;;
+      --from-pane=*) from_pane="${arg#--from-pane=}" ;;
+      --reply-to) [ "$#" -gt 0 ] || return 2; reply_to="$1"; shift ;;
+      --reply-to=*) reply_to="${arg#--reply-to=}" ;;
       --bead) [ "$#" -gt 0 ] || return 2; bead="$1"; shift ;;
       --bead=*) bead="${arg#--bead=}" ;;
       --text) [ "$#" -gt 0 ] || return 2; text="$1"; shift ;;
@@ -1123,8 +1129,11 @@ message_send() {
     [ "$json" = 1 ]         && cli_args+=(--json)
     [ -n "$bead" ]          && cli_args+=(--bead "$bead")
     [ -n "$expects_reply" ] && cli_args+=(--expects-reply "$expects_reply")
-    [ -n "$to_pid" ]        && cli_args+=(--to-pane   "$to_pid")
-    [ -n "$from_pid" ] && cli_args+=(--from-pane "$from_pid")
+    [ -n "$reply_to" ]      && cli_args+=(--reply-to "$reply_to")
+    [ -n "$to_pane" ]       && cli_args+=(--to-pane "$to_pane")
+    [ -n "$from_pane" ]     && cli_args+=(--from-pane "$from_pane")
+    [ -n "$to_pid" ]         && cli_args+=(--to-pane "$to_pid")
+    [ -n "$from_pid" ]      && cli_args+=(--from-pane "$from_pid")
     "${OBS_ARGV[@]}" "${cli_args[@]}" || return $?
     tmux display-message -t "$to_sid" "msg from ${from_sid}${bead:+ [$bead]}: ${text:0:80}" 2>/dev/null || true
     return 0
@@ -1141,8 +1150,9 @@ message_send() {
     local shadow_args=(message-send --to "$to_sid" --from "$from_sid" --id "$id" --text "$text")
     [ -n "$bead" ]          && shadow_args+=(--bead "$bead")
     [ -n "$expects_reply" ] && shadow_args+=(--expects-reply "$expects_reply")
-    [ -n "$to_pid_s" ]      && shadow_args+=(--to-pane   "$to_pid_s")
-    [ -n "$from_pid_s" ] && shadow_args+=(--from-pane "$from_pid_s")
+    [ -n "$reply_to" ]      && shadow_args+=(--reply-to "$reply_to")
+    [ -n "$to_pid_s" ]      && shadow_args+=(--to-pane "$to_pid_s")
+    [ -n "$from_pid_s" ]    && shadow_args+=(--from-pane "$from_pid_s")
     obs_call "${shadow_args[@]}"
   fi
   # Delivery signal — best-effort. Bumps a session-scoped counter recipients
@@ -1157,6 +1167,49 @@ message_send() {
   tmux set-option -t "$to_sid" -q @agent_unread_since "$now_epoch" 2>/dev/null || true
   tmux display-message -t "$to_sid" "msg from ${from_sid}${bead:+ [$bead]}: ${text:0:80}" 2>/dev/null || true
   printf 'message\t%s\t%s\t%s\t%s\t%s\n' "$id" "$from_sid" "$to_sid" "$bead" "$text"
+}
+
+message_reply() {
+  local key='' text='' message_key='' json=0 arg
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --in-reply-to) [ "$#" -gt 0 ] || return 2; key="$1"; shift ;;
+      --in-reply-to=*) key="${arg#--in-reply-to=}" ;;
+      --text) [ "$#" -gt 0 ] || return 2; text="$1"; shift ;;
+      --text=*) text="${arg#--text=}" ;;
+      --message-key) [ "$#" -gt 0 ] || return 2; message_key="$1"; shift ;;
+      --message-key=*) message_key="${arg#--message-key=}" ;;
+      --json) json=1 ;;
+      *) printf 'message-reply: unknown arg: %s\n' "$arg" >&2; return 2 ;;
+    esac
+  done
+  [ -n "$key" ] && [ -n "$text" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'usage: message-reply --in-reply-to <messageKey> --text <text> [--message-key K]' message-reply 2; return $?; }
+  obs_v2_mode; [ "$REPLY" = on ] || { command_error "$json" XTMUX_JSON_REQUIRES_V2 'message-reply requires XTMUX_OBS_V2=1' message-reply 2; return $?; }
+  obs_runtime_argv
+  local args=(message-reply --in-reply-to "$key" --text "$text")
+  [ -n "$message_key" ] && args+=(--message-key "$message_key")
+  [ "$json" = 1 ] && args+=(--json)
+  exec "${OBS_ARGV[@]}" "${args[@]}"
+}
+
+message_cancel() {
+  local key='' json=0 arg
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --message-key) [ "$#" -gt 0 ] || return 2; key="$1"; shift ;;
+      --message-key=*) key="${arg#--message-key=}" ;;
+      --json) json=1 ;;
+      *) printf 'message-cancel: unknown arg: %s\n' "$arg" >&2; return 2 ;;
+    esac
+  done
+  [ -n "$key" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'usage: message-cancel --message-key <messageKey>' message-cancel 2; return $?; }
+  obs_v2_mode; [ "$REPLY" = on ] || { command_error "$json" XTMUX_JSON_REQUIRES_V2 'message-cancel requires XTMUX_OBS_V2=1' message-cancel 2; return $?; }
+  obs_runtime_argv
+  local args=(message-cancel --message-key "$key")
+  [ "$json" = 1 ] && args+=(--json)
+  exec "${OBS_ARGV[@]}" "${args[@]}"
 }
 
 message_ack() {
@@ -1213,12 +1266,16 @@ message_ack() {
 }
 
 message_status() {
-  local key="${1:-}"
-  [ -n "$key" ] || { printf 'usage: message-status <message_key>\n' >&2; return 2; }
+  local key="${1:-}" json=0
+  [ -n "$key" ] || { printf 'usage: message-status <message_key> [--json]\n' >&2; return 2; }
+  shift || true
+  [ "${1:-}" = '--json' ] && json=1
   obs_v2_mode
   [ "$REPLY" = on ] || { printf 'message-status: requires XTMUX_OBS_V2=1\n' >&2; return 2; }
   obs_runtime_argv
-  exec "${OBS_ARGV[@]}" message-status "$key"
+  local args=(message-status "$key")
+  [ "$json" = 1 ] && args+=(--json)
+  exec "${OBS_ARGV[@]}" "${args[@]}"
 }
 
 unread_count() {
@@ -1295,12 +1352,14 @@ _message_list_v1_body() {
 }
 
 message_list() {
-  local to='' pane='' since='' limit=100 unacked=0 expects_reply=0 json=0 arg
+  local to='' pane='' from='' since='' limit=100 unacked=0 expects_reply=0 json=0 arg
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
       --for|--to) [ "$#" -gt 0 ] || return 2; to="$1"; shift ;;
       --for=*|--to=*) to="${arg#*=}" ;;
+      --from) [ "$#" -gt 0 ] || return 2; from="$1"; shift ;;
+      --from=*) from="${arg#--from=}" ;;
       --since) [ "$#" -gt 0 ] || return 2; parse_wait_duration "$1" || return 2; since="$REPLY"; shift ;;
       --since=*) parse_wait_duration "${arg#--since=}" || return 2; since="$REPLY" ;;
       --limit) [ "$#" -gt 0 ] || return 2; limit="$1"; shift ;;
@@ -1328,6 +1387,7 @@ message_list() {
     [ "$expects_reply" = 1 ] && cli_args+=(--expects-reply)
     [ "$json" = 1 ]          && cli_args+=(--json)
     [ -n "$pane" ]           && cli_args+=(--pane "$pane")
+    [ -n "$from" ]           && cli_args+=(--from "$from")
     [ -n "$since" ]          && cli_args+=(--since "$since")
     exec "${OBS_ARGV[@]}" "${cli_args[@]}"
   fi
@@ -1341,6 +1401,8 @@ message_list() {
         obs_runtime_argv
         local v2_args=(message-list --for "$to_sid_v2" --limit "$limit")
         [ "$unacked" = 1 ] && v2_args+=(--unacked)
+        [ "$expects_reply" = 1 ] && v2_args+=(--expects-reply)
+        [ -n "$from" ] && v2_args+=(--from "$from")
         [ -n "$since" ] && v2_args+=(--since "$since")
         v2_out="$("${OBS_ARGV[@]}" "${v2_args[@]}" 2>/dev/null || true)"
       fi
@@ -1745,12 +1807,17 @@ communication contract
 never send while working
   wait-agent <pane> [--wait-for-transition] --timeout 30m --interval 30s
   monitor-agent <pane> [--wait-for-transition] --timeout 30m --interval 30s
-  monitor-list / monitor-kill <id>
+  monitor-list --json / monitor-kill <id>
 
 safe handoff
   handoff --target <pane> --bead <id> --note 'NO push'
-  safe-send-pointer <pane> 'leggi /tmp/file.txt e seguilo'
+  safe-send-pointer [--reply-to <messageKey>] <pane> 'leggi /tmp/file.txt e seguilo'
   add --yes only after inspecting the printed command
+
+message replies
+  message-reply --in-reply-to <messageKey> --text <text> [--message-key K] [--json]
+  message-cancel --message-key <messageKey> [--json]
+  message-ack means receipt, not reply
 
 inventory / dashboard
   dashboard sessions-only    compact orchestrator TSV
@@ -1797,12 +1864,16 @@ below works under either. <angled> args are REQUIRED, [bracketed] are optional.
 MESSAGES — short status/escalation between panes.
 Durable task content belongs in beads (`bd`), not here.
   message-send   --to <target> --text <text> [--from <id>] [--bead <id>]
-                 [--expects-reply[=true|false]] [json]
+                 [--to-pane <%id>] [--from-pane <%id>] [--message-key <key>]
+                 [--expects-reply[=true|false]] [--reply-to <messageKey>] [json]
                  --bead implies --expects-reply=true; opt out explicitly.
-  message-list   --for <target> [--unacked] [--limit <n>] [--since <dur>] [json]
-                 --for is REQUIRED. Without it: exit 2.
-  message-ack    <message-id> [--by <target>] [json]
-  message-status <message-key> [json]
+  message-list   --for <target> [--pane <%id>] [--from <id>] [--unacked]
+                 [--expects-reply] [--limit <n>] [--since <dur>] [json]
+                 --expects-reply adds correlated reply fields; --for REQUIRED.
+  message-reply  --in-reply-to <messageKey> --text <text> [--message-key <key>] [json]
+  message-cancel --message-key <messageKey> [json]
+  message-ack    <message-id> [--by <target>] [json] (receipt, not reply)
+  message-status <message-key> [--json] (add --json for correlated reply state)
   unread-count   --for <recipient> [--pane <%id>] [json]
                  --for is REQUIRED. --pane narrows to one pane's inbox.
 
@@ -1814,6 +1885,14 @@ Durable task content belongs in beads (`bd`), not here.
                    senderKind, recipientId, recipientKind, targetPaneId, beadId,
                    expectsReply, createdAtMs
     message-ack    messageKey, acked, ackedAtMs, ackedBy, status
+    message-reply  messageKey, messageId, duplicate, replyToMessageKey,
+                   fulfilledMessageKey, fulfilled, senderId, senderPaneId,
+                   recipientId, targetPaneId, createdAtMs
+    message-cancel messageKey, cancelled, cancelledAtMs
+    message-list   correlated opt-in adds replyStatus, fulfilledAtMs,
+                   fulfilledByMessageKey, correlatedReply
+    message-status --json adds replyStatus, fulfilledAtMs,
+                   fulfilledByMessageKey, correlatedReply
     unread-count   recipientId, unreadCount, oldestUnackedAtMs
 
     TRAP: the message body is `summary` and its id is `messageKey`.
@@ -1834,20 +1913,27 @@ MONITORS — never prompt a pane that is working; wait for it instead.
   monitor-run   <internal — spawned by monitor-agent; do not call directly>
 
   json output:
-    wait-agent    target, sessionId, paneId, state, status, startedAtMs,
-                  completedAtMs, timeoutMs, intervalMs
-    monitor-agent monitorId, target, sessionId, paneId, state, startedAtMs
-    monitor-list  monitorId, target, sessionId, paneId, state, startedAtMs,
+    wait-agent    waitId, target, requesterSessionId, requesterPaneId,
+                  targetSessionId, targetPaneId, state, monitorId,
+                  terminalStatus, wakeDelivered, wakeConsumed, replayed,
+                  startedAtMs, completedAtMs, timeoutMs, intervalMs
+    monitor-agent monitorId, waitId, target, requesterSessionId,
+                  requesterPaneId, sessionId, paneId, state, startedAtMs,
+                  timeoutMs, intervalMs, terminalStatus, wakeDelivered
+    monitor-list  monitorId, waitId, target, requesterSessionId,
+                  requesterPaneId, sessionId, paneId, state, startedAtMs,
                   updatedAtMs, timeoutMs, intervalMs, terminalStatus,
-                  terminalAtMs, terminalDetail
+                  terminalAtMs, wakeDelivered, wakeConsumed, orphan
     monitor-kill  monitorId, status
 
 DELEGATION — hand work to another pane without fragmenting its prompt.
   handoff          --target <target> --bead <id> [--note <text>] [--file <path>]
                    [--yes] [json]   writes the /tmp prompt file, keeps the bead as
                                     the contract, prints the exact send command
-  safe-send-pointer [--yes] [--double-enter|--no-double-enter] [--force-freeform]
+  safe-send-pointer [--yes] [--double-enter|--no-double-enter]
+                   [--force-freeform] [--reply-to <messageKey>]
                    <target> <slash-command | /tmp pointer> [json]
+                   --reply-to fulfils only after successful tmux injection; injection failure never fulfils.
                    Refuses working targets, multiline payloads and $(...).
                    Dry-runs unless --yes. Adds the second Enter that Claude Code
                    panes eat via paste-detection; pi/Codex panes do not get it.
@@ -2952,7 +3038,7 @@ pane_is_claude_code() {
 }
 
 safe_send_pointer() {
-  local execute=0 double_enter=-1 force_freeform=0 json=0 target='' payload='' arg pane state qpane qpayload cmd
+  local execute=0 double_enter=-1 force_freeform=0 json=0 target='' payload='' reply_to='' fulfilment_json='' arg pane state qpane qpayload cmd
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
@@ -2961,6 +3047,8 @@ safe_send_pointer() {
       --double-enter) double_enter=1 ;;
       --no-double-enter) double_enter=0 ;;
       --force-freeform) force_freeform=1 ;;
+      --reply-to) [ "$#" -gt 0 ] || return 2; reply_to="$1"; shift ;;
+      --reply-to=*) reply_to="${arg#--reply-to=}" ;;
       --json) json=1 ;;
       -h|--help) return 2 ;;
       --*) printf 'safe-send-pointer: unknown option: %s\n' "$arg" >&2; return 2 ;;
@@ -2973,7 +3061,11 @@ safe_send_pointer() {
         ;;
     esac
   done
-  [ -n "$target" ] && [ -n "$payload" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'usage: safe-send-pointer [--yes] [--double-enter|--no-double-enter] [--force-freeform] <target> <slash-command|/tmp pointer>' safe-send-pointer 2; return $?; }
+  [ -n "$target" ] && [ -n "$payload" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'usage: safe-send-pointer [--yes] [--double-enter|--no-double-enter] [--force-freeform] [--reply-to <messageKey>] <target> <slash-command|/tmp pointer>' safe-send-pointer 2; return $?; }
+  if [ -n "$reply_to" ]; then
+    obs_v2_mode
+    [ "$REPLY" = on ] || { command_error "$json" XTMUX_JSON_REQUIRES_V2 'safe-send-pointer --reply-to requires XTMUX_OBS_V2=1' safe-send-pointer 2; return $?; }
+  fi
   if [ "$json" = 1 ]; then
     safe_pointer_payload "$payload" "$force_freeform" 2>/dev/null || { command_error 1 XTMUX_POINTER_REJECTED 'safe-send-pointer: payload rejected' safe-send-pointer 2; return $?; }
   else
@@ -3014,10 +3106,16 @@ safe_send_pointer() {
     fi
   fi
   if [ "$execute" = 1 ]; then
-    tmux send-keys -t "$pane" "$payload" Enter
+    if ! tmux send-keys -t "$pane" "$payload" Enter; then
+      command_error "$json" XTMUX_DELIVERY_FAILED 'safe-send-pointer: tmux injection failed; reply not fulfilled' safe-send-pointer 1
+      return $?
+    fi
     if [ "$double_enter" = 1 ]; then
       sleep 2
-      tmux send-keys -t "$pane" Enter
+      if ! tmux send-keys -t "$pane" Enter; then
+        command_error "$json" XTMUX_DELIVERY_FAILED 'safe-send-pointer: tmux injection failed; reply not fulfilled' safe-send-pointer 1
+        return $?
+      fi
     fi
     current_tmux_session_id; _from_session="$REPLY"
     obs_v2_mode
@@ -3039,12 +3137,25 @@ safe_send_pointer() {
     else
       log_event message.sent via=safe-send-pointer from="${_from_session:-unknown}" to="$target" pane="$pane" text="$payload" state="${state:-unknown}" double_enter="$double_enter" force_freeform="$force_freeform"
     fi
+    if [ -n "$reply_to" ]; then
+      obs_runtime_argv
+      local reply_args=(message-reply --in-reply-to "$reply_to" --text "$payload")
+      [ "$json" = 1 ] && reply_args+=(--json)
+      fulfilment_json="$("${OBS_ARGV[@]}" "${reply_args[@]}")" || return $?
+      [ "$json" = 1 ] || printf '%s' "$fulfilment_json"
+    fi
     [ "$json" = 1 ] || printf 'sent target=%s pane=%s state=%s double_enter=%s\n' "$target" "$pane" "${state:-unknown}" "$double_enter"
   fi
   if [ "$json" = 1 ]; then
-    printf '{"target":"%s","paneId":"%s","state":"%s","doubleEnter":%s,"sent":%s}\n' \
-      "$(json_escape "$target")" "$(json_escape "$pane")" "$(json_escape "${state:-unknown}")" \
-      "$([ "$double_enter" = 1 ] && printf true || printf false)" "$([ "$execute" = 1 ] && printf true || printf false)"
+    if [ -n "$reply_to" ] && [ "$execute" = 1 ]; then
+      printf '{"injection":{"target":"%s","paneId":"%s","state":"%s","doubleEnter":%s,"sent":true},"fulfilment":%s}\n' \
+        "$(json_escape "$target")" "$(json_escape "$pane")" "$(json_escape "${state:-unknown}")" \
+        "$([ "$double_enter" = 1 ] && printf true || printf false)" "$fulfilment_json"
+    else
+      printf '{"target":"%s","paneId":"%s","state":"%s","doubleEnter":%s,"sent":%s}\n' \
+        "$(json_escape "$target")" "$(json_escape "$pane")" "$(json_escape "${state:-unknown}")" \
+        "$([ "$double_enter" = 1 ] && printf true || printf false)" "$([ "$execute" = 1 ] && printf true || printf false)"
+    fi
   fi
 }
 
@@ -3498,11 +3609,21 @@ case "${1:-}" in
     ;;
   wait-agent)
     shift
+    obs_v2_mode
+    if [ "$REPLY" = on ]; then
+      obs_runtime_argv
+      exec "${OBS_ARGV[@]}" wait-agent "$@"
+    fi
     wait_agent "$@"
     exit $?
     ;;
   monitor-agent)
     shift
+    obs_v2_mode
+    if [ "$REPLY" = on ]; then
+      obs_runtime_argv
+      exec "${OBS_ARGV[@]}" monitor-agent "$@"
+    fi
     monitor_agent "$@"
     exit $?
     ;;
@@ -3513,6 +3634,11 @@ case "${1:-}" in
     ;;
   monitor-list)
     shift
+    obs_v2_mode
+    if [ "$REPLY" = on ]; then
+      obs_runtime_argv
+      exec "${OBS_ARGV[@]}" monitor-list "$@"
+    fi
     monitor_list "$@"
     exit $?
     ;;
@@ -3574,6 +3700,16 @@ case "${1:-}" in
   message-send)
     shift
     message_send "$@"
+    exit $?
+    ;;
+  message-reply)
+    shift
+    message_reply "$@"
+    exit $?
+    ;;
+  message-cancel)
+    shift
+    message_cancel "$@"
     exit $?
     ;;
   message-list)
