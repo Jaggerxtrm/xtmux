@@ -18,7 +18,7 @@ import { auditCommand } from "./commands/audit.ts";
 import { listObligations } from "../extensions/pi-inbox-reply.ts";
 import { captureRuntimeContext } from "./domains/identity/runtime-context.ts";
 import { capturePane } from "./domains/identity/pane-capture.ts";
-import { createHandoffWithMonitor, markSent } from "./domains/handoffs/lifecycle.ts";
+import { createHandoffWithMonitor, markSent, HandoffKeyConflictError } from "./domains/handoffs/lifecycle.ts";
 
 function usage(): string {
   return `usage: xtmux-obs <command>
@@ -339,27 +339,39 @@ function cliHandoff(db: import("./db/connection.ts").Db, argv: string[]): number
   }
   const monitorId = flags.get("monitor-id");
   const nowMs = Date.now();
-  const result = createHandoffWithMonitor(db, {
-    id,
-    handoffKey: flags.get("key") ?? id,
-    sourceInstanceId: flags.get("source-instance"),
-    sourceSessionId: flags.get("source-session"),
-    targetSessionId: flags.get("target-session"),
-    targetPaneId: paneId,
-    beadId,
-    parentSessionId: flags.get("parent-session"),
-    promptFile,
-    summary: flags.get("summary"),
-  }, monitorId ? {
-    monitorId,
-    target: flags.get("target") ?? paneId,
-    paneId,
-    sessionId: flags.get("target-session"),
-    instanceId: flags.get("instance-id"),
-    state: flags.get("monitor-state") ?? "waiting-ready",
-    timeoutMs: flags.get("monitor-timeout-ms") ? Number(flags.get("monitor-timeout-ms")) : undefined,
-    intervalMs: Number(flags.get("monitor-interval-ms") ?? 1000),
-  } : undefined, () => nowMs);
+  let result;
+  try {
+    result = createHandoffWithMonitor(db, {
+      id,
+      handoffKey: flags.get("key") ?? id,
+      sourceInstanceId: flags.get("source-instance"),
+      sourceSessionId: flags.get("source-session"),
+      targetSessionId: flags.get("target-session"),
+      targetPaneId: paneId,
+      beadId,
+      parentSessionId: flags.get("parent-session"),
+      promptFile,
+      summary: flags.get("summary"),
+    }, monitorId ? {
+      monitorId,
+      target: flags.get("target") ?? paneId,
+      paneId,
+      sessionId: flags.get("target-session"),
+      instanceId: flags.get("instance-id"),
+      state: flags.get("monitor-state") ?? "waiting-ready",
+      timeoutMs: flags.get("monitor-timeout-ms") ? Number(flags.get("monitor-timeout-ms")) : undefined,
+      intervalMs: Number(flags.get("monitor-interval-ms") ?? 1000),
+    } : undefined, () => nowMs);
+  } catch (err) {
+    // A reused key that names a DIFFERENT delegation is the caller's mistake, not
+    // a storage failure: surface it as a structured refusal so the picker can
+    // report it without writing anything, rather than a stack trace.
+    if (err instanceof HandoffKeyConflictError) {
+      process.stderr.write(JSON.stringify({ code: err.code, message: err.message, detail: { handoff_key: err.handoffKey, conflicts: err.conflicts.join("; ") } }) + "\n");
+      return 4;
+    }
+    throw err;
+  }
   process.stdout.write(JSON.stringify({
     handoffId: result.handoff.id,
     handoffKey: flags.get("key") ?? id,

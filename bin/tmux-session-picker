@@ -2865,12 +2865,25 @@ handoff_prompt_file_allowed() {
   return 1
 }
 
+# Readiness is a property of the AGENT INSTANCE, not of the pane.
+#
+# `log query` is a history query, so asking "does this pane have an agent.ready
+# row?" answers yes for a pane whose PREVIOUS occupant readied and exited — and
+# --wait-ready would then stop waiting and inject the pointer into a pane whose
+# current agent has not finished initializing, which is precisely the failure
+# readiness exists to prevent. Match the ready event against the pane's CURRENT
+# @agent_instance_id (rotated on --new-instance by scripts/agent-state.sh).
+#
+# No instance id means no agent has claimed this pane at all: not ready, and never
+# "ready by default".
 handoff_ready_seen() {
-  local pane="$1" out
+  local pane="$1" out instance
   obs_available || return 1
+  instance="$(tmux show-options -p -t "$pane" -qv @agent_instance_id 2>/dev/null || true)"
+  [ -n "$instance" ] || return 1
   obs_runtime_argv
-  out="$("${OBS_ARGV[@]}" log-query --type agent.ready --pane "$pane" --limit 20 --json 2>/dev/null || true)"
-  printf '%s\n' "$out" | grep -F '"type":"agent.ready"' >/dev/null 2>&1
+  out="$("${OBS_ARGV[@]}" log-query --type agent.ready --pane "$pane" --limit 50 --json 2>/dev/null || true)"
+  printf '%s\n' "$out" | grep -F "\"instanceId\":\"$instance\"" >/dev/null 2>&1
 }
 
 handoff_wait_ready() {
@@ -2893,7 +2906,7 @@ handoff_wait_ready() {
 
 handoff_v2() {
   local execute="$1" json="$2" target="$3" bead="$4" prompt_file="$5" wait_ready="$6" monitor="$7" handoff_key="$8" parent="$9" pane="${10}"; shift 10
-  local target_session source_session monitor_id safe_key state create_out ready_timeout
+  local target_session source_session monitor_id safe_key state create_out ready_timeout pointer
   handoff_prompt_file_allowed "$prompt_file" || {
     command_error "$json" XTMUX_PROMPT_FILE_REJECTED "handoff: prompt file must be readable existing file under local allowed path: $prompt_file" handoff 2
     return $?
@@ -2906,6 +2919,17 @@ handoff_v2() {
   # indistinguishable downstream from a real one. A handoff whose contract nobody
   # can look up is not a handoff; the bead IS the contract, in both modes.
   [ -n "$bead" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'handoff: --bead is required — the bead is the durable contract the target reads' handoff 2; return $?; }
+  # Build and validate the pointer BEFORE anything durable is written.
+  # handoff_prompt_file_allowed accepts a file under $PWD or XDG_STATE_HOME, but
+  # safe_pointer_payload only accepts a payload referencing /tmp — so such a path
+  # used to pass validation, create the durable handoff row, and only THEN have its
+  # pointer rejected, leaving a handoff that claims a delegation nobody ever
+  # attempted. Whatever we cannot deliver, we must not first record as delegated.
+  pointer="leggi $prompt_file e seguilo. contratto durevole: bd show $bead. report finale nel bead."
+  safe_pointer_payload "$pointer" >/dev/null 2>&1 || {
+    command_error "$json" XTMUX_PROMPT_FILE_REJECTED "handoff: prompt file must live where a pointer may reference it (see safe-send-pointer rules): $prompt_file" handoff 2
+    return $?
+  }
   [ -n "$handoff_key" ] || handoff_key="ho-$(date +%s)-$$-${RANDOM}"
   safe_key="$(printf '%s' "$handoff_key" | tr -cs 'A-Za-z0-9._-' '-')"
   [ -n "$safe_key" ] || safe_key="ho-$(date +%s)-$$"
@@ -2932,10 +2956,24 @@ handoff_v2() {
     create_args+=(--monitor-id "$monitor_id" --monitor-state waiting-ready --monitor-interval-ms 1000)
     [ "$wait_ready" -gt 0 ] && create_args+=(--monitor-timeout-ms "$((wait_ready * 1000))")
   fi
-  create_out="$("${OBS_ARGV[@]}" "${create_args[@]}" 2>/dev/null)" || {
-    if [ "$json" = 1 ]; then json_error XTMUX_HANDOFF_CREATE_FAILED 'handoff: durable registration failed' handoff; else printf '%s\n' "$create_out" >&2; fi
-    return 1
+  # Keep the runtime's OWN structured error when it has one. Collapsing every
+  # failure into XTMUX_HANDOFF_CREATE_FAILED throws away the only thing the caller
+  # can act on: a reused idempotency key that names a different delegation
+  # (XTMUX_HANDOFF_KEY_CONFLICT, exit 4) needs a new key, while a storage failure
+  # needs a retry — and "durable registration failed" cannot tell them apart.
+  local create_err
+  create_err="$(mktemp)"
+  create_out="$("${OBS_ARGV[@]}" "${create_args[@]}" 2>"$create_err")" || {
+    local rc=$? err_body
+    err_body="$(cat "$create_err" 2>/dev/null || true)"
+    rm -f "$create_err"
+    case "$err_body" in
+      *'"code"'*) [ "$json" = 1 ] && printf '%s\n' "$err_body" >&2 || printf '%s\n' "$err_body" >&2 ;;
+      *) if [ "$json" = 1 ]; then json_error XTMUX_HANDOFF_CREATE_FAILED 'handoff: durable registration failed' handoff; else printf '%s\n' "$err_body" >&2; fi ;;
+    esac
+    return "$rc"
   }
+  rm -f "$create_err"
   if [ "$wait_ready" -gt 0 ]; then
     handoff_wait_ready "$target" "$pane" "$wait_ready" "$json" || {
       local ready_rc=$?
@@ -2948,8 +2986,6 @@ handoff_v2() {
   tmux set-option -p -t "$pane" -q @agent_bead "$bead" 2>/dev/null || true
   tmux set-option -p -t "$pane" -q @agent_prompt_file "$prompt_file" 2>/dev/null || true
   [ -n "$parent" ] && tmux set-option -p -t "$pane" -q @agent_parent_session "$parent" 2>/dev/null || true
-  local pointer="leggi $prompt_file e seguilo. contratto durevole: bd show $bead. report finale nel bead."
-  safe_pointer_payload "$pointer" || return 2
   local delivery_rc=0
   set +e
   XTMUX_HANDOFF_ID="$handoff_key" safe_send_pointer --yes "$target" "$pointer" >/dev/null

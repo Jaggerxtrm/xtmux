@@ -1422,6 +1422,52 @@ else
     && ok "handoff: a delivered pointer is an attempt, never acceptance (state=$st)" \
     || nok "handoff: a delivered pointer must not be recorded as acceptance (state=$st)"
 
+  # Readiness belongs to the AGENT INSTANCE, not to the pane. `log query` is a
+  # history query, so a pane whose PREVIOUS occupant readied and exited still has
+  # an agent.ready row — and a pane-scoped check would see it, stop waiting, and
+  # inject the pointer into a pane whose current agent has not finished
+  # initializing. That is the exact failure readiness exists to prevent.
+  #
+  # Give the pane a stale ready event from a DEAD instance, then a fresh instance
+  # id that has readied nothing. --wait-ready must still time out.
+  env TMUX="$hd_env" TMUX_PANE="$hd_pane" XDG_STATE_HOME="$hd_state" XTMUX_OBS_V2=1 \
+    PATH="$hd_bin:$PATH" "$AGENT_STATE" idle --new-instance >/dev/null 2>&1
+  command tmux -L "$hd_sock" set-option -p -t "$hd_pane" -q @agent_instance_id "successor-with-no-ready" 2>/dev/null || true
+  stale_t0="$(date +%s)"
+  stale_err="$(hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$hd_prompt" --handoff-key k-stale --wait-ready 2s --yes --json 2>&1 >/dev/null)"; stale_rc=$?
+  stale_elapsed=$(( $(date +%s) - stale_t0 ))
+  { [ "$stale_rc" -ne 0 ] && [ "$stale_elapsed" -ge 2 ] \
+      && case "$stale_err" in *XTMUX_READY_TIMEOUT*) true ;; *) false ;; esac; } \
+    && ok "handoff: --wait-ready ignores a PREVIOUS instance's agent.ready on the same pane" \
+    || nok "handoff: --wait-ready ignores a previous instance's agent.ready (rc=$stale_rc elapsed=${stale_elapsed}s err='$stale_err')"
+
+  # An idempotency key promises "the SAME delegation, sent again". A retry that
+  # changed the bead is a DIFFERENT delegation wearing a used key: silently
+  # returning the old row would leave the durable record describing one thing while
+  # the pointer delivered another.
+  conf_err="$(hd handoff --target "$hd_pane" --bead xtmux-j46.99 --prompt-file "$hd_prompt" --handoff-key k-idem --yes --json 2>&1 >/dev/null)"; conf_rc=$?
+  conf_bead="$(hd_q "SELECT bead_id FROM handoffs WHERE handoff_key='k-idem'")"
+  { [ "$conf_rc" -ne 0 ] && [ "$conf_bead" = "xtmux-j46.8" ] \
+      && case "$conf_err" in *XTMUX_HANDOFF_KEY_CONFLICT*) true ;; *) false ;; esac; } \
+    && ok "handoff: a reused key describing a DIFFERENT delegation is refused, not silently absorbed" \
+    || nok "handoff: a reused key with different inputs is refused (rc=$conf_rc bead now '$conf_bead' err='$conf_err')"
+
+  # A prompt file the pointer cannot reference must be refused BEFORE anything
+  # durable is written. It used to pass the path check, create the handoff row, and
+  # only then have its pointer rejected — leaving a handoff that claims a
+  # delegation nobody ever attempted.
+  # NOT under $hd_state: XDG_STATE_HOME is itself a mktemp dir under /tmp, so a
+  # file there is perfectly pointer-legal. The case being tested is a path that
+  # handoff_prompt_file_allowed accepts ($PWD) but a pointer may not reference.
+  outside="$ROOT/.xtmux-contract-outside-$$.md"
+  printf 'unreachable by pointer\n' > "$outside"
+  rows_before="$(hd_q "SELECT count(*) FROM handoffs")"
+  out_err="$(hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$outside" --handoff-key k-outside --yes --json 2>&1 >/dev/null)"; out_rc=$?
+  { [ "$out_rc" -ne 0 ] && [ "$(hd_q "SELECT count(*) FROM handoffs")" = "$rows_before" ]; } \
+    && ok "handoff: an undeliverable prompt path leaves no orphan durable record" \
+    || nok "handoff: an undeliverable prompt path leaves no orphan record (rc=$out_rc rows $rows_before -> $(hd_q "SELECT count(*) FROM handoffs"))"
+  rm -f "$outside"
+
   # --wait-ready against a pane that never emits agent.ready must time out as a
   # STRUCTURED refusal, not hang forever and not send anyway.
   t0="$(date +%s)"

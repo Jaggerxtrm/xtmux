@@ -26,6 +26,20 @@ export interface CreateInput {
   summary?: string | undefined;
 }
 
+/**
+ * A retry reused an idempotency key for a delegation that is not the same one.
+ * Distinct from a plain duplicate (which is the whole point of the key) and from a
+ * storage error: this is the caller's mistake, and it is caught rather than
+ * absorbed because absorbing it produces a durable record that lies.
+ */
+export class HandoffKeyConflictError extends Error {
+  readonly code = "XTMUX_HANDOFF_KEY_CONFLICT";
+  constructor(readonly handoffKey: string, readonly conflicts: string[]) {
+    super(`handoff ${handoffKey}: key already describes a different delegation — ${conflicts.join(", ")}`);
+    this.name = "HandoffKeyConflictError";
+  }
+}
+
 function hashFile(path: string): string | null {
   try {
     const buf = readFileSync(path);
@@ -69,11 +83,31 @@ function insertHandoffWithinTransaction(
     ) as { changes?: number };
   const duplicate = Number(result.changes ?? 0) === 0;
   const existing = db.raw
-    .query<{ id: string; prompt_file_hash: string | null }, [string]>(
-      "SELECT id, prompt_file_hash FROM handoffs WHERE handoff_key = ?",
+    .query<{ id: string; prompt_file_hash: string | null; target_pane_id: string; bead_id: string; prompt_file: string }, [string]>(
+      "SELECT id, prompt_file_hash, target_pane_id, bead_id, prompt_file FROM handoffs WHERE handoff_key = ?",
     )
     .get(key);
   if (!existing) throw new Error(`handoff ${key}: insert was not committed`);
+  // An idempotency key promises "this is the SAME delegation, sent again". A retry
+  // that changed the target, the bead, or the prompt file is a DIFFERENT
+  // delegation wearing a used key: DO NOTHING would keep the old row, the picker
+  // would still inject the new pointer, and the attempt would be recorded against
+  // a handoff that describes something else entirely — a durable record that lies
+  // about what was delivered. Refuse instead; the caller wants a new key.
+  if (duplicate) {
+    const conflicts: string[] = [];
+    if (existing.target_pane_id !== input.targetPaneId) conflicts.push(`target_pane_id (${existing.target_pane_id} -> ${input.targetPaneId})`);
+    if (existing.bead_id !== input.beadId) conflicts.push(`bead_id (${existing.bead_id} -> ${input.beadId})`);
+    if (existing.prompt_file !== input.promptFile) conflicts.push(`prompt_file (${existing.prompt_file} -> ${input.promptFile})`);
+    // The file may have been REWRITTEN under the same path. Same key + same path +
+    // different bytes is still a different delegation.
+    if (hash !== null && existing.prompt_file_hash !== null && hash !== existing.prompt_file_hash) {
+      conflicts.push("prompt_file contents changed");
+    }
+    if (conflicts.length > 0) {
+      throw new HandoffKeyConflictError(key, conflicts);
+    }
+  }
   if (!duplicate) {
     insertEnvelope(db, {
       type: "handoffs.created",
