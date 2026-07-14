@@ -46,6 +46,7 @@ pane="\${MOCK_PANE:-}"
 case "$target" in
   *owner*) session='$owner'; pane='%owner' ;;
   *worker*) session='$worker'; pane='%worker' ;;
+  *target*) session='$target'; pane='%target' ;;
 esac
 case "$1" in
   display-message)
@@ -188,7 +189,8 @@ describe("coordination CLI acceptance", () => {
         expect(help).toMatch(/ack[^\n]*receipt[^\n]*not[^\n]*reply/i);
         expect(help).toMatch(/wait-agent[^\n]*--consume/i);
       }
-      expect(pickerHelp).toMatch(/safe-send-pointer[^\n]*--reply-to/i);
+      expect(pickerHelp).toContain("safe-send-pointer");
+      expect(pickerHelp).toContain("--reply-to <messageKey>");
       expect(pickerHelp).toContain("wakeConsumed");
     } finally {
       ctx.cleanup();
@@ -243,13 +245,13 @@ describe("coordination CLI acceptance", () => {
       seedRequest(success.dbPath, "safe-success");
       const result = picker([
         "safe-send-pointer", "--yes", "--json", "--reply-to", "safe-success",
-        "--message-key", "safe-success-reply", "%owner", "leggi /tmp/reply.txt e seguilo",
+        "%owner", "leggi /tmp/reply.txt e seguilo",
       ], success.env);
       expect(result.status).toBe(0);
       expect(readFileSync(success.calls, "utf8")).toContain("send-keys");
       expect(JSON.parse(result.stdout)).toMatchObject({
         injection: { sent: true, target: "%owner" },
-        fulfilment: { messageKey: "safe-success-reply", replyToMessageKey: "safe-success", fulfilled: true },
+        fulfilment: { messageKey: "reply-safe-success", replyToMessageKey: "safe-success", fulfilled: true },
       });
       const db = new Database(success.dbPath, { readonly: true });
       expect(db.query<{ fulfilled: number }, []>("SELECT fulfilled_at_ms IS NOT NULL AS fulfilled FROM messages WHERE message_key = 'safe-success'").get()).toEqual({ fulfilled: 1 });
@@ -263,13 +265,13 @@ describe("coordination CLI acceptance", () => {
       seedRequest(failure.dbPath, "safe-failure");
       const result = picker([
         "safe-send-pointer", "--yes", "--json", "--reply-to", "safe-failure",
-        "--message-key", "safe-failure-reply", "%owner", "leggi /tmp/reply.txt e seguilo",
+        "%owner", "leggi /tmp/reply.txt e seguilo",
       ], { ...failure.env, TMUX_SEND_FAIL: "1" });
       expect(result.status).not.toBe(0);
       expect(readFileSync(failure.calls, "utf8")).toContain("send-keys");
       const db = new Database(failure.dbPath, { readonly: true });
       expect(db.query("SELECT fulfilled_at_ms FROM messages WHERE message_key = 'safe-failure'").get()).toEqual({ fulfilled_at_ms: null });
-      expect(db.query("SELECT COUNT(*) AS count FROM messages WHERE message_key = 'safe-failure-reply'").get()).toEqual({ count: 0 });
+      expect(db.query("SELECT COUNT(*) AS count FROM messages WHERE message_key = 'reply-safe-failure'").get()).toEqual({ count: 0 });
       db.close();
     } finally {
       failure.cleanup();
