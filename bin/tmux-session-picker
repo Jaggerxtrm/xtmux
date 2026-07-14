@@ -1780,8 +1780,7 @@ never send while working
   monitor-list / monitor-kill <id>
 
 safe handoff
-  handoff --target <pane> --bead <id> --note 'NO push'
-  handoff --target <pane> --prompt-file /tmp/task.md --wait-ready 2m --monitor --yes
+  handoff --target <pane> --bead <id> --note 'NO push'   [--prompt-file X --wait-ready 2m --monitor]
   safe-send-pointer <pane> 'leggi /tmp/file.txt e seguilo'
   add --yes only after inspecting the printed command
 
@@ -1879,9 +1878,10 @@ DELEGATION — hand work to another pane without fragmenting its prompt.
   handoff          --target <target> --bead <id> [--note <text>] [--file <path>]
                    [--yes] [json]   writes the /tmp prompt file, keeps the bead as
                                     the contract, prints the exact send command
-  handoff          --target <target> --prompt-file <path> [--wait-ready <dur>]
-                   [--monitor] [--handoff-key <key>] [--yes] [json]
-                                    uses existing file; durable, readiness-aware path
+  handoff          --target <t> --prompt-file <path> [--wait-ready <dur>] [--monitor]
+                   [--handoff-key <k>] [--yes] [json]   durable, readiness-aware
+                                    path over an existing file; send-keys success is
+                                    an ATTEMPT, never acceptance
   safe-send-pointer [--yes] [--double-enter|--no-double-enter] [--force-freeform]
                    <target> <slash-command | /tmp pointer> [json]
                    Refuses working targets, multiline payloads and $(...).
@@ -2900,7 +2900,12 @@ handoff_v2() {
   }
   current_tmux_session_id; source_session="$REPLY"
   resolve_to_session_id "$target" && target_session="$REPLY" || target_session=''
-  [ -n "$bead" ] || bead='prompt-file'
+  # NOT a default. This used to substitute the literal string 'prompt-file' for a
+  # missing --bead, which then landed in the durable handoff row AND in the journal
+  # envelope's bead_id — a fabricated reference to a bead that does not exist,
+  # indistinguishable downstream from a real one. A handoff whose contract nobody
+  # can look up is not a handoff; the bead IS the contract, in both modes.
+  [ -n "$bead" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'handoff: --bead is required — the bead is the durable contract the target reads' handoff 2; return $?; }
   [ -n "$handoff_key" ] || handoff_key="ho-$(date +%s)-$$-${RANDOM}"
   safe_key="$(printf '%s' "$handoff_key" | tr -cs 'A-Za-z0-9._-' '-')"
   [ -n "$safe_key" ] || safe_key="ho-$(date +%s)-$$"

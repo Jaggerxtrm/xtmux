@@ -126,6 +126,7 @@ Compiled plumbing remains documented even when it is not exposed as a picker or 
 | `obs:log-query` | agent-json | NDJSON → array in JSON mode | .4 |
 | `obs:delivery-record` | guarded-admin | picker-internal delivery evidence | .4 |
 | `obs:context` | agent-json | resolves the invoking pane → `xtrm.runtime-origin.v1`; cross-repo contract consumed by xtrm-dev/specialists; opens no DB | j46.2 |
+| `obs:handoff` | agent-json | `handoff create` writes the durable handoff record and (optionally) registers its monitor in ONE SQLite transaction — a failed insert leaves neither, which two separate picker→runtime invocations could never guarantee. `handoff attempt` appends one delivery_attempts row per pointer injection. Idempotent on `handoff_key`: a retry reuses the record and the monitor, and only the attempt row is added | j46.8 |
 | `obs:log-follow` | agent-json | polling stream over `journalPage()` — one item per line, same envelope as the page. Advances its cursor only AFTER a row is written, so a crash mid-line replays a row (absorbed by `event_key`) rather than skipping it | j46.6 |
 | `obs:pane` | agent-json | `pane capture` → `xtrm.xtmux.pane-capture.v1`; bounded at `max_lines`, over-large requests clamped not rejected; opens no DB; content never journalled | j46.4 |
 | `obs:monitor` | agent-json | mixed dispatcher; only list is a normal query | .2 |

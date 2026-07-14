@@ -93,7 +93,10 @@ describe("migration 0010 reply correlation", () => {
       ).all();
 
       expect(db.raw.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()?.foreign_keys).toBe(1);
-      expect(migrate(db).applied).toEqual([10, 11]);
+      // Contains, not equals: this test is about what migration 10 does to the
+      // data, so pinning the exact set of pending versions just makes it fail on
+      // the next unrelated migration anyone adds (it did — 0012 broke it).
+      expect(migrate(db).applied).toEqual(expect.arrayContaining([10, 11]));
       expect(db.raw.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()?.foreign_keys).toBe(1);
       expect(db.raw.query("PRAGMA foreign_key_check").all()).toEqual([]);
       expect({
