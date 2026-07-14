@@ -1010,13 +1010,16 @@ ALTER TABLE messages ADD COLUMN fulfilled_at_ms INTEGER;
 ALTER TABLE messages ADD COLUMN cancelled_at_ms INTEGER;
 ALTER TABLE messages ADD COLUMN cancel_reason TEXT;
 
+-- Declarative sketch only; implementation uses table-rebuild constraints below.
 ALTER TABLE messages ADD CONSTRAINT messages_reply_shape CHECK (
   reply_to_message_id IS NULL OR reply_to_message_id <> id
 );
+-- Declarative sketch only; implementation uses table-rebuild constraints below.
 ALTER TABLE messages ADD CONSTRAINT messages_fulfilment_shape CHECK (
   (fulfilled_by_message_id IS NULL AND fulfilled_at_ms IS NULL)
   OR (fulfilled_by_message_id IS NOT NULL AND fulfilled_at_ms IS NOT NULL)
 );
+-- Declarative sketch only; implementation uses table-rebuild constraints below.
 ALTER TABLE messages ADD CONSTRAINT messages_terminal_obligation CHECK (
   cancelled_at_ms IS NULL OR fulfilled_at_ms IS NULL
 );
@@ -1036,10 +1039,18 @@ CREATE INDEX msg_fulfilled_retention
   WHERE expects_reply = 1;
 ```
 
-The implementation must use a migration-safe table rebuild if deployed SQLite
-cannot add named table constraints with `ALTER TABLE`; this is a sketch, not a
-claim that shown statements are exact migration syntax. Existing unique
-`message_key` remains send idempotency key.
+**SQLite migration constraint.** SQLite does not support `ALTER TABLE ... ADD
+CONSTRAINT` for foreign keys or unique indexes on existing tables. The sketches
+above are declarative; implementation MUST use the SQLite table-rebuild pattern:
+(1) CREATE new table with the target schema; (2) INSERT ... SELECT from the old
+table; (3) DROP the old table; (4) RENAME the new table; (5) recreate all
+dependent indexes/triggers. This applies to both the `messages` extension for
+`reply_to_message_id` / `fulfilled_by_message_key` and to `outbound_waits`.
+Foreign-key consistency between `reply_to_message_id` (`messages.id`) and
+`fulfilled_by_message_key` (`messages.message_key`) MUST be verified in the same
+migration transaction; a rebuild that leaves them inconsistent is an
+implementation defect. Existing unique `message_key` remains send idempotency
+key.
 
 #### Outbound wait: add `outbound_waits`
 
@@ -1120,6 +1131,15 @@ fulfilled; `fulfilled` means both fulfilment columns are set; `cancelled` means
 and pane identities, and one-reply uniqueness before inserting. No text or bead
 matching is permitted.
 
+**Decision (v1): one reply per pending message.** A UNIQUE constraint on
+`(reply_to_message_id)` (or the equivalent on `messages.fulfilled_by_message_key`
+per §17.2) enforces exactly one fulfilling reply per pending message. A second
+attempted reply to the same `messageKey` returns a structured
+`XTMUX_ALREADY_FULFILLED` error. Multi-reply / streaming / correction semantics
+are a future migration and are explicitly out of scope for xtmux-3ua; when a
+future need arises, remove the UNIQUE constraint and add versioned reply rows
+without breaking the v1 fulfilment shape.
+
 | Transition case | Guard and input | SQLite transition | Concrete API result | Journal outcome |
 |---|---|---|---|---|
 | Send with implicit expectation | `message-send` has `--bead`, no explicit false, valid identities | Insert `expects_reply=1` message and receipt; fulfilment NULL | `duplicate:false`, `expectsReply:true`, key/id returned | `messages.sent` with IDs, panes, intent; no body |
@@ -1185,13 +1205,22 @@ consumption are separate idempotent facts.
 | Wake consumed | Requester owns wait and terminal wake is unconsumed | Set `state='consumed'`, `wake_consumed_at_ms` once | `consumed:true`; second call false/already-consumed | `wait.wake.consumed` once |
 | Replay after restart | Same requester queries terminal unconsumed wait after process restart | Read existing terminal row; do not re-arm or redeliver | `replayed:true`, same wait/monitor/status; consumption still one-time | `wait.wake.replayed`; no new arm |
 | Duplicate arm | Same wait already armed or terminal | Conditional update affects zero rows; existing monitor returned | `duplicate:true`, existing `monitorId`; no second monitor | `wait.monitor.duplicate` |
-| Orphan monitor | Monitor terminalizes with no matching `outbound_waits` row | Preserve monitor terminal history; create no wait or wake | `monitor-list` marks `orphan:true` or internal report; no requester wake | `wait.monitor.orphan` |
+| Orphan monitor | Monitor terminalizes with no matching `outbound_waits` row | Preserve monitor terminal history; create no wait or wake | `monitor-list` marks `orphan:true` or internal report; no requester wake | `wait.wake.orphan` |
 | Cross-session isolation | Caller session/pane differs from requester columns | No update and no wake delivery/consumption | `XTMUX_WAIT_NOT_OWNER`, exit 4 | `wait.validation_failed` with expected/actual IDs |
 | Cross-pane isolation | Same session but wrong requester pane | No update; target pane is not enough authority | `XTMUX_WAIT_NOT_OWNER`, exit 4 | Validation event with pane IDs |
 | Invalid monitor linkage | Arm target pane/session differs from wait target | Transaction rolls back monitor link | `XTMUX_WAIT_TARGET_MISMATCH`, exit 4 | `wait.validation_failed` |
 | Cancellation/timeout | Owner cancels, or expiry applies before arm | Set `cancelled`/`expired`; terminal monitor cannot deliver wake | `state:cancelled` or `state:expired`; `consumed:false` | `wait.cancelled` or `wait.expired` |
 | Restart during arm | Process dies before commit | No half-row is visible; retry registers/arms idempotently | Existing committed state returned, otherwise safe retry | No phantom event |
 | Retention prune | Consumed/cancelled/expired wait older than wait TTL | Delete wait only after terminal facts are journaled; active/registered/armed preserved | Retention report counts row; no future wake | `wait.pruned` |
+
+**Wake delivery vs consumption under crash.** `wake_delivered_at_ms` is a
+delivery timestamp; it does NOT imply the caller consumed the wake. Terminal or
+unconsumed rows remain replayable across process restart: after a crash the
+pending wait is re-read from SQLite and `wake-agent --consume` is required to
+advance the row to `wake_consumed_at_ms`. Delivery may be retried (idempotent);
+consumption is exactly-once. This means UI side effects that must fire exactly
+once must be gated on `wake_consumed_at_ms IS NULL AND wake-agent --consume`
+succeeding within the same transaction, never on `wake_delivered_at_ms` alone.
 
 ### 17.5 CLI and JSON contracts
 
@@ -1230,6 +1259,29 @@ The operation derives reversed endpoints from `m-1`; caller-provided endpoint
 or pane overrides are rejected. Optional `--message-key` controls idempotence.
 `message-cancel --message-key m-1 --json` returns
 `{"messageKey":"m-1","cancelled":true,"cancelledAtMs":1730000000300}`.
+
+**`safe-send-pointer --reply-to <messageKey>` fulfilment contract.** After
+successful tmux injection, this flag invokes idempotent `message-reply`
+fulfilment using the same reversed-endpoint derivation. If `tmux send-keys`
+fails (non-zero exit, working-target refusal, or multiline guard rejection),
+the pointer command returns an error and performs NO fulfilment write; injection
+success is a strict prerequisite. Fulfilment uses `message-reply`'s
+`--message-key` idempotence semantics, so a repeat pointer call with the same
+`--reply-to` and successful injection returns `duplicate:true` and does not
+double-write. Without `--reply-to`, `safe-send-pointer` never fulfils; silent
+heuristic clearing remains forbidden.
+
+The fulfilment result matches `message-reply`:
+
+```json
+{"messageKey":"reply-m-1-1","messageId":42,"duplicate":false,"replyToMessageKey":"m-1","fulfilledMessageKey":"m-1","fulfilled":true,"senderId":"$requester","senderPaneId":"%1","recipientId":"$target","targetPaneId":"%2","createdAtMs":1730000000200}
+```
+
+The pointer wrapper returns both results:
+
+```json
+{"injection":{"sent":true,"target":"$target","doubleEnter":true},"fulfilment":{"messageKey":"reply-m-1-1","messageId":42,"duplicate":false,"replyToMessageKey":"m-1","fulfilledMessageKey":"m-1","fulfilled":true,"senderId":"$requester","senderPaneId":"%1","recipientId":"$target","targetPaneId":"%2","createdAtMs":1730000000200}}
+```
 
 **`message-ack`** remains receipt-only and unchanged:
 
@@ -1382,11 +1434,8 @@ sanitizing input and never echo attacker-controlled text into the event.
    the original target pane is gone or the runtime can only recover session ID.
    Should pane identity degrade to session identity after pane teardown, or must
    it reject forever? Attack row: cross-pane reply and restart projection.
-2. **One reply versus multiple valid replies.** `msg_one_reply_per_request`
-   makes correlation one-to-one. If a recipient legitimately needs a correction
-   or streamed completion, this schema rejects second reply rather than modelling
-   versions. Attack row: duplicate reply and correlated reply; decide whether a
-   future reply sequence is required before migration 0010.
+2. **One-reply uniqueness.** One-reply uniqueness is now a v1 decision (see
+   §17.3); multi-reply is future migration.
 3. **Wake delivery crash window.** Delivery is recorded before extension/Claude
    notification. A process can crash after `wake_delivered_at_ms` and before
    user-visible notification; replay returns the recorded wake, but delivery
