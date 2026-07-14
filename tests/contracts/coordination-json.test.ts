@@ -1,34 +1,42 @@
 import { expect, test } from "bun:test";
 import { coordinationResult } from "../../extensions/coordination-json.ts";
 
-test("ignores unrelated pretty JSON followed by middleware output", () => {
-  const output = `{
-  "status": "running",
-  "items": []
-}
-sp result: no coordination message`;
-
-  expect(() => coordinationResult(output)).not.toThrow();
-  expect(coordinationResult(output)).toBeNull();
-  expect(coordinationResult('{"items":[]}\n{"other":"output"}')).toBeNull();
+test("ignores unrelated JSON, NDJSON, and multi-command JSON", () => {
+  const values = [
+    '{"status":"running","items":[]}',
+    '{"items":[]}\n{"other":"output"}',
+    '{"messageKey":"m1","duplicate":false,"senderId":"$s","recipientId":"$r"}\n{"other":"output"}',
+    '[{"messageKey":"m1"}]',
+  ];
+  for (const value of values) {
+    expect(() => coordinationResult(value)).not.toThrow();
+    expect(coordinationResult(value)).toBeNull();
+  }
 });
 
-test("recognizes compact coordination JSON before appended middleware text", () => {
+test("recognizes exactly one coordination envelope before non-JSON middleware text", () => {
   expect(coordinationResult(JSON.stringify({
     messageKey: "m1", duplicate: false, senderId: "$sender", recipientId: "$recipient",
-  }) + "\nwrapper output")).toEqual({ kind: "message-send", target: "$recipient" });
+  }) + "\nwrapper output")).toEqual({ kind: "message-send", messageKey: "m1", target: "$recipient" });
+  expect(coordinationResult(JSON.stringify({
+    messageKey: "reply-1", duplicate: false, replyToMessageKey: "m1", fulfilled: true,
+    senderId: "$recipient", recipientId: "$sender",
+  }))).toEqual({ kind: "message-reply", messageKey: "reply-1", replyToMessageKey: "m1", target: "$sender" });
   expect(coordinationResult(JSON.stringify({
     messageKey: "m1", status: "acked", acked: true,
-  }) + "\nwrapper output")).toEqual({ kind: "message-ack", messageKey: "m1" });
+  }))).toEqual({ kind: "message-ack", messageKey: "m1" });
   expect(coordinationResult(JSON.stringify({
-    target: "%recipient", sent: true, doubleEnter: true,
-  }) + "\nwrapper output")).toEqual({ kind: "safe-send-pointer", target: "%recipient" });
+    injection: { target: "%recipient", sent: true, doubleEnter: true },
+    fulfilment: { messageKey: "reply-m1", replyToMessageKey: "m1", fulfilled: true },
+  }))).toEqual({ kind: "safe-send-pointer", target: "%recipient", replyToMessageKey: "m1" });
 });
 
-test("retains actionable errors for malformed intended coordination JSON", () => {
+test("retains actionable errors only for xtmux-shaped malformed output", () => {
   expect(() => coordinationResult('{"messageKey":"m1","recipientId":"$recipient"')).toThrow(
     "Malformed xtmux JSON result",
   );
+  expect(() => coordinationResult('{"status":"running"')).not.toThrow();
+  expect(coordinationResult('{"status":"running"')).toBeNull();
 });
 
 test("retains actionable errors for incompatible coordination contracts", () => {
@@ -39,6 +47,6 @@ test("retains actionable errors for incompatible coordination contracts", () => 
     messageKey: "m1", status: "acked", acked: "true",
   }))).toThrow("Incompatible xtmux message-ack JSON result");
   expect(() => coordinationResult(JSON.stringify({
-    target: "%recipient", sent: true, doubleEnter: "true",
+    injection: { target: "%recipient", sent: true, doubleEnter: "true" },
   }))).toThrow("Incompatible xtmux safe-send-pointer JSON result");
 });
