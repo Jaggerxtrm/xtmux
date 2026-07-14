@@ -670,6 +670,86 @@ else
   fi
 fi
 
+echo
+echo "== identity contract: host_id + @agent_instance_id (xtmux-j46.1) =="
+
+# Isolated tmux socket + throwaway state dir: identity is the one thing that must
+# not be polluted by (or pollute) whatever the operator has running.
+id_sock="xtmux-identity-$$"
+id_state="$(mktemp -d)"
+id_hostfile="$id_state/xtmux/host-id"
+
+if ! command tmux -L "$id_sock" -f /dev/null new-session -d -s xtmux-identity 'sleep 100' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m identity contract (cannot start isolated tmux server)\n'
+else
+  id_pane="$(command tmux -L "$id_sock" list-panes -a -F '#{pane_id}' | head -1)"
+  # The script resolves via TMUX_PANE against the socket in TMUX; point both at
+  # the isolated server so nothing lands on a bystander.
+  id_tmuxenv="$(command tmux -L "$id_sock" display-message -p '#{socket_path},0,0')"
+  agent_state_iso() {
+    env TMUX="$id_tmuxenv" TMUX_PANE="$id_pane" XDG_STATE_HOME="$id_state" \
+      XTMUX_HOST_ID_FILE="$id_hostfile" PATH="$PATH" "$AGENT_STATE" "$@" >/dev/null 2>&1
+  }
+  pane_opt() { command tmux -L "$id_sock" show-options -p -t "$id_pane" -qv "$1" 2>/dev/null || true; }
+  uuid_shaped() { [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; }
+
+  agent_state_iso idle --new-instance
+  inst1="$(pane_opt @agent_instance_id)"
+  host1="$(cat "$id_hostfile" 2>/dev/null || true)"
+
+  uuid_shaped "$inst1" && ok "identity: --new-instance writes a uuid @agent_instance_id" \
+    || nok "identity: --new-instance writes a uuid @agent_instance_id (got '$inst1')"
+
+  uuid_shaped "$host1" && ok "identity: host_id persisted as a uuid" \
+    || nok "identity: host_id persisted as a uuid (got '$host1')"
+
+  # A public identifier derived from machine-id would leak a stable host fingerprint.
+  machine_id="$(cat /etc/machine-id 2>/dev/null || true)"
+  if [ -n "$machine_id" ] && [ "${host1//-/}" = "$machine_id" ]; then
+    nok "identity: host_id is not /etc/machine-id"
+  else
+    ok "identity: host_id is not /etc/machine-id"
+  fi
+
+  agent_state_iso running
+  agent_state_iso needs-input
+  inst_after="$(pane_opt @agent_instance_id)"
+  host_after="$(cat "$id_hostfile" 2>/dev/null || true)"
+  [ "$inst_after" = "$inst1" ] && ok "identity: ordinary transitions preserve @agent_instance_id" \
+    || nok "identity: ordinary transitions preserve @agent_instance_id ('$inst1' -> '$inst_after')"
+  [ "$host_after" = "$host1" ] && ok "identity: host_id stable across invocations" \
+    || nok "identity: host_id stable across invocations ('$host1' -> '$host_after')"
+
+  # off is a post-mortem marker, not an eraser: the id survives for attribution.
+  agent_state_iso off
+  [ "$(pane_opt @agent_instance_id)" = "$inst1" ] && ok "identity: off preserves @agent_instance_id" \
+    || nok "identity: off preserves @agent_instance_id"
+
+  # A pane reused by a new agent must not inherit the previous occupant's identity.
+  agent_state_iso idle --new-instance
+  inst2="$(pane_opt @agent_instance_id)"
+  { uuid_shaped "$inst2" && [ "$inst2" != "$inst1" ]; } \
+    && ok "identity: a reused pane gets a fresh instance id" \
+    || nok "identity: a reused pane gets a fresh instance id ('$inst1' -> '$inst2')"
+
+  # The event carries the identity, so a consumer never has to re-read pane
+  # options after the fact (which would race a pane that already rotated).
+  id_event="$(tail -1 "$id_state/xtmux/events.jsonl" 2>/dev/null || true)"
+  case "$id_event" in
+    *"\"host_id\":\"$host1\""*"\"agent_instance_id\":\"$inst2\""*)
+      ok "identity: agent.state event carries host_id + agent_instance_id" ;;
+    *) nok "identity: agent.state event carries host_id + agent_instance_id" ;;
+  esac
+
+  case "$id_event" in
+    *XDG_STATE_HOME*|*"$id_sock"*) nok "identity: event leaks no environment" ;;
+    *) ok "identity: event leaks no environment" ;;
+  esac
+
+  command tmux -L "$id_sock" kill-server >/dev/null 2>&1 || true
+fi
+rm -rf "$id_state"
+
 
 echo
 echo "== rename contract =="
