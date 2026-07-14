@@ -62,16 +62,19 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
   let lastState: AgentState | undefined;
   let lastStateAt = 0;
 
-  async function setState(state: AgentState) {
+  async function setState(state: AgentState, newInstance = false) {
     const now = Date.now();
-    if (state === lastState && now - lastStateAt < STATE_DEBOUNCE_MS) return;
+    // A new occupation must always reach the script: debouncing it away would
+    // leave the pane wearing the previous agent's instance id.
+    if (!newInstance && state === lastState && now - lastStateAt < STATE_DEBOUNCE_MS) return;
     lastState = state;
     lastStateAt = now;
 
+    const args = newInstance ? [state, "--new-instance"] : [state];
     try {
       // The script is intentionally best-effort: outside tmux it exits 0, and
       // dead panes are ignored. Keep a short timeout so hook latency is bounded.
-      await pi.exec(SCRIPT, [state], { timeout: 1000 });
+      await pi.exec(SCRIPT, args, { timeout: 1000 });
     } catch {
       // Never fail an agent turn because a tmux pane option could not be written.
     }
@@ -132,7 +135,8 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async () => {
-    await setState("idle");
+    // One new agent instance per pi session — not per idle transition.
+    await setState("idle", true);
   });
 
   pi.on("before_agent_start", async () => {
