@@ -133,6 +133,21 @@ else
 fi
 derive_bead_id "agent" "$WORK/.xtrm/worktrees/xtmux-mux.6-demo" "$WORK"; assert_eq "bead derive: from path convention" "xtmux-mux.6" "$REPLY"
 derive_bead_id "feature-123" "$WORK/feature-123" ""; assert_eq "bead derive: avoids loose numeric slug" "" "$REPLY"
+# Asserted on extract_bead_id DIRECTLY, not through derive_bead_id: derive's later
+# fallback branch re-scans the path relative to the root and quietly recovers the
+# right answer when `bd` is installed to validate candidates — which masks this bug
+# on a developer's machine and exposes it only in CI, where bd is absent. The scan
+# itself is what must not lie.
+#
+# The path is scanned WHOLE, so the scan must not mine a bead id out of the
+# directories ABOVE the one we care about. mktemp's suffix begins with a digit
+# about one run in six, and `tmp.9` matched — so a pane whose cwd was a temp dir
+# got labelled with bead `tmp.9`, which exists nowhere, and this suite flaked on
+# nothing but the name mktemp handed it. Literal path, so it fails every run.
+extract_bead_id "/tmp/tmp.9aBcDeFgHi/.xtrm/worktrees/xtmux-mux.6-demo"
+assert_eq "bead derive: a digit-leading temp dir is not mined for a bead id" "xtmux-mux.6" "$REPLY"
+extract_bead_id "/tmp/tmp.9aBcDeFgHi/plain-worktree"
+assert_eq "bead derive: no bead in the path means no bead, not tmp.9" "" "$REPLY"
 nonrepo_git_preview="$(git_worktree_preview "$WORK/no-such-repo")"; [ -z "$nonrepo_git_preview" ] && ok "git preview: non-repo degrades empty" || nok "git preview: non-repo degrades empty"
 mk_repo "$WORK/preview-dirty"
 add_clean "$WORK/preview-dirty" "dirty.txt" "base"
@@ -986,6 +1001,87 @@ else
   [ "$before" = "$after" ] && ok "context: read-only — writes no pane option" \
     || nok "context: read-only — writes no pane option"
 
+  # Read-only means read-only IN THE STORE too, not just in pane options.
+  # Specialists calls this on every `sp run`; if it lazily opened an agent
+  # instance, every job dispatch would manufacture a phantom agent, and the
+  # pane-option check above would never notice.
+  ctx_db="$ctx_state/xtmux/observability.db"
+  ctx_rows() { python3 -c "
+import sqlite3,sys
+try: print(sqlite3.connect(sys.argv[1]).execute('SELECT count(*) FROM agent_instances').fetchone()[0])
+except Exception: print(0)" "$ctx_db" 2>/dev/null; }
+  rows_before="$(ctx_rows)"
+  ctx_run >/dev/null; ctx_run >/dev/null
+  rows_after="$(ctx_rows)"
+  [ "$rows_before" = "$rows_after" ] \
+    && ok "context: read-only — opens no agent instance in the store" \
+    || nok "context: read-only — opens no agent instance (rows $rows_before -> $rows_after)"
+
+  # Two live tmux servers. The pane id %N is only unique WITHIN a server, so a
+  # resolver that ignores which socket it was invoked from can hand back a
+  # confidently-wrong pane that exists on the other server — the worst outcome
+  # available here, because the caller persists it as a verified origin forever.
+  other_sock="xtmux-ctx-other-$$"
+  if command tmux -L "$other_sock" -f /dev/null new-session -d -s xtmux-ctx-other 'sleep 100' 2>/dev/null; then
+    other_env="$(command tmux -L "$other_sock" display-message -p '#{socket_path},0,0')"
+    # Every fresh tmux server numbers its first pane %0, so naming %0 across two
+    # servers proves NOTHING — the answer matches whichever server you asked. Burn
+    # the low ids on the second server so the id we probe with exists ONLY on the
+    # first one: now "resolved it anyway" and "refused" are distinguishable answers.
+    command tmux -L "$other_sock" new-window -d 'sleep 100' 2>/dev/null || true
+    command tmux -L "$other_sock" kill-pane -t "$ctx_pane" 2>/dev/null || true
+    # NOT `display-message -t <pane>`: tmux exits 0 with EMPTY output for a dead
+    # pane target, so an existence check on its exit code always says "alive".
+    if command tmux -L "$other_sock" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx -- "$ctx_pane"; then
+      printf '  \033[33mskip\033[0m context bystander-server case (could not make %s absent on the 2nd server)\n' "$ctx_pane"
+    else
+      # TMUX names the second server; TMUX_PANE names a pane that lives only on the
+      # first. A resolver that consults the wrong socket — or falls back to "some
+      # active pane" — answers confidently and wrongly, and the caller persists that
+      # fabricated origin forever. The only safe answers are: refuse, or resolve a
+      # pane that actually exists on the invoking server.
+      # REFUSAL is the only correct answer, and the assertion says so. Accepting
+      # "any pane that exists on the invoking server" would let an implementation
+      # ignore an invalid TMUX_PANE entirely and fall back to whatever pane happens
+      # to be active — which is a fabricated origin wearing a valid-looking id, the
+      # exact failure the dead-pane assertion above already forbids.
+      cross="$(env TMUX="$other_env" TMUX_PANE="$ctx_pane" XDG_STATE_HOME="$ctx_state" \
+        XTMUX_HOST_ID_FILE="$ctx_hostfile" "$PICKER" context --current --json 2>/dev/null)"; cross_rc=$?
+      { [ "$cross_rc" -ne 0 ] && [ -z "$cross" ]; } \
+        && ok "context: never resolves a bystander tmux server — refuses, never falls back to an active pane" \
+        || nok "context: never resolves a bystander tmux server (rc=$cross_rc got '$cross')"
+    fi
+    command tmux -L "$other_sock" kill-server >/dev/null 2>&1 || true
+  else
+    printf '  \033[33mskip\033[0m context bystander-server case (cannot start a second tmux server)\n'
+  fi
+
+  # Concurrent first-run. Several panes start at once on a fresh machine and all
+  # race to create the host id; if the writer is not atomic they disagree, and the
+  # events they emit are attributed to two different "hosts" that are one machine.
+  race_state="$(mktemp -d)"
+  race_file="$race_state/xtmux/host-id"
+  race_out="$race_state/answers"
+  mkdir -p "$race_out"
+  # Capture what each RACER actually returned. A post-race read would prove
+  # nothing: if two racers each invented an id and the last writer won the file,
+  # a ninth read would agree with the file and the test would pass while two
+  # events had already been emitted under two different host identities. The
+  # divergence lives in the racers' own answers, so that is what gets compared.
+  for i in 1 2 3 4 5 6 7 8; do
+    ( env XDG_STATE_HOME="$race_state" XTMUX_HOST_ID_FILE="$race_file" TMUX="$ctx_tmuxenv" \
+        TMUX_PANE="$ctx_pane" "$PICKER" context --current --json 2>/dev/null \
+        | sed -n 's/.*"host_id":"\([^"]*\)".*/\1/p' > "$race_out/$i" ) &
+  done
+  wait
+  race_uniq="$(cat "$race_out"/* 2>/dev/null | sort -u | grep -c . || true)"
+  race_answers="$(cat "$race_out"/* 2>/dev/null | sort -u | head -1)"
+  race_persisted="$(cat "$race_file" 2>/dev/null || true)"
+  { [ "$race_uniq" = 1 ] && [ -n "$race_answers" ] && [ "$race_answers" = "$race_persisted" ]; } \
+    && ok "context: concurrent first-run readers all return the one persisted host_id" \
+    || nok "context: concurrent first-run readers all return one host_id (distinct=$race_uniq answer='$race_answers' file='$race_persisted')"
+  rm -rf "$race_state"
+
   case "$ctx_json" in
     *XDG_STATE_HOME*|*"$ctx_sock"*|*PATH*) nok "context: leaks no environment" ;;
     *) ok "context: leaks no environment" ;;
@@ -1118,7 +1214,42 @@ else
     && ok "pane capture: a non-%id target is refused, never resolved by name" \
     || nok "pane capture: a non-%id target is refused (rc=$rc out='$out')"
 
+  # Terminal content is the most sensitive payload xtmux touches, and capture is
+  # the one command that returns it. It must stay EPHEMERAL: journaling it would
+  # persist whatever was on screen (tokens, keys, someone else's diff) into an
+  # append-only store that other repos consume as forensic input.
+  cap_sentinel="XTMUXCAPSENTINEL$$"
+  cap_state="$WORK/cap-journal-state"
+  mkdir -p "$cap_state"
+  command tmux -L "$cap_sock" new-window -d -t xtmux-cap "printf '%s\\n' $cap_sentinel; sleep 100" 2>/dev/null
+  cap_sent_pane="$(command tmux -L "$cap_sock" list-panes -a -F '#{pane_id}' | tail -1)"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    command tmux -L "$cap_sock" capture-pane -p -t "$cap_sent_pane" 2>/dev/null \
+      | grep -q "^$cap_sentinel\$" && break
+    sleep 0.2
+  done
+  cap_env() {
+    env XDG_STATE_HOME="$cap_state" XTMUX_OBS_V2=1 \
+      TMUX="$(command tmux -L "$cap_sock" display-message -p '#{socket_path},0,0')" "$@"
+  }
+  # Seed the store first, with a SECOND sentinel. Two reasons this is not one
+  # sentinel and one store: against an absent store, "the content is not there"
+  # passes for the wrong reason; and searching only the SQLite journal misses a
+  # leak into the legacy events.jsonl, which is still written under the same
+  # XDG_STATE_HOME. So: grep the whole state tree (-a: the DB is binary), and let
+  # the probe sentinel prove the tree is the live store the writes actually reach.
+  cap_probe="XTMUXCAPPROBE$$"
+  cap_env "$PICKER" log emit capture.probe "marker=$cap_probe" >/dev/null 2>&1
+  cap_sent_json="$(cap_env "$PICKER" pane capture --pane "$cap_sent_pane" --lines 50 --json 2>/dev/null)"
+  case "$cap_sent_json" in *"$cap_sentinel"*) cap_returned=1 ;; *) cap_returned=0 ;; esac
+  grep -rasq "$cap_probe" "$cap_state" && cap_store_live=1 || cap_store_live=0
+  grep -rasq "$cap_sentinel" "$cap_state" && cap_leaked=1 || cap_leaked=0
+  { [ "$cap_returned" = 1 ] && [ "$cap_store_live" = 1 ] && [ "$cap_leaked" = 0 ]; } \
+    && ok "pane capture: content is returned to the caller and never persisted" \
+    || nok "pane capture: content never persisted (returned=$cap_returned store_live=$cap_store_live leaked=$cap_leaked)"
+
   command tmux -L "$cap_sock" kill-server >/dev/null 2>&1 || true
+  rm -rf "$cap_state"
 fi
 
 
@@ -1223,6 +1354,542 @@ case "$legacy" in
   *)   nok "journal cursor: log query without --after-id keeps the legacy array shape (got '$legacy')" ;;
 esac
 rm -rf "$jc_state"
+
+echo
+echo "== activity spans: agent.activity telemetry (xtmux-j46.11) =="
+
+# The pi extension emits one completed span per thinking/text/tool segment. The
+# runtime has no typed writer for agent.activity — it must fall through to the
+# generic journal write and come back through the SAME cursor page as every other
+# event, so a materializer computes durations without a second schema.
+as_state="$(mktemp -d)"
+as_emit() { env XDG_STATE_HOME="$as_state" XTMUX_OBS_V2=1 "$PICKER" log emit agent.activity "$@" >/dev/null 2>&1; }
+if ! command -v python3 >/dev/null 2>&1; then
+  printf '  \033[33mskip\033[0m activity spans (python3 missing)\n'
+else
+  as_emit activity=thinking segment_id=0:1 turn_index=0 started_at_ms=1000 duration_ms=250 char_count=1400
+  as_emit activity=tool segment_id=toolcall-abc turn_index=0 started_at_ms=1300 duration_ms=80
+  as_page="$(env XDG_STATE_HOME="$as_state" XTMUX_OBS_V2=1 "$PICKER" log query --type agent.activity --after-id 0 --json 2>/dev/null)"
+  as_check="$(printf '%s' "$as_page" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+items=[i for i in d['items'] if i['event_type']=='agent.activity']
+by={i['payload']['activity']:i['payload'] for i in items}
+th=by.get('thinking',{}); to=by.get('tool',{})
+ok = (len(items)==2
+      and th.get('duration_ms')=='250' and th.get('char_count')=='1400'
+      and th.get('started_at_ms')=='1000' and th.get('turn_index')=='0'
+      # a tool span carries NO char_count — it is not text-bearing
+      and 'char_count' not in to and to.get('duration_ms')=='80'
+      # the schema is the ordinary journal page, not a second envelope
+      and d['schema_version']=='xtrm.xtmux.journal-page.v1')
+print('ok' if ok else 'no:'+json.dumps(by))
+" 2>/dev/null)"
+  [ "$as_check" = ok ] \
+    && ok "activity: spans journal through the generic path and page back with duration + char_count" \
+    || nok "activity: span round-trip ($as_check)"
+fi
+rm -rf "$as_state"
+
+echo
+echo "== journal follow: log follow --after-id (xtmux-j46.6) =="
+
+# The stream is a latency optimization over polling, never a second authority and
+# never a second schema. Every line must be exactly what log query would have given
+# for that journal_id, or a consumer has to implement the envelope twice.
+jf_state="$(mktemp -d)"
+jf_db="$jf_state/xtmux/observability.db"
+jf_obs() { env XDG_STATE_HOME="$jf_state" XTMUX_OBS_DB_PATH="$jf_db" "$ROOT/bin/xtmux-obs" "$@" 2>/dev/null; }
+i=1
+while [ "$i" -le 6 ]; do jf_obs log-emit follow.probe seq="$i" >/dev/null; i=$((i+1)); done
+
+# --once drains the committed backlog and exits, so a consumer can catch up without
+# holding a stream open.
+drain="$(jf_obs log-follow --after-id 0 --once --json)"
+n_drain="$(printf '%s\n' "$drain" | grep -c '"journal_id"' || true)"
+jf_total="$(python3 -c "
+import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute('SELECT count(*) FROM event_journal').fetchone()[0])" "$jf_db" 2>/dev/null)"
+{ [ "$n_drain" = "$jf_total" ] && [ -n "$jf_total" ]; } \
+  && ok "follow: --once drains the committed backlog from the cursor and exits" \
+  || nok "follow: --once drains the committed backlog (got $n_drain of $jf_total)"
+
+# NOT a second schema. Byte-identical to the log query item for the same id.
+first_line="$(printf '%s\n' "$drain" | head -1)"
+first_id="$(printf '%s' "$first_line" | python3 -c "import json,sys; print(json.load(sys.stdin)['journal_id'])" 2>/dev/null)"
+page_item="$(jf_obs log-query --after-id "$((first_id - 1))" --limit 1 --json | python3 -c "
+import json,sys; print(json.dumps(json.load(sys.stdin)['items'][0], sort_keys=True))" 2>/dev/null)"
+follow_item="$(printf '%s' "$first_line" | python3 -c "
+import json,sys; print(json.dumps(json.load(sys.stdin), sort_keys=True))" 2>/dev/null)"
+[ "$page_item" = "$follow_item" ] \
+  && ok "follow: a streamed item is identical to the log query item for the same journal_id" \
+  || nok "follow: a streamed item is identical to the log query item (page='$page_item' follow='$follow_item')"
+
+# The whole contract: reconnect at the last id you MATERIALIZED -> no duplicates,
+# no gaps. Emit while disconnected, then resume.
+last_id="$(printf '%s\n' "$drain" | tail -1 | python3 -c "import json,sys; print(json.load(sys.stdin)['journal_id'])" 2>/dev/null)"
+i=1
+while [ "$i" -le 4 ]; do jf_obs log-emit follow.probe gap="$i" >/dev/null; i=$((i+1)); done
+resume="$(jf_obs log-follow --after-id "$last_id" --once --json)"
+resume_ids="$(printf '%s\n' "$resume" | python3 -c "
+import json,sys
+ids=[json.loads(l)['journal_id'] for l in sys.stdin if l.strip()]
+print(len(ids), ids==sorted(ids), len(ids)==len(set(ids)), min(ids) if ids else 0)" 2>/dev/null)"
+set -- $resume_ids
+{ [ "$1" = 4 ] && [ "$2" = True ] && [ "$3" = True ] && [ "$4" = "$((last_id + 1))" ]; } \
+  && ok "follow: reconnect at the last materialized id — zero duplicates, zero gaps" \
+  || nok "follow: reconnect at the last materialized id (got count=$1 asc=$2 uniq=$3 first=$4 want first=$((last_id + 1)))"
+
+# A LIVE follower must see rows committed after it started, and must exit 0 on
+# SIGTERM — being killed is the normal way a follower ends, and a non-zero exit
+# would make every supervisor log a spurious error on every clean shutdown.
+live="$(python3 - "$ROOT" "$jf_state" "$jf_db" <<'PY'
+import json,os,signal,subprocess,sys,time
+root,state,db=sys.argv[1],sys.argv[2],sys.argv[3]
+env={**os.environ,"XDG_STATE_HOME":state,"XTMUX_OBS_DB_PATH":db}
+after=sqlite_max=subprocess.run(["python3","-c",
+  "import sqlite3,sys;print(sqlite3.connect(sys.argv[1]).execute('SELECT MAX(id) FROM event_journal').fetchone()[0])",db],
+  capture_output=True,text=True).stdout.strip()
+p=subprocess.Popen([f"{root}/bin/xtmux-obs","log-follow","--after-id",after,"--interval","60","--json"],
+                   stdout=subprocess.PIPE,text=True,env=env)
+time.sleep(0.6)
+for k in range(3):
+    subprocess.run([f"{root}/bin/xtmux-obs","log-emit","follow.live",f"n={k}"],capture_output=True,env=env)
+time.sleep(1.2)
+p.send_signal(signal.SIGTERM)
+try: out,_=p.communicate(timeout=10)
+except subprocess.TimeoutExpired: p.kill(); print("HANG 0 0"); sys.exit()
+ids=[json.loads(l)["journal_id"] for l in out.splitlines() if l.strip()]
+print(p.returncode, len(ids), int(ids==sorted(ids) and len(ids)==len(set(ids))))
+PY
+)"
+set -- $live
+[ "$1" = 0 ] \
+  && ok "follow: SIGTERM exits 0 with the stream flushed" \
+  || nok "follow: SIGTERM exits 0 with the stream flushed (rc=$1)"
+{ [ "$2" -ge 3 ] && [ "$3" = 1 ]; } \
+  && ok "follow: a live follower receives rows committed after it started, once each, in order" \
+  || nok "follow: a live follower receives post-start rows (got $2 rows, ordered/unique=$3)"
+
+# --flag=value is accepted everywhere else in the CLI, so a log command that took
+# only the space form would reject a call the rest of the tool accepts. Assert BOTH
+# forms on both cursor commands: the equals form used to die in the runtime's arg
+# parser while the picker happily forwarded it.
+eqf="$(jf_obs log-follow --after-id=0 --once --json | head -1)"
+eqq="$(jf_obs log-query --after-id=0 --limit 1 --json)"
+{ case "$eqf" in *'"journal_id"'*) true ;; *) false ;; esac \
+  && case "$eqq" in *'"journal_id"'*) true ;; *) false ;; esac; } \
+  && ok "follow/query: --after-id=N is accepted, not just --after-id N" \
+  || nok "follow/query: --after-id=N is accepted (follow='$eqf' query='$eqq')"
+
+# A stream with no cursor cannot resume and would dump unbounded history.
+noc="$(jf_obs log-follow --once --json)"; noc_rc=$?
+{ [ "$noc_rc" -ne 0 ] && [ -z "$noc" ]; } \
+  && ok "follow: refuses to stream without --after-id" \
+  || nok "follow: refuses to stream without --after-id (rc=$noc_rc)"
+rm -rf "$jf_state"
+
+echo
+echo "== bridge: read-only NDJSON over ssh (xtmux-j46.9 / j46.16) =="
+
+# The FIRST remotely-reachable surface. Every assertion here is about an untrusted
+# peer, not an operator: default-deny dispatch, bounded frames, and survival.
+br_state="$(mktemp -d)"
+br_sock="xtmux-br-$$"
+if ! command tmux -L "$br_sock" -f /dev/null new-session -d -s xtmux-br 'seq 1 40; sleep 100' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m bridge (cannot start isolated tmux server)\n'
+elif ! command -v python3 >/dev/null 2>&1; then
+  printf '  \033[33mskip\033[0m bridge (python3 missing)\n'
+else
+  br_pane="$(command tmux -L "$br_sock" list-panes -a -F '#{pane_id}' | head -1)"
+  br_env="$(command tmux -L "$br_sock" display-message -p '#{socket_path},0,0')"
+  # Feed frames on stdin; collect the NDJSON replies. This is exactly the shape
+  # `ssh <host> xtmux bridge --stdio` produces — stdin is a pipe that then closes.
+  br() {
+    env TMUX="$br_env" XDG_STATE_HOME="$br_state" XTMUX_OBS_V2=1 \
+      "$PICKER" bridge --stdio 2>/dev/null
+  }
+  br_field() { printf '%s' "$1" | python3 -c "
+import sys,json
+want=sys.argv[1]; path=sys.argv[2].split('.')
+for line in sys.stdin.read().splitlines():
+    try: d=json.loads(line)
+    except Exception: continue
+    if str(d.get('id')) != want: continue
+    cur=d
+    for k in path:
+        if not isinstance(cur,dict): cur=None; break
+        cur=cur.get(k)
+    if cur is not None: print(json.dumps(cur) if isinstance(cur,(dict,list)) else cur); break
+" "$2" "$3" 2>/dev/null; }
+
+  # Seed one journal row so the read paths have something real to return.
+  env TMUX="$br_env" XDG_STATE_HOME="$br_state" XTMUX_OBS_V2=1 "$PICKER" log emit bridge.probe a=1 >/dev/null 2>&1
+
+  hello="$(printf '%s\n' '{"id":1,"method":"bridge.hello"}' | br)"
+  { [ "$(br_field "$hello" 1 result.schema_version)" = "xtrm.xtmux.bridge.v1" ] \
+      && [ -n "$(br_field "$hello" 1 result.host_id)" ] \
+      && [ "$(br_field "$hello" 1 result.read_only)" = True ] \
+      && case "$(br_field "$hello" 1 result.capabilities)" in *topology.snapshot*journal.follow*) true ;; *) false ;; esac; } \
+    && ok "bridge: hello negotiates schema_version, host_id and the capability list" \
+    || nok "bridge: hello negotiates capabilities (got '$hello')"
+
+  # A remote read must be the SAME fact as the local read, or a viewer showing a
+  # remote host is showing something no local operator could ever reproduce. Two
+  # reads milliseconds apart are compared, so this normalizes to the STABLE
+  # structure — session names, window/pane ids and geometry — and drops the fields
+  # that legitimately tick between calls (last_activity_ms; current_command as a
+  # pane's startup command exits into its successor). The skeleton is what the
+  # relay must preserve; the timestamps are not the relay's to freeze.
+  br_skeleton='
+import sys,json
+def pane(p):
+    return {"pane_id":p.get("pane_id"),"pane_index":p.get("pane_index"),
+            "active":p.get("active"),"width":p.get("width"),"height":p.get("height"),
+            "left":p.get("left"),"top":p.get("top"),"pid":p.get("pid")}
+def win(w):
+    return {"window_id":w.get("window_id"),"window_index":w.get("window_index"),
+            "panes":sorted((pane(p) for p in w.get("panes",[])), key=lambda x:str(x["pane_id"]))}
+def sess(s):
+    return {"name":s.get("name"),
+            "windows":sorted((win(w) for w in s.get("windows",[])), key=lambda x:str(x["window_id"]))}
+def skel(sessions):
+    return sorted((sess(s) for s in (sessions or [])), key=lambda x:str(x["name"]))
+'
+  br_topo="$(printf '%s\n' '{"id":"t","method":"topology.snapshot"}' | br | python3 -c "$br_skeleton
+for l in sys.stdin:
+    d=json.loads(l)
+    if d.get('id')=='t': print(json.dumps(skel(d['result']['topology'].get('sessions'))))
+" 2>/dev/null)"
+  local_topo="$(env TMUX="$br_env" XDG_STATE_HOME="$br_state" XTMUX_OBS_V2=1 "$PICKER" topology --json 2>/dev/null | python3 -c "$br_skeleton
+print(json.dumps(skel(json.load(sys.stdin).get('sessions'))))" 2>/dev/null)"
+  { [ -n "$br_topo" ] && [ "$br_topo" = "$local_topo" ]; } \
+    && ok "bridge: topology.snapshot is the same structure as the local command" \
+    || nok "bridge: topology.snapshot matches the local command"
+
+  br_cap="$(printf '{"id":"c","method":"pane.capture","params":{"pane_id":"%s","lines":3}}\n' "$br_pane" | br)"
+  { [ "$(br_field "$br_cap" c result.capture.schema_version)" = "xtrm.xtmux.pane-capture.v1" ] \
+      && [ "$(br_field "$br_cap" c result.capture.returned_lines)" = 3 ]; } \
+    && ok "bridge: pane.capture returns the local pane-capture contract, bounded" \
+    || nok "bridge: pane.capture returns the local contract (got '$br_cap')"
+
+  # Default deny. A mutation name is refused AND leaves no trace — a rejection
+  # that still wrote a row would be the worst of both.
+  br_msgs_before="$(python3 -c "
+import sqlite3,sys
+try: print(sqlite3.connect(sys.argv[1]).execute('SELECT count(*) FROM messages').fetchone()[0])
+except Exception: print('ERR')" "$br_state/xtmux/observability.db" 2>/dev/null)"
+  mut="$(printf '%s\n' \
+    '{"id":"m1","method":"message.send","params":{"to":"$1","text":"pwned"}}' \
+    '{"id":"m2","method":"pane.input","params":{"pane_id":"%0","keys":"rm -rf /"}}' \
+    '{"id":"m3","method":"handoff.create"}' | br)"
+  br_msgs_after="$(python3 -c "
+import sqlite3,sys
+try: print(sqlite3.connect(sys.argv[1]).execute('SELECT count(*) FROM messages').fetchone()[0])
+except Exception: print('ERR')" "$br_state/xtmux/observability.db" 2>/dev/null)"
+  { [ "$(br_field "$mut" m1 error.code)" = XTMUX_BRIDGE_READ_ONLY ] \
+      && [ "$(br_field "$mut" m2 error.code)" = XTMUX_BRIDGE_READ_ONLY ] \
+      && [ "$(br_field "$mut" m3 error.code)" = XTMUX_BRIDGE_READ_ONLY ] \
+      && [ "$br_msgs_before" = "$br_msgs_after" ]; } \
+    && ok "bridge: every mutation method is refused, with no side effect" \
+    || nok "bridge: mutations refused with no side effect (before=$br_msgs_before after=$br_msgs_after out='$mut')"
+
+  # There is no fallthrough to the local CLI: a method that is not on the
+  # allowlist cannot be named into existence, however plausible it looks.
+  unk="$(printf '%s\n' '{"id":"u","method":"log.query"}' '{"id":"u2","method":"exec"}' | br)"
+  { [ "$(br_field "$unk" u error.code)" = XTMUX_BRIDGE_UNKNOWN_METHOD ] \
+      && [ "$(br_field "$unk" u2 error.code)" = XTMUX_BRIDGE_UNKNOWN_METHOD ]; } \
+    && ok "bridge: an unknown method is refused, never dispatched to the local CLI" \
+    || nok "bridge: unknown method refused (got '$unk')"
+
+  # Per-connection request-rate cap: a flood of VALID requests is turned away
+  # before doing work, so a peer cannot pin the event loop with subprocess-backed
+  # calls. All frames here arrive in one window (one process invocation), so once
+  # the cap is reached the rest are refused with a resource-limit error.
+  flood="$(python3 -c "
+for i in range(40): print('{\"id\":%d,\"method\":\"bridge.hello\"}' % i)" | br)"
+  flood_ok="$(printf '%s' "$flood" | grep -c '\"schema_version\":\"xtrm.xtmux.bridge.v1\"' || true)"
+  flood_lim="$(printf '%s' "$flood" | grep -o XTMUX_BRIDGE_RESOURCE_LIMIT | wc -l | tr -d ' ')"
+  { [ "$flood_ok" -ge 1 ] && [ "$flood_lim" -ge 1 ] && [ $((flood_ok + flood_lim)) -eq 40 ]; } \
+    && ok "bridge: a request flood is rate-capped per connection, not all served" \
+    || nok "bridge: request-rate cap (accepted=$flood_ok limited=$flood_lim)"
+
+  # Survival. A peer that can kill the server with one bad byte owns a
+  # denial-of-service primitive; the NEXT request is what proves we are alive.
+  garbage="$(printf '%s\n' 'not json at all' '{"id":"after1","method":"bridge.hello"}' | br)"
+  [ "$(br_field "$garbage" after1 result.schema_version)" = "xtrm.xtmux.bridge.v1" ] \
+    && ok "bridge: malformed JSON is answered and the next request still serves" \
+    || nok "bridge: malformed JSON does not kill the stream (got '$garbage')"
+
+  # An oversized frame must be refused by SIZE, before it is parsed, and the
+  # bytes it occupies must not be re-read as a fresh request when we resync.
+  big="$(python3 -c "
+import json
+print(json.dumps({'id':'big','method':'bridge.hello','params':{'pad':'A'*1200000}}))
+print(json.dumps({'id':'after2','method':'bridge.hello'}))" | br)"
+  { case "$big" in *XTMUX_BRIDGE_FRAME_TOO_LARGE*) true ;; *) false ;; esac \
+      && [ "$(br_field "$big" after2 result.schema_version)" = "xtrm.xtmux.bridge.v1" ]; } \
+    && ok "bridge: an oversized frame is refused by size and the stream resyncs" \
+    || nok "bridge: oversized frame refused and stream resyncs (got '$(printf '%s' "$big" | cut -c1-200)')"
+
+  # EOF is the peer hanging up (ssh exited, the viewer closed) — a graceful close,
+  # never a fault. It must also STOP the follow, or the process outlives its pipe.
+  printf '%s\n' '{"id":"f","method":"journal.follow","params":{"after_id":0}}' | br >/dev/null 2>&1
+  br_eof_rc=$?
+  [ "$br_eof_rc" = 0 ] && ok "bridge: EOF ends an active follow and exits 0" \
+    || nok "bridge: EOF exits 0 (rc=$br_eof_rc)"
+
+  # Reconnect: a viewer that resumes at its last committed id must not be handed a
+  # row it already materialized. Duplicates double-count; that is the whole reason
+  # the cursor exists.
+  env TMUX="$br_env" XDG_STATE_HOME="$br_state" XTMUX_OBS_V2=1 "$PICKER" log emit bridge.probe b=2 >/dev/null 2>&1
+  first="$(printf '%s\n' '{"id":"q1","method":"journal.query","params":{"after_id":0,"limit":1}}' | br)"
+  br_cursor="$(br_field "$first" q1 result.page.next_after_id)"
+  resumed="$(printf '{"id":"q2","method":"journal.query","params":{"after_id":%s}}\n' "$br_cursor" | br | python3 -c "
+import sys,json
+for l in sys.stdin:
+    d=json.loads(l)
+    if d.get('id')=='q2':
+        print(' '.join(str(i['journal_id']) for i in d['result']['page']['items']))
+" 2>/dev/null)"
+  dup=0
+  for jid in $resumed; do [ "$jid" -le "$br_cursor" ] && dup=1; done
+  { [ -n "$br_cursor" ] && [ "$br_cursor" -gt 0 ] && [ "$dup" = 0 ] && [ -n "$resumed" ]; } \
+    && ok "bridge: resuming at the last committed id replays nothing" \
+    || nok "bridge: reconnect replays nothing (cursor=$br_cursor resumed='$resumed')"
+
+  # There is no listen/bind mode. If one is ever added, it must be a decision
+  # someone makes on purpose — not a flag that quietly appears.
+  nostdio="$(env XDG_STATE_HOME="$br_state" XTMUX_OBS_V2=1 "$PICKER" bridge --listen 0.0.0.0:9000 </dev/null 2>&1 >/dev/null)"; ns_rc=$?
+  { [ "$ns_rc" -ne 0 ] && case "$nostdio" in *XTMUX_*) true ;; *) false ;; esac; } \
+    && ok "bridge: refuses anything but --stdio — no listening socket exists" \
+    || nok "bridge: refuses a listen mode (rc=$ns_rc out='$nostdio')"
+
+  # Follow fan-out is capped per connection. Excess follows are the DoS: unique
+  # ids each spin up their own 500ms poll loop, so it is the COUNT that has to be
+  # bounded, not just duplicate ids. Beyond the cap → structured refusal.
+  fan="$(python3 -c "
+for i in range(12): print('{\"id\":\"ff%d\",\"method\":\"journal.follow\",\"params\":{\"after_id\":0}}' % i)" | br)"
+  fan_rej="$(printf '%s' "$fan" | grep -o XTMUX_BRIDGE_RESOURCE_LIMIT | wc -l | tr -d ' ')"
+  { [ "$fan_rej" -ge 1 ]; } \
+    && ok "bridge: concurrent follows are capped per connection, excess refused" \
+    || nok "bridge: follow fan-out is capped (resource-limit rejections=$fan_rej)"
+
+  # READ-ONLY in the SQLite sense, not just the method sense. A remote read must
+  # never write: no DDL, no BEGIN IMMEDIATE write lock, no migration-row insert,
+  # and — the observable proof — it must not CREATE the store. Point the bridge at
+  # a state dir with no database and assert the query fails structurally AND no
+  # observability.db appears. If the bridge migrated on read (as it did before
+  # this fix), the file would be there.
+  ro_state="$(mktemp -d)"
+  # The same fresh state makes EVERY read throw at the DB open — which is exactly
+  # the condition that must NOT crash the process. So this one session also proves
+  # survival of both throw paths: a synchronous handler throw (journal.query) is
+  # answered structurally AND a later hello on the same connection still serves;
+  # a throw inside the detached follow loop (Finding 1: an unhandled rejection
+  # there would terminate Node) comes back as a stream error, not a dead pipe.
+  ro_out="$(printf '%s\n' \
+    '{"id":"ro","method":"journal.query","params":{"after_id":0}}' \
+    '{"id":"rof","method":"journal.follow","params":{"after_id":0}}' \
+    '{"id":"roh","method":"bridge.hello"}' \
+    | env TMUX="$br_env" XDG_STATE_HOME="$ro_state" XTMUX_OBS_V2=1 "$PICKER" bridge --stdio 2>/dev/null)"
+  ro_err="$(br_field "$ro_out" ro error.code)"
+  ro_alive="$(br_field "$ro_out" roh result.schema_version)"
+  ro_db_created=0; [ -e "$ro_state/xtmux/observability.db" ] && ro_db_created=1
+  { [ -n "$ro_err" ] && [ "$ro_db_created" = 0 ]; } \
+    && ok "bridge: a read against a fresh host errors structurally and creates no database" \
+    || nok "bridge: read-only never initializes state (err='$ro_err' db_created=$ro_db_created)"
+  { [ "$ro_alive" = "xtrm.xtmux.bridge.v1" ] \
+      && case "$ro_out" in *XTMUX_BRIDGE_STREAM_ERROR*) true ;; *) false ;; esac; } \
+    && ok "bridge: a throwing read (sync or in the follow loop) never crashes the process" \
+    || nok "bridge: handler throws do not crash the process (alive='$ro_alive' out='$(printf '%s' "$ro_out" | tr '\n' '|' | cut -c1-200)')"
+  rm -rf "$ro_state"
+
+  command tmux -L "$br_sock" kill-server >/dev/null 2>&1 || true
+fi
+rm -rf "$br_state"
+
+echo
+echo "== readiness-aware handoff: --prompt-file / --wait-ready / --monitor (xtmux-j46.8) =="
+
+# The durable half of delegation. Before this bead the picker's handoff wrote only
+# V1 log_event lines, so handoffs/ and delivery_attempts/ had zero rows while the
+# domain code sat there fully written — the same dead-domain shape as j46.7.
+hd_sock="xtmux-ho-$$"
+hd_state="$(mktemp -d)"
+hd_bin="$(mktemp -d)"
+hd_db="$hd_state/xtmux/observability.db"
+printf '#!/bin/sh\nexec %s/bin/tmux-session-picker "$@"\n' "$ROOT" > "$hd_bin/xtmux"
+chmod +x "$hd_bin/xtmux"
+hd_q() { python3 -c "
+import sqlite3,sys
+try: print(sqlite3.connect(sys.argv[1]).execute(sys.argv[2]).fetchone()[0])
+except Exception as e: print('ERR')" "$hd_db" "$1" 2>/dev/null; }
+
+if ! command tmux -L "$hd_sock" -f /dev/null new-session -d -s xtmux-ho 'sleep 100' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m readiness-aware handoff (cannot start isolated tmux server)\n'
+else
+  hd_pane="$(command tmux -L "$hd_sock" list-panes -a -F '#{pane_id}' | head -1)"
+  hd_env="$(command tmux -L "$hd_sock" display-message -p '#{socket_path},0,0')"
+  hd() {
+    env TMUX="$hd_env" TMUX_PANE="$hd_pane" XDG_STATE_HOME="$hd_state" \
+      XTMUX_OBS_V2=1 PATH="$hd_bin:$PATH" "$PICKER" "$@"
+  }
+  hd_prompt="$hd_state/task.md"
+  printf 'do the thing\n' > "$hd_prompt"
+
+  # An existing prompt file is DELIVERED, not overwritten: a coordinator that
+  # already wrote the contract must not have it silently replaced by a generated one.
+  # --yes: without it handoff is a DRY RUN by design (no send, and therefore no
+  # durable record either — there is no attempt to be durable about).
+  hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$hd_prompt" --handoff-key k1 --yes --json >/dev/null 2>&1
+  { [ "$(hd_q "SELECT count(*) FROM handoffs WHERE prompt_file='$hd_prompt'")" = 1 ] \
+      && [ "$(cat "$hd_prompt")" = "do the thing" ]; } \
+    && ok "handoff: --prompt-file delivers that exact file and writes one durable record" \
+    || nok "handoff: --prompt-file delivers that exact file (rows=$(hd_q "SELECT count(*) FROM handoffs"))"
+
+  # The record exists BEFORE the first delivery attempt. If the attempt were
+  # recorded first, a crash between the two would leave an attempt pointing at a
+  # handoff that does not exist — an orphan the consumer cannot interpret.
+  { [ "$(hd_q "SELECT count(*) FROM handoffs")" -ge 1 ] \
+      && [ "$(hd_q "SELECT (SELECT min(created_at_ms) FROM handoffs) <= coalesce((SELECT min(attempted_at_ms) FROM delivery_attempts), 1e18)")" = 1 ]; } \
+    && ok "handoff: the durable record is written before the first delivery attempt" \
+    || nok "handoff: the durable record is written before the first delivery attempt"
+
+  # A prompt path that does not exist is rejected PRE-delivery: nothing sent, and
+  # no half-written handoff row left behind for a file that was never readable.
+  before_rows="$(hd_q "SELECT count(*) FROM handoffs")"
+  bad_out="$(hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file /nonexistent/nope.md --handoff-key k-bad --yes --json 2>/dev/null)"; bad_rc=$?
+  { [ "$bad_rc" -ne 0 ] && [ -z "$bad_out" ] \
+      && [ "$(hd_q "SELECT count(*) FROM handoffs")" = "$before_rows" ]; } \
+    && ok "handoff: a missing prompt file is rejected pre-delivery, writing nothing" \
+    || nok "handoff: a missing prompt file is rejected pre-delivery (rc=$bad_rc rows $before_rows -> $(hd_q "SELECT count(*) FROM handoffs"))"
+
+  # Idempotency. A retry with the same key must not fork the delegation into two
+  # handoffs or arm a second monitor — but each injection IS a separate attempt,
+  # and the attempt log is append-only precisely so a redelivery is visible.
+  hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$hd_prompt" --handoff-key k-idem --monitor --yes --json >/dev/null 2>&1
+  hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$hd_prompt" --handoff-key k-idem --monitor --yes --json >/dev/null 2>&1
+  hd_h="$(hd_q "SELECT count(*) FROM handoffs WHERE handoff_key='k-idem'")"
+  hd_m="$(hd_q "SELECT count(DISTINCT monitor_id) FROM handoffs WHERE handoff_key='k-idem' AND monitor_id IS NOT NULL")"
+  hd_a="$(hd_q "SELECT count(*) FROM delivery_attempts WHERE related_handoff_id=(SELECT id FROM handoffs WHERE handoff_key='k-idem')")"
+  { [ "$hd_h" = 1 ] && [ "$hd_m" = 1 ] && [ "$hd_a" = 2 ]; } \
+    && ok "handoff: same key twice — one handoff, one monitor, two delivery attempts" \
+    || nok "handoff: same key twice — one handoff, one monitor, two delivery attempts (got h=$hd_h m=$hd_m a=$hd_a)"
+
+  # A missing --bead must be REFUSED, never defaulted. The first implementation
+  # substituted the literal string 'prompt-file', which then landed in the durable
+  # row and in the journal envelope's bead_id — a fabricated reference to a bead
+  # that does not exist, indistinguishable downstream from a real one.
+  nb_out="$(hd handoff --target "$hd_pane" --prompt-file "$hd_prompt" --handoff-key k-nobead --yes --json 2>/dev/null)"; nb_rc=$?
+  { [ "$nb_rc" -ne 0 ] && [ -z "$nb_out" ] \
+      && [ "$(hd_q "SELECT count(*) FROM handoffs WHERE bead_id NOT LIKE 'xtmux-%'")" = 0 ]; } \
+    && ok "handoff: a missing --bead is refused, never defaulted to a fabricated id" \
+    || nok "handoff: a missing --bead is refused (rc=$nb_rc bead_id='$(hd_q "SELECT bead_id FROM handoffs WHERE handoff_key=\'k-nobead\'")')"
+
+  # send-keys success is NOT acceptance. The handoff must not claim a terminal
+  # 'accepted' state just because tmux took the keystrokes — only the target's own
+  # readiness/state change can say that, and nothing has said it here.
+  st="$(hd_q "SELECT state FROM handoffs WHERE handoff_key='k-idem'")"
+  [ "$st" != "accepted" ] && [ "$st" != "completed" ] \
+    && ok "handoff: a delivered pointer is an attempt, never acceptance (state=$st)" \
+    || nok "handoff: a delivered pointer must not be recorded as acceptance (state=$st)"
+
+  # Readiness belongs to the AGENT INSTANCE, not to the pane. `log query` is a
+  # history query, so a pane whose PREVIOUS occupant readied and exited still has
+  # an agent.ready row — and a pane-scoped check would see it, stop waiting, and
+  # inject the pointer into a pane whose current agent has not finished
+  # initializing. That is the exact failure readiness exists to prevent.
+  #
+  # Give the pane a stale ready event from a DEAD instance, then a fresh instance
+  # id that has readied nothing. --wait-ready must still time out.
+  env TMUX="$hd_env" TMUX_PANE="$hd_pane" XDG_STATE_HOME="$hd_state" XTMUX_OBS_V2=1 \
+    PATH="$hd_bin:$PATH" "$AGENT_STATE" idle --new-instance >/dev/null 2>&1
+  command tmux -L "$hd_sock" set-option -p -t "$hd_pane" -q @agent_instance_id "successor-with-no-ready" 2>/dev/null || true
+  stale_t0="$(date +%s)"
+  stale_err="$(hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$hd_prompt" --handoff-key k-stale --wait-ready 2s --yes --json 2>&1 >/dev/null)"; stale_rc=$?
+  stale_elapsed=$(( $(date +%s) - stale_t0 ))
+  { [ "$stale_rc" -ne 0 ] && [ "$stale_elapsed" -ge 2 ] \
+      && case "$stale_err" in *XTMUX_READY_TIMEOUT*) true ;; *) false ;; esac; } \
+    && ok "handoff: --wait-ready ignores a PREVIOUS instance's agent.ready on the same pane" \
+    || nok "handoff: --wait-ready ignores a previous instance's agent.ready (rc=$stale_rc elapsed=${stale_elapsed}s err='$stale_err')"
+
+  # An idempotency key promises "the SAME delegation, sent again". A retry that
+  # changed the bead is a DIFFERENT delegation wearing a used key: silently
+  # returning the old row would leave the durable record describing one thing while
+  # the pointer delivered another.
+  conf_err="$(hd handoff --target "$hd_pane" --bead xtmux-j46.99 --prompt-file "$hd_prompt" --handoff-key k-idem --yes --json 2>&1 >/dev/null)"; conf_rc=$?
+  conf_bead="$(hd_q "SELECT bead_id FROM handoffs WHERE handoff_key='k-idem'")"
+  { [ "$conf_rc" -ne 0 ] && [ "$conf_bead" = "xtmux-j46.8" ] \
+      && case "$conf_err" in *XTMUX_HANDOFF_KEY_CONFLICT*) true ;; *) false ;; esac; } \
+    && ok "handoff: a reused key describing a DIFFERENT delegation is refused, not silently absorbed" \
+    || nok "handoff: a reused key with different inputs is refused (rc=$conf_rc bead now '$conf_bead' err='$conf_err')"
+
+  # A prompt file the pointer cannot reference must be refused BEFORE anything
+  # durable is written. It used to pass the path check, create the handoff row, and
+  # only then have its pointer rejected — leaving a handoff that claims a
+  # delegation nobody ever attempted.
+  # NOT under $hd_state: XDG_STATE_HOME is itself a mktemp dir under /tmp, so a
+  # file there is perfectly pointer-legal. The case being tested is a path that
+  # handoff_prompt_file_allowed accepts ($PWD) but a pointer may not reference.
+  outside="$ROOT/.xtmux-contract-outside-$$.md"
+  printf 'unreachable by pointer\n' > "$outside"
+  rows_before="$(hd_q "SELECT count(*) FROM handoffs")"
+  out_err="$(hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$outside" --handoff-key k-outside --yes --json 2>&1 >/dev/null)"; out_rc=$?
+  { [ "$out_rc" -ne 0 ] && [ "$(hd_q "SELECT count(*) FROM handoffs")" = "$rows_before" ]; } \
+    && ok "handoff: an undeliverable prompt path leaves no orphan durable record" \
+    || nok "handoff: an undeliverable prompt path leaves no orphan record (rc=$out_rc rows $rows_before -> $(hd_q "SELECT count(*) FROM handoffs"))"
+  rm -f "$outside"
+
+  # --wait-ready against a pane that never emits agent.ready must time out as a
+  # STRUCTURED refusal, not hang forever and not send anyway.
+  t0="$(date +%s)"
+  to_out="$(hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$hd_prompt" --handoff-key k-to --wait-ready 2s --yes --json 2>/dev/null)"; to_rc=$?
+  to_err="$(hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$hd_prompt" --handoff-key k-to2 --wait-ready 2s --yes --json 2>&1 >/dev/null)"
+  elapsed=$(( $(date +%s) - t0 ))
+  { [ "$to_rc" -ne 0 ] && [ -z "$to_out" ] && [ "$elapsed" -lt 30 ] \
+      && case "$to_err" in *XTMUX_READY_TIMEOUT*) true ;; *) false ;; esac; } \
+    && ok "handoff: --wait-ready times out as a structured refusal, never hangs" \
+    || nok "handoff: --wait-ready times out as a structured refusal (rc=$to_rc elapsed=${elapsed}s err='$to_err')"
+
+  # Dry-run is the default, and it must be a REHEARSAL: the whole point of typing
+  # the command without --yes is to see what would happen without any of it having
+  # happened. A dry run that quietly wrote the durable record would make the next
+  # real run a no-op replay of a delegation nobody ever approved.
+  dry_before_h="$(hd_q "SELECT count(*) FROM handoffs")"
+  dry_before_d="$(hd_q "SELECT count(*) FROM delivery_attempts")"
+  dry_out="$(hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$hd_prompt" --handoff-key k-dry --json 2>/dev/null)"
+  { [ "$(hd_q "SELECT count(*) FROM handoffs")" = "$dry_before_h" ] \
+      && [ "$(hd_q "SELECT count(*) FROM delivery_attempts")" = "$dry_before_d" ] \
+      && [ "$(hd_q "SELECT count(*) FROM handoffs WHERE handoff_key='k-dry'")" = 0 ]; } \
+    && ok "handoff: without --yes nothing is sent and nothing is written" \
+    || nok "handoff: without --yes nothing is written (handoffs $dry_before_h -> $(hd_q "SELECT count(*) FROM handoffs"), out='$dry_out')"
+
+  # The handoff row and its monitor are ONE fact: "this delegation is being watched".
+  # If the monitor insert fails and the handoff row survives, the delegation is
+  # durably recorded but nothing is watching it — it hangs forever and no consumer
+  # can tell that from a healthy one. Fault-inject at the store: rename the monitors
+  # table so the second insert throws inside the transaction, and assert the FIRST
+  # insert rolled back with it.
+  hd_sql() { python3 -c "
+import sqlite3,sys
+try:
+  c=sqlite3.connect(sys.argv[1]); c.execute(sys.argv[2]); c.commit(); print('OK')
+except Exception as e: print('ERR', e)" "$hd_db" "$1" 2>/dev/null; }
+  tx_before="$(hd_q "SELECT count(*) FROM handoffs")"
+  hd_sql "ALTER TABLE monitors RENAME TO monitors_faultinject" >/dev/null
+  hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$hd_prompt" --handoff-key k-tx --monitor --yes --json >/dev/null 2>&1
+  tx_rc=$?
+  hd_sql "ALTER TABLE monitors_faultinject RENAME TO monitors" >/dev/null
+  { [ "$tx_rc" -ne 0 ] \
+      && [ "$(hd_q "SELECT count(*) FROM handoffs")" = "$tx_before" ] \
+      && [ "$(hd_q "SELECT count(*) FROM handoffs WHERE handoff_key='k-tx'")" = 0 ] \
+      && [ "$(hd_q "SELECT count(*) FROM monitors WHERE target='$hd_pane'")" != ERR ]; } \
+    && ok "handoff: a failed monitor insert rolls the handoff back — never a watched-by-nobody record" \
+    || nok "handoff: a failed monitor insert rolls the handoff back (rc=$tx_rc handoffs $tx_before -> $(hd_q "SELECT count(*) FROM handoffs"))"
+
+  command tmux -L "$hd_sock" kill-server >/dev/null 2>&1 || true
+fi
+rm -rf "$hd_state" "$hd_bin"
 
 echo
 echo "== rename contract =="
@@ -1565,6 +2232,10 @@ else
   tmux new-session -d -s "$topo_a" -x 100 -y 30 'sleep 100' 2>/dev/null
   tmux new-session -d -s "$topo_b" -x 90 -y 25 'sleep 100' 2>/dev/null
   tmux split-window -h -t "$topo_a" 'sleep 100' 2>/dev/null
+  # A SECOND window in topo_a. With one window per session, a snapshot that
+  # flattened every pane of a session into a single synthetic window would satisfy
+  # every other assertion here — the window rung has to be forced to carry weight.
+  tmux new-window -d -t "$topo_a" 'sleep 100' 2>/dev/null
   topo_sid="$(tmux display-message -p -t "$topo_a" '#{session_id}' 2>/dev/null)"
   topo_parent_pane="$(tmux list-panes -t "$topo_a" -F '#{pane_id}' 2>/dev/null | tail -1)"
   topo_b_pane="$(tmux list-panes -t "$topo_b" -F '#{pane_id}' 2>/dev/null | head -1)"
@@ -1572,25 +2243,37 @@ else
   tmux set-option -p -t "$topo_parent_pane" @agent_instance_id topology-instance 2>/dev/null || true
   tmux set-option -p -t "$topo_parent_pane" @agent_state running 2>/dev/null || true
   topo_json="$(XDG_STATE_HOME="$WORK/topology-state" XTMUX_OBS_V2=0 "$PICKER" topology --json 2>/dev/null)"
+  # topo_a is 2 windows holding 2 + 1 panes. The per-window pane COUNTS and the
+  # global uniqueness of every pane_id are what pin the shape: a graph that hung
+  # every pane under every window would still satisfy a "find pane P under window
+  # W" lookup for each pane, and only these two catch it.
   printf '%s\n' "$topo_json" | jq -e --arg a "$topo_a" --arg b "$topo_b" \
-    '[.sessions[] | select(.name == $a or .name == $b)] | length == 2 and all(.[]; (.windows | length) == 1)' >/dev/null \
+    '([.sessions[] | select(.name == $a or .name == $b)] | length == 2) and
+     ([.sessions[] | select(.name == $a) | .windows[] | .panes | length] | sort == [1, 2]) and
+     ([.sessions[] | select(.name == $b) | .windows] | flatten | length == 1) and
+     ([.sessions[].windows[].panes[].pane_id] | (length == (unique | length)))' >/dev/null \
     && ok "topology: host -> sessions -> windows nesting" || nok "topology: host -> sessions -> windows nesting"
   printf '%s\n' "$topo_json" | jq -e --arg a "$topo_a" --arg p "$topo_parent_pane" --arg sid "$topo_sid" \
     '(.schema_version == "xtrm.xtmux.topology.v1") and (.host.host_id | length > 0) and
-     ([.sessions[] | select(.name == $a) | .windows[].panes[]] | length == 2) and
+     ([.sessions[] | select(.name == $a) | .windows[].panes[]] | length == 3) and
      ([.sessions[] | select(.name == $a) | .windows[].panes[] | select(.pane_id == $p and .agent.parent_session_id == $sid)] | length == 1)' >/dev/null \
     && ok "topology: stable IDs and parent session metadata" || nok "topology: stable IDs and parent session metadata"
   # ANSI-C quoting makes tabs real; tmux leaves \t literal inside single-quoted formats.
-  topo_expected="$(tmux list-panes -t "$topo_a" -F $'#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_pid}' 2>/dev/null)"
+  # -s widens list-panes from the session's CURRENT window to every pane it owns —
+  # without it the second window's pane is never compared against anything.
+  topo_expected="$(tmux list-panes -s -t "$topo_a" -F $'#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_pid}\t#{window_id}\t#{window_index}' 2>/dev/null)"
   topo_geometry_ok=1
-  while IFS=$'\t' read -r ep ei ea ew eh el et epid; do
+  while IFS=$'\t' read -r ep ei ea ew eh el et epid ewid ewidx; do
     [ -n "$ep" ] || continue
-    if ! printf '%s\n' "$topo_json" | jq -e --arg p "$ep" --argjson i "${ei:-0}" --argjson a "${ea:-0}" --argjson w "${ew:-0}" --argjson h "${eh:-0}" --argjson l "${el:-0}" --argjson t "${et:-0}" --argjson pid "${epid:-0}" \
-      '[.sessions[].windows[].panes[] | select(.pane_id == $p and .pane_index == $i and .active == ($a == 1) and .width == $w and .height == $h and .left == $l and .top == $t and .pid == $pid)] | length == 1' >/dev/null; then
+    # The pane is looked up THROUGH its window: a graph that put the right pane
+    # under the wrong window would pass a flat `.. | .panes[]` scan.
+    if ! printf '%s\n' "$topo_json" | jq -e --arg p "$ep" --argjson i "${ei:-0}" --argjson a "${ea:-0}" --argjson w "${ew:-0}" --argjson h "${eh:-0}" --argjson l "${el:-0}" --argjson t "${et:-0}" --argjson pid "${epid:-0}" --arg wid "${ewid:-}" --argjson widx "${ewidx:-0}" \
+      '[.sessions[].windows[] | select(.window_id == $wid and .window_index == $widx) | .panes[]
+        | select(.pane_id == $p and .pane_index == $i and .active == ($a == 1) and .width == $w and .height == $h and .left == $l and .top == $t and .pid == $pid)] | length == 1' >/dev/null; then
       topo_geometry_ok=0
     fi
   done <<< "$topo_expected"
-  [ "$topo_geometry_ok" = 1 ] && ok "topology: pane geometry/index/active matches tmux" || nok "topology: pane geometry/index/active matches tmux"
+  [ "$topo_geometry_ok" = 1 ] && ok "topology: each pane sits under its own window, with tmux's geometry" || nok "topology: each pane sits under its own window, with tmux's geometry"
   printf '%s\n' "$topo_json" | jq -e --arg b "$topo_b_pane" \
     '[.sessions[].windows[].panes[] | select(.pane_id == $b and ((has("agent") | not) or .agent == null))] | length == 1 and ([.. | objects | keys[]] | any(. == "content" or . == "env" or . == "environment") | not)' >/dev/null \
     && ok "topology: absent agent metadata and no pane content/env" || nok "topology: absent agent metadata and no pane content/env"
@@ -1832,10 +2515,19 @@ echo "== help surface (xtmux-d0a.15) =="
 "$PICKER" help >"$WORK/help.out" 2>&1
 _help_lines="$(wc -l <"$WORK/help.out" | tr -d ' ')"
 
-if [ "$_help_lines" -ge 50 ] && [ "$_help_lines" -le 160 ]; then
-  ok "help: grouped and scannable ($_help_lines lines, bd/sp/xt band is 50-160)"
+# The band was 50-160, chosen when the CLI was smaller. Epic j46 added five real
+# command families (context, topology, pane capture, the log cursor + follow,
+# readiness-aware handoff) and help hit exactly 160 — after which every new command
+# could only be documented by deleting explanation from an existing one, which is
+# how help decays into a list of flags nobody can act on. Re-set to 200 ONCE,
+# deliberately, rather than nudged by +5 whenever it trips: the guard is here to
+# stop help becoming a manual, and the checks that keep help HONEST (the two-way
+# dispatch-table cross-check and the field-names-vs-live-output check below) are
+# untouched and are the ones that actually catch rot.
+if [ "$_help_lines" -ge 50 ] && [ "$_help_lines" -le 200 ]; then
+  ok "help: grouped and scannable ($_help_lines lines, band is 50-200)"
 else
-  nok "help: grouped and scannable ($_help_lines lines, want 50-160)"
+  nok "help: grouped and scannable ($_help_lines lines, want 50-200)"
 fi
 
 # the authoritative command list: the top-level dispatch arms themselves

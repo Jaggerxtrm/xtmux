@@ -40,6 +40,46 @@ function extractText(value: unknown): string {
   return "";
 }
 
+export type ActivityKind = "thinking" | "text" | "tool";
+
+/**
+ * Format one COMPLETED activity span as flat log-emit args (xtmux-j46.11).
+ *
+ * A completed span, not a start/end pair: it carries both `started_at_ms` and
+ * `duration_ms`, so a consumer computes segment durations, time-to-first-activity
+ * (first span's started_at_ms minus turn start), and segment counts from a SINGLE
+ * event — half the emits of a start/end pair, and no correlation step. This is the
+ * same "record the fact, not every observation" shape the monitor domain uses.
+ *
+ * `duration_ms` is OBSERVED STREAM DURATION — wall-clock between the provider's
+ * *_start and *_end stream events as this host saw them. It is NOT provider
+ * compute time and must never be presented as such. char_count is a length only;
+ * no thinking/text/tool content is ever recorded.
+ */
+export function activitySpanArgs(span: {
+  activity: ActivityKind;
+  segmentId: string;
+  turnIndex: number;
+  startedAtMs: number;
+  endedAtMs: number;
+  charCount?: number | undefined;
+}): string[] {
+  const args = [
+    "log",
+    "emit",
+    "agent.activity",
+    `activity=${span.activity}`,
+    `segment_id=${span.segmentId}`,
+    `turn_index=${span.turnIndex}`,
+    `started_at_ms=${span.startedAtMs}`,
+    `duration_ms=${Math.max(0, span.endedAtMs - span.startedAtMs)}`,
+  ];
+  // Omit char_count entirely when unknown (tool spans) — an emitted 0 would read
+  // as "measured zero characters" rather than "not a text-bearing activity".
+  if (span.charCount !== undefined) args.push(`char_count=${span.charCount}`);
+  return args;
+}
+
 function lastAssistantTextFromMessages(messages: unknown[] | undefined): string {
   if (!messages) return "";
   for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -134,6 +174,26 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
     }
   }
 
+  // Activity-span telemetry (xtmux-j46.11). segmentStarts maps a segment key to
+  // the wall-clock ms at which its stream *_start fired; the matching *_end emits
+  // one completed span. Keyed by turn+contentIndex for thinking/text and by
+  // toolCallId for tools, so overlapping segments never collide.
+  let currentTurnIndex = 0;
+  const segmentStarts = new Map<string, number>();
+
+  async function emitActivity(activity: ActivityKind, segmentId: string, startedAtMs: number, charCount?: number): Promise<void> {
+    // Same identity guard as publishTurnDone: without a client socket tmux would
+    // resolve a bystander pane, and a span is journaled against pane/session.
+    if (!process.env.TMUX) return;
+    try {
+      await pi.exec(PICKER, activitySpanArgs({
+        activity, segmentId, turnIndex: currentTurnIndex, startedAtMs, endedAtMs: Date.now(), charCount,
+      }), { timeout: 1500 });
+    } catch {
+      // Best-effort telemetry: never fail a turn over a span write.
+    }
+  }
+
   pi.on("session_start", async () => {
     // One new agent instance per pi session — not per idle transition.
     await setState("idle", true);
@@ -145,15 +205,53 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
 
   pi.on("agent_start", async () => {
     lastTurnMessage = "";
+    segmentStarts.clear();
     await setState("running");
   });
 
-  pi.on("tool_execution_start", async () => {
+  pi.on("tool_execution_start", async (event) => {
+    // A tool call is one segment, keyed by its own id so parallel tool calls
+    // within a turn each get a distinct span.
+    segmentStarts.set(`tool:${event.toolCallId}`, Date.now());
     await setState("running");
   });
 
-  pi.on("turn_start", async () => {
+  pi.on("tool_execution_end", async (event) => {
+    const key = `tool:${event.toolCallId}`;
+    const startedAtMs = segmentStarts.get(key);
+    if (startedAtMs === undefined) return;
+    segmentStarts.delete(key);
+    // No char_count for tools: the result is content, and content is a NON_GOAL.
+    await emitActivity("tool", event.toolCallId, startedAtMs);
+  });
+
+  pi.on("turn_start", async (event) => {
+    currentTurnIndex = event.turnIndex;
     await setState("running");
+  });
+
+  // Thinking/text spans come from the assistant stream's part boundaries. Only
+  // the *_start/*_end variants are acted on; the far more frequent *_delta events
+  // are ignored, so emission is bounded to one span per completed segment.
+  pi.on("message_update", async (event) => {
+    const ev = event.assistantMessageEvent;
+    if (!ev || typeof ev !== "object") return;
+    const kind: ActivityKind | undefined =
+      ev.type === "thinking_start" || ev.type === "thinking_end" ? "thinking"
+      : ev.type === "text_start" || ev.type === "text_end" ? "text"
+      : undefined;
+    if (!kind) return;
+    const key = `${kind}:${currentTurnIndex}:${(ev as { contentIndex: number }).contentIndex}`;
+    if (ev.type === "thinking_start" || ev.type === "text_start") {
+      segmentStarts.set(key, Date.now());
+      return;
+    }
+    const startedAtMs = segmentStarts.get(key);
+    if (startedAtMs === undefined) return;
+    segmentStarts.delete(key);
+    const content = (ev as { content?: unknown }).content;
+    const charCount = typeof content === "string" ? content.length : undefined;
+    await emitActivity(kind, `${currentTurnIndex}:${(ev as { contentIndex: number }).contentIndex}`, startedAtMs, charCount);
   });
 
   pi.on("turn_end", async (event) => {

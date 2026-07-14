@@ -56,7 +56,7 @@ function lifecycle(db: Db, id: string): LifecycleRow {
   return row;
 }
 
-export function register(db: Db, m: RegisterInput): void {
+export function registerWithinTransaction(db: Db, m: RegisterInput): void {
   db.raw
     .query(
       `INSERT INTO monitors (id, owner_pid, target, session_id, pane_id, instance_id, state,
@@ -93,6 +93,11 @@ export function register(db: Db, m: RegisterInput): void {
     },
     createdAtMs: m.nowMs,
   });
+}
+
+export function register(db: Db, m: RegisterInput): void {
+  const tx = db.raw.transaction(() => registerWithinTransaction(db, m));
+  tx();
 }
 
 /**
