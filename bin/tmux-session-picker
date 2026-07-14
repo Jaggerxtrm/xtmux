@@ -472,7 +472,16 @@ extract_bead_id() {
   local text="${1:-}" line
   # Conservative: require a dot-number child id (e.g. xtmux-rib.16). This avoids
   # treating arbitrary worktree slugs such as feature-123 as bead ids.
-  line="$(printf '%s\n' "$text" | grep -Eo '[A-Za-z][A-Za-z0-9-]*\.[0-9]+' | head -1 || true)"
+  #
+  # The DASH is load-bearing, and it is not cosmetic. This is run over whole
+  # filesystem paths, and without it the pattern also matches `tmp.9` inside
+  # /tmp/tmp.9aBcDeFg — mktemp's suffix begins with a digit roughly one time in
+  # six. A pane whose cwd was a temp dir would then be labelled with the bead
+  # `tmp.9`, which exists nowhere and which nobody can look up. Every real bead id
+  # is <prefix>-<slug>.<n>, so requiring the dash rejects the false positive and
+  # accepts every genuine id. (It also made the contract suite flake ~1 run in 3,
+  # dependent on nothing but the random name mktemp handed it.)
+  line="$(printf '%s\n' "$text" | grep -Eo '[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9.-]*[A-Za-z0-9]\.[0-9]+' | head -1 || true)"
   REPLY="$line"
 }
 

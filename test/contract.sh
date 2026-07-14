@@ -133,6 +133,21 @@ else
 fi
 derive_bead_id "agent" "$WORK/.xtrm/worktrees/xtmux-mux.6-demo" "$WORK"; assert_eq "bead derive: from path convention" "xtmux-mux.6" "$REPLY"
 derive_bead_id "feature-123" "$WORK/feature-123" ""; assert_eq "bead derive: avoids loose numeric slug" "" "$REPLY"
+# Asserted on extract_bead_id DIRECTLY, not through derive_bead_id: derive's later
+# fallback branch re-scans the path relative to the root and quietly recovers the
+# right answer when `bd` is installed to validate candidates — which masks this bug
+# on a developer's machine and exposes it only in CI, where bd is absent. The scan
+# itself is what must not lie.
+#
+# The path is scanned WHOLE, so the scan must not mine a bead id out of the
+# directories ABOVE the one we care about. mktemp's suffix begins with a digit
+# about one run in six, and `tmp.9` matched — so a pane whose cwd was a temp dir
+# got labelled with bead `tmp.9`, which exists nowhere, and this suite flaked on
+# nothing but the name mktemp handed it. Literal path, so it fails every run.
+extract_bead_id "/tmp/tmp.9aBcDeFgHi/.xtrm/worktrees/xtmux-mux.6-demo"
+assert_eq "bead derive: a digit-leading temp dir is not mined for a bead id" "xtmux-mux.6" "$REPLY"
+extract_bead_id "/tmp/tmp.9aBcDeFgHi/plain-worktree"
+assert_eq "bead derive: no bead in the path means no bead, not tmp.9" "" "$REPLY"
 nonrepo_git_preview="$(git_worktree_preview "$WORK/no-such-repo")"; [ -z "$nonrepo_git_preview" ] && ok "git preview: non-repo degrades empty" || nok "git preview: non-repo degrades empty"
 mk_repo "$WORK/preview-dirty"
 add_clean "$WORK/preview-dirty" "dirty.txt" "base"
