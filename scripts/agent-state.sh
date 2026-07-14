@@ -45,6 +45,12 @@ done
 target="${TMUX_PANE:-}"
 [ -n "$target" ] || exit 0
 
+host_id_source="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+host_id_source="$(cd -- "$(dirname -- "$host_id_source")" && pwd)/xtmux-host-id.sh"
+[ -r "$host_id_source" ] || host_id_source="$HOME/.tmux/scripts/xtmux-host-id.sh"
+source "$host_id_source"
+unset host_id_source
+
 json_escape() {
   local s="${1:-}"
   s="${s//\\/\\\\}"
@@ -61,43 +67,6 @@ event_log_file() {
   else
     REPLY="${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/events.jsonl"
   fi
-}
-
-gen_uuid() {
-  # Ordered by availability, cheapest first. The last rung is a composite: no
-  # UUID tooling must ever fail an agent turn, and a colliding instance id is
-  # still better than a missing one (it degrades to pane-level precision).
-  if [ -r /proc/sys/kernel/random/uuid ]; then
-    REPLY="$(cat /proc/sys/kernel/random/uuid)"
-  elif command -v uuidgen >/dev/null 2>&1; then
-    REPLY="$(uuidgen)"
-  else
-    REPLY="$(printf '%08x-%04x-4%03x-%04x-%012x' \
-      "$(date +%s)" "$((RANDOM & 0xffff))" "$((RANDOM & 0xfff))" \
-      "$((0x8000 | (RANDOM & 0x3fff)))" "$$$(date +%N 2>/dev/null || printf '0')")"
-  fi
-}
-
-# host_id namespaces every tmux identifier across machines. It is a generated
-# UUID persisted in xtmux's own state dir — never derived from /etc/machine-id,
-# which would leak a stable public fingerprint of the host.
-host_id() {
-  local dir file
-  dir="${XDG_STATE_HOME:-$HOME/.local/state}/xtmux"
-  file="${XTMUX_HOST_ID_FILE:-$dir/host-id}"
-  if [ -s "$file" ]; then
-    REPLY="$(cat "$file")"
-    return 0
-  fi
-  mkdir -p "${file%/*}" 2>/dev/null || true
-  gen_uuid
-  # noclobber makes the create atomic: two panes starting at once agree on the
-  # id written by whichever won, instead of one overwriting the other's.
-  if (set -C; printf '%s\n' "$REPLY" > "$file") 2>/dev/null; then
-    return 0
-  fi
-  [ -s "$file" ] && REPLY="$(cat "$file")"
-  return 0
 }
 
 log_agent_state_event() {
@@ -155,25 +124,96 @@ clear_optional_meta() {
   set_pane_option @agent_parent_session ""
 }
 
+prev_state="$(tmux show-options -p -t "$target" -qv @agent_state 2>/dev/null || true)"
+
 # a new agent occupation of the pane gets a fresh identity, written before the
 # state event so the event already carries it. ordinary transitions preserve the
 # id: rotating it per-idle would make every turn look like a new agent, and a
 # pane's Specialists jobs would scatter across phantom instances.
 if [ "$new_instance" = 1 ]; then
-  gen_uuid
+  xtmux_gen_uuid
   set_pane_option @agent_instance_id "$REPLY"
+fi
+
+# BEFORE any emit, because emit_v2 reads these from the pane options. A delegated
+# agent is launched as `XTMUX_AGENT_BEAD=... agent-state.sh idle --new-instance`,
+# so with this call left until after the lifecycle emits — where it used to be —
+# the one launch that most needs a bead binding is exactly the one that opens its
+# durable instance without one. openInstance is idempotent, so no later
+# transition can repair that row.
+set_meta_from_env
+
+# Feed the durable agent domain (agent_instances / agent_state_transitions /
+# event_journal). Best-effort and bounded: a hook must never fail an agent turn,
+# and `xtmux` may not be on PATH at all in a bare environment.
+#
+# This runs on EVERY Claude PreToolUse/PostToolUse, so it is gated on an actual
+# state change. The store debounces same-state writes anyway, but that costs two
+# process spawns per tool call to discover; the pane option already knows.
+emit_v2() {
+  command -v xtmux >/dev/null 2>&1 || return 0
+  # `xtmux log emit` is mode-dependent: with the store set to the legacy JSONL
+  # (XTMUX_OBS_V2=0) it appends to events.jsonl, and in shadow mode it appends
+  # there AND tees to SQLite. But log_agent_state_event below already writes the
+  # V1 journal itself, so routing through it would give every transition a
+  # duplicate agent.state row and inject agent.instance.* / agent.ready rows the
+  # V1 journal has never carried — polluting tail/query and the JSONL->SQLite
+  # migration input. So: skip entirely when the operator has opted out of V2, and
+  # otherwise force the V2-only branch. This feed exists to fill the SQLite agent
+  # domain; it has no business in the legacy store.
+  case "${XTMUX_OBS_V2:-}" in
+    '' | 1 | shadow) ;;
+    *) return 0 ;;
+  esac
+  local instance host
+  instance="$(tmux show-options -p -t "$target" -qv @agent_instance_id 2>/dev/null || true)"
+  host_id; host="$REPLY"
+  XTMUX_OBS_V2=1 timeout 2s xtmux log emit "$@" \
+    pane="$target" \
+    session="$(tmux display-message -p -t "$target" '#{session_id}' 2>/dev/null || true)" \
+    session_name="$(tmux display-message -p -t "$target" '#S' 2>/dev/null || true)" \
+    instance_id="$instance" \
+    host_id="$host" \
+    bead="$(tmux show-options -p -t "$target" -qv @agent_bead 2>/dev/null || true)" \
+    task="$(tmux show-options -p -t "$target" -qv @agent_task 2>/dev/null || true)" \
+    prompt_file="$(tmux show-options -p -t "$target" -qv @agent_prompt_file 2>/dev/null || true)" \
+    parent="$(tmux show-options -p -t "$target" -qv @agent_parent_session 2>/dev/null || true)" \
+    >/dev/null 2>&1 || true
+}
+
+if [ "$new_instance" = 1 ]; then
+  emit_v2 agent.instance.started runtime="${XTMUX_AGENT_RUNTIME:-}"
+  # The handshake. This hook only fires once the runtime has finished init and
+  # installed its control hooks — reaching this line IS the proof that the agent
+  # can receive work, which "the pane exists" never was. Distinct from `idle`,
+  # which recurs after every turn; exactly-once is enforced by the store's UNIQUE
+  # event_key, so a double-fired hook cannot wake a coordinator twice.
+  emit_v2 agent.ready runtime="${XTMUX_AGENT_RUNTIME:-}"
 fi
 
 # don't let a missing/dead pane fail the agent hook. the state is best-effort;
 # the picker just renders no badge if the option can't be written.
 tmux set-option -p -t "$target" -q @agent_state "$state" 2>/dev/null || true
 tmux set-option -p -t "$target" -q @agent_last_transition "$(date -Is)" 2>/dev/null || true
-set_meta_from_env
 # off is the explicit lifecycle end marker: keep @agent_state=off for backward
 # compatibility, but clear optional task metadata so previews do not show stale
 # bead/task pointers for a reused pane. @agent_instance_id deliberately survives
 # so a post-mortem can still attribute the pane's last occupation; the next
 # --new-instance overwrites it.
+# Only a real transition reaches the store. The running->running storm from
+# Claude's PreToolUse/PostToolUse hooks is the common case and is dropped here,
+# before it costs a process spawn. A new instance always emits: its first state
+# must land even if the pane happened to already read `idle`.
+#
+# Emitted BEFORE clear_optional_meta: `off` wipes @agent_bead, and the closing
+# event is precisely the one that most needs to say which bead the agent died on.
+if [ "$new_instance" = 1 ] || [ "$prev_state" != "$state" ]; then
+  emit_v2 agent.state state="$state" hook_event="${CLAUDE_HOOK_EVENT:-${PI_HOOK_EVENT:-}}"
+  # `|| true`: this is the if-body's last command, and a false test under set -e
+  # would take the whole hook down with it.
+  { [ "$state" = off ] && emit_v2 agent.instance.ended; } || true
+fi
+
 [ "$state" = off ] && clear_optional_meta
 log_agent_state_event
 

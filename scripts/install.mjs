@@ -37,6 +37,7 @@ const bins = {
 const compatibilityLinks = {
   [join(home, ".tmux", "scripts", "git-pane-status.sh")]: join(root, "scripts", "git-pane-status.sh"),
   [join(home, ".tmux", "scripts", "agent-state.sh")]: join(root, "scripts", "agent-state.sh"),
+  [join(home, ".tmux", "scripts", "xtmux-host-id.sh")]: join(root, "scripts", "xtmux-host-id.sh"),
 };
 
 function readJson(path, fallback = {}) {

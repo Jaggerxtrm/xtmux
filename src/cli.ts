@@ -17,6 +17,7 @@ import { telemetryCommand } from "./commands/telemetry.ts";
 import { auditCommand } from "./commands/audit.ts";
 import { listObligations } from "../extensions/pi-inbox-reply.ts";
 import { captureRuntimeContext } from "./domains/identity/runtime-context.ts";
+import { capturePane } from "./domains/identity/pane-capture.ts";
 
 function usage(): string {
   return `usage: xtmux-obs <command>
@@ -116,6 +117,26 @@ async function main(argv: string[]): Promise<number> {
           return 1;
         }
         process.stdout.write(JSON.stringify(result.origin) + "\n");
+        return 0;
+      }
+      case "pane": {
+        // Read-only, no DB: `pane capture` is reachable over the (future) remote
+        // bridge, so it must not be able to touch state.
+        if (argv[3] !== "capture") {
+          process.stderr.write(JSON.stringify({ code: "XTMUX_INVALID_ARGUMENT", message: "usage: xtmux pane capture --pane %N [--lines N] [--json]", detail: {} }) + "\n");
+          return 2;
+        }
+        const rest = argv.slice(4);
+        const paneFlag = rest.indexOf("--pane");
+        const linesFlag = rest.indexOf("--lines");
+        const paneId = paneFlag >= 0 ? rest[paneFlag + 1] ?? "" : process.env.TMUX ? process.env.TMUX_PANE ?? "" : "";
+        const lines = linesFlag >= 0 ? Number(rest[linesFlag + 1]) : 200;
+        const result = capturePane(paneId, lines);
+        if (!result.ok) {
+          process.stderr.write(JSON.stringify(result.error) + "\n");
+          return 1;
+        }
+        process.stdout.write(JSON.stringify(result.capture) + "\n");
         return 0;
       }
       case "obligations": {

@@ -751,6 +751,156 @@ fi
 rm -rf "$id_state"
 
 echo
+echo "== readiness lifecycle: agent.ready + durable agent domain (xtmux-j46.7) =="
+
+# Before this bead the hook wrote ONLY to events.jsonl: agent_instances and
+# agent_state_transitions had zero rows, so the V2 journal — the ordered feed the
+# Console graph consumes — knew nothing about agent lifecycle at all.
+rl_sock="xtmux-ready-$$"
+rl_state="$(mktemp -d)"
+rl_bin="$(mktemp -d)"
+# A real exec wrapper, not a symlink: the picker resolves its root from
+# BASH_SOURCE without dereferencing, so a symlink would send it hunting for the
+# runtime in the wrong tree.
+printf '#!/bin/sh\nexec %s/bin/tmux-session-picker "$@"\n' "$ROOT" > "$rl_bin/xtmux"
+chmod +x "$rl_bin/xtmux"
+
+if ! command tmux -L "$rl_sock" -f /dev/null new-session -d -s xtmux-ready 'sleep 100' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m readiness lifecycle (cannot start isolated tmux server)\n'
+else
+  rl_pane="$(command tmux -L "$rl_sock" list-panes -a -F '#{pane_id}' | head -1)"
+  rl_tmuxenv="$(command tmux -L "$rl_sock" display-message -p '#{socket_path},0,0')"
+  # The agent domain is V2-only by nature (it IS the SQLite store). The suite
+  # runs V1 by default because the goldens are V1-shaped, so opt this section in.
+  rl() {
+    env TMUX="$rl_tmuxenv" TMUX_PANE="$rl_pane" XDG_STATE_HOME="$rl_state" \
+      XTMUX_OBS_V2=1 PATH="$rl_bin:$PATH" "$AGENT_STATE" "$@" >/dev/null 2>&1
+  }
+  rl_db="$rl_state/xtmux/observability.db"
+  rl_q() { python3 -c "
+import sqlite3,sys
+try: c=sqlite3.connect(sys.argv[1]); print(c.execute(sys.argv[2]).fetchone()[0])
+except Exception: print('ERR')" "$rl_db" "$1" 2>/dev/null; }
+
+  # Agent A occupies the pane, runs a turn (the running->running storm Claude's
+  # PreToolUse/PostToolUse hooks produce), then exits. Agent B reuses the pane.
+  rl idle --new-instance; rl running; rl running; rl running; rl idle
+  rl off
+  rl idle --new-instance; rl running
+
+  [ "$(rl_q "SELECT count(*) FROM agent_instances")" = 2 ] \
+    && ok "readiness: a reused pane opens a second durable agent instance" \
+    || nok "readiness: a reused pane opens a second durable agent instance (got $(rl_q "SELECT count(*) FROM agent_instances"))"
+
+  # The whole point of the handshake: exactly once per occupation. `idle` recurs
+  # after every turn; ready must not, or a coordinator waiting on it wakes on a
+  # mid-session idle and delivers work to an agent that never re-initialized.
+  [ "$(rl_q "SELECT count(*) FROM event_journal WHERE type='agent.ready'")" = 2 ] \
+    && ok "readiness: exactly one agent.ready per agent instance" \
+    || nok "readiness: exactly one agent.ready per agent instance"
+
+  [ "$(rl_q "SELECT count(*) FROM event_journal WHERE type='agent.ready' AND instance_id IS NULL")" = 0 ] \
+    && ok "readiness: every agent.ready carries its instance id" \
+    || nok "readiness: every agent.ready carries its instance id"
+
+  # Transitions attach to the instance that produced them, not to whoever
+  # occupied the pane before. Without this a reused pane's first transitions
+  # would be filed under the previous agent.
+  [ "$(rl_q "SELECT count(*) FROM agent_state_transitions WHERE instance_id IS NULL")" = 0 ] \
+    && ok "readiness: transitions are attributed to an agent instance" \
+    || nok "readiness: transitions are attributed to an agent instance"
+
+  # The storm is dropped before it costs a process spawn: A did idle, running x3,
+  # idle, off -> 4 real transitions, not 6.
+  [ "$(rl_q "SELECT count(*) FROM agent_state_transitions")" = 6 ] \
+    && ok "readiness: repeated same-state hook fires do not write duplicate transitions" \
+    || nok "readiness: repeated same-state hook fires do not write duplicate transitions (got $(rl_q "SELECT count(*) FROM agent_state_transitions"), want 6)"
+
+  [ "$(rl_q "SELECT count(*) FROM agent_instances WHERE ended_at_ms IS NOT NULL")" = 1 ] \
+    && ok "readiness: off ends the instance, leaving the successor open" \
+    || nok "readiness: off ends the instance, leaving the successor open"
+
+  # A double-fired hook must be a no-op, not a second wake and not an error.
+  rl_inst="$(python3 -c "
+import sqlite3,sys
+c=sqlite3.connect(sys.argv[1]); print(c.execute(\"SELECT instance_id FROM event_journal WHERE type='agent.ready' LIMIT 1\").fetchone()[0])" "$rl_db" 2>/dev/null)"
+  env XTMUX_OBS_DB_PATH="$rl_db" "$ROOT/bin/xtmux-obs" log-emit agent.ready instance_id="$rl_inst" pane="$rl_pane" >/dev/null 2>&1
+  rc=$?
+  { [ "$rc" -eq 0 ] && [ "$(rl_q "SELECT count(*) FROM event_journal WHERE type='agent.ready'")" = 2 ]; } \
+    && ok "readiness: a re-emitted agent.ready is idempotent, not a duplicate or an error" \
+    || nok "readiness: a re-emitted agent.ready is idempotent (rc=$rc)"
+
+  # A pane running a plain shell is not a ready agent. "Pane exists" must never
+  # be mistaken for "agent can receive work" — that is the whole bead.
+  command tmux -L "$rl_sock" new-window -d 'sleep 100' 2>/dev/null || true
+  bare="$(command tmux -L "$rl_sock" list-panes -a -F '#{pane_id}' | tail -1)"
+  [ "$(rl_q "SELECT count(*) FROM event_journal WHERE type='agent.ready' AND pane_id='$bare'")" = 0 ] \
+    && ok "readiness: a pane with no agent emits no agent.ready" \
+    || nok "readiness: a pane with no agent emits no agent.ready"
+
+  # A DELEGATED agent is launched exactly like this: the bead lives in the
+  # environment, and agent-state.sh is what copies it into the pane options. If
+  # the lifecycle emits run before that copy, the instance row opens with no bead
+  # — and openInstance is idempotent, so no later transition ever repairs it. That
+  # silently breaks the one binding Specialists needs: job -> pane -> bead.
+  env TMUX="$rl_tmuxenv" TMUX_PANE="$bare" XDG_STATE_HOME="$rl_state" \
+    XTMUX_OBS_V2=1 PATH="$rl_bin:$PATH" \
+    XTMUX_AGENT_BEAD=xtmux-j46.7 XTMUX_AGENT_TASK='delegated task' \
+    "$AGENT_STATE" idle --new-instance >/dev/null 2>&1
+  d_bead="$(rl_q "SELECT bead_id FROM agent_instances WHERE pane_id='$bare'")"
+  d_task="$(rl_q "SELECT task FROM agent_instances WHERE pane_id='$bare'")"
+  { [ "$d_bead" = xtmux-j46.7 ] && [ "$d_task" = 'delegated task' ]; } \
+    && ok "readiness: a delegated launch binds bead/task to the instance it opens" \
+    || nok "readiness: a delegated launch binds bead/task to the instance (got bead='$d_bead' task='$d_task')"
+
+  [ "$(rl_q "SELECT count(*) FROM event_journal WHERE type='agent.ready' AND bead_id='xtmux-j46.7'")" = 1 ] \
+    && ok "readiness: the agent.ready envelope carries the bead the agent was launched for" \
+    || nok "readiness: the agent.ready envelope carries the bead the agent was launched for"
+
+  command tmux -L "$rl_sock" kill-server >/dev/null 2>&1 || true
+fi
+rm -rf "$rl_state" "$rl_bin"
+
+# The V2 feed must stay out of the LEGACY journal. agent-state.sh already writes
+# events.jsonl itself, and `xtmux log emit` is store-dependent: with V2 off it
+# appends there too. Routing the feed through it gives every transition a
+# duplicate agent.state row and injects agent.instance.*/agent.ready rows the V1
+# journal has never carried — which pollutes tail/query and, worse, becomes input
+# to the JSONL->SQLite migration.
+v1_sock="xtmux-v1feed-$$"
+v1_state="$(mktemp -d)"
+v1_bin="$(mktemp -d)"
+printf '#!/bin/sh\nexec %s/bin/tmux-session-picker "$@"\n' "$ROOT" > "$v1_bin/xtmux"
+chmod +x "$v1_bin/xtmux"
+if ! command tmux -L "$v1_sock" -f /dev/null new-session -d -s xtmux-v1feed 'sleep 100' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m legacy-journal isolation (cannot start isolated tmux server)\n'
+else
+  v1_pane="$(command tmux -L "$v1_sock" list-panes -a -F '#{pane_id}' | head -1)"
+  v1_env="$(command tmux -L "$v1_sock" display-message -p '#{socket_path},0,0')"
+  v1_log="$v1_state/xtmux/events.jsonl"
+  v1() {
+    env TMUX="$v1_env" TMUX_PANE="$v1_pane" XDG_STATE_HOME="$v1_state" \
+      XTMUX_OBS_V2=0 PATH="$v1_bin:$PATH" "$AGENT_STATE" "$@" >/dev/null 2>&1
+  }
+  v1 idle --new-instance; v1 running; v1 off
+
+  # grep -c prints 0 AND exits 1 on no-match, so `|| echo 0` would append a
+  # SECOND zero and the comparison would never match. Take the count only.
+  n_state="$(grep -c '"type":"agent.state"' "$v1_log" 2>/dev/null || true)"
+  [ "$n_state" = 3 ] \
+    && ok "legacy journal: one agent.state row per transition, not two" \
+    || nok "legacy journal: one agent.state row per transition, not two (got $n_state)"
+
+  n_life="$(grep -c 'agent\.instance\.\|agent\.ready' "$v1_log" 2>/dev/null || true)"
+  [ "$n_life" = 0 ] \
+    && ok "legacy journal: V2-only lifecycle events never leak into events.jsonl" \
+    || nok "legacy journal: V2-only lifecycle events never leak into events.jsonl (got $n_life)"
+
+  command tmux -L "$v1_sock" kill-server >/dev/null 2>&1 || true
+fi
+rm -rf "$v1_state" "$v1_bin"
+
+echo
 echo "== runtime-origin contract: xtmux context --current --json (xtmux-j46.2) =="
 
 # This is the CROSS-REPO interface: xtrm-dev/specialists parses these exact field
@@ -880,6 +1030,199 @@ else
 fi
 rm -rf "$ctx_state"
 
+
+echo
+echo "== pane capture contract: bounded terminal preview (xtmux-j46.4) =="
+
+# The only command whose response SIZE a caller controls, and it is reachable
+# over the SSH bridge. The bound is the whole point of the test.
+cap_sock="xtmux-cap-$$"
+if ! command tmux -L "$cap_sock" -f /dev/null new-session -d -s xtmux-cap 'seq 1 400; sleep 100' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m pane capture (cannot start isolated tmux server)\n'
+else
+  cap_pane="$(command tmux -L "$cap_sock" list-panes -a -F '#{pane_id}' | head -1)"
+  # Let `seq` finish writing before capturing, or the assertions race the shell.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    command tmux -L "$cap_sock" capture-pane -p -t "$cap_pane" 2>/dev/null | grep -q '^400$' && break
+    sleep 0.2
+  done
+  # The runtime resolves panes on the socket TMUX names; point it at ours.
+  cap_run() {
+    env TMUX="$(command tmux -L "$cap_sock" display-message -p '#{socket_path},0,0')" \
+      "$PICKER" pane capture --pane "$cap_pane" "$@" 2>/dev/null
+  }
+  jnum() { printf '%s' "$1" | sed -n "s/.*\"$2\":\([0-9]*\).*/\1/p"; }
+
+  cap_json="$(cap_run --lines 10 --json)"
+  case "$cap_json" in
+    *'"schema_version":"xtrm.xtmux.pane-capture.v1"'*"\"pane_id\":\"$cap_pane\""*)
+      ok "pane capture: emits xtrm.xtmux.pane-capture.v1 for the requested pane" ;;
+    *) nok "pane capture: emits xtrm.xtmux.pane-capture.v1 (got '$cap_json')" ;;
+  esac
+
+  # "The last N lines" must mean N — not N plus however many blank rows the
+  # visible screen happens to contribute. tmux's own `-S -N` pads to screen
+  # height, so an unbounded passthrough would return ~34 lines for a request of 10.
+  got_lines="$(jnum "$cap_json" returned_lines)"
+  { [ "$got_lines" = 10 ] && [ "$(jnum "$cap_json" requested_lines)" = 10 ]; } \
+    && ok "pane capture: returns exactly the requested line count, not the screen height" \
+    || nok "pane capture: returns exactly the requested line count (got returned_lines=$got_lines)"
+
+  # The last N lines, in order — a capture that silently returned the FIRST N
+  # would look identical in every count-based assertion above.
+  case "$cap_json" in
+    *'400'*) ok "pane capture: content is the TAIL of the buffer" ;;
+    *) nok "pane capture: content is the TAIL of the buffer" ;;
+  esac
+
+  # A viewer over the bridge must never be able to ask for an unbounded buffer.
+  # Over-large requests are CLAMPED and the response says so — not honored, and
+  # not rejected outright (a rejection would push callers to retry-guess the cap).
+  big="$(cap_run --lines 999999 --json)"
+  big_ret="$(jnum "$big" returned_lines)"; big_max="$(jnum "$big" max_lines)"
+  { [ -n "$big_max" ] && [ "$(jnum "$big" requested_lines)" = 999999 ] \
+      && [ "$big_ret" -le "$big_max" ]; } \
+    && ok "pane capture: an over-large --lines is clamped to max_lines, and reported" \
+    || nok "pane capture: an over-large --lines is clamped (returned=$big_ret max=$big_max)"
+
+  # `truncated` has exactly one meaning: there is more above what you were given.
+  # A clamped request that still returned the WHOLE buffer is not truncated —
+  # reporting it as such would make a viewer render a "scroll for more"
+  # affordance over content that has no more.
+  case "$cap_json" in *'"truncated":true'*) t1=1 ;; *) t1=0 ;; esac
+  case "$big"      in *'"truncated":false'*) t2=1 ;; *) t2=0 ;; esac
+  { [ "$t1" = 1 ] && [ "$t2" = 1 ]; } \
+    && ok "pane capture: truncated means 'more above', not 'your request was clamped'" \
+    || nok "pane capture: truncated semantics (partial=$t1 whole-buffer=$t2)"
+
+  # Read-only by contract: this is polled by a viewer.
+  before="$(command tmux -L "$cap_sock" show-options -p -t "$cap_pane" 2>/dev/null)"
+  cap_run --lines 5 --json >/dev/null
+  after="$(command tmux -L "$cap_sock" show-options -p -t "$cap_pane" 2>/dev/null)"
+  [ "$before" = "$after" ] && ok "pane capture: read-only — writes no pane option" \
+    || nok "pane capture: read-only — writes no pane option"
+
+  # A dead pane must not silently fall back to a bystander pane: the viewer would
+  # render someone else's terminal under the dead pane's title.
+  out="$(env TMUX="$(command tmux -L "$cap_sock" display-message -p '#{socket_path},0,0')" \
+    "$PICKER" pane capture --pane '%99999' --lines 5 --json 2>/dev/null)"; rc=$?
+  { [ "$rc" -ne 0 ] && [ -z "$out" ]; } \
+    && ok "pane capture: dead pane -> non-zero, no bystander content" \
+    || nok "pane capture: dead pane -> non-zero, no bystander content (rc=$rc out='$out')"
+
+  # A pane target that is not a stable %id is a bug in the caller, not a lookup
+  # to guess at: session names and indexes are mutable and would rebind silently.
+  out="$(env TMUX="$(command tmux -L "$cap_sock" display-message -p '#{socket_path},0,0')" \
+    "$PICKER" pane capture --pane xtmux-cap --lines 5 --json 2>/dev/null)"; rc=$?
+  { [ "$rc" -ne 0 ] && [ -z "$out" ]; } \
+    && ok "pane capture: a non-%id target is refused, never resolved by name" \
+    || nok "pane capture: a non-%id target is refused (rc=$rc out='$out')"
+
+  command tmux -L "$cap_sock" kill-server >/dev/null 2>&1 || true
+fi
+
+
+echo
+echo "== journal cursor: log query --after-id (xtmux-j46.5) =="
+
+# Console reconnects and asks "what have I not seen?". It cannot ask by timestamp
+# (two events share a millisecond, clocks move) and cannot ask by event_key (it is
+# optional). The committed rowid is the only honest cursor.
+jc_state="$(mktemp -d)"
+jc_db="$jc_state/xtmux/observability.db"
+jc_obs() { env XDG_STATE_HOME="$jc_state" XTMUX_OBS_DB_PATH="$jc_db" "$ROOT/bin/xtmux-obs" "$@" 2>/dev/null; }
+jc_q() { python3 -c "
+import sqlite3,sys
+try: c=sqlite3.connect(sys.argv[1]); print(c.execute(sys.argv[2]).fetchone()[0])
+except Exception: print('ERR')" "$jc_db" "$1" 2>/dev/null; }
+
+i=1
+while [ "$i" -le 12 ]; do jc_obs log-emit "cursor.probe" seq="$i" >/dev/null; i=$((i+1)); done
+
+# Page the whole journal in chunks and prove every row is seen EXACTLY once, in
+# ascending id order. A DESC page, an inclusive cursor, or an off-by-one in
+# next_after_id all produce either a duplicate or a hole; this walk catches all three.
+page_walk="$(python3 - "$ROOT" "$jc_state" "$jc_db" <<'PY'
+import json,subprocess,sys
+root,state,db=sys.argv[1],sys.argv[2],sys.argv[3]
+env={"XDG_STATE_HOME":state,"XTMUX_OBS_DB_PATH":db,"PATH":"/usr/bin:/bin"}
+seen,cursor,pages=[],0,0
+while True:
+    out=subprocess.run([f"{root}/bin/xtmux-obs","log-query","--after-id",str(cursor),"--limit","5","--json"],
+                       capture_output=True,text=True,env=env).stdout
+    p=json.loads(out); pages+=1
+    seen+=[i["journal_id"] for i in p["items"]]
+    cursor=p["next_after_id"]
+    if not p["has_more"] or pages>20: break
+asc = seen==sorted(seen)
+uniq = len(seen)==len(set(seen))
+print(f"{len(seen)} {asc} {uniq} {cursor}")
+PY
+)"
+set -- $page_walk
+# Compare against what the journal ACTUALLY holds, not the 12 rows this test
+# seeded: the runtime also journals its own migration events, and a hardcoded
+# count would make this assertion track the test's assumptions instead of the
+# store's contents.
+jc_total="$(jc_q "SELECT count(*) FROM event_journal")"
+{ [ "$1" = "$jc_total" ] && [ "$2" = True ] && [ "$3" = True ]; } \
+  && ok "journal cursor: paging returns every row exactly once, ascending, no holes" \
+  || nok "journal cursor: paging returns every row exactly once (got count=$1/$jc_total asc=$2 uniq=$3)"
+
+first_id="$(jc_q "SELECT MIN(id) FROM event_journal")"
+last_id="$(jc_q "SELECT MAX(id) FROM event_journal")"
+
+# Exclusive: the cursor names the last row you HANDLED, not the next one you want.
+# An inclusive cursor redelivers that row on every reconnect, forever.
+excl="$(jc_obs log-query --after-id "$first_id" --limit 1 --json | python3 -c "import json,sys; print(json.load(sys.stdin)['items'][0]['journal_id'])" 2>/dev/null)"
+[ "$excl" = "$((first_id + 1))" ] \
+  && ok "journal cursor: --after-id is exclusive" \
+  || nok "journal cursor: --after-id is exclusive (got $excl, want $((first_id + 1)))"
+
+# Caught up. next_after_id must echo the cursor the caller SENT — returning 0 would
+# rewind a caught-up consumer to the head of the journal and replay everything.
+tail_json="$(jc_obs log-query --after-id "$last_id" --limit 5 --json)"
+tail_probe="$(printf '%s' "$tail_json" | python3 -c "
+import json,sys; p=json.load(sys.stdin)
+print(len(p['items']), p['next_after_id'], p['has_more'], p['oldest_available_id'], p['latest_available_id'])" 2>/dev/null)"
+set -- $tail_probe
+{ [ "$1" = 0 ] && [ "$2" = "$last_id" ] && [ "$3" = False ]; } \
+  && ok "journal cursor: an empty page echoes the requested cursor, never rewinds to 0" \
+  || nok "journal cursor: an empty page echoes the requested cursor (got items=$1 next=$2 has_more=$3)"
+
+{ [ "$4" = "$first_id" ] && [ "$5" = "$last_id" ]; } \
+  && ok "journal cursor: watermarks match MIN/MAX(id) of the journal" \
+  || nok "journal cursor: watermarks match MIN/MAX(id) (got oldest=$4 latest=$5, want $first_id/$last_id)"
+
+# Retention ate the consumer's position. It has a hole it can NEVER fill, so it
+# must be told — silently serving the next surviving page would look like a clean
+# resume while the consumer's state was quietly missing rows forever.
+python3 -c "
+import sqlite3,sys
+c=sqlite3.connect(sys.argv[1]); c.execute('DELETE FROM event_journal WHERE id <= ?', (int(sys.argv[2])+5,)); c.commit()" "$jc_db" "$first_id"
+exp_out="$(jc_obs log-query --after-id "$first_id" --limit 5 --json)"; exp_rc=$?
+exp_err="$(env XDG_STATE_HOME="$jc_state" XTMUX_OBS_DB_PATH="$jc_db" "$ROOT/bin/xtmux-obs" log-query --after-id "$first_id" --limit 5 --json 2>&1 >/dev/null)"
+{ [ "$exp_rc" -ne 0 ] && [ -z "$exp_out" ] \
+    && case "$exp_err" in *XTMUX_CURSOR_EXPIRED*oldest_available_id*) true ;; *) false ;; esac; } \
+  && ok "journal cursor: an expired cursor is a structured refusal carrying oldest_available_id" \
+  || nok "journal cursor: an expired cursor is a structured refusal (rc=$exp_rc out='$exp_out' err='$exp_err')"
+
+# ...but a cursor that merely sits AT the new boundary is still perfectly valid.
+# Treating "oldest-1" as expired would spuriously reset a consumer that lost nothing.
+new_oldest="$(jc_q "SELECT MIN(id) FROM event_journal")"
+ok_out="$(jc_obs log-query --after-id "$((new_oldest - 1))" --limit 5 --json)"; ok_rc=$?
+{ [ "$ok_rc" -eq 0 ] && case "$ok_out" in *'"journal_id":'*) true ;; *) false ;; esac; } \
+  && ok "journal cursor: a cursor at the retention boundary is served, not expired" \
+  || nok "journal cursor: a cursor at the retention boundary is served (rc=$ok_rc)"
+
+# The legacy array shape is what every current consumer and every V1 golden reads.
+# Adding a cursor must not change the answer for a caller that never sends one.
+legacy="$(jc_obs log-query --limit 3 --json)"
+case "$legacy" in
+  \[*) ok "journal cursor: log query without --after-id keeps the legacy array shape" ;;
+  *)   nok "journal cursor: log query without --after-id keeps the legacy array shape (got '$legacy')" ;;
+esac
+rm -rf "$jc_state"
 
 echo
 echo "== rename contract =="
@@ -1208,6 +1551,54 @@ fi
 
 
 echo
+echo "== topology JSON contract (live tmux) =="
+
+if ! tmux info >/dev/null 2>&1; then
+  printf '  \033[33mskip\033[0m topology tests (no live tmux server)\n'
+elif ! command -v jq >/dev/null 2>&1; then
+  printf '  \033[33mskip\033[0m topology tests (jq missing)\n'
+else
+  topo_a="xtmux-topology-a-$$"
+  topo_b="xtmux-topology-b-$$"
+  tmux kill-session -t "$topo_a" 2>/dev/null || true
+  tmux kill-session -t "$topo_b" 2>/dev/null || true
+  tmux new-session -d -s "$topo_a" -x 100 -y 30 'sleep 100' 2>/dev/null
+  tmux new-session -d -s "$topo_b" -x 90 -y 25 'sleep 100' 2>/dev/null
+  tmux split-window -h -t "$topo_a" 'sleep 100' 2>/dev/null
+  topo_sid="$(tmux display-message -p -t "$topo_a" '#{session_id}' 2>/dev/null)"
+  topo_parent_pane="$(tmux list-panes -t "$topo_a" -F '#{pane_id}' 2>/dev/null | tail -1)"
+  topo_b_pane="$(tmux list-panes -t "$topo_b" -F '#{pane_id}' 2>/dev/null | head -1)"
+  tmux set-option -p -t "$topo_parent_pane" @agent_parent_session "$topo_sid" 2>/dev/null || true
+  tmux set-option -p -t "$topo_parent_pane" @agent_instance_id topology-instance 2>/dev/null || true
+  tmux set-option -p -t "$topo_parent_pane" @agent_state running 2>/dev/null || true
+  topo_json="$(XDG_STATE_HOME="$WORK/topology-state" XTMUX_OBS_V2=0 "$PICKER" topology --json 2>/dev/null)"
+  printf '%s\n' "$topo_json" | jq -e --arg a "$topo_a" --arg b "$topo_b" \
+    '[.sessions[] | select(.name == $a or .name == $b)] | length == 2 and all(.[]; (.windows | length) == 1)' >/dev/null \
+    && ok "topology: host -> sessions -> windows nesting" || nok "topology: host -> sessions -> windows nesting"
+  printf '%s\n' "$topo_json" | jq -e --arg a "$topo_a" --arg p "$topo_parent_pane" --arg sid "$topo_sid" \
+    '(.schema_version == "xtrm.xtmux.topology.v1") and (.host.host_id | length > 0) and
+     ([.sessions[] | select(.name == $a) | .windows[].panes[]] | length == 2) and
+     ([.sessions[] | select(.name == $a) | .windows[].panes[] | select(.pane_id == $p and .agent.parent_session_id == $sid)] | length == 1)' >/dev/null \
+    && ok "topology: stable IDs and parent session metadata" || nok "topology: stable IDs and parent session metadata"
+  # ANSI-C quoting makes tabs real; tmux leaves \t literal inside single-quoted formats.
+  topo_expected="$(tmux list-panes -t "$topo_a" -F $'#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_pid}' 2>/dev/null)"
+  topo_geometry_ok=1
+  while IFS=$'\t' read -r ep ei ea ew eh el et epid; do
+    [ -n "$ep" ] || continue
+    if ! printf '%s\n' "$topo_json" | jq -e --arg p "$ep" --argjson i "${ei:-0}" --argjson a "${ea:-0}" --argjson w "${ew:-0}" --argjson h "${eh:-0}" --argjson l "${el:-0}" --argjson t "${et:-0}" --argjson pid "${epid:-0}" \
+      '[.sessions[].windows[].panes[] | select(.pane_id == $p and .pane_index == $i and .active == ($a == 1) and .width == $w and .height == $h and .left == $l and .top == $t and .pid == $pid)] | length == 1' >/dev/null; then
+      topo_geometry_ok=0
+    fi
+  done <<< "$topo_expected"
+  [ "$topo_geometry_ok" = 1 ] && ok "topology: pane geometry/index/active matches tmux" || nok "topology: pane geometry/index/active matches tmux"
+  printf '%s\n' "$topo_json" | jq -e --arg b "$topo_b_pane" \
+    '[.sessions[].windows[].panes[] | select(.pane_id == $b and ((has("agent") | not) or .agent == null))] | length == 1 and ([.. | objects | keys[]] | any(. == "content" or . == "env" or . == "environment") | not)' >/dev/null \
+    && ok "topology: absent agent metadata and no pane content/env" || nok "topology: absent agent metadata and no pane content/env"
+  tmux kill-session -t "$topo_a" 2>/dev/null || true
+  tmux kill-session -t "$topo_b" 2>/dev/null || true
+fi
+
+
 echo "== specialist sp-* contract =="
 
 if ! tmux info >/dev/null 2>&1; then
