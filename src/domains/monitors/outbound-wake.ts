@@ -65,8 +65,15 @@ export interface RegisterOutboundWaitInput {
 export interface ArmOutboundWaitInput {
   waitId: string;
   monitorId: string;
-  requesterSessionId?: string | undefined;
-  requesterPaneId?: string | undefined;
+  requesterSessionId: string;
+  requesterPaneId: string;
+  nowMs: number;
+}
+
+export interface DeliverOutboundWakeInput {
+  waitId: string;
+  requesterSessionId: string;
+  requesterPaneId: string;
   nowMs: number;
 }
 
@@ -124,6 +131,14 @@ export class OutboundWaitOwnershipError extends Error {
   }
 }
 
+export class OutboundWaitRegistrationConflictError extends Error {
+  readonly code = "wait.identity_conflict";
+  constructor(readonly waitId: string) {
+    super(`outbound wait ${waitId}: identity conflict`);
+    this.name = "OutboundWaitRegistrationConflictError";
+  }
+}
+
 export class OutboundWaitTargetMismatchError extends Error {
   readonly code = "wait.target_mismatch";
   constructor(readonly waitId: string, readonly monitorId: string) {
@@ -132,8 +147,8 @@ export class OutboundWaitTargetMismatchError extends Error {
   }
 }
 
-function requireId(value: string, field: string): void {
-  if (value.length === 0) throw new Error(`outbound wait: ${field} is required`);
+function requireId(value: string | undefined, field: string): void {
+  if (value === undefined || value.length === 0) throw new Error(`outbound wait: ${field} is required`);
 }
 
 function asWait(row: WaitRow): OutboundWait {
@@ -257,9 +272,11 @@ export function registerOutboundWait(
         existing.requester_session_id !== input.requesterSessionId ||
         existing.requester_pane_id !== input.requesterPaneId ||
         existing.target_session_id !== input.targetSessionId ||
-        existing.target_pane_id !== input.targetPaneId
+        existing.target_pane_id !== input.targetPaneId ||
+        existing.related_message_id !== (input.relatedMessageId ?? null) ||
+        existing.expires_at_ms !== (input.expiresAtMs ?? null)
       ) {
-        throw new Error(`outbound wait ${input.waitId}: identity conflict`);
+        throw new OutboundWaitRegistrationConflictError(input.waitId);
       }
       result = { wait: asWait(existing), duplicate: true };
       return;
@@ -301,21 +318,21 @@ export function armOutboundWait(
 ): WaitMutationResult {
   requireId(input.waitId, "waitId");
   requireId(input.monitorId, "monitorId");
+  requireId(input.requesterSessionId, "requesterSessionId");
+  requireId(input.requesterPaneId, "requesterPaneId");
 
   let result: WaitMutationResult | undefined;
   let targetMismatch = false;
   let ownershipError: OutboundWaitOwnershipError | undefined;
   const tx = db.raw.transaction(() => {
     const row = requireWait(db, input.waitId);
-    if (input.requesterSessionId !== undefined && input.requesterPaneId !== undefined) {
-      try {
-        assertOwner(row, input.requesterSessionId, input.requesterPaneId);
-      } catch (err) {
-        if (!(err instanceof OutboundWaitOwnershipError)) throw err;
-        journalOwnershipFailure(db, row, input.requesterSessionId, input.requesterPaneId, "arm", input.nowMs);
-        ownershipError = err;
-        return;
-      }
+    try {
+      assertOwner(row, input.requesterSessionId, input.requesterPaneId);
+    } catch (err) {
+      if (!(err instanceof OutboundWaitOwnershipError)) throw err;
+      journalOwnershipFailure(db, row, input.requesterSessionId, input.requesterPaneId, "arm", input.nowMs);
+      ownershipError = err;
+      return;
     }
     if (row.state !== "unarmed") {
       result = { wait: asWait(row), duplicate: true };
@@ -484,12 +501,24 @@ export function replayOutboundWakes(db: Db, nowMs: number): number {
 
 export function deliverOutboundWake(
   db: Db,
-  waitId: string,
-  nowMs: number,
+  input: DeliverOutboundWakeInput,
 ): WakeDeliveryResult {
+  requireId(input.waitId, "waitId");
+  requireId(input.requesterSessionId, "requesterSessionId");
+  requireId(input.requesterPaneId, "requesterPaneId");
+
   let result: WakeDeliveryResult | undefined;
+  let ownershipError: OutboundWaitOwnershipError | undefined;
   const tx = db.raw.transaction(() => {
-    const row = requireWait(db, waitId);
+    const row = requireWait(db, input.waitId);
+    try {
+      assertOwner(row, input.requesterSessionId, input.requesterPaneId);
+    } catch (err) {
+      if (!(err instanceof OutboundWaitOwnershipError)) throw err;
+      journalOwnershipFailure(db, row, input.requesterSessionId, input.requesterPaneId, "deliver", input.nowMs);
+      ownershipError = err;
+      return;
+    }
     if (row.state !== "terminal-unconsumed" || row.wake_delivered_at_ms !== null) {
       result = { wait: asWait(row), delivered: false, duplicate: row.wake_delivered_at_ms !== null };
       return;
@@ -500,17 +529,18 @@ export function deliverOutboundWake(
             SET wake_delivered_at_ms = ?, updated_at_ms = ?
           WHERE id = ? AND state = 'terminal-unconsumed' AND wake_delivered_at_ms IS NULL`,
       )
-      .run(nowMs, nowMs, waitId);
-    const delivered = requireWait(db, waitId);
+      .run(input.nowMs, input.nowMs, input.waitId);
+    const delivered = requireWait(db, input.waitId);
     journalWait(db, "wait.wake.delivered", delivered, {
       monitor_id: delivered.monitor_id,
-      delivery_timestamp_ms: nowMs,
+      delivery_timestamp_ms: input.nowMs,
       duplicate: false,
-    }, nowMs);
+    }, input.nowMs);
     result = { wait: asWait(delivered), delivered: true, duplicate: false };
   });
   tx.immediate();
-  if (!result) throw new Error(`outbound wait ${waitId}: delivery produced no result`);
+  if (ownershipError) throw ownershipError;
+  if (!result) throw new Error(`outbound wait ${input.waitId}: delivery produced no result`);
   return result;
 }
 
@@ -518,6 +548,10 @@ export function consumeOutboundWake(
   db: Db,
   input: ConsumeOutboundWakeInput,
 ): WakeConsumptionResult {
+  requireId(input.waitId, "waitId");
+  requireId(input.requesterSessionId, "requesterSessionId");
+  requireId(input.requesterPaneId, "requesterPaneId");
+
   let result: WakeConsumptionResult | undefined;
   let ownershipError: OutboundWaitOwnershipError | undefined;
   const tx = db.raw.transaction(() => {
@@ -537,7 +571,7 @@ export function consumeOutboundWake(
       result = { wait: asWait(row), consumed: false, duplicate: true };
       return;
     }
-    if (row.state !== "terminal-unconsumed") {
+    if (row.state !== "terminal-unconsumed" || row.wake_delivered_at_ms === null) {
       result = { wait: asWait(row), consumed: false, duplicate: false };
       return;
     }
