@@ -7,11 +7,15 @@
  * subcommands, and via the picker delegation branch under V2.
  */
 import type { Db } from "./db/connection.ts";
+import { insertEnvelope } from "./db/journal.ts";
 import { ackMessage } from "./domains/messages/ack.ts";
 import { listMessages } from "./domains/messages/list.ts";
+import { MessageError } from "./domains/messages/errors.ts";
+import { replyMessage } from "./domains/messages/reply.ts";
 import { sendMessage } from "./domains/messages/send.ts";
 import { computeUnread } from "./domains/messages/reconcile-unread.ts";
 import { messageStatus } from "./domains/messages/status.ts";
+import { captureRuntimeContext } from "./domains/identity/runtime-context.ts";
 
 interface Args {
   positional: string[];
@@ -56,6 +60,24 @@ function fail(json: boolean, code: string, message: string, exitCode: number, de
   return exitCode;
 }
 
+export type LiveTmuxRequester =
+  | { ok: true; sessionId: string; paneId: string }
+  | { ok: false; code: "XTMUX_NOT_IN_TMUX" | "XTMUX_PANE_UNRESOLVED"; message: string; detail: Record<string, string> };
+
+export function liveTmuxRequester(): LiveTmuxRequester {
+  const result = captureRuntimeContext();
+  if (!result.ok) return { ok: false, ...result.error };
+  if (result.origin.tmux_pane_id !== process.env.TMUX_PANE) {
+    return {
+      ok: false,
+      code: "XTMUX_PANE_UNRESOLVED",
+      message: `xtmux context resolved a different pane than TMUX_PANE ${process.env.TMUX_PANE ?? ""}`,
+      detail: { pane: process.env.TMUX_PANE ?? "", resolved: result.origin.tmux_pane_id },
+    };
+  }
+  return { ok: true, sessionId: result.origin.tmux_session_id, paneId: result.origin.tmux_pane_id };
+}
+
 function identityKind(id: string, paneId?: string | null): "session" | "pane" | "name" | "unknown" {
   if (paneId || id.startsWith("%")) return "pane";
   if (id.startsWith("$")) return "session";
@@ -96,6 +118,7 @@ export interface MessageSendArgs {
   bead?: string;
   text: string;
   messageKey?: string;
+  replyTo?: string;
 }
 
 /**
@@ -110,7 +133,8 @@ export function cliMessageSend(db: Db, argv: string[]): number {
   const to = String(flags.get("to") ?? "");
   const from = String(flags.get("from") ?? "");
   const text = String(flags.get("text") ?? "");
-  if (!to || !from || !text) return fail(json, "XTMUX_INVALID_ARGUMENT", "message-send: --to, --from, and --text are required", 2);
+  const replyTo = flags.get("reply-to") as string | undefined;
+  if (!to || !text || (!from && !replyTo)) return fail(json, "XTMUX_INVALID_ARGUMENT", "message-send: --to, --from, and --text are required unless --reply-to supplies the live requester", 2);
   const messageKey =
     (flags.get("message-key") as string | undefined) ??
     (flags.get("id") as string | undefined) ??
@@ -120,34 +144,95 @@ export function cliMessageSend(db: Db, argv: string[]): number {
   if (expectsReply === null) return fail(json, "XTMUX_INVALID_ARGUMENT", "message-send: --expects-reply must be true or false", 2);
   const senderPaneId = (flags.get("from-pane") as string | undefined) ?? null;
   const targetPaneId = (flags.get("to-pane") as string | undefined) ?? null;
-  const result = sendMessage(db, {
-    messageKey,
-    senderId: from,
-    senderPaneId: senderPaneId ?? undefined,
-    recipientId: to,
-    targetPaneId: targetPaneId ?? undefined,
-    beadId: bead || undefined,
-    summary: text,
-    expectsReply,
-  });
+  let result;
+  let responseSenderId = from;
+  let responseSenderPaneId = senderPaneId;
+  if (replyTo) {
+    const requester = liveTmuxRequester();
+    if (!requester.ok) return fail(json, requester.code, requester.message, 4, requester.detail);
+    const target = db.raw.query<{
+      id: number;
+      sender_id: string;
+      sender_pane_id: string | null;
+      recipient_id: string;
+      target_pane_id: string | null;
+    }, [string]>(
+      "SELECT id, sender_id, sender_pane_id, recipient_id, target_pane_id FROM messages WHERE message_key = ?",
+    ).get(replyTo);
+    if (!target) return fail(json, "XTMUX_MESSAGE_NOT_FOUND", "message-send: reply target was not found", 5, { replyToMessageKey: replyTo });
+    if (requester.sessionId !== target.recipient_id || (from && from !== requester.sessionId)) {
+      return fail(json, "XTMUX_WRONG_RECIPIENT", "message-send: live tmux requester is not original recipient", 4, {
+        replyToMessageKey: replyTo,
+      });
+    }
+    if (target.target_pane_id !== null && requester.paneId !== target.target_pane_id) {
+      return fail(json, "XTMUX_WRONG_PANE", "message-send: live tmux pane is not original target pane", 4, {
+        replyToMessageKey: replyTo,
+      });
+    }
+    if (senderPaneId !== null && senderPaneId !== requester.paneId) {
+      return fail(json, "XTMUX_WRONG_PANE", "message-send: --from-pane does not match live tmux pane", 4, {
+        replyToMessageKey: replyTo,
+      });
+    }
+    if (to !== target.sender_id || targetPaneId !== target.sender_pane_id) {
+      return fail(json, "XTMUX_ENDPOINT_OVERRIDE", "message-send: reply endpoints must reverse original message", 4, {
+        replyToMessageKey: replyTo,
+      });
+    }
+    if (senderPaneId !== null && senderPaneId !== target.target_pane_id) {
+      return fail(json, "XTMUX_ENDPOINT_OVERRIDE", "message-send: reply sender pane must reverse original target pane", 4, {
+        replyToMessageKey: replyTo,
+      });
+    }
+    if (expectsReply) return fail(json, "XTMUX_INVALID_CORRELATION", "message-send: correlated reply cannot expect another reply", 4, { replyToMessageKey: replyTo });
+    responseSenderId = requester.sessionId;
+    responseSenderPaneId = target.target_pane_id === null ? null : requester.paneId;
+    try {
+      result = sendMessage(db, {
+        messageKey,
+        senderId: responseSenderId,
+        senderPaneId: responseSenderPaneId ?? undefined,
+        recipientId: target.sender_id,
+        targetPaneId: target.sender_pane_id ?? undefined,
+        beadId: bead || undefined,
+        summary: text,
+        expectsReply: false,
+        replyToMessageId: target.id,
+      });
+    } catch (error) {
+      if (!(error instanceof MessageError)) throw error;
+      return fail(json, error.code, error.message, 4, error.detail);
+    }
+  } else {
+    result = sendMessage(db, {
+      messageKey,
+      senderId: from,
+      senderPaneId: senderPaneId ?? undefined,
+      recipientId: to,
+      targetPaneId: targetPaneId ?? undefined,
+      beadId: bead || undefined,
+      summary: text,
+      expectsReply,
+    });
+  }
   if (json) {
-    const createdAtMs = db.raw.query<{ created_at_ms: number }, [string]>("SELECT created_at_ms FROM messages WHERE message_key = ?").get(messageKey)?.created_at_ms ?? null;
     process.stdout.write(JSON.stringify({
       messageKey,
       messageId: result.messageId,
       duplicate: result.duplicate,
-      senderId: from,
-      senderPaneId,
-      senderKind: identityKind(from, senderPaneId),
+      senderId: responseSenderId,
+      senderPaneId: responseSenderPaneId,
+      senderKind: identityKind(responseSenderId, responseSenderPaneId),
       recipientId: to,
       targetPaneId,
       recipientKind: identityKind(to, targetPaneId),
       beadId: bead || null,
-      expectsReply,
-      createdAtMs,
+      expectsReply: replyTo ? false : expectsReply,
+      createdAtMs: result.createdAtMs,
     }) + "\n");
   } else {
-    process.stdout.write(`message\t${messageKey}\t${from}\t${to}\t${bead}\t${text}\n`);
+    process.stdout.write(`message\t${messageKey}\t${responseSenderId}\t${to}\t${bead}\t${text}\n`);
   }
   return 0;
 }
@@ -243,6 +328,93 @@ export function cliUnreadCount(db: Db, argv: string[]): number {
   const paneFlag = flags.get("pane");
   const paneId = typeof paneFlag === "string" && paneFlag ? paneFlag : undefined;
   process.stdout.write(JSON.stringify(computeUnread(db, recipientId, paneId)) + "\n");
+  return 0;
+}
+
+export function cliMessageReply(db: Db, argv: string[]): number {
+  const { flags } = parseArgs(argv);
+  const json = flags.get("json") === true;
+  const replyToMessageKey = String(flags.get("in-reply-to") ?? "");
+  const text = String(flags.get("text") ?? "");
+  const messageKey = flags.get("message-key") as string | undefined;
+  if (!replyToMessageKey || !text) {
+    return fail(json, "XTMUX_INVALID_ARGUMENT", "message-reply: --in-reply-to and --text are required", 2);
+  }
+  const requester = liveTmuxRequester();
+  if (!requester.ok) return fail(json, requester.code, requester.message, 4, requester.detail);
+  const target = db.raw.query<{
+    recipient_id: string;
+    target_pane_id: string | null;
+  }, [string]>("SELECT recipient_id, target_pane_id FROM messages WHERE message_key = ?").get(replyToMessageKey);
+  if (!target) return fail(json, "XTMUX_MESSAGE_NOT_FOUND", "message-reply: reply target was not found", 5, { replyToMessageKey });
+  if (requester.sessionId !== target.recipient_id) {
+    return fail(json, "XTMUX_WRONG_RECIPIENT", "message-reply: live tmux requester is not original recipient", 4, { replyToMessageKey });
+  }
+  if (target.target_pane_id !== null && requester.paneId !== target.target_pane_id) {
+    return fail(json, "XTMUX_WRONG_PANE", "message-reply: live tmux pane is not original target pane", 4, { replyToMessageKey });
+  }
+  try {
+    const result = replyMessage(db, {
+      messageKey,
+      replyToMessageKey,
+      senderId: requester.sessionId,
+      senderPaneId: target.target_pane_id === null ? undefined : requester.paneId,
+      summary: text,
+    });
+    if (json) process.stdout.write(JSON.stringify(result) + "\n");
+    else process.stdout.write(`reply\t${result.messageKey}\t${result.replyToMessageKey}\t${result.fulfilled}\n`);
+    return 0;
+  } catch (error) {
+    if (!(error instanceof MessageError)) throw error;
+    return fail(json, error.code, error.message, 4, error.detail);
+  }
+}
+
+export function cliMessageCancel(db: Db, argv: string[]): number {
+  const { flags } = parseArgs(argv);
+  const json = flags.get("json") === true;
+  const messageKey = String(flags.get("message-key") ?? "");
+  if (!messageKey) return fail(json, "XTMUX_INVALID_ARGUMENT", "message-cancel: --message-key is required", 2);
+  const requester = liveTmuxRequester();
+  if (!requester.ok) return fail(json, requester.code, requester.message, 4, requester.detail);
+  const row = db.raw.query<{
+    id: number;
+    sender_id: string;
+    sender_pane_id: string | null;
+    fulfilled_at_ms: number | null;
+    cancelled_at_ms: number | null;
+  }, [string]>(
+    "SELECT id, sender_id, sender_pane_id, fulfilled_at_ms, cancelled_at_ms FROM messages WHERE message_key = ?",
+  ).get(messageKey);
+  if (!row) return fail(json, "XTMUX_MESSAGE_NOT_FOUND", "message-cancel: message was not found", 5, { messageKey });
+  if (requester.sessionId !== row.sender_id) {
+    return fail(json, "XTMUX_WRONG_RECIPIENT", "message-cancel: live tmux requester is not message owner", 4, { messageKey });
+  }
+  if (row.sender_pane_id !== null && requester.paneId !== row.sender_pane_id) {
+    return fail(json, "XTMUX_WRONG_PANE", "message-cancel: live tmux pane is not message owner pane", 4, { messageKey });
+  }
+  if (row.fulfilled_at_ms !== null) return fail(json, "XTMUX_ALREADY_FULFILLED", "message-cancel: message was already fulfilled", 4, { messageKey });
+  if (row.cancelled_at_ms !== null) {
+    const result = { messageKey, cancelled: false, cancelledAtMs: row.cancelled_at_ms };
+    if (json) process.stdout.write(JSON.stringify(result) + "\n");
+    else process.stdout.write(`cancelled\t${messageKey}\t${row.cancelled_at_ms}\n`);
+    return 0;
+  }
+  const cancelledAtMs = Date.now();
+  db.raw.transaction(() => {
+    db.raw.query("UPDATE messages SET cancelled_at_ms = ?, cancel_reason = ? WHERE id = ? AND cancelled_at_ms IS NULL")
+      .run(cancelledAtMs, "requested", row.id);
+    insertEnvelope(db, {
+      type: "messages.cancelled",
+      domain: "messages",
+      correlationId: messageKey,
+      payload: { message_id: row.id, outcome: "cancelled" },
+      createdAtMs: cancelledAtMs,
+    });
+  }).immediate();
+  const result = { messageKey, cancelled: true, cancelledAtMs };
+  if (json) process.stdout.write(JSON.stringify(result) + "\n");
+  else process.stdout.write(`cancelled\t${messageKey}\t${cancelledAtMs}\n`);
   return 0;
 }
 

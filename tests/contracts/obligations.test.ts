@@ -1,33 +1,56 @@
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
+import { openDb } from "../../src/db/connection.ts";
+import { migrate } from "../../src/db/schema.ts";
+import { sendMessage } from "../../src/domains/messages/send.ts";
 
 const ROOT = join(import.meta.dir, "../..");
 const CLI = join(ROOT, "src/cli.ts");
 
-describe("obligations list (.35)", () => {
-  test("lists only the selected pane without opening the database", () => {
+describe("obligations list ownership", () => {
+  test("requires live pane context and never discloses another pane summary", () => {
     const runtime = mkdtempSync(join(tmpdir(), "xtmux-obligations-"));
-    const dir = join(runtime, "xtmux-reply-obligations");
-    mkdirSync(dir);
-    const marker = (paneId: string, messageKey: string) => JSON.stringify({
-      senderId: "$sender", messageKey, beadId: "work-35", summary: "reply", acceptedAtMs: 1000, paneId,
+    const bin = join(runtime, "bin");
+    const dbPath = join(runtime, "obs.db");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "tmux"), "#!/bin/sh\nprintf '%s\\t@w\\t%s\\t\\t\\t\\t\\n' \"${MOCK_SESSION}\" \"${MOCK_PANE}\"\n");
+    chmodSync(join(bin, "tmux"), 0o755);
+    const db = openDb({ dbPath, mode: "on", busyTimeoutMs: 3000 });
+    migrate(db);
+    sendMessage(db, {
+      messageKey: "private-owner",
+      senderId: "$owner",
+      senderPaneId: "%owner",
+      recipientId: "$worker",
+      targetPaneId: "%worker",
+      summary: "private summary",
+      expectsReply: true,
     });
-    writeFileSync(join(dir, "reply-to-$sender-for-%1_pending"), marker("%1", "mine"));
-    writeFileSync(join(dir, "reply-to-$sender-for-%2_pending"), marker("%2", "other"));
+    db.close();
+    const env = {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      TMUX: "/tmp/private.sock,1,0",
+      TMUX_PANE: "%foreign",
+      MOCK_SESSION: "$foreign",
+      MOCK_PANE: "%foreign",
+      XTMUX_OBS_V2: "1",
+      XTMUX_OBS_DB_PATH: dbPath,
+      XDG_STATE_HOME: join(runtime, "state"),
+    };
     try {
-      const result = spawnSync("bun", [CLI, "obligations", "list", "--pane", "%1"], {
+      const result = spawnSync("bun", [CLI, "obligations", "list", "--pane", "%owner", "--json"], {
         cwd: ROOT,
-        env: { ...process.env, XDG_RUNTIME_DIR: runtime, XTMUX_REPLY_OBLIGATION_TTL_MS: "9999999999999" },
+        env,
         encoding: "utf8",
       });
-      expect(result.status).toBe(0);
-      expect(JSON.parse(result.stdout)).toEqual([{
-        sender: "$sender", beadId: "work-35", messageKey: "mine", summary: "reply",
-        createdAtMs: 1000, expiresAtMs: 10000000000999,
-      }]);
+      expect(result.status).toBe(2);
+      expect(result.stdout).toBe("");
+      expect(JSON.parse(result.stderr)).toMatchObject({ code: "XTMUX_WRONG_PANE" });
+      expect(result.stderr).not.toContain("private summary");
     } finally {
       rmSync(runtime, { recursive: true, force: true });
     }

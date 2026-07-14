@@ -5,7 +5,8 @@ import { migrate } from "./db/schema.ts";
 import { checkHealth } from "./db/health.ts";
 import { DbError } from "./db/errors.ts";
 import { MessageError } from "./domains/messages/errors.ts";
-import { cliMessageAck, cliMessageList, cliMessageSend, cliMessageStatus, cliUnreadCount } from "./cli-messages.ts";
+import { cliMessageAck, cliMessageCancel, cliMessageList, cliMessageReply, cliMessageSend, cliMessageStatus, cliUnreadCount } from "./cli-messages.ts";
+import { cliObligationsList } from "./cli-obligations.ts";
 import { cliLogEmit, cliLogTail, cliLogQuery, cliLogFollow } from "./cli-log.ts";
 import { recordDelivery } from "./domains/deliveries/attempt.ts";
 import type { DeliveryKind } from "./domains/deliveries/attempt.ts";
@@ -15,7 +16,6 @@ import { applyRetention } from "./db/retention.ts";
 import { monitorCommand } from "./commands/monitors.ts";
 import { telemetryCommand } from "./commands/telemetry.ts";
 import { auditCommand } from "./commands/audit.ts";
-import { listObligations } from "../extensions/pi-inbox-reply.ts";
 import { captureRuntimeContext } from "./domains/identity/runtime-context.ts";
 import { capturePane } from "./domains/identity/pane-capture.ts";
 import { createHandoffWithMonitor, markSent, HandoffKeyConflictError } from "./domains/handoffs/lifecycle.ts";
@@ -27,12 +27,14 @@ commands:
   migrate                    apply pending schema migrations
   version [--json]           print schema version
 
-  message-send --to <sid> --from <sid> [--to-pane %N] [--from-pane %N] --text T [--bead ID] [--expects-reply true|false] [--message-key K] [--json]
+  message-send --to <sid> [--from <sid>] [--to-pane %N] [--from-pane %N] --text T [--bead ID] [--expects-reply true|false] [--message-key K] [--reply-to K] [--json]
   message-list --for <sid> [--pane %N] [--from <sid>] [--since <ms>] [--unacked] [--expects-reply] [--json] [--limit N]
+  message-reply --in-reply-to <messageKey> --text T [--message-key K] [--json]
+  message-cancel --message-key <messageKey> [--json]
   message-ack <message_id> --by <sid> [--json]
   message-status <message_key>        print JSON receipt state (V2 only)
   unread-count --for <sid> [--pane %N] print JSON unread summary; --pane scopes to that pane (xtmux-3xs.28)
-  obligations list [--pane %N] [--json] print active reply obligations; JSON mode requires a pane
+  obligations list [--pane %N] [--json] print active reply obligations; live pane required
   log-tail [N] [--json]             print NDJSON or one JSON event array
   log-query [filters] [--json]      query NDJSON or one JSON event array
   log-follow --after-id <n>         stream committed journal items (NDJSON)
@@ -148,14 +150,13 @@ async function main(argv: string[]): Promise<number> {
           process.stderr.write(json ? JSON.stringify({ code: "XTMUX_INVALID_ARGUMENT", message: "usage: xtmux-obs obligations list [--pane %N] [--json]", detail: {} }) + "\n" : "usage: xtmux-obs obligations list [--pane %N]\n");
           return 2;
         }
-        const paneFlag = argv.indexOf("--pane", 4);
-        const paneId = paneFlag >= 0 ? argv[paneFlag + 1] ?? "" : process.env.TMUX ? process.env.TMUX_PANE ?? "" : "";
-        if (json && !paneId) {
-          process.stderr.write(JSON.stringify({ code: "XTMUX_PANE_REQUIRED", message: "obligations list --json requires --pane or a tmux pane context", detail: {} }) + "\n");
-          return 2;
+        const db = openDb(cfg);
+        try {
+          migrate(db);
+          return cliObligationsList(db, argv.slice(3));
+        } finally {
+          db.close();
         }
-        process.stdout.write(JSON.stringify(listObligations(paneId)) + "\n");
-        return paneId ? 0 : 2;
       }
       case "obs-migrate": {
         const db = openDb(cfg);
@@ -244,6 +245,8 @@ async function main(argv: string[]): Promise<number> {
       }
       case "message-send":
       case "message-list":
+      case "message-reply":
+      case "message-cancel":
       case "message-ack":
       case "message-status":
       case "unread-count":
@@ -260,6 +263,8 @@ async function main(argv: string[]): Promise<number> {
           switch (cmd) {
             case "message-send":     return cliMessageSend(db, rest);
             case "message-list":     return cliMessageList(db, rest);
+            case "message-reply":    return cliMessageReply(db, rest);
+            case "message-cancel":   return cliMessageCancel(db, rest);
             case "message-ack":      return cliMessageAck(db, rest);
             case "message-status":   return cliMessageStatus(db, rest);
             case "unread-count":     return cliUnreadCount(db, rest);

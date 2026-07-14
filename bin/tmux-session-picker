@@ -819,7 +819,7 @@ json_requested() {
 json_command_state() {
   local command="$1" subcommand="${2:-}"
   case "$command:$subcommand" in
-    message-list:*|message-status:*|unread-count:*|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|safe-send-pointer:*|handoff:*|message-send:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|log:follow|context:--current|pane:capture) REPLY='ready' ;;
+    message-list:*|message-status:*|unread-count:*|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|safe-send-pointer:*|handoff:*|message-send:*|message-reply:*|message-cancel:*|message-ack:*|obligations:list|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|log:follow|context:--current|pane:capture) REPLY='ready' ;;
     *) REPLY='unsupported' ;;
   esac
 }
@@ -1088,7 +1088,7 @@ pane_cli() {
 }
 
 message_send() {
-  local to='' from='' bead='' text='' id='' expects_reply='' json=0 arg
+  local to='' from='' bead='' text='' id='' expects_reply='' reply_to='' json=0 arg
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
@@ -1104,11 +1104,13 @@ message_send() {
       --id=*) id="${arg#--id=}" ;;
       --expects-reply) expects_reply=true ;;
       --expects-reply=*) expects_reply="${arg#--expects-reply=}" ;;
+      --reply-to) [ "$#" -gt 0 ] || return 2; reply_to="$1"; shift ;;
+      --reply-to=*) reply_to="${arg#--reply-to=}" ;;
       --json) json=1 ;;
       *) text+="${text:+ }$arg" ;;
     esac
   done
-  [ -n "$to" ] && [ -n "$text" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'usage: message-send --to <session|pane> [--from x] [--bead id] [--expects-reply[=true|false]] --text <text>' message-send 2; return $?; }
+  [ -n "$to" ] && [ -n "$text" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'usage: message-send --to <session|pane> [--from x] [--bead id] [--reply-to key] [--expects-reply[=true|false]] --text <text>' message-send 2; return $?; }
   case "$expects_reply" in ''|true|false|1|0) ;; *) command_error "$json" XTMUX_INVALID_ARGUMENT 'message-send: --expects-reply must be true or false' message-send 2; return $? ;; esac
   # Canonicalize target to session_id so message-list --for finds it regardless
   # of which alias (name/pane_id/session_id/shorthand) the recipient uses. For
@@ -1155,8 +1157,9 @@ message_send() {
     [ "$json" = 1 ]         && cli_args+=(--json)
     [ -n "$bead" ]          && cli_args+=(--bead "$bead")
     [ -n "$expects_reply" ] && cli_args+=(--expects-reply "$expects_reply")
+    [ -n "$reply_to" ]      && cli_args+=(--reply-to "$reply_to")
     [ -n "$to_pid" ]        && cli_args+=(--to-pane   "$to_pid")
-    [ -n "$from_pid" ] && cli_args+=(--from-pane "$from_pid")
+    [ -z "$reply_to" ] && [ -n "$from_pid" ] && cli_args+=(--from-pane "$from_pid")
     "${OBS_ARGV[@]}" "${cli_args[@]}" || return $?
     tmux display-message -t "$to_sid" "msg from ${from_sid}${bead:+ [$bead]}: ${text:0:80}" 2>/dev/null || true
     return 0
@@ -1173,8 +1176,9 @@ message_send() {
     local shadow_args=(message-send --to "$to_sid" --from "$from_sid" --id "$id" --text "$text")
     [ -n "$bead" ]          && shadow_args+=(--bead "$bead")
     [ -n "$expects_reply" ] && shadow_args+=(--expects-reply "$expects_reply")
+    [ -n "$reply_to" ]      && shadow_args+=(--reply-to "$reply_to")
     [ -n "$to_pid_s" ]      && shadow_args+=(--to-pane   "$to_pid_s")
-    [ -n "$from_pid_s" ] && shadow_args+=(--from-pane "$from_pid_s")
+    [ -z "$reply_to" ] && [ -n "$from_pid_s" ] && shadow_args+=(--from-pane "$from_pid_s")
     obs_call "${shadow_args[@]}"
   fi
   # Delivery signal — best-effort. Bumps a session-scoped counter recipients
@@ -1189,6 +1193,57 @@ message_send() {
   tmux set-option -t "$to_sid" -q @agent_unread_since "$now_epoch" 2>/dev/null || true
   tmux display-message -t "$to_sid" "msg from ${from_sid}${bead:+ [$bead]}: ${text:0:80}" 2>/dev/null || true
   printf 'message\t%s\t%s\t%s\t%s\t%s\n' "$id" "$from_sid" "$to_sid" "$bead" "$text"
+}
+
+message_reply() {
+  local key='' text='' message_key='' json=0 arg
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --in-reply-to) [ "$#" -gt 0 ] || return 2; key="$1"; shift ;;
+      --in-reply-to=*) key="${arg#--in-reply-to=}" ;;
+      --text) [ "$#" -gt 0 ] || return 2; text="$1"; shift ;;
+      --text=*) text="${arg#--text=}" ;;
+      --message-key) [ "$#" -gt 0 ] || return 2; message_key="$1"; shift ;;
+      --message-key=*) message_key="${arg#--message-key=}" ;;
+      --json) json=1 ;;
+      *) command_error "$json" XTMUX_INVALID_ARGUMENT "message-reply: unknown arg: $arg" message-reply 2; return $? ;;
+    esac
+  done
+  [ -n "$key" ] && [ -n "$text" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'usage: message-reply --in-reply-to <messageKey> --text <text> [--message-key K]' message-reply 2; return $?; }
+  obs_v2_mode; [ "$REPLY" = on ] || { command_error "$json" XTMUX_JSON_REQUIRES_V2 'message-reply requires XTMUX_OBS_V2=1' message-reply 2; return $?; }
+  obs_runtime_argv
+  local args=(message-reply --in-reply-to "$key" --text "$text")
+  [ -n "$message_key" ] && args+=(--message-key "$message_key")
+  [ "$json" = 1 ] && args+=(--json)
+  exec "${OBS_ARGV[@]}" "${args[@]}"
+}
+
+message_cancel() {
+  local key='' json=0 arg
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --message-key) [ "$#" -gt 0 ] || return 2; key="$1"; shift ;;
+      --message-key=*) key="${arg#--message-key=}" ;;
+      --json) json=1 ;;
+      *) command_error "$json" XTMUX_INVALID_ARGUMENT "message-cancel: unknown arg: $arg" message-cancel 2; return $? ;;
+    esac
+  done
+  [ -n "$key" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'usage: message-cancel --message-key <messageKey>' message-cancel 2; return $?; }
+  obs_v2_mode; [ "$REPLY" = on ] || { command_error "$json" XTMUX_JSON_REQUIRES_V2 'message-cancel requires XTMUX_OBS_V2=1' message-cancel 2; return $?; }
+  obs_runtime_argv
+  local args=(message-cancel --message-key "$key")
+  [ "$json" = 1 ] && args+=(--json)
+  exec "${OBS_ARGV[@]}" "${args[@]}"
+}
+
+obligations_cli() {
+  local sub="${1:-}"; shift || true
+  [ "$sub" = list ] || { printf 'usage: obligations list [--pane %%N] [--json]\n' >&2; return 2; }
+  obs_v2_mode; [ "$REPLY" = on ] || { command_error "$(json_requested "$@" && printf 1 || printf 0)" XTMUX_JSON_REQUIRES_V2 'obligations list requires XTMUX_OBS_V2=1' obligations 2; return $?; }
+  obs_runtime_argv
+  exec "${OBS_ARGV[@]}" obligations list "$@"
 }
 
 message_ack() {
@@ -1829,8 +1884,15 @@ below works under either. <angled> args are REQUIRED, [bracketed] are optional.
 MESSAGES — short status/escalation between panes.
 Durable task content belongs in beads (`bd`), not here.
   message-send   --to <target> --text <text> [--from <id>] [--bead <id>]
-                 [--expects-reply[=true|false]] [json]
+                 [--reply-to <messageKey>] [--expects-reply[=true|false]] [json]
+                 --reply-to binds sender to live TMUX/TMUX_PANE context.
                  --bead implies --expects-reply=true; opt out explicitly.
+  message-reply  --in-reply-to <messageKey> --text <text> [--message-key K] [json]
+                 binds reply owner to live TMUX/TMUX_PANE context.
+  message-cancel --message-key <messageKey> [json]
+                 cancels only from owning live TMUX/TMUX_PANE context.
+  obligations list [--pane <%id>] [json]
+                 lists only obligations bound to owning live pane.
   message-list   --for <target> [--unacked] [--limit <n>] [--since <dur>] [json]
                  --for is REQUIRED. Without it: exit 2.
   message-ack    <message-id> [--by <target>] [json]
@@ -3790,6 +3852,21 @@ case "${1:-}" in
   message-list)
     shift
     message_list "$@"
+    exit $?
+    ;;
+  message-reply)
+    shift
+    message_reply "$@"
+    exit $?
+    ;;
+  message-cancel)
+    shift
+    message_cancel "$@"
+    exit $?
+    ;;
+  obligations)
+    shift
+    obligations_cli "$@"
     exit $?
     ;;
   message-status)
