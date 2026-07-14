@@ -1225,6 +1225,103 @@ esac
 rm -rf "$jc_state"
 
 echo
+echo "== journal follow: log follow --after-id (xtmux-j46.6) =="
+
+# The stream is a latency optimization over polling, never a second authority and
+# never a second schema. Every line must be exactly what log query would have given
+# for that journal_id, or a consumer has to implement the envelope twice.
+jf_state="$(mktemp -d)"
+jf_db="$jf_state/xtmux/observability.db"
+jf_obs() { env XDG_STATE_HOME="$jf_state" XTMUX_OBS_DB_PATH="$jf_db" "$ROOT/bin/xtmux-obs" "$@" 2>/dev/null; }
+i=1
+while [ "$i" -le 6 ]; do jf_obs log-emit follow.probe seq="$i" >/dev/null; i=$((i+1)); done
+
+# --once drains the committed backlog and exits, so a consumer can catch up without
+# holding a stream open.
+drain="$(jf_obs log-follow --after-id 0 --once --json)"
+n_drain="$(printf '%s\n' "$drain" | grep -c '"journal_id"' || true)"
+jf_total="$(python3 -c "
+import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute('SELECT count(*) FROM event_journal').fetchone()[0])" "$jf_db" 2>/dev/null)"
+{ [ "$n_drain" = "$jf_total" ] && [ -n "$jf_total" ]; } \
+  && ok "follow: --once drains the committed backlog from the cursor and exits" \
+  || nok "follow: --once drains the committed backlog (got $n_drain of $jf_total)"
+
+# NOT a second schema. Byte-identical to the log query item for the same id.
+first_line="$(printf '%s\n' "$drain" | head -1)"
+first_id="$(printf '%s' "$first_line" | python3 -c "import json,sys; print(json.load(sys.stdin)['journal_id'])" 2>/dev/null)"
+page_item="$(jf_obs log-query --after-id "$((first_id - 1))" --limit 1 --json | python3 -c "
+import json,sys; print(json.dumps(json.load(sys.stdin)['items'][0], sort_keys=True))" 2>/dev/null)"
+follow_item="$(printf '%s' "$first_line" | python3 -c "
+import json,sys; print(json.dumps(json.load(sys.stdin), sort_keys=True))" 2>/dev/null)"
+[ "$page_item" = "$follow_item" ] \
+  && ok "follow: a streamed item is identical to the log query item for the same journal_id" \
+  || nok "follow: a streamed item is identical to the log query item (page='$page_item' follow='$follow_item')"
+
+# The whole contract: reconnect at the last id you MATERIALIZED -> no duplicates,
+# no gaps. Emit while disconnected, then resume.
+last_id="$(printf '%s\n' "$drain" | tail -1 | python3 -c "import json,sys; print(json.load(sys.stdin)['journal_id'])" 2>/dev/null)"
+i=1
+while [ "$i" -le 4 ]; do jf_obs log-emit follow.probe gap="$i" >/dev/null; i=$((i+1)); done
+resume="$(jf_obs log-follow --after-id "$last_id" --once --json)"
+resume_ids="$(printf '%s\n' "$resume" | python3 -c "
+import json,sys
+ids=[json.loads(l)['journal_id'] for l in sys.stdin if l.strip()]
+print(len(ids), ids==sorted(ids), len(ids)==len(set(ids)), min(ids) if ids else 0)" 2>/dev/null)"
+set -- $resume_ids
+{ [ "$1" = 4 ] && [ "$2" = True ] && [ "$3" = True ] && [ "$4" = "$((last_id + 1))" ]; } \
+  && ok "follow: reconnect at the last materialized id — zero duplicates, zero gaps" \
+  || nok "follow: reconnect at the last materialized id (got count=$1 asc=$2 uniq=$3 first=$4 want first=$((last_id + 1)))"
+
+# A LIVE follower must see rows committed after it started, and must exit 0 on
+# SIGTERM — being killed is the normal way a follower ends, and a non-zero exit
+# would make every supervisor log a spurious error on every clean shutdown.
+live="$(python3 - "$ROOT" "$jf_state" "$jf_db" <<'PY'
+import json,os,signal,subprocess,sys,time
+root,state,db=sys.argv[1],sys.argv[2],sys.argv[3]
+env={**os.environ,"XDG_STATE_HOME":state,"XTMUX_OBS_DB_PATH":db}
+after=sqlite_max=subprocess.run(["python3","-c",
+  "import sqlite3,sys;print(sqlite3.connect(sys.argv[1]).execute('SELECT MAX(id) FROM event_journal').fetchone()[0])",db],
+  capture_output=True,text=True).stdout.strip()
+p=subprocess.Popen([f"{root}/bin/xtmux-obs","log-follow","--after-id",after,"--interval","60","--json"],
+                   stdout=subprocess.PIPE,text=True,env=env)
+time.sleep(0.6)
+for k in range(3):
+    subprocess.run([f"{root}/bin/xtmux-obs","log-emit","follow.live",f"n={k}"],capture_output=True,env=env)
+time.sleep(1.2)
+p.send_signal(signal.SIGTERM)
+try: out,_=p.communicate(timeout=10)
+except subprocess.TimeoutExpired: p.kill(); print("HANG 0 0"); sys.exit()
+ids=[json.loads(l)["journal_id"] for l in out.splitlines() if l.strip()]
+print(p.returncode, len(ids), int(ids==sorted(ids) and len(ids)==len(set(ids))))
+PY
+)"
+set -- $live
+[ "$1" = 0 ] \
+  && ok "follow: SIGTERM exits 0 with the stream flushed" \
+  || nok "follow: SIGTERM exits 0 with the stream flushed (rc=$1)"
+{ [ "$2" -ge 3 ] && [ "$3" = 1 ]; } \
+  && ok "follow: a live follower receives rows committed after it started, once each, in order" \
+  || nok "follow: a live follower receives post-start rows (got $2 rows, ordered/unique=$3)"
+
+# --flag=value is accepted everywhere else in the CLI, so a log command that took
+# only the space form would reject a call the rest of the tool accepts. Assert BOTH
+# forms on both cursor commands: the equals form used to die in the runtime's arg
+# parser while the picker happily forwarded it.
+eqf="$(jf_obs log-follow --after-id=0 --once --json | head -1)"
+eqq="$(jf_obs log-query --after-id=0 --limit 1 --json)"
+{ case "$eqf" in *'"journal_id"'*) true ;; *) false ;; esac \
+  && case "$eqq" in *'"journal_id"'*) true ;; *) false ;; esac; } \
+  && ok "follow/query: --after-id=N is accepted, not just --after-id N" \
+  || nok "follow/query: --after-id=N is accepted (follow='$eqf' query='$eqq')"
+
+# A stream with no cursor cannot resume and would dump unbounded history.
+noc="$(jf_obs log-follow --once --json)"; noc_rc=$?
+{ [ "$noc_rc" -ne 0 ] && [ -z "$noc" ]; } \
+  && ok "follow: refuses to stream without --after-id" \
+  || nok "follow: refuses to stream without --after-id (rc=$noc_rc)"
+rm -rf "$jf_state"
+
+echo
 echo "== rename contract =="
 
 if ! command -v tmux >/dev/null 2>&1; then

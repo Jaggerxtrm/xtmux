@@ -25,6 +25,16 @@ function parseArgs(argv: string[]): Args {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a.startsWith("--")) {
+      // --flag=value, not just --flag value. The picker accepts both forms on
+      // every command it parses itself, so a runtime command that only accepts
+      // the space form silently rejects a call the rest of the CLI takes — which
+      // is exactly what `log follow --after-id=0` did. Split at the FIRST `=`
+      // so a value may contain one.
+      const eq = a.indexOf("=");
+      if (eq > 2) {
+        flags.set(a.slice(2, eq), a.slice(eq + 1));
+        continue;
+      }
       const key = a.slice(2);
       const next = argv[i + 1];
       if (next !== undefined && !next.startsWith("--")) {
@@ -198,6 +208,67 @@ export function cliLogEmit(db: Db, argv: string[]): number {
     default:
       emitEvent(db, { type, fields });
       return 0;
+  }
+}
+
+/**
+ * `log follow --after-id N` — the committed-event stream (docs/xtmux-gaps.md §6.4).
+ *
+ * Deliberately NOT a second event schema: every line is a journalPage() item, so a
+ * consumer can switch between polling `log query --after-id` and following without
+ * re-implementing the envelope. The stream is a latency optimization over polling,
+ * never a separate authority.
+ *
+ * SQLite has no server-side notify, so this polls. That is fine — the contract is
+ * "no duplicates, no gaps", not "sub-millisecond". The cursor is what guarantees
+ * it: on reconnect the consumer resumes from the last journal_id it MATERIALIZED,
+ * so a crash mid-line replays that row rather than skipping it.
+ */
+export async function cliLogFollow(db: Db, argv: string[]): Promise<number> {
+  const { flags } = parseArgs(argv);
+  const afterRaw = flags.has("after-id") ? Number(flags.get("after-id")) : NaN;
+  if (!Number.isInteger(afterRaw) || afterRaw < 0) {
+    process.stderr.write(JSON.stringify({
+      code: "XTMUX_INVALID_ARGUMENT",
+      message: "log follow requires --after-id <n>: a stream with no cursor would dump unbounded history and could not resume",
+      detail: { after_id: String(flags.get("after-id") ?? "") },
+    }) + "\n");
+    return 2;
+  }
+  const intervalMs = Math.max(50, Math.min(Number(flags.get("interval") ?? 250) || 250, 10_000));
+  const once = flags.get("once") === true;
+
+  let cursor = afterRaw;
+  let running = true;
+  // Exit 0 on a signal, with whatever we already wrote flushed. A follower is
+  // meant to be killed — treating the normal way it ends as a failure would make
+  // every supervisor log a spurious error on every shutdown.
+  const stop = (): void => { running = false; };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+
+  try {
+    while (running) {
+      const result = journalPage(db, { afterId: cursor, limit: 500 });
+      if (!result.ok) {
+        process.stderr.write(JSON.stringify(result.error) + "\n");
+        return 2;
+      }
+      for (const item of result.page.items) {
+        process.stdout.write(JSON.stringify(item) + "\n");
+        // Advance only AFTER the row is written: if we die between these two
+        // statements the consumer replays one row it has already seen, which its
+        // event_key dedupe absorbs. Advancing first would silently drop it.
+        cursor = item.journal_id;
+      }
+      if (once && !result.page.has_more) return 0;
+      if (result.page.has_more) continue; // drain the backlog before sleeping
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+    return 0;
+  } finally {
+    process.off("SIGINT", stop);
+    process.off("SIGTERM", stop);
   }
 }
 
