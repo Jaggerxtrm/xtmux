@@ -819,7 +819,7 @@ json_requested() {
 json_command_state() {
   local command="$1" subcommand="${2:-}"
   case "$command:$subcommand" in
-    message-list:*|message-status:*|unread-count:*|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|safe-send-pointer:*|handoff:*|message-send:*|message-reply:*|message-cancel:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|log:follow|context:--current|pane:capture|bridge:--stdio) REPLY='ready' ;;
+    message-list:*|message-status:*|unread-count:*|obligations:list|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|safe-send-pointer:*|handoff:*|message-send:*|message-reply:*|message-cancel:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|log:follow|context:--current|pane:capture|bridge:--stdio) REPLY='ready' ;;
     *) REPLY='unsupported' ;;
   esac
 }
@@ -1933,6 +1933,7 @@ Durable task content belongs in beads (`bd`), not here.
   message-status <message-key> [--json] (add --json for correlated reply state)
   unread-count   --for <recipient> [--pane <%id>] [json]
                  --for is REQUIRED. --pane narrows to one pane's inbox.
+  obligations list [--pane <%id>] [json]   active reply obligations owned by this live pane.
 
   json output:
     message        messageKey, senderId, senderPaneId, senderKind, recipientId,
@@ -1951,6 +1952,8 @@ Durable task content belongs in beads (`bd`), not here.
     message-status --json adds replyStatus, fulfilledAtMs,
                    fulfilledByMessageKey, correlatedReply
     unread-count   recipientId, unreadCount, oldestUnackedAtMs
+    obligations    messageKey, messageId, senderId, senderPaneId, recipientId,
+                   targetPaneId, summary, createdAtMs, acked, ackedAtMs, replyStatus
 
     TRAP: the message body is `summary` and its id is `messageKey`.
     There is no `text` field and no `id` field — reading those yields null.
@@ -1960,9 +1963,10 @@ Durable task content belongs in beads (`bd`), not here.
     which silently sends or reads under the WRONG identity.
 
 MONITORS — never prompt a pane that is working; wait for it instead.
-  wait-agent    <target> [--wait-for-transition] [--timeout <dur>]
+  wait-agent    <target> [--wait-for-transition] [--consume] [--timeout <dur>]
                 [--interval <dur>] [json]        blocks until the pane leaves
-                                                 working/running/busy/thinking
+                                                 working/running/busy/thinking;
+                                                 --consume claims its wake once
   monitor-agent <target> [--wait-for-transition] [--timeout <dur>]
                 [--interval <dur>] [json]        same, but registered + background
   monitor-list  [json]
@@ -3851,6 +3855,13 @@ case "${1:-}" in
     shift
     toggle_list_mode
     exit 0
+    ;;
+  obligations)
+    shift
+    obs_v2_mode
+    [ "$REPLY" = on ] || { printf 'obligations: requires XTMUX_OBS_V2=1\n' >&2; exit 2; }
+    obs_runtime_argv
+    exec "${OBS_ARGV[@]}" obligations "$@"
     ;;
   wait-agent)
     shift

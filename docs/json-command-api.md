@@ -83,6 +83,7 @@ Categories are closed: **agent-json** gains/retains structured output for agents
 | `picker:message-list` | agent-json | existing `--json` array retained and completed additively | .2 |
 | `picker:message-status` | agent-json | existing `MessageStatus` object retained | .2 |
 | `picker:unread-count` | agent-json | existing `UnreadStats` object retained | .2 |
+| `picker:obligations` | agent-json | forwards `list` to the SQLite backend; live requester ownership remains mandatory | 3ua.5.1 |
 | `picker:message-ack` | agent-json | TSV mutation result → ack object; wrong-recipient remains no-op | .2 |
 | `picker:telemetry` | guarded-admin | byte-transparent arbitrary-command proxy; explicit exception with no JSON mode | — |
 | `picker:border-label` | interactive-only | fzf label text | — |

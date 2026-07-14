@@ -6,6 +6,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export interface RetentionConfig {
   messageDays: number;
   replyRetentionDays?: number;
+  waitDays: number;
   agentStateDays: number;
   turnDays: number;
   telemetryDays: number;
@@ -17,6 +18,7 @@ export interface RetentionConfig {
 const DEFAULTS: RetentionConfig = {
   messageDays: 30,
   replyRetentionDays: 30,
+  waitDays: 30,
   agentStateDays: 14,
   turnDays: 60,
   telemetryDays: 30,
@@ -43,6 +45,7 @@ export function loadRetentionConfig(): RetentionConfig {
   return {
     messageDays:     parseIntEnv("XTMUX_OBS_MESSAGE_RETENTION_DAYS", DEFAULTS.messageDays),
     replyRetentionDays: parseIntEnv("XTMUX_OBS_REPLY_RETENTION_DAYS", DEFAULTS.replyRetentionDays ?? DEFAULTS.messageDays),
+    waitDays:        parseIntEnv("XTMUX_OBS_WAIT_RETENTION_DAYS", DEFAULTS.waitDays),
     agentStateDays:  parseIntEnv("XTMUX_OBS_AGENT_STATE_RETENTION_DAYS", DEFAULTS.agentStateDays),
     turnDays:        parseIntEnv("XTMUX_OBS_TURN_RETENTION_DAYS", DEFAULTS.turnDays),
     telemetryDays:   parseIntEnv("XTMUX_OBS_TELEMETRY_RETENTION_DAYS", DEFAULTS.telemetryDays),
@@ -55,6 +58,7 @@ export function loadRetentionConfig(): RetentionConfig {
 export interface RetentionReport {
   messagesDeleted: number;
   replyMessagesDeleted: number;
+  waitsDeleted: number;
   agentStatesCompacted: number;
   turnsDeleted: number;
   commandRunsDeleted: number;
@@ -78,6 +82,7 @@ export function applyRetention(
   const report: RetentionReport = {
     messagesDeleted: 0,
     replyMessagesDeleted: 0,
+    waitsDeleted: 0,
     agentStatesCompacted: 0,
     turnsDeleted: 0,
     commandRunsDeleted: 0,
@@ -143,6 +148,35 @@ export function applyRetention(
         createdAtMs: t,
       });
     }
+  }
+
+  // Outbound waits: only completed/cancelled/expired rows are terminal cleanup.
+  // Armed and undelivered terminal wakes remain durable regardless of age.
+  {
+    const cutoff = t - cfg.waitDays * DAY_MS;
+    const eligible = db.raw.prepare<{ id: string }, [number]>(
+      `SELECT id FROM outbound_waits
+        WHERE state IN ('consumed', 'cancelled', 'expired')
+          AND updated_at_ms < ?
+        ORDER BY id`,
+    );
+    const remove = db.raw.transaction(() => {
+      const waitIds = eligible.all(cutoff).map((row) => row.id);
+      if (waitIds.length === 0) return;
+      const result = db.raw.prepare<unknown, [number]>(
+        `DELETE FROM outbound_waits
+          WHERE state IN ('consumed', 'cancelled', 'expired')
+            AND updated_at_ms < ?`,
+      ).run(cutoff);
+      report.waitsDeleted = Number((result as { changes?: number }).changes ?? 0);
+      insertEnvelope(db, {
+        type: "wait.pruned",
+        domain: "monitors",
+        payload: { outcome: "pruned", wait_ids: waitIds, count: report.waitsDeleted },
+        createdAtMs: t,
+      });
+    });
+    remove.immediate();
   }
 
   // Agent state: compact by preserving only the latest transition per instance

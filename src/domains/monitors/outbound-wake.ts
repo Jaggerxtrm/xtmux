@@ -217,6 +217,7 @@ function journalWait(
       target_session_id: row.target_session_id,
       target_pane_id: row.target_pane_id,
       ...payload,
+      outcome: type.slice(type.lastIndexOf(".") + 1),
     },
     createdAtMs,
   });
