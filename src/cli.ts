@@ -4,6 +4,7 @@ import { openDb } from "./db/connection.ts";
 import { migrate } from "./db/schema.ts";
 import { checkHealth } from "./db/health.ts";
 import { DbError } from "./db/errors.ts";
+import { MessageError } from "./domains/messages/errors.ts";
 import { cliMessageAck, cliMessageList, cliMessageSend, cliMessageStatus, cliUnreadCount } from "./cli-messages.ts";
 import { cliLogEmit, cliLogTail, cliLogQuery } from "./cli-log.ts";
 import { recordDelivery } from "./domains/deliveries/attempt.ts";
@@ -15,6 +16,7 @@ import { monitorCommand } from "./commands/monitors.ts";
 import { telemetryCommand } from "./commands/telemetry.ts";
 import { auditCommand } from "./commands/audit.ts";
 import { listObligations } from "../extensions/pi-inbox-reply.ts";
+import { captureRuntimeContext } from "./domains/identity/runtime-context.ts";
 
 function usage(): string {
   return `usage: xtmux-obs <command>
@@ -98,6 +100,23 @@ async function main(argv: string[]): Promise<number> {
         } finally {
           db.close();
         }
+      }
+      case "context": {
+        // Read-only by contract: no DB is opened, no agent instance is lazily
+        // created. Specialists calls this on every `sp run` and must never
+        // mutate xtmux state as a side effect of asking who it is.
+        const rest = argv.slice(3);
+        if (!rest.includes("--current")) {
+          process.stderr.write(JSON.stringify({ code: "XTMUX_INVALID_ARGUMENT", message: "usage: xtmux context --current [--json]", detail: {} }) + "\n");
+          return 2;
+        }
+        const result = captureRuntimeContext();
+        if (!result.ok) {
+          process.stderr.write(JSON.stringify(result.error) + "\n");
+          return 1;
+        }
+        process.stdout.write(JSON.stringify(result.origin) + "\n");
+        return 0;
       }
       case "obligations": {
         const json = argv.slice(4).includes("--json");
@@ -238,7 +257,7 @@ async function main(argv: string[]): Promise<number> {
         return 2;
     }
   } catch (err) {
-    if (err instanceof DbError) {
+    if (err instanceof DbError || err instanceof MessageError) {
       process.stderr.write(JSON.stringify(err.toJSON()) + "\n");
       return 3;
     }

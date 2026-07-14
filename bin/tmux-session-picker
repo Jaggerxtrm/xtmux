@@ -728,17 +728,28 @@ obs_runtime_argv() {
   binary="$root/bin/xtmux-obs"
   if [ -x "$binary" ]; then
     OBS_ARGV=("$binary")
-  else
+  elif command -v bun >/dev/null 2>&1; then
     OBS_ARGV=("bun" "run" "$root/src/cli.ts")
+  else
+    # An npm install ships neither: bin/xtmux-obs is not in package.json `files:`
+    # (a compiled 100MB binary per platform is not a tarball), and bun is not a
+    # system dependency of a node user. scripts/xtmux-obs.mjs is the launcher for
+    # exactly that case — it resolves the VENDORED bun from the npm dependency.
+    # Without this rung the entire agent-JSON surface is unavailable on the one
+    # install path most users actually take.
+    OBS_ARGV=("node" "$root/scripts/xtmux-obs.mjs")
   fi
 }
 obs_available() {
   local root binary
   root="${self%/bin/*}"
   binary="$root/bin/xtmux-obs"
-  # Binary path: standalone. Fallback path: requires bun + cli.ts on disk.
+  # Binary path: standalone. Otherwise we need cli.ts plus something to run it:
+  # system bun, or node + the vendored-bun launcher.
   [ -x "$binary" ] && return 0
-  [ -f "$root/src/cli.ts" ] && command -v bun >/dev/null 2>&1
+  [ -f "$root/src/cli.ts" ] || return 1
+  command -v bun >/dev/null 2>&1 && return 0
+  [ -f "$root/scripts/xtmux-obs.mjs" ] && command -v node >/dev/null 2>&1
 }
 
 json_error() {
@@ -762,7 +773,7 @@ json_requested() {
 json_command_state() {
   local command="$1" subcommand="${2:-}"
   case "$command:$subcommand" in
-    message-list:*|message-status:*|unread-count:*|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|safe-send-pointer:*|handoff:*|message-send:*|message-ack:*|worktree-collisions:*|dashboard:*|audit:*|log:tail|log:query) REPLY='ready' ;;
+    message-list:*|message-status:*|unread-count:*|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|safe-send-pointer:*|handoff:*|message-send:*|message-ack:*|worktree-collisions:*|dashboard:*|audit:*|log:tail|log:query|context:--current) REPLY='ready' ;;
     *) REPLY='unsupported' ;;
   esac
 }
@@ -780,10 +791,18 @@ json_request_preflight() {
       return 2
       ;;
   esac
-  obs_v2_mode; local mode="$REPLY"
-  if [ "$mode" != 'on' ]; then
-    json_error XTMUX_JSON_REQUIRES_V2 "$command --json requires the V2 runtime" "$command"
-    return 2
+  # `context` is exempt from the V2-mode gate. XTMUX_OBS_V2 selects the
+  # observability STORE (SQLite vs legacy JSONL); context reads neither — only
+  # live tmux and the host-id file. Gating it on that flag would let an operator
+  # who opted out of V2 silently break Specialists' job->pane binding, with no
+  # error anyone would see until the graph came out empty. It still needs the
+  # runtime binary, because the command is implemented there.
+  if [ "$command" != context ]; then
+    obs_v2_mode; local mode="$REPLY"
+    if [ "$mode" != 'on' ]; then
+      json_error XTMUX_JSON_REQUIRES_V2 "$command --json requires the V2 runtime" "$command"
+      return 2
+    fi
   fi
   if ! obs_available; then
     json_error XTMUX_JSON_BACKEND_UNAVAILABLE "$command --json backend is unavailable" "$command"
@@ -956,6 +975,18 @@ log_cli() {
     query) log_cli_query "$@" ;;
     *) printf 'usage: log <emit|tail|query> ...\n' >&2; return 2 ;;
   esac
+}
+
+# context --current [--json] — the runtime-origin DTO Specialists reads on every
+# `sp run` to record which pane/agent spawned a job (xtrm.runtime-origin.v1).
+# Strict, never best-effort: a swallowed failure here would let the caller bind a
+# job to a pane we never actually verified.
+context_cli() {
+  if ! obs_available; then
+    json_error XTMUX_RUNTIME_UNAVAILABLE "xtmux context requires the V2 runtime (bin/xtmux-obs or bun + src/cli.ts)" "context"
+    return 1
+  fi
+  obs_call_strict context "$@"
 }
 
 message_send() {
@@ -1669,6 +1700,27 @@ DELEGATION — hand work to another pane without fragmenting its prompt.
 
   json output:
     handoff        target, paneId, beadId, promptFile, sent, createdAtMs
+
+IDENTITY — who is this pane, for cross-tool job attribution.
+  context --current [--json]   the runtime origin of the INVOKING pane, as
+                               xtrm.runtime-origin.v1. Read-only: it never
+                               creates an agent instance. Requires a real tmux
+                               context (both TMUX and TMUX_PANE); outside tmux,
+                               or when the pane cannot be verified against the
+                               live server, it exits non-zero with a structured
+                               error and prints nothing on stdout — never a
+                               guessed binding.
+
+  json output:
+    context        schema_version, kind, host_id, tmux_session_id/window_id/
+                   pane_id (stable $N/@N/%N ids, never names or indexes),
+                   agent_instance_id?, bead_id?, parent_session_id?,
+                   captured_at_ms, capture_source, verified
+
+    Specialists calls this on `sp run` to record which pane spawned a job.
+    Absent optional fields are omitted, never emitted as "" — a missing
+    agent_instance_id means pane-level precision, which is honest; an empty
+    string would look like a real binding.
 
 SESSIONS & DASHBOARD — inventory for orchestrators.
   dashboard [sessions-only|expanded] [json]   agent-readable inventory
@@ -3321,6 +3373,11 @@ case "${1:-}" in
   log)
     shift
     log_cli "$@"
+    exit $?
+    ;;
+  context)
+    shift
+    context_cli "$@"
     exit $?
     ;;
   message-send)

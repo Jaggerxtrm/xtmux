@@ -54,6 +54,15 @@ describe("coordination JSON", () => {
       expect(JSON.parse(sent.stdout)).toMatchObject({ messageKey: "m1", duplicate: false, senderId: "$sender", recipientId: "$recipient", targetPaneId: "%recipient", beadId: "b1", expectsReply: true });
       expect(JSON.parse(cli(sendArgs, ctx.env).stdout).duplicate).toBe(true);
 
+      const conflict = cli([...sendArgs.slice(0, -1), "different"], ctx.env);
+      expect(conflict.exitCode).toBe(3);
+      expect(conflict.stdout).toBe("");
+      expect(JSON.parse(conflict.stderr)).toMatchObject({
+        code: "XTMUX_MESSAGE_KEY_CONFLICT",
+        detail: { messageKey: "m1" },
+      });
+      expect(conflict.stderr).not.toContain("MessageError:");
+
       const listed = JSON.parse(cli(["message-list", "--json", "--for", "$recipient"], ctx.env).stdout);
       expect(listed).toEqual([expect.objectContaining({ messageKey: "m1", senderPaneId: "%sender", senderKind: "pane", recipientKind: "pane", ackedAtMs: null, ackedBy: null })]);
 

@@ -5,6 +5,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface RetentionConfig {
   messageDays: number;
+  replyRetentionDays?: number;
   agentStateDays: number;
   turnDays: number;
   telemetryDays: number;
@@ -15,6 +16,7 @@ export interface RetentionConfig {
 
 const DEFAULTS: RetentionConfig = {
   messageDays: 30,
+  replyRetentionDays: 30,
   agentStateDays: 14,
   turnDays: 60,
   telemetryDays: 30,
@@ -40,6 +42,7 @@ function parseNullableIntEnv(name: string, dflt: number | null): number | null {
 export function loadRetentionConfig(): RetentionConfig {
   return {
     messageDays:     parseIntEnv("XTMUX_OBS_MESSAGE_RETENTION_DAYS", DEFAULTS.messageDays),
+    replyRetentionDays: parseIntEnv("XTMUX_OBS_REPLY_RETENTION_DAYS", DEFAULTS.replyRetentionDays ?? DEFAULTS.messageDays),
     agentStateDays:  parseIntEnv("XTMUX_OBS_AGENT_STATE_RETENTION_DAYS", DEFAULTS.agentStateDays),
     turnDays:        parseIntEnv("XTMUX_OBS_TURN_RETENTION_DAYS", DEFAULTS.turnDays),
     telemetryDays:   parseIntEnv("XTMUX_OBS_TELEMETRY_RETENTION_DAYS", DEFAULTS.telemetryDays),
@@ -51,6 +54,7 @@ export function loadRetentionConfig(): RetentionConfig {
 
 export interface RetentionReport {
   messagesDeleted: number;
+  replyMessagesDeleted: number;
   agentStatesCompacted: number;
   turnsDeleted: number;
   commandRunsDeleted: number;
@@ -73,6 +77,7 @@ export function applyRetention(
   const t = now();
   const report: RetentionReport = {
     messagesDeleted: 0,
+    replyMessagesDeleted: 0,
     agentStatesCompacted: 0,
     turnsDeleted: 0,
     commandRunsDeleted: 0,
@@ -81,22 +86,63 @@ export function applyRetention(
     journalPruned: 0,
   };
 
-  // Messages: only delete if acked AND older than window. Unacked always preserved.
+  // Messages: only terminal, acknowledged rows older than window are eligible.
+  // Pending obligations are excluded even when their receipt is acknowledged.
+  // Fulfilled replies and originals are deleted together after both retention
+  // windows and both receipt policies pass.
   {
-    const cutoff = t - cfg.messageDays * DAY_MS;
-    const r = db.raw
-      .prepare<unknown, [number]>(
-        `DELETE FROM messages
-           WHERE id IN (
-             SELECT m.id
-               FROM messages m
-               LEFT JOIN message_receipts r
-                 ON r.message_id = m.id AND r.recipient_id = m.recipient_id
-              WHERE m.created_at_ms < ? AND r.acked_at_ms IS NOT NULL
-           )`,
-      )
-      .run(cutoff);
-    report.messagesDeleted = Number((r as { changes?: number }).changes ?? 0);
+    const messageCutoff = t - cfg.messageDays * DAY_MS;
+    const replyCutoff = t - (cfg.replyRetentionDays ?? cfg.messageDays) * DAY_MS;
+    const eligible = db.raw.prepare<
+      { original_id: number; reply_id: number | null },
+      [number, number]
+    >(
+      `SELECT m.id AS original_id, linked.id AS reply_id
+         FROM messages m
+         LEFT JOIN message_receipts original_receipt
+           ON original_receipt.message_id = m.id
+          AND original_receipt.recipient_id = m.recipient_id
+         LEFT JOIN messages linked ON linked.reply_to_message_id = m.id
+         LEFT JOIN message_receipts reply_receipt
+           ON reply_receipt.message_id = linked.id
+          AND reply_receipt.recipient_id = linked.recipient_id
+        WHERE m.reply_to_message_id IS NULL
+          AND m.created_at_ms < ?
+          AND original_receipt.acked_at_ms IS NOT NULL
+          AND NOT (m.expects_reply = 1
+                   AND m.fulfilled_at_ms IS NULL
+                   AND m.cancelled_at_ms IS NULL)
+          AND (linked.id IS NULL OR
+               (linked.created_at_ms < ? AND reply_receipt.acked_at_ms IS NOT NULL))`,
+    );
+    let rows: Array<{ original_id: number; reply_id: number | null }> = [];
+    const remove = db.raw.transaction(() => {
+      db.raw.exec("PRAGMA defer_foreign_keys = ON");
+      rows = eligible.all(messageCutoff, replyCutoff);
+      const deleteReply = db.raw.prepare<unknown, [number]>("DELETE FROM messages WHERE id = ?");
+      const deleteOriginal = db.raw.prepare<unknown, [number]>("DELETE FROM messages WHERE id = ?");
+      for (const row of rows) {
+        if (row.reply_id !== null) {
+          deleteReply.run(row.reply_id);
+          report.replyMessagesDeleted++;
+          report.messagesDeleted++;
+        }
+        deleteOriginal.run(row.original_id);
+        report.messagesDeleted++;
+      }
+    });
+    remove.immediate();
+    const pairIds = rows
+      .filter((row) => row.reply_id !== null)
+      .map((row) => ({ original_id: row.original_id, reply_id: row.reply_id }));
+    if (pairIds.length > 0) {
+      insertEnvelope(db, {
+        type: "messages.obligation.pruned",
+        domain: "messages",
+        payload: { outcome: "pruned", pairs: pairIds, count: pairIds.length },
+        createdAtMs: t,
+      });
+    }
   }
 
   // Agent state: compact by preserving only the latest transition per instance
