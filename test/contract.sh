@@ -841,6 +841,41 @@ else
     *) ok "context: leaks no environment" ;;
   esac
 
+  # A published npm install ships NEITHER the compiled bin/xtmux-obs (not in
+  # package.json `files:`) NOR a system bun (not a dependency of a node user).
+  # Mirror that layout and strip bun from PATH: the picker must still reach the
+  # V2 runtime through the vendored-bun launcher. Without this the whole
+  # agent-JSON surface — context, message-send, monitors, log query — is dead on
+  # the install path most users actually take, and the failure reads like a
+  # transient backend error rather than a missing runtime. (xtmux-j46.19)
+  pkg="$(mktemp -d)/pkg"
+  mkdir -p "$pkg/bin"
+  cp "$ROOT/bin/tmux-session-picker" "$pkg/bin/"
+  # Mirror package.json `files:` — src/cli.ts imports ../extensions/, which the
+  # tarball does ship. An incomplete mirror would fail for the wrong reason.
+  cp -r "$ROOT/scripts" "$ROOT/src" "$ROOT/extensions" "$pkg/" 2>/dev/null
+  rm -f "$pkg/bin/xtmux-obs"
+  # npm installs the `bun` dependency (package.json dependencies.bun) alongside
+  # the package — that vendored copy is what scripts/xtmux-obs.mjs resolves. The
+  # mirror must include it or the test proves nothing about a real install.
+  [ -d "$ROOT/node_modules" ] && ln -s "$ROOT/node_modules" "$pkg/node_modules" 2>/dev/null
+  bunless="$(printf '%s' "$PATH" | tr ':' '\n' | grep -v -i 'bun' | paste -sd:)"
+  if [ ! -d "$pkg/node_modules/bun" ]; then
+    printf '  \033[33mskip\033[0m published-layout fallback (no vendored bun: run bun install / npm ci)\n'
+  elif PATH="$bunless" command -v bun >/dev/null 2>&1; then
+    printf '  \033[33mskip\033[0m published-layout fallback (cannot strip bun from PATH)\n'
+  else
+    pub="$(env PATH="$bunless" TMUX="$ctx_tmuxenv" TMUX_PANE="$ctx_pane" \
+      XDG_STATE_HOME="$ctx_state" XTMUX_HOST_ID_FILE="$ctx_hostfile" \
+      "$pkg/bin/tmux-session-picker" context --current --json 2>/dev/null)"
+    case "$pub" in
+      *'"schema_version":"xtrm.runtime-origin.v1"'*)
+        ok "context: answers on a published layout with no system bun (vendored-bun launcher)" ;;
+      *) nok "context: answers on a published layout with no system bun (got '$pub')" ;;
+    esac
+  fi
+  rm -rf "$(dirname "$pkg")"
+
   command tmux -L "$ctx_sock" kill-server >/dev/null 2>&1 || true
 fi
 rm -rf "$ctx_state"
