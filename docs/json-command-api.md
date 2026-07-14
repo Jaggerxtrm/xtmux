@@ -78,6 +78,8 @@ Categories are closed: **agent-json** gains/retains structured output for agents
 | `picker:log follow` | agent-json | NDJSON stream of committed journal items, each identical to a `log query` page item — deliberately NOT a second event schema. V2-only (the cursor is the committed SQLite rowid). Requires `--after-id`: a stream with no cursor cannot resume and would dump unbounded history. SIGINT/SIGTERM exit 0 | j46.6 |
 | `picker:log query` | agent-json | NDJSON → filtered event array; `--after-id <n>` switches to the cursor-paged `xtrm.xtmux.journal-page.v1` envelope (V2-only — the cursor IS the committed SQLite rowid, which the legacy JSONL store does not have). Without `--after-id` the legacy array shape is unchanged | .4 / j46.5 |
 | `picker:message-send` | agent-json | TSV mutation result → message mutation object | .2 |
+| `picker:message-reply` | agent-json | correlated reply mutation object; fulfils only the named message | 3ua.4 |
+| `picker:message-cancel` | agent-json | sender-owned obligation cancellation object | 3ua.4 |
 | `picker:message-list` | agent-json | existing `--json` array retained and completed additively | .2 |
 | `picker:message-status` | agent-json | existing `MessageStatus` object retained | .2 |
 | `picker:unread-count` | agent-json | existing `UnreadStats` object retained | .2 |
@@ -118,10 +120,15 @@ Compiled plumbing remains documented even when it is not exposed as a picker or 
 | `obs:retention` | guarded-admin | destructive maintenance; existing report object | .4 |
 | `obs:shadow-record` | guarded-admin | picker-internal best-effort write | .4 |
 | `obs:message-send` | agent-json | mutation object in JSON mode | .2 |
+| `obs:message-reply` | agent-json | correlated reply mutation object | 3ua.4 |
+| `obs:message-cancel` | agent-json | sender-owned obligation cancellation object | 3ua.4 |
 | `obs:message-list` | agent-json | existing JSON array retained | .2 |
 | `obs:message-ack` | agent-json | ack object in JSON mode | .2 |
 | `obs:message-status` | agent-json | existing object retained | .2 |
 | `obs:unread-count` | agent-json | existing object retained | .2 |
+| `obs:wait-agent` | agent-json | requester-owned durable wait and wake object; timeout remains rc 124 | 3ua.4 |
+| `obs:monitor-agent` | agent-json | monitor plus requester-owned wait registration object | 3ua.4 |
+| `obs:monitor-list` | agent-json | durable monitor and wake state array | 3ua.4 |
 | `obs:log-emit` | guarded-admin | internal event write | .4 |
 | `obs:log-tail` | agent-json | NDJSON → array in JSON mode | .4 |
 | `obs:log-query` | agent-json | NDJSON → array in JSON mode | .4 |

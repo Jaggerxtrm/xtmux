@@ -92,9 +92,11 @@ describe("hostile invocation environments", () => {
       await Bun.sleep(50);
 
       const db = new Database(ctx.dbPath, { readonly: true });
-      const row = db.query<{ state: string }, []>("SELECT state FROM monitors ORDER BY started_at_ms DESC LIMIT 1").get();
+      const row = db.query<{ state: string; owner_pid: number | null; terminal_status: string | null }, []>(
+        "SELECT state, owner_pid, terminal_status FROM monitors ORDER BY started_at_ms DESC LIMIT 1",
+      ).get();
       db.close();
-      expect(row?.state).toBe("unknown");
+      expect(row).toEqual({ state: "unknown", owner_pid: null, terminal_status: null });
     } finally {
       ctx.cleanup();
     }
