@@ -750,6 +750,101 @@ else
 fi
 rm -rf "$id_state"
 
+echo
+echo "== runtime-origin contract: xtmux context --current --json (xtmux-j46.2) =="
+
+# This is the CROSS-REPO interface: xtrm-dev/specialists parses these exact field
+# names and embeds them in immutable forensic events. A rename or a fabricated
+# binding here corrupts another repository's history permanently, so the shape is
+# asserted field-by-field, not just "is it JSON".
+ctx_sock="xtmux-ctx-$$"
+ctx_state="$(mktemp -d)"
+ctx_hostfile="$ctx_state/xtmux/host-id"
+
+if ! command tmux -L "$ctx_sock" -f /dev/null new-session -d -s xtmux-ctx 'sleep 100' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m runtime-origin contract (cannot start isolated tmux server)\n'
+else
+  ctx_pane="$(command tmux -L "$ctx_sock" list-panes -a -F '#{pane_id}' | head -1)"
+  ctx_tmuxenv="$(command tmux -L "$ctx_sock" display-message -p '#{socket_path},0,0')"
+  ctx_run() {
+    env TMUX="$ctx_tmuxenv" TMUX_PANE="$ctx_pane" XDG_STATE_HOME="$ctx_state" \
+      XTMUX_HOST_ID_FILE="$ctx_hostfile" "$PICKER" context --current --json 2>/dev/null
+  }
+  jget() { printf '%s' "$1" | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p"; }
+
+  # Give the pane a full agent identity, the way a live agent session would.
+  env TMUX="$ctx_tmuxenv" TMUX_PANE="$ctx_pane" XDG_STATE_HOME="$ctx_state" \
+    XTMUX_HOST_ID_FILE="$ctx_hostfile" XTMUX_AGENT_BEAD=xtmux-j46.2 \
+    "$AGENT_STATE" idle --new-instance >/dev/null 2>&1
+  ctx_json="$(ctx_run)"
+
+  case "$ctx_json" in
+    *'"schema_version":"xtrm.runtime-origin.v1"'*'"kind":"xtmux.agent_instance"'*'"capture_source":"xtmux-context"'*'"verified":true'*)
+      ok "context: emits xtrm.runtime-origin.v1 envelope" ;;
+    *) nok "context: emits xtrm.runtime-origin.v1 envelope (got '$ctx_json')" ;;
+  esac
+
+  ctx_sid="$(jget "$ctx_json" tmux_session_id)"
+  ctx_wid="$(jget "$ctx_json" tmux_window_id)"
+  ctx_pid_="$(jget "$ctx_json" tmux_pane_id)"
+  want_sid="$(command tmux -L "$ctx_sock" display-message -p -t "$ctx_pane" '#{session_id}')"
+  want_wid="$(command tmux -L "$ctx_sock" display-message -p -t "$ctx_pane" '#{window_id}')"
+  # Identity is tmux's stable ids, never names or indexes: a name is mutable and a
+  # rebound name would silently re-point a job's origin at someone else's pane.
+  { [ "$ctx_sid" = "$want_sid" ] && [ "$ctx_wid" = "$want_wid" ] && [ "$ctx_pid_" = "$ctx_pane" ]; } \
+    && ok "context: ids match the invoking pane and are \$/@/% stable ids" \
+    || nok "context: ids match the invoking pane (got $ctx_sid/$ctx_wid/$ctx_pid_ want $want_sid/$want_wid/$ctx_pane)"
+
+  ctx_inst="$(jget "$ctx_json" agent_instance_id)"
+  ctx_bead="$(jget "$ctx_json" bead_id)"
+  ctx_host="$(jget "$ctx_json" host_id)"
+  { [ -n "$ctx_inst" ] && [ "$ctx_bead" = xtmux-j46.2 ] && [ "$ctx_host" = "$(cat "$ctx_hostfile")" ]; } \
+    && ok "context: carries agent_instance_id, bead_id and the persisted host_id" \
+    || nok "context: carries agent_instance_id, bead_id and the persisted host_id"
+
+  # An unoccupied pane has no instance id. The field must be ABSENT, not "" —
+  # Specialists reads absence as pane-level precision (honest), where an empty
+  # string would look like a real agent binding.
+  command tmux -L "$ctx_sock" set-option -p -t "$ctx_pane" -qu @agent_instance_id 2>/dev/null || true
+  command tmux -L "$ctx_sock" set-option -p -t "$ctx_pane" -q @agent_instance_id "" 2>/dev/null || true
+  bare_json="$(ctx_run)"
+  case "$bare_json" in
+    *'"agent_instance_id":""'*) nok "context: absent instance id is omitted, never empty-string" ;;
+    *'"verified":true'*)        ok "context: absent instance id is omitted, never empty-string" ;;
+    *)                          nok "context: absent instance id is omitted, never empty-string (got '$bare_json')" ;;
+  esac
+
+  # Outside tmux: a structured refusal. Never a guessed pane — a fabricated
+  # origin is worse than none, because the consumer persists it forever.
+  out="$(env -u TMUX -u TMUX_PANE "$PICKER" context --current --json 2>/tmp/ctx-err-$$.json)"; rc=$?
+  err="$(cat /tmp/ctx-err-$$.json 2>/dev/null)"; rm -f /tmp/ctx-err-$$.json
+  { [ "$rc" -ne 0 ] && [ -z "$out" ] && case "$err" in *XTMUX_NOT_IN_TMUX*) true ;; *) false ;; esac; } \
+    && ok "context: outside tmux -> non-zero, empty stdout, structured error" \
+    || nok "context: outside tmux -> non-zero, empty stdout, structured error (rc=$rc out='$out')"
+
+  # TMUX set but the pane is gone: must not fall back to a bystander pane.
+  out="$(env TMUX="$ctx_tmuxenv" TMUX_PANE='%99999' "$PICKER" context --current --json 2>/dev/null)"; rc=$?
+  { [ "$rc" -ne 0 ] && [ -z "$out" ]; } \
+    && ok "context: dead pane -> non-zero, no fabricated ids" \
+    || nok "context: dead pane -> non-zero, no fabricated ids (rc=$rc out='$out')"
+
+  # Read-only by contract: Specialists calls this on every `sp run`. It must not
+  # lazily create an agent instance or write any pane option as a side effect.
+  before="$(command tmux -L "$ctx_sock" show-options -p -t "$ctx_pane" 2>/dev/null)"
+  ctx_run >/dev/null
+  after="$(command tmux -L "$ctx_sock" show-options -p -t "$ctx_pane" 2>/dev/null)"
+  [ "$before" = "$after" ] && ok "context: read-only — writes no pane option" \
+    || nok "context: read-only — writes no pane option"
+
+  case "$ctx_json" in
+    *XDG_STATE_HOME*|*"$ctx_sock"*|*PATH*) nok "context: leaks no environment" ;;
+    *) ok "context: leaks no environment" ;;
+  esac
+
+  command tmux -L "$ctx_sock" kill-server >/dev/null 2>&1 || true
+fi
+rm -rf "$ctx_state"
+
 
 echo
 echo "== rename contract =="
