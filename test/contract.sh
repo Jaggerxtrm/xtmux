@@ -1237,7 +1237,8 @@ else
      ([.sessions[] | select(.name == $a) | .windows[].panes[]] | length == 2) and
      ([.sessions[] | select(.name == $a) | .windows[].panes[] | select(.pane_id == $p and .agent.parent_session_id == $sid)] | length == 1)' >/dev/null \
     && ok "topology: stable IDs and parent session metadata" || nok "topology: stable IDs and parent session metadata"
-  topo_expected="$(tmux list-panes -t "$topo_a" -F '#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_pid}' 2>/dev/null)"
+  # ANSI-C quoting makes tabs real; tmux leaves \t literal inside single-quoted formats.
+  topo_expected="$(tmux list-panes -t "$topo_a" -F $'#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_pid}' 2>/dev/null)"
   topo_geometry_ok=1
   while IFS=$'\t' read -r ep ei ea ew eh el et epid; do
     [ -n "$ep" ] || continue
