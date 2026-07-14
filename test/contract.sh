@@ -1208,6 +1208,54 @@ fi
 
 
 echo
+echo "== topology JSON contract (live tmux) =="
+
+if ! tmux info >/dev/null 2>&1; then
+  printf '  \033[33mskip\033[0m topology tests (no live tmux server)\n'
+elif ! command -v jq >/dev/null 2>&1; then
+  printf '  \033[33mskip\033[0m topology tests (jq missing)\n'
+else
+  topo_a="xtmux-topology-a-$$"
+  topo_b="xtmux-topology-b-$$"
+  tmux kill-session -t "$topo_a" 2>/dev/null || true
+  tmux kill-session -t "$topo_b" 2>/dev/null || true
+  tmux new-session -d -s "$topo_a" -x 100 -y 30 'sleep 100' 2>/dev/null
+  tmux new-session -d -s "$topo_b" -x 90 -y 25 'sleep 100' 2>/dev/null
+  tmux split-window -h -t "$topo_a" 'sleep 100' 2>/dev/null
+  topo_sid="$(tmux display-message -p -t "$topo_a" '#{session_id}' 2>/dev/null)"
+  topo_parent_pane="$(tmux list-panes -t "$topo_a" -F '#{pane_id}' 2>/dev/null | tail -1)"
+  topo_b_pane="$(tmux list-panes -t "$topo_b" -F '#{pane_id}' 2>/dev/null | head -1)"
+  tmux set-option -p -t "$topo_parent_pane" @agent_parent_session "$topo_sid" 2>/dev/null || true
+  tmux set-option -p -t "$topo_parent_pane" @agent_instance_id topology-instance 2>/dev/null || true
+  tmux set-option -p -t "$topo_parent_pane" @agent_state running 2>/dev/null || true
+  topo_json="$(XDG_STATE_HOME="$WORK/topology-state" XTMUX_OBS_V2=0 "$PICKER" topology --json 2>/dev/null)"
+  printf '%s\n' "$topo_json" | jq -e --arg a "$topo_a" --arg b "$topo_b" \
+    '[.sessions[] | select(.name == $a or .name == $b)] | length == 2 and all(.[]; (.windows | length) == 1)' >/dev/null \
+    && ok "topology: host -> sessions -> windows nesting" || nok "topology: host -> sessions -> windows nesting"
+  printf '%s\n' "$topo_json" | jq -e --arg a "$topo_a" --arg p "$topo_parent_pane" --arg sid "$topo_sid" \
+    '(.schema_version == "xtrm.xtmux.topology.v1") and (.host.host_id | length > 0) and
+     ([.sessions[] | select(.name == $a) | .windows[].panes[]] | length == 2) and
+     ([.sessions[] | select(.name == $a) | .windows[].panes[] | select(.pane_id == $p and .agent.parent_session_id == $sid)] | length == 1)' >/dev/null \
+    && ok "topology: stable IDs and parent session metadata" || nok "topology: stable IDs and parent session metadata"
+  # ANSI-C quoting makes tabs real; tmux leaves \t literal inside single-quoted formats.
+  topo_expected="$(tmux list-panes -t "$topo_a" -F $'#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_pid}' 2>/dev/null)"
+  topo_geometry_ok=1
+  while IFS=$'\t' read -r ep ei ea ew eh el et epid; do
+    [ -n "$ep" ] || continue
+    if ! printf '%s\n' "$topo_json" | jq -e --arg p "$ep" --argjson i "${ei:-0}" --argjson a "${ea:-0}" --argjson w "${ew:-0}" --argjson h "${eh:-0}" --argjson l "${el:-0}" --argjson t "${et:-0}" --argjson pid "${epid:-0}" \
+      '[.sessions[].windows[].panes[] | select(.pane_id == $p and .pane_index == $i and .active == ($a == 1) and .width == $w and .height == $h and .left == $l and .top == $t and .pid == $pid)] | length == 1' >/dev/null; then
+      topo_geometry_ok=0
+    fi
+  done <<< "$topo_expected"
+  [ "$topo_geometry_ok" = 1 ] && ok "topology: pane geometry/index/active matches tmux" || nok "topology: pane geometry/index/active matches tmux"
+  printf '%s\n' "$topo_json" | jq -e --arg b "$topo_b_pane" \
+    '[.sessions[].windows[].panes[] | select(.pane_id == $b and ((has("agent") | not) or .agent == null))] | length == 1 and ([.. | objects | keys[]] | any(. == "content" or . == "env" or . == "environment") | not)' >/dev/null \
+    && ok "topology: absent agent metadata and no pane content/env" || nok "topology: absent agent metadata and no pane content/env"
+  tmux kill-session -t "$topo_a" 2>/dev/null || true
+  tmux kill-session -t "$topo_b" 2>/dev/null || true
+fi
+
+
 echo "== specialist sp-* contract =="
 
 if ! tmux info >/dev/null 2>&1; then

@@ -34,6 +34,7 @@ field name here or there and the contract test fails.
 | Monitor | `monitorId`, `target`, `sessionId`, `paneId`, `state`, `startedAtMs`, `updatedAtMs`, `timeoutMs`, `intervalMs`, `terminalStatus`, `terminalAtMs`, `terminalDetail` |
 | Monitor mutation | arm: `monitorId`, `target`, `sessionId`, `paneId`, `state`, `startedAtMs`; kill: `monitorId`, `status` |
 | Session inventory | `{ "mode", "sessions", "panes" }`; rows retain dashboard concepts as camelCase: IDs/names, state, bead/task, repo/branch, dirty/shared-worktree flags, idle age in milliseconds, and path |
+| Topology snapshot | `schema_version`, `generated_at_ms`, `host`, `sessions[]` → `windows[]` → `panes[]`; snake_case is intentional cross-repository contract `xtrm.xtmux.topology.v1`, with stable `$N`/`@N`/`%N` IDs and optional `agent` metadata |
 | Audit finding | `severity`, `kind`, `sessionId`, `sessionName`, `paneId`, `paneIndex`, `path`, `repo`, `detail` |
 | Worktree collision | `path`, `sessionCount`, `paneCount`, `sessionNames` |
 | Event | existing journal keys normalized to `createdAtMs`, `type`, `sessionId`, `paneId`, `beadId`, `correlationId`, and bounded `detail` |
@@ -59,6 +60,7 @@ Categories are closed: **agent-json** gains/retains structured output for agents
 | `picker:safe-send-pointer` | guarded-admin | pane injection; retain dry-run and confirmation guards | .2 |
 | `picker:worktree-collisions` | agent-json | TSV → collision array | .3 |
 | `picker:dashboard` | agent-json | TSV header/rows → session inventory object | .3 |
+| `picker:topology` | agent-json | one bounded `tmux list-panes -a -F` pass → versioned nested topology snapshot; no pane content | j46.3 |
 | `picker:audit` | agent-json | TSV findings → audit finding array | .3 |
 | `picker:context` | agent-json | `context --current --json` → `xtrm.runtime-origin.v1` for the invoking pane; read-only; exempt from the V2-mode gate (reads tmux + host-id file, not the store) | j46.2 |
 | `picker:handoff` | guarded-admin | creates prompt file and may inject pointer; explicit confirmation | .2 |

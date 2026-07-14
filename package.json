@@ -45,6 +45,7 @@
     "extensions/",
     "prompts/",
     "scripts/agent-state.sh",
+    "scripts/xtmux-host-id.sh",
     "scripts/changelog.mjs",
     "scripts/git-pane-status.sh",
     "scripts/install.mjs",
