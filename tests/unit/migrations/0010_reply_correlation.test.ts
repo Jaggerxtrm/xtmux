@@ -82,10 +82,9 @@ describe("migration 0010 reply correlation", () => {
         "SELECT id, parent_message_id FROM agent_turns ORDER BY id",
       ).all();
 
-      db.raw.exec("PRAGMA foreign_keys = OFF");
+      expect(db.raw.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()?.foreign_keys).toBe(1);
       expect(migrate(db).applied).toEqual([10]);
-      db.raw.exec("PRAGMA foreign_keys = ON");
-
+      expect(db.raw.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()?.foreign_keys).toBe(1);
       expect(db.raw.query("PRAGMA foreign_key_check").all()).toEqual([]);
       expect({
         messages: db.raw.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM messages").get()?.n,
