@@ -180,7 +180,9 @@ describe("Claude SQLite auto-monitor hooks", () => {
     expect(payload.reason).toMatch(/rejected.*noncanonical target/i);
     expect(payload.reason).not.toContain("Monitor(command");
     for (const target of hostile) expect(payload.reason).not.toContain(target);
-    run("sh", ["-c", payload.reason], baseEnv());
+    const generatedReason = join(TEST_ROOT, "generated-stop-reason.sh");
+    writeFileSync(generatedReason, payload.reason);
+    run("sh", [generatedReason], baseEnv());
     expect(existsSync(sentinel)).toBe(false);
     expect(JSON.stringify(payload).length).toBeLessThan(1200);
   });
