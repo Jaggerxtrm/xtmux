@@ -5,35 +5,76 @@ All notable changes to this project are documented here.
 ## [Unreleased]
 
 ### Added
+- Add agent-state hook contract for tmux panes ([7dde61a](https://github.com/Jaggerxtrm/xtmux/commit/7dde61a7f3edc18a8c96955aaabcc9bfd9fc3c22))
+- Act-on-preview — approve/interrupt/message panes from the list ([a39c3ba](https://github.com/Jaggerxtrm/xtmux/commit/a39c3ba1295cc8adf1848011ecb049098752ca07))
+- Add tmux-native specialist sp-* awareness ([6364b4e](https://github.com/Jaggerxtrm/xtmux/commit/6364b4e95ecc5fe3ba16688f2f326c72a33ece5c))
+- Recognize interactive role-<name>[-<hex>] session names ([b6b0453](https://github.com/Jaggerxtrm/xtmux/commit/b6b04534ba796c5eb1c77d791d0cae13f1f8acfe))
+- Xtmux multiplexing + agent-state orchestration primitives ([8f4d46b](https://github.com/Jaggerxtrm/xtmux/commit/8f4d46bb70e3a4823f81d3210bb1012c35ade748))
+- Message-send signal, normalization, dead-target error, rotation (xtmux-1hq) ([a0f665f](https://github.com/Jaggerxtrm/xtmux/commit/a0f665f5a945b31971354045bb7652a14549ba57))
+- Phase 2 Bun/TS scaffold + SQLite adapter + migrations (xtmux-3xs.2) ([b6e0ffd](https://github.com/Jaggerxtrm/xtmux/commit/b6e0ffd58200c83fb028b24f3053ca604ca563b0))
+- Phase 3 delegation — V2 message/log routing + delivery attempts (xtmux-3xs.3) ([bd0436e](https://github.com/Jaggerxtrm/xtmux/commit/bd0436e3529962071567e7c67fee65222d29a82e))
+- Phase 5 agent instances/transitions/turns + smart-dispatch log-emit (xtmux-3xs.5) ([f6663f6](https://github.com/Jaggerxtrm/xtmux/commit/f6663f683ceda554066b8dfc10999912ebacef2a))
+- Phase 6 handoff lifecycle + prompt-pointer atomicity (xtmux-3xs.6) ([78631de](https://github.com/Jaggerxtrm/xtmux/commit/78631deff0fe8d92dd10643aa899bc9cde0248ce))
+- Phase 10 — retention + benchmarks + docs + cutover HOLD (xtmux-3xs.10) ([7bd5cd5](https://github.com/Jaggerxtrm/xtmux/commit/7bd5cd542daa6df43ceb080e1190a418bd95b24c))
 - CI, CodeQL, and Dependabot baseline (#2) ([fdba7b8](https://github.com/Jaggerxtrm/xtmux/commit/fdba7b8b13e7bed03b4f7312a75b87c2dcd80408))
 - Additive --json command API + xtrm v2 skills migration (#6) ([fd568db](https://github.com/Jaggerxtrm/xtmux/commit/fd568dbbc46acecff5198ebcd89d16163ecf87e9))
 - Expose canonical `xtmux` command prefix via alias (#9) ([589695c](https://github.com/Jaggerxtrm/xtmux/commit/589695c58f0f066b4d0ecc00940186637dca403b))
 - Real `xtmux help` — grouped commands and --json output fields (#11) ([ad304ee](https://github.com/Jaggerxtrm/xtmux/commit/ad304eec948ddac1c6004125a78ec2d71a62d8d7))
+- Publish @jaggerxtrm/xtmux installer (#20) ([d5cc800](https://github.com/Jaggerxtrm/xtmux/commit/d5cc800fe658ff2d995464047d7e32817b1f58eb))
+- Persist host_id and rotate @agent_instance_id per agent occupation (xtmux-j46.1) (#21) ([6c7924f](https://github.com/Jaggerxtrm/xtmux/commit/6c7924fb5dfde761d23fb71e38e08fb9e52df816))
+- Xtmux context --current --json — the Specialists runtime-origin contract (xtmux-j46.2) (#25) ([009901a](https://github.com/Jaggerxtrm/xtmux/commit/009901ad5c88d3c4f16c231158c45e85faa20807))
+- Xtmux topology --json + single-source host id (xtmux-j46.3) (#27) ([7a04260](https://github.com/Jaggerxtrm/xtmux/commit/7a04260d06c03c4c355dd015bba223c594c4145d))
+- Bounded xtmux pane capture --json (xtmux-j46.4) (#29) ([5956ba6](https://github.com/Jaggerxtrm/xtmux/commit/5956ba68b0aa3f74bf39974c1577dd92c94d0d15))
+- Cursor-paged journal reads — log query --after-id (xtmux-j46.5) (#31) ([cbae0bd](https://github.com/Jaggerxtrm/xtmux/commit/cbae0bd1084a9c9562395f3491dbe2a9ba1b20e0))
+- Persist outbound wake ownership (#23) ([b74185d](https://github.com/Jaggerxtrm/xtmux/commit/b74185df00de8013cf954ddc11ebbc4467ba9549))
+- Log follow --after-id — the committed-event stream (xtmux-j46.6) (#32) ([4de5ff0](https://github.com/Jaggerxtrm/xtmux/commit/4de5ff038976588bbd25b66785292548dbd344ef))
+- Readiness-aware, idempotent, durable delegation (xtmux-j46.8) (#34) ([4003abe](https://github.com/Jaggerxtrm/xtmux/commit/4003abed8276b9dac16af91de23f5fa27cdf8b76))
+- Read-only NDJSON bridge over ssh (j46.9 + protocol tests j46.16) (#38) ([fad430f](https://github.com/Jaggerxtrm/xtmux/commit/fad430f565a078feb64945587c0bad8d04f41e9f))
 
 ### Coordination and hooks
+- Auto-monitor-on-send — Claude Code hook + pi extension ([2a642ac](https://github.com/Jaggerxtrm/xtmux/commit/2a642ac7bc33e03b1f34a2c9f8e4e3b044961ffb))
+- Pi-auto-monitor.ts uses correct isBashToolResult + event shape ([f900c28](https://github.com/Jaggerxtrm/xtmux/commit/f900c285cb91dcfba9f1a20e7fd341e71b13c753))
 - Wake-path completion — wait-for-transition + Claude Stop drain ([c70b725](https://github.com/Jaggerxtrm/xtmux/commit/c70b725a58fdea8531327e485b5ac9a4af8182b6))
 - XTMUX_AUTO_MONITOR_SKIP_TARGETS env bypass (xtmux-3xs.29) ([ae42383](https://github.com/Jaggerxtrm/xtmux/commit/ae42383c4772e351ca33341f5bfb12474508a786))
 - Auto-monitor tmux has-session precheck (xtmux-3xs.30) ([5f4eb8f](https://github.com/Jaggerxtrm/xtmux/commit/5f4eb8fd6a7f1464e2116219ad420ac07d344def))
 - List pane reply obligations ([9f2eed2](https://github.com/Jaggerxtrm/xtmux/commit/9f2eed2dacf135b15a8b0a66572798c697a7ff6b))
 
 ### Fixed
+- Split git cache from agent_state — never cache attention sort/badges (xtmux-rib.17) ([96c7787](https://github.com/Jaggerxtrm/xtmux/commit/96c77876bfb5c78553bac29c194ad781d4a70e4d))
+- Make WAIT orchestrator-safe via PostToolUse reset ([d14572b](https://github.com/Jaggerxtrm/xtmux/commit/d14572bb1047e2bb687a6a3d7f392cc684f1d7a3))
+- Alt-x kill wedged the picker via a nested fzf ([d138131](https://github.com/Jaggerxtrm/xtmux/commit/d1381319e1da735c1b81707ba962515fc95aef30))
+- Do not mark active sp-* panes stale in the hot list ([e989297](https://github.com/Jaggerxtrm/xtmux/commit/e989297a8d3bcb16ca5ef9444bab5c9544b4b8e0))
+- Group worktree sessions under their parent repo ([845bbca](https://github.com/Jaggerxtrm/xtmux/commit/845bbca062531ca8fa7e26af950630f369109e44))
+- Render specialist sessions as pane rows ([6c542c1](https://github.com/Jaggerxtrm/xtmux/commit/6c542c1a42d0ee0be959fd84bca4546d6c6de868))
+- Add repo headers for specialist pane grouping ([4d0bf84](https://github.com/Jaggerxtrm/xtmux/commit/4d0bf84bcdf02d4cb5f0ed45082ec2b14e4c26e3))
+- Pre-filter events.jsonl with grep before parse loop (xtmux-bje) ([8deb7ad](https://github.com/Jaggerxtrm/xtmux/commit/8deb7ad2c5acbd61da36581de0a8051f19bd214b))
+- P0 telemetry+identity bystander corruption when $TMUX unset (xtmux-3xs.18) ([0d2309a](https://github.com/Jaggerxtrm/xtmux/commit/0d2309a4e2236be34562eafc607bc935569b2386))
 - V2 message ack takes V1 message-key; audit --stable sort (xtmux-3xs.24, .17) ([7ce1eef](https://github.com/Jaggerxtrm/xtmux/commit/7ce1eef86cdc965965a23bcdf543de2320a6319d))
 - Shadow-tee sites were checking stale $REPLY after log_event (xtmux-3xs.12) ([fc3195e](https://github.com/Jaggerxtrm/xtmux/commit/fc3195e98a9b152659ef99ca2fa6fd199139cbf0))
 - Derive coordination effects from JSON results (#12) ([6f20973](https://github.com/Jaggerxtrm/xtmux/commit/6f209735ec2e7a89a15f44969262e4c9e9b3a77a))
 - Make the smoke gate tell the truth, and fix what it was hiding (#13) ([e19886b](https://github.com/Jaggerxtrm/xtmux/commit/e19886b8b38f1684c3d26fe7150ee338a2465eb0))
 - Migrate on the monitor/telemetry/audit path (#15) ([c81da80](https://github.com/Jaggerxtrm/xtmux/commit/c81da80488b6ddfa6307e421a3930694cfb5103d))
 - Detect Claude panes that run behind the xt wrapper (#17) ([647bcaa](https://github.com/Jaggerxtrm/xtmux/commit/647bcaa1e117edc9683852bd3d858506ef6c2cca))
+- Reach the V2 runtime via the vendored-bun launcher on npm installs (xtmux-j46.19) (#26) ([41674a7](https://github.com/Jaggerxtrm/xtmux/commit/41674a71b4c1ea92a894365d7bab9cd33aa75e0b))
+- Bind delegated metadata before the lifecycle emits, and keep the V2 feed out of the legacy journal (xtmux-j46.7) (#30) ([24ae942](https://github.com/Jaggerxtrm/xtmux/commit/24ae9423a918ac0e3fe7d41bcec208349fde65a0))
+- Stop mining a bead id out of a temp-dir path (tmp.9) (#36) ([9a5a7c4](https://github.com/Jaggerxtrm/xtmux/commit/9a5a7c4dd65e3e1785e5bb043a7bcd2456d0aa6d))
 
 ### Messages and delivery
+- Phase 3 messages/receipts/deliveries/events domain (xtmux-3xs.3, WIP) ([1753539](https://github.com/Jaggerxtrm/xtmux/commit/1753539403f4123f19ddcd71879fa1fc1d8d6dd0))
 - Add status and unread query primitives ([53b0c2b](https://github.com/Jaggerxtrm/xtmux/commit/53b0c2b885717e54878e961589a02d091d0754ca))
 - Unread-count --pane %N for pane-scoped counts (xtmux-3xs.28) ([ff2c489](https://github.com/Jaggerxtrm/xtmux/commit/ff2c48994773b76d924988eae04213bc36c2d487))
 - V2 timestamp column matches V1 date -Is byte-for-byte (xtmux-3xs.27) ([b056061](https://github.com/Jaggerxtrm/xtmux/commit/b05606129f72cabd9ba3dc3ce7f8d490845d895a))
 - Add sender-declared reply expectations ([b87fb05](https://github.com/Jaggerxtrm/xtmux/commit/b87fb057e03450e3fe840df52bc6521be06f26a1))
+- SQLite reply-obligation model (migration 0010, cycle guard, opt-in correlated projection) — xtmux-3ua.2 (#24) ([a45aa05](https://github.com/Jaggerxtrm/xtmux/commit/a45aa052ed476ca685018ab8936498d7e92117c2))
 
 ### Migration
+- Phase 9 legacy JSONL importer + shadow-mode substrate (xtmux-3xs.9) ([3f90149](https://github.com/Jaggerxtrm/xtmux/commit/3f901493c44f0a2440afdebc5db27e4dd227229f))
 - Reconstruct monitors rows from legacy .tsv (xtmux-3xs.13) ([93576ae](https://github.com/Jaggerxtrm/xtmux/commit/93576ae1336e4bc16075f54d4e3f0a4d0fe9b89c))
 
 ### Observability runtime
+- DB-backed monitors, telemetry, audit domains (3xs.4/.7/.8) ([2eb8e2b](https://github.com/Jaggerxtrm/xtmux/commit/2eb8e2b5d8e23d8114180bfb8f9e25ee25626c97))
+- Pure decision logic for monitors/telemetry/audit domains (3xs.4/.7/.8) ([fd8925e](https://github.com/Jaggerxtrm/xtmux/commit/fd8925ed9d8be5fdcd76b8f0111856600a496e32))
+- Route monitor/telemetry/audit through the V2 runtime (3xs.4/.7/.8) ([92e2f15](https://github.com/Jaggerxtrm/xtmux/commit/92e2f15440483911849c48ba33f19c1b1f137c01))
 - Bun --compile CLI binary + picker prefers it (xtmux-3xs.11) ([47f9d31](https://github.com/Jaggerxtrm/xtmux/commit/47f9d3164ea767d5af2dc4bb07c193505993f057))
 - Shadow-mode picker wiring — writes tee, reads diff (xtmux-3xs.12) ([abf82f4](https://github.com/Jaggerxtrm/xtmux/commit/abf82f44ecc81314f7fc9edbcd06176f58c03693))
 - Slow-query envelope wrapper in openDb (xtmux-3xs.14) ([f2bba70](https://github.com/Jaggerxtrm/xtmux/commit/f2bba708aa274180969f5035bb64981ff5d282ae))
@@ -42,6 +83,33 @@ All notable changes to this project are documented here.
 - Log-query shadow-diff; audit content-diff declined (xtmux-3xs.25) ([71dd2df](https://github.com/Jaggerxtrm/xtmux/commit/71dd2dfb0f8bacbb46b7ec2dbd9992e51c004999))
 - Flip V2 to default-on — epic cutover (xtmux-3xs.31) ([99dc6c6](https://github.com/Jaggerxtrm/xtmux/commit/99dc6c627902ba13031737dc5838d0d0bf13be38))
 
+### Other changes
+- Initial import: fzf tmux session/pane picker (perf-optimized)
+
+Two files:
+- bin/tmux-session-picker: list/preview/jump/kill, attention ranking,
+  agent-state inference, git-rich rows, TTL-cached list, scoped preview.
+- scripts/git-pane-status.sh: per-path git status line (shared with the
+  tmux status bar); batched rev-parse, worktree-aware stash guard,
+  caller-supplied toplevel fast path, op detection now functional.
+
+Performance (see docs/perf-audit.md):
+- list cold:  ~1.0-1.4s -> ~0.65s
+- list warm:  ~0.65-1.0s -> ~20ms (TTL cache)
+- preview:    ~300ms -> ~95ms
+
+Output contracts unchanged (status-line script byte-identical on all paths). ([a4a6978](https://github.com/Jaggerxtrm/xtmux/commit/a4a6978768865f8e9641ad3a200a7f1d004e9a4c))
+- Eliminate subshell overhead via REPLY pattern (warm list 500ms→122ms) ([588dd86](https://github.com/Jaggerxtrm/xtmux/commit/588dd8689733b799c7ec0c06caebaba9761f6518))
+- Revert "fix: add repo headers for specialist pane grouping"
+
+This reverts commit 4d0bf84bcdf02d4cb5f0ed45082ec2b14e4c26e3. ([4e6d715](https://github.com/Jaggerxtrm/xtmux/commit/4e6d715ce94415ea16696d361dfc4c4450860ca8))
+- Revert "fix: render specialist sessions as pane rows"
+
+This reverts commit 6c542c1a42d0ee0be959fd84bca4546d6c6de868. ([c35590c](https://github.com/Jaggerxtrm/xtmux/commit/c35590c222d4ff19b6134e72078d0fc456129afa))
+- Debounce agent-state writes; drop message_update handler (xtmux-2iv) ([e0493d6](https://github.com/Jaggerxtrm/xtmux/commit/e0493d6950c09f86b89a04dacf02d82879ee4823))
+- Xtmux-3xs.4/.7/.8 close via cherry-pick from xt/ojsx ([55b652f](https://github.com/Jaggerxtrm/xtmux/commit/55b652f859193cefde42b8fff49dd725ee48f766))
+- Bash prefilter cuts auto-monitor no-match cost 40ms→10ms ([268c801](https://github.com/Jaggerxtrm/xtmux/commit/268c8016be0405bf6bbf910c5a66a625b9737da8))
+
 ### Pi extensions
 - Add inbox and deferred reply reminders ([6f224ed](https://github.com/Jaggerxtrm/xtmux/commit/6f224ede119554f6964ddefdfa03200a71606c77))
 - Scope inbox counts to current pane ([c215728](https://github.com/Jaggerxtrm/xtmux/commit/c21572833fd35ff7344ef38617f66ca3c7ff8cb7))
@@ -49,8 +117,31 @@ All notable changes to this project are documented here.
 - Inject pending replies into turn context ([22bcf10](https://github.com/Jaggerxtrm/xtmux/commit/22bcf10ef20ba6e3aca9cd6b2ec18150073150d1))
 - Wake on outbound peer completion ([fc4af11](https://github.com/Jaggerxtrm/xtmux/commit/fc4af11adecc1c1482ed0652bc0b197c9bb997bc))
 - Wake on idle reply obligations ([b65f9a6](https://github.com/Jaggerxtrm/xtmux/commit/b65f9a63b56cf9927b573e197a1ec72b712e4c17))
+- Ignore unrelated JSON tool output (#35) ([86521e4](https://github.com/Jaggerxtrm/xtmux/commit/86521e4ebfbc636f93b7bbe4110f94e90455acd8))
 
 ### Project maintenance
+- Init beads project (issue board for v0.2 epic xtmux-rib) ([08488ae](https://github.com/Jaggerxtrm/xtmux/commit/08488aefa00d9e5a0977818a1f14c0b06771ecaa))
+- Add contract harness for status-line and picker output ([0d6c380](https://github.com/Jaggerxtrm/xtmux/commit/0d6c380bedf92f12813fa65b51effb9713644a57))
+- Close xtmux-rib.1 ([ed70771](https://github.com/Jaggerxtrm/xtmux/commit/ed707718bfc35bb24a6d36fa95f04d74d6cb893b))
+- Close xtmux-rib.2 ([3ceb3c7](https://github.com/Jaggerxtrm/xtmux/commit/3ceb3c784aef2a6fdcf62799e123c31a1f580668))
+- Lowercase prose/comments across docs and scripts ([0d5a374](https://github.com/Jaggerxtrm/xtmux/commit/0d5a3743641682cc16bad067f37769b0bfb123a0))
+- Lowercase the visual agent-state badges ([cf45150](https://github.com/Jaggerxtrm/xtmux/commit/cf451508db8a26c1c1fb3dbaeaa161fc3a012edf))
+- Close xtmux-rib.3 ([2508520](https://github.com/Jaggerxtrm/xtmux/commit/250852079e4949aee9feb36bbe55cbbda38f624e))
+- Close xtmux-rib.4 ([0126431](https://github.com/Jaggerxtrm/xtmux/commit/012643156e2d5b5491f60650a1450b0f7da4a21f))
+- Refresh README + add tmux keybindings guide ([8ffd490](https://github.com/Jaggerxtrm/xtmux/commit/8ffd4904b3db9af29047e9a198c930d5690dcdff))
+- Xtrm + gitnexus managed blocks in AGENTS.md/CLAUDE.md ([a4e3804](https://github.com/Jaggerxtrm/xtmux/commit/a4e3804961ed3cfccecca714a39f4b6c3c964afa))
+- Ignore local pi harness artifacts ([25224bd](https://github.com/Jaggerxtrm/xtmux/commit/25224bdc6031d2e4048f8bbdd08a26ad57f91c83))
+- Wire xtrm hooks with \$CLAUDE_PROJECT_DIR ([ef3763e](https://github.com/Jaggerxtrm/xtmux/commit/ef3763ebc1d551b5c3174b6b14b000e308d809ed))
+- Mark @agent_parent_session as tmux session_id (xtmux-7ob) ([85fccf5](https://github.com/Jaggerxtrm/xtmux/commit/85fccf55413fa69fdbbb7657d8e83e782734626d))
+- Document XTMUX_PI_STATE_DEBOUNCE_MS + message_update drop (xtmux-2iv) ([175c87d](https://github.com/Jaggerxtrm/xtmux/commit/175c87da275f6adf0addad8df5af4db04a393560))
+- Chore ([2bf21a1](https://github.com/Jaggerxtrm/xtmux/commit/2bf21a1722ce41c5248afeea535c961a1a370693))
+- Phase 1 design brief + V1 golden fixture baseline (xtmux-3xs.1) ([b84e110](https://github.com/Jaggerxtrm/xtmux/commit/b84e1100d96fb3deb61fbb79fc0725c41ff79bc6))
+- Port domains 4/7/8 onto the Phase 2 scaffold ([8743bac](https://github.com/Jaggerxtrm/xtmux/commit/8743bacfc811b9bc6c76ca711b80e31e1c114512))
+- V1 golden fixtures for monitor/telemetry/audit + domain 4/7/8 design draft ([2543edc](https://github.com/Jaggerxtrm/xtmux/commit/2543edc22149070f85bb01a03b337ef389f65b7c))
+- DDL for monitors/command_runs/audit_* + fix resolution keying ([3e654b5](https://github.com/Jaggerxtrm/xtmux/commit/3e654b585e3e1e0a186a683bb94ed061bf7cb457))
+- Record the implementation decisions for domains 4/7/8 ([ad21e43](https://github.com/Jaggerxtrm/xtmux/commit/ad21e43b47a86ca7490ada7f55aa959537b73a4f))
+- Align domains 4/7/8 with the Channels canonical vocabulary ([549ff16](https://github.com/Jaggerxtrm/xtmux/commit/549ff1627a0bca7c57efd62d52646d3bc1431ce7))
+- Pane-addressing fix — reader note that discrimination lives in columns not stdout ([58de921](https://github.com/Jaggerxtrm/xtmux/commit/58de9213d211e3b8ec96c349776be6695d19265c))
 - Add hostile and differential contract oracles ([39a01fa](https://github.com/Jaggerxtrm/xtmux/commit/39a01fa5fb58cbeb6bf25f495924128a40213a5e))
 - Apply 0.10.2 managed assets ([27bb881](https://github.com/Jaggerxtrm/xtmux/commit/27bb88169c7a1e5e9b9a4f489f9eb96bc55c28d7))
 - Gitignore .xtrm/statusline-claim (runtime hook write) ([e2e97b8](https://github.com/Jaggerxtrm/xtmux/commit/e2e97b81580d0b4bcdb70df0fe5ba47ccaebcd4f))
@@ -59,4 +150,7 @@ All notable changes to this project are documented here.
 - Make a missing `pi` binary name its own cause (#16) ([4341167](https://github.com/Jaggerxtrm/xtmux/commit/4341167e2d0883ae11d776ea331908e98a48bc57))
 - Apply 0.10.4 managed assets — hooks now fail open (#18) ([a78a352](https://github.com/Jaggerxtrm/xtmux/commit/a78a3521f62ffd4899594d0e06f7a377ccba799b))
 - Apply 0.10.5 managed assets (#19) ([32f1806](https://github.com/Jaggerxtrm/xtmux/commit/32f1806e8e541f403db37181b42fc97293a3553e))
+- SQLite reply-obligation and outbound-wake state machines (xtmux-3ua.1) (#22) ([e5743d4](https://github.com/Jaggerxtrm/xtmux/commit/e5743d43a82a1c99eed6ded00c5bc7db401092bd))
+- Close the j46.12 gaps — bystander server, store read-only, host-id race (xtmux-j46.12) (#33) ([d290915](https://github.com/Jaggerxtrm/xtmux/commit/d29091518fe7bb181d8cd8eb8883cb194ca65ceb))
+- Close the real gaps in the topology/cursor/handoff contracts (j46.13/.14/.15) (#37) ([72da1f4](https://github.com/Jaggerxtrm/xtmux/commit/72da1f4d806b8347047f2d6c88d9507eea5fc2ed))
 <!-- generated by xtmux-changelog; edit commit messages or cliff.toml, not generated rows -->
