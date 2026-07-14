@@ -12,8 +12,10 @@ import { replyMessage } from "../../src/domains/messages/reply.ts";
 import { sendMessage } from "../../src/domains/messages/send.ts";
 import {
   armOutboundWait,
+  cancelOutboundWait,
   consumeOutboundWake,
   deliverOutboundWake,
+  expireOutboundWait,
   getOutboundWait,
   OutboundWaitOwnershipError,
   registerOutboundWait,
@@ -142,6 +144,48 @@ describe("SQLite coordination state machines", () => {
         reopened.close();
       }
     } finally {
+      ctx.cleanup();
+    }
+  });
+
+  test("retention prunes only consumed/cancelled/expired waits after their own TTL", () => {
+    const ctx = setup();
+    const previous = process.env.XTMUX_OBS_WAIT_RETENTION_DAYS;
+    try {
+      migrate(ctx.db);
+      const now = 1_000_000_000_000;
+      const old = now - 90 * DAY_MS;
+      wait(ctx.db, "active", "$requester", "%requester", "monitor-active", old);
+      wait(ctx.db, "undelivered", "$requester", "%requester", "monitor-undelivered", old + 10);
+      terminalizeOutboundWait(ctx.db, "monitor-undelivered", "done", old + 11);
+      wait(ctx.db, "consumed", "$requester", "%requester", "monitor-consumed", old + 20);
+      terminalizeOutboundWait(ctx.db, "monitor-consumed", "done", old + 21);
+      deliverOutboundWake(ctx.db, { waitId: "consumed", requesterSessionId: "$requester", requesterPaneId: "%requester", nowMs: old + 22 });
+      consumeOutboundWake(ctx.db, { waitId: "consumed", requesterSessionId: "$requester", requesterPaneId: "%requester", nowMs: old + 23 });
+      registerOutboundWait(ctx.db, { waitId: "cancelled", requesterSessionId: "$requester", requesterPaneId: "%requester", targetSessionId: "$target", targetPaneId: "%target", nowMs: old + 30 });
+      cancelOutboundWait(ctx.db, { waitId: "cancelled", requesterSessionId: "$requester", requesterPaneId: "%requester", nowMs: old + 31 });
+      registerOutboundWait(ctx.db, { waitId: "expired", requesterSessionId: "$requester", requesterPaneId: "%requester", targetSessionId: "$target", targetPaneId: "%target", nowMs: old + 40 });
+      expireOutboundWait(ctx.db, { waitId: "expired", requesterSessionId: "$requester", requesterPaneId: "%requester", nowMs: old + 41 });
+
+      process.env.XTMUX_OBS_WAIT_RETENTION_DAYS = "30";
+      const cfg = loadRetentionConfig() as ReturnType<typeof loadRetentionConfig> & { waitDays?: number };
+      expect(cfg.waitDays).toBe(30);
+      const report = applyRetention(ctx.db, cfg, () => now) as ReturnType<typeof applyRetention> & { waitsDeleted?: number };
+      expect(report.waitsDeleted).toBe(3);
+      expect(ctx.db.raw.query<{ id: string }, []>("SELECT id FROM outbound_waits ORDER BY id").all()).toEqual([
+        { id: "active" },
+        { id: "undelivered" },
+      ]);
+      const pruned = ctx.db.raw.query<{ payload_json: string }, []>("SELECT payload_json FROM event_journal WHERE type = 'wait.pruned'").get();
+      expect(JSON.parse(pruned?.payload_json ?? "{}")).toMatchObject({
+        outcome: "pruned",
+        wait_ids: ["cancelled", "consumed", "expired"],
+        count: 3,
+      });
+      expect(pruned?.payload_json).not.toMatch(/secret|token|summary|payload/i);
+    } finally {
+      if (previous === undefined) delete process.env.XTMUX_OBS_WAIT_RETENTION_DAYS;
+      else process.env.XTMUX_OBS_WAIT_RETENTION_DAYS = previous;
       ctx.cleanup();
     }
   });
