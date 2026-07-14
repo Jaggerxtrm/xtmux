@@ -105,6 +105,14 @@ describe("outbound wake lifecycle", () => {
         targetPaneId: "%target",
         nowMs: 2000,
       }).duplicate).toBe(true);
+      expect(() => registerOutboundWait(db, {
+        waitId: "wait-1",
+        requesterSessionId: "$requester",
+        requesterPaneId: "%requester",
+        targetSessionId: "$other",
+        targetPaneId: "%target",
+        nowMs: 2000,
+      })).toThrow(/identity conflict/);
       const first = armOutboundWait(db, {
         waitId: "wait-1",
         monitorId: "monitor-1",
@@ -132,7 +140,102 @@ describe("outbound wake lifecycle", () => {
         requesterPaneId: "%requester",
         nowMs: 2002,
       })).toThrow(OutboundWaitOwnershipError);
+      expect(() => armOutboundWait(db, {
+        waitId: "wait-1",
+        monitorId: "monitor-1",
+        requesterSessionId: "$requester",
+        requesterPaneId: "%other",
+        nowMs: 2003,
+      })).toThrow(OutboundWaitOwnershipError);
     } finally {
+      cleanup();
+    }
+  });
+
+  test("concurrent registration and arm preserve one owner and one monitor", async () => {
+    const { db, path, cleanup } = setup();
+    const left = openDb({ dbPath: path, mode: "off", busyTimeoutMs: 3000 });
+    const right = openDb({ dbPath: path, mode: "off", busyTimeoutMs: 3000 });
+    try {
+      const registrations = await Promise.all([
+        Promise.resolve().then(() => registerOutboundWait(db, {
+          waitId: "race",
+          requesterSessionId: "$requester",
+          requesterPaneId: "%requester",
+          targetSessionId: "$target",
+          targetPaneId: "%target",
+          nowMs: 1000,
+        })),
+        Promise.resolve().then(() => registerOutboundWait(left, {
+          waitId: "race",
+          requesterSessionId: "$requester",
+          requesterPaneId: "%requester",
+          targetSessionId: "$target",
+          targetPaneId: "%target",
+          nowMs: 1001,
+        })),
+      ]);
+      expect(registrations.filter((item) => !item.duplicate)).toHaveLength(1);
+      expect(registrations.filter((item) => item.duplicate)).toHaveLength(1);
+
+      makeMonitor(db, "race-monitor");
+      const arms = await Promise.all([
+        Promise.resolve().then(() => armOutboundWait(db, {
+          waitId: "race",
+          monitorId: "race-monitor",
+          requesterSessionId: "$requester",
+          requesterPaneId: "%requester",
+          nowMs: 2000,
+        })),
+        Promise.resolve().then(() => armOutboundWait(right, {
+          waitId: "race",
+          monitorId: "race-monitor",
+          requesterSessionId: "$requester",
+          requesterPaneId: "%requester",
+          nowMs: 2001,
+        })),
+      ]);
+      expect(arms.filter((item) => !item.duplicate)).toHaveLength(1);
+      expect(arms.filter((item) => item.duplicate)).toHaveLength(1);
+      expect(getOutboundWait(db, "race", "$requester", "%requester").monitorId).toBe("race-monitor");
+
+      expect(terminalizeOutboundWait(db, "race-monitor", "done", 3000)).toBe(true);
+      const deliveries = await Promise.all([
+        Promise.resolve().then(() => deliverOutboundWake(db, {
+          waitId: "race",
+          requesterSessionId: "$requester",
+          requesterPaneId: "%requester",
+          nowMs: 3001,
+        })),
+        Promise.resolve().then(() => deliverOutboundWake(left, {
+          waitId: "race",
+          requesterSessionId: "$requester",
+          requesterPaneId: "%requester",
+          nowMs: 3002,
+        })),
+      ]);
+      expect(deliveries.filter((item) => item.delivered)).toHaveLength(1);
+      expect(deliveries.filter((item) => item.duplicate)).toHaveLength(1);
+
+      const consumptions = await Promise.all([
+        Promise.resolve().then(() => consumeOutboundWake(db, {
+          waitId: "race",
+          requesterSessionId: "$requester",
+          requesterPaneId: "%requester",
+          nowMs: 3003,
+        })),
+        Promise.resolve().then(() => consumeOutboundWake(right, {
+          waitId: "race",
+          requesterSessionId: "$requester",
+          requesterPaneId: "%requester",
+          nowMs: 3004,
+        })),
+      ]);
+      expect(consumptions.filter((item) => item.consumed)).toHaveLength(1);
+      expect(consumptions.filter((item) => item.duplicate)).toHaveLength(1);
+    } finally {
+      left.close();
+      right.close();
       cleanup();
     }
   });
@@ -153,6 +256,8 @@ describe("outbound wake lifecycle", () => {
       expect(() => armOutboundWait(db, {
         waitId: "wait-1",
         monitorId: "wrong-monitor",
+        requesterSessionId: "$requester",
+        requesterPaneId: "%requester",
         nowMs: 2000,
       })).toThrow(OutboundWaitTargetMismatchError);
       expect(getOutboundWait(db, "wait-1", "$requester", "%requester").state).toBe("unarmed");
@@ -166,28 +271,63 @@ describe("outbound wake lifecycle", () => {
     try {
       makeWait(db);
       makeMonitor(db);
-      armOutboundWait(db, { waitId: "wait-1", monitorId: "monitor-1", nowMs: 2000 });
+      armOutboundWait(db, {
+        waitId: "wait-1",
+        monitorId: "monitor-1",
+        requesterSessionId: "$requester",
+        requesterPaneId: "%requester",
+        nowMs: 2000,
+      });
       expect(terminalizeOutboundWait(db, "monitor-1", "done", 3000)).toBe(true);
       expect(terminalizeOutboundWait(db, "monitor-1", "done", 3001)).toBe(false);
-      expect(deliverOutboundWake(db, "wait-1", 3002).delivered).toBe(true);
-      expect(deliverOutboundWake(db, "wait-1", 3003).duplicate).toBe(true);
+      const beforeDelivery = consumeOutboundWake(db, {
+        waitId: "wait-1",
+        requesterSessionId: "$requester",
+        requesterPaneId: "%requester",
+        nowMs: 3002,
+      });
+      expect(beforeDelivery).toMatchObject({ consumed: false, duplicate: false });
+      expect(deliverOutboundWake(db, {
+        waitId: "wait-1",
+        requesterSessionId: "$requester",
+        requesterPaneId: "%requester",
+        nowMs: 3003,
+      }).delivered).toBe(true);
+      expect(deliverOutboundWake(db, {
+        waitId: "wait-1",
+        requesterSessionId: "$requester",
+        requesterPaneId: "%requester",
+        nowMs: 3004,
+      }).duplicate).toBe(true);
       expect(() => consumeOutboundWake(db, {
         waitId: "wait-1",
         requesterSessionId: "$other",
         requesterPaneId: "%requester",
-        nowMs: 3004,
+        nowMs: 3005,
+      })).toThrow(OutboundWaitOwnershipError);
+      expect(() => deliverOutboundWake(db, {
+        waitId: "wait-1",
+        requesterSessionId: "$other",
+        requesterPaneId: "%requester",
+        nowMs: 3005,
+      })).toThrow(OutboundWaitOwnershipError);
+      expect(() => deliverOutboundWake(db, {
+        waitId: "wait-1",
+        requesterSessionId: "$requester",
+        requesterPaneId: "%other",
+        nowMs: 3005,
       })).toThrow(OutboundWaitOwnershipError);
       expect(consumeOutboundWake(db, {
         waitId: "wait-1",
         requesterSessionId: "$requester",
         requesterPaneId: "%requester",
-        nowMs: 3005,
+        nowMs: 3006,
       }).consumed).toBe(true);
       expect(consumeOutboundWake(db, {
         waitId: "wait-1",
         requesterSessionId: "$requester",
         requesterPaneId: "%requester",
-        nowMs: 3006,
+        nowMs: 3007,
       }).duplicate).toBe(true);
     } finally {
       cleanup();
@@ -199,7 +339,13 @@ describe("outbound wake lifecycle", () => {
     try {
       makeWait(db);
       makeMonitor(db);
-      armOutboundWait(db, { waitId: "wait-1", monitorId: "monitor-1", nowMs: 2000 });
+      armOutboundWait(db, {
+        waitId: "wait-1",
+        monitorId: "monitor-1",
+        requesterSessionId: "$requester",
+        requesterPaneId: "%requester",
+        nowMs: 2000,
+      });
       terminate(db, "monitor-1", "timeout", 3000);
       closeDb();
 
@@ -208,7 +354,12 @@ describe("outbound wake lifecycle", () => {
         expect(replayOutboundWakes(reopened, 4000)).toBe(1);
         expect(getOutboundWait(reopened, "wait-1", "$requester", "%requester").state)
           .toBe("terminal-unconsumed");
-        deliverOutboundWake(reopened, "wait-1", 4001);
+        deliverOutboundWake(reopened, {
+          waitId: "wait-1",
+          requesterSessionId: "$requester",
+          requesterPaneId: "%requester",
+          nowMs: 4001,
+        });
         expect(consumeOutboundWake(reopened, {
           waitId: "wait-1",
           requesterSessionId: "$requester",
@@ -238,6 +389,8 @@ describe("outbound wake lifecycle", () => {
       expect(armOutboundWait(db, {
         waitId: "expiring",
         monitorId: "missing-monitor",
+        requesterSessionId: "$requester",
+        requesterPaneId: "%requester",
         nowMs: 2000,
       }).wait.state).toBe("expired");
       makeWait(db, "cancelled");
