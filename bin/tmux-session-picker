@@ -617,6 +617,68 @@ json_nullable() {
   case "${1:-}" in ''|-) printf 'null' ;; *) printf '"%s"' "$(json_escape "$1")" ;; esac
 }
 
+topology_host_id() {
+  local file="${XTMUX_HOST_ID_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/host-id}" value
+  if [ -s "$file" ]; then
+    REPLY="$(head -n 1 "$file")"
+    return 0
+  fi
+  mkdir -p "$(dirname -- "$file")" 2>/dev/null || true
+  if [ -r /proc/sys/kernel/random/uuid ]; then
+    value="$(cat /proc/sys/kernel/random/uuid)"
+  elif command -v uuidgen >/dev/null 2>&1; then
+    value="$(uuidgen)"
+  else
+    value="$(printf '%08x-%04x-4%03x-%04x-%012x' \
+      "$(date +%s)" "$((RANDOM & 0xffff))" "$((RANDOM & 0xfff))" \
+      "$((0x8000 | (RANDOM & 0x3fff)))" "$RANDOM$(date +%N 2>/dev/null || printf '0')")"
+  fi
+  if (set -C; printf '%s\n' "$value" > "$file") 2>/dev/null; then
+    REPLY="$value"
+  elif [ -s "$file" ]; then
+    REPLY="$(head -n 1 "$file")"
+  else
+    REPLY="$value"
+  fi
+}
+
+topology_number() {
+  case "${1:-}" in
+    ''|-) printf 'null' ;;
+    *[!0-9]*) printf 'null' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+topology_milliseconds() {
+  case "${1:-}" in
+    ''|-) printf 'null' ;;
+    *[!0-9]*) printf 'null' ;;
+    *) printf '%s000' "$1" ;;
+  esac
+}
+
+topology_boolean() {
+  case "${1:-}" in
+    1|true|yes|on) printf 'true' ;;
+    *) printf 'false' ;;
+  esac
+}
+
+topology_agent_json() {
+  local first=1 key value index
+  local -a keys=(instance_id state bead_id task prompt_file parent_session_id last_transition)
+  local -a values=("$@")
+  for index in "${!keys[@]}"; do
+    value="${values[$index]:-}"
+    case "$value" in ''|-) continue ;; esac
+    [ "$first" = 1 ] || printf ','
+    first=0
+    key="${keys[$index]}"
+    printf '"%s":"%s"' "$key" "$(json_escape "$value")"
+  done
+}
+
 # V1 deliberately retains its historical best-effort default-server lookup.
 # V2 durable writes must not infer identity outside a tmux client: a bare shell
 # can otherwise be attributed to whichever pane is current.
@@ -773,7 +835,7 @@ json_requested() {
 json_command_state() {
   local command="$1" subcommand="${2:-}"
   case "$command:$subcommand" in
-    message-list:*|message-status:*|unread-count:*|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|safe-send-pointer:*|handoff:*|message-send:*|message-ack:*|worktree-collisions:*|dashboard:*|audit:*|log:tail|log:query|context:--current) REPLY='ready' ;;
+    message-list:*|message-status:*|unread-count:*|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|safe-send-pointer:*|handoff:*|message-send:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|context:--current) REPLY='ready' ;;
     *) REPLY='unsupported' ;;
   esac
 }
@@ -791,20 +853,18 @@ json_request_preflight() {
       return 2
       ;;
   esac
-  # `context` is exempt from the V2-mode gate. XTMUX_OBS_V2 selects the
-  # observability STORE (SQLite vs legacy JSONL); context reads neither — only
-  # live tmux and the host-id file. Gating it on that flag would let an operator
-  # who opted out of V2 silently break Specialists' job->pane binding, with no
-  # error anyone would see until the graph came out empty. It still needs the
-  # runtime binary, because the command is implemented there.
-  if [ "$command" != context ]; then
+  # Read-only identity/topology commands are exempt from the V2-mode gate.
+  # XTMUX_OBS_V2 selects the observability STORE (SQLite vs legacy JSONL);
+  # these commands read only live tmux and the host-id file. Gating them on
+  # that flag would make a valid graph depend on an unrelated event store.
+  if [ "$command" != context ] && [ "$command" != topology ]; then
     obs_v2_mode; local mode="$REPLY"
     if [ "$mode" != 'on' ]; then
       json_error XTMUX_JSON_REQUIRES_V2 "$command --json requires the V2 runtime" "$command"
       return 2
     fi
   fi
-  if ! obs_available; then
+  if [ "$command" != topology ] && ! obs_available; then
     json_error XTMUX_JSON_BACKEND_UNAVAILABLE "$command --json backend is unavailable" "$command"
     return 1
   fi
@@ -1574,6 +1634,88 @@ dashboard() {
   log_cli_emit query.completed command=dashboard session_count="$session_count" pane_count="$pane_count" duration_ms="$(( $(date +%s%3N) - started_ms ))" outcome=ok
 }
 
+topology_json() {
+  local json=0 arg rows row sid sname created activity attached wid windex wname wactive
+  local pane_id pindex pactive width height left top pid command path instance state bead task prompt parent transition
+  local key session_first window_first pane_first agent
+  for arg in "$@"; do
+    case "$arg" in
+      --json) json=1 ;;
+      *) command_error "$json" XTMUX_INVALID_ARGUMENT "topology: unknown arg: $arg" topology 2; return $? ;;
+    esac
+  done
+  [ "$json" = 1 ] || { printf 'usage: topology --json\n' >&2; return 2; }
+
+  topology_host_id
+  local host_id="$REPLY" generated_at_ms="$(date +%s%3N)"
+  # One list-panes pass supplies every session, window and pane field. Do not
+  # add display-message/show-options calls here: Console needs one coherent
+  # snapshot, not independently sampled hierarchy levels.
+  rows="$(tmux list-panes -a -F $'#{session_id}\t#{session_name}\t#{session_created}\t#{session_activity}\t#{session_attached}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{?@agent_instance_id,#{@agent_instance_id},-}\t#{?@agent_state,#{@agent_state},-}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_prompt_file,#{@agent_prompt_file},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}' 2>/dev/null || true)"
+
+  local -a sessions=() pane_rows=()
+  declare -A session_seen=() session_name=() session_created=() session_activity=() session_attached=()
+  declare -A session_windows=() window_seen=() window_index=() window_name=() window_active=()
+  while IFS=$'\t' read -r sid sname created activity attached wid windex wname wactive pane_id pindex pactive width height left top pid command path instance state bead task prompt parent transition; do
+    [ -n "$sid" ] || continue
+    sname="$(tsv_clean "$sname")"
+    created="$(tsv_clean "$created")"; activity="$(tsv_clean "$activity")"; attached="$(tsv_clean "$attached")"
+    windex="$(tsv_clean "$windex")"; wname="$(tsv_clean "$wname")"; wactive="$(tsv_clean "$wactive")"
+    pindex="$(tsv_clean "$pindex")"; pactive="$(tsv_clean "$pactive")"; width="$(tsv_clean "$width")"
+    height="$(tsv_clean "$height")"; left="$(tsv_clean "$left")"; top="$(tsv_clean "$top")"; pid="$(tsv_clean "$pid")"
+    command="$(tsv_clean "$command")"; path="$(tsv_clean "$path")"
+    instance="$(tsv_clean "$instance")"; state="$(tsv_clean "$state")"; bead="$(tsv_clean "$bead")"
+    task="$(tsv_clean "$task")"; prompt="$(tsv_clean "$prompt")"; parent="$(tsv_clean "$parent")"
+    transition="$(tsv_clean "$transition")"
+    if [ -z "${session_seen[$sid]:-}" ]; then
+      session_seen["$sid"]=1; sessions+=("$sid")
+      session_name["$sid"]="$sname"; session_created["$sid"]="$created"
+      session_activity["$sid"]="$activity"; session_attached["$sid"]="$attached"
+    fi
+    key="$sid|$wid"
+    if [ -z "${window_seen[$key]:-}" ]; then
+      window_seen["$key"]=1; session_windows["$sid"]+="${session_windows[$sid]:+ }$wid"
+      window_index["$key"]="$windex"; window_name["$key"]="$wname"; window_active["$key"]="$wactive"
+    fi
+    pane_rows+=("$sid"$'\t'"$wid"$'\t'"$pane_id"$'\t'"$pindex"$'\t'"$pactive"$'\t'"$width"$'\t'"$height"$'\t'"$left"$'\t'"$top"$'\t'"$pid"$'\t'"$command"$'\t'"$path"$'\t'"$instance"$'\t'"$state"$'\t'"$bead"$'\t'"$task"$'\t'"$prompt"$'\t'"$parent"$'\t'"$transition")
+  done <<< "$rows"
+
+  printf '{"schema_version":"xtrm.xtmux.topology.v1","generated_at_ms":%s,"host":{"host_id":"%s"},"sessions":[' \
+    "$(topology_number "$generated_at_ms")" "$(json_escape "$host_id")"
+  session_first=1
+  for sid in "${sessions[@]}"; do
+    [ "$session_first" = 1 ] || printf ','; session_first=0
+    printf '{"session_id":"%s","name":"%s","created_at_ms":%s,"activity_at_ms":%s,"attached":%s,"active":%s,"windows":[' \
+      "$(json_escape "$sid")" "$(json_escape "${session_name[$sid]}")" \
+      "$(topology_milliseconds "${session_created[$sid]}")" "$(topology_milliseconds "${session_activity[$sid]}")" \
+      "$(topology_boolean "${session_attached[$sid]}")" "$(topology_boolean "${session_attached[$sid]}")"
+    window_first=1
+    read -ra _topology_windows <<< "${session_windows[$sid]:-}"
+    for wid in "${_topology_windows[@]}"; do
+      key="$sid|$wid"
+      [ "$window_first" = 1 ] || printf ','; window_first=0
+      printf '{"window_id":"%s","window_index":%s,"name":"%s","active":%s,"panes":[' \
+        "$(json_escape "$wid")" "$(topology_number "${window_index[$key]}")" "$(json_escape "${window_name[$key]}")" "$(topology_boolean "${window_active[$key]}")"
+      pane_first=1
+      for row in "${pane_rows[@]}"; do
+        IFS=$'\t' read -r row_sid row_wid pane_id pindex pactive width height left top pid command path instance state bead task prompt parent transition <<< "$row"
+        [ "$row_sid" = "$sid" ] && [ "$row_wid" = "$wid" ] || continue
+        [ "$pane_first" = 1 ] || printf ','; pane_first=0
+        printf '{"pane_id":"%s","pane_index":%s,"active":%s,"width":%s,"height":%s,"left":%s,"top":%s,"pid":%s,"current_command":"%s","current_path":"%s"' \
+          "$(json_escape "$pane_id")" "$(topology_number "$pindex")" "$(topology_boolean "$pactive")" \
+          "$(topology_number "$width")" "$(topology_number "$height")" "$(topology_number "$left")" "$(topology_number "$top")" \
+          "$(topology_number "$pid")" "$(json_escape "$command")" "$(json_escape "$path")"
+        agent="$(topology_agent_json "$instance" "$state" "$bead" "$task" "$prompt" "$parent" "$transition")"
+        [ -n "$agent" ] && printf ',"agent":{%s}' "$agent"
+        printf '}'
+      done
+      printf ']}'
+    done
+    printf ']}'
+  done
+  printf ']}\n'
+}
+
 audit_tsv_field() {
   local line="$1" n="$2"
   awk -F '\t' -v n="$n" '{print $n}' <<< "$line"
@@ -1724,6 +1866,7 @@ IDENTITY — who is this pane, for cross-tool job attribution.
 
 SESSIONS & DASHBOARD — inventory for orchestrators.
   dashboard [sessions-only|expanded] [json]   agent-readable inventory
+  topology --json                            complete host/session/window/pane snapshot
   list [all|waiting|running|repo:<x>|branch:<x>|cmd:<x>|grep:<x>]
   list-active                                 list under the active filter
 
@@ -1732,6 +1875,17 @@ SESSIONS & DASHBOARD — inventory for orchestrators.
                    sessions/panes rows: sessionId, sessionName, paneId, state,
                    beadId, task, repo, branch, dirtyCount, sharedWorktree,
                    idleMs, path
+    topology       schema_version, generated_at_ms, host, sessions
+                   host: host_id
+                   session: session_id, name, created_at_ms, activity_at_ms,
+                   attached, active, windows
+                   window: window_id, window_index, name, active, panes
+                   pane: pane_id, pane_index, active, width, height, left, top,
+                   pid, current_command, current_path, agent?
+                   agent: instance_id, state, bead_id, task, prompt_file,
+                   parent_session_id, last_transition
+                   topology uses stable $/@/% ids, omits absent agent metadata,
+                   and never includes pane content.
 
 OBSERVABILITY — the local event log and command telemetry.
   log emit  <type> [key=value ...]
@@ -3353,6 +3507,11 @@ case "${1:-}" in
   dashboard)
     shift
     dashboard "$@"
+    exit $?
+    ;;
+  topology)
+    shift
+    topology_json "$@"
     exit $?
     ;;
   audit)
