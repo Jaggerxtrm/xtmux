@@ -1453,6 +1453,155 @@ noc="$(jf_obs log-follow --once --json)"; noc_rc=$?
 rm -rf "$jf_state"
 
 echo
+echo "== bridge: read-only NDJSON over ssh (xtmux-j46.9 / j46.16) =="
+
+# The FIRST remotely-reachable surface. Every assertion here is about an untrusted
+# peer, not an operator: default-deny dispatch, bounded frames, and survival.
+br_state="$(mktemp -d)"
+br_sock="xtmux-br-$$"
+if ! command tmux -L "$br_sock" -f /dev/null new-session -d -s xtmux-br 'seq 1 40; sleep 100' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m bridge (cannot start isolated tmux server)\n'
+elif ! command -v python3 >/dev/null 2>&1; then
+  printf '  \033[33mskip\033[0m bridge (python3 missing)\n'
+else
+  br_pane="$(command tmux -L "$br_sock" list-panes -a -F '#{pane_id}' | head -1)"
+  br_env="$(command tmux -L "$br_sock" display-message -p '#{socket_path},0,0')"
+  # Feed frames on stdin; collect the NDJSON replies. This is exactly the shape
+  # `ssh <host> xtmux bridge --stdio` produces — stdin is a pipe that then closes.
+  br() {
+    env TMUX="$br_env" XDG_STATE_HOME="$br_state" XTMUX_OBS_V2=1 \
+      "$PICKER" bridge --stdio 2>/dev/null
+  }
+  br_field() { printf '%s' "$1" | python3 -c "
+import sys,json
+want=sys.argv[1]; path=sys.argv[2].split('.')
+for line in sys.stdin.read().splitlines():
+    try: d=json.loads(line)
+    except Exception: continue
+    if str(d.get('id')) != want: continue
+    cur=d
+    for k in path:
+        if not isinstance(cur,dict): cur=None; break
+        cur=cur.get(k)
+    if cur is not None: print(json.dumps(cur) if isinstance(cur,(dict,list)) else cur); break
+" "$2" "$3" 2>/dev/null; }
+
+  # Seed one journal row so the read paths have something real to return.
+  env TMUX="$br_env" XDG_STATE_HOME="$br_state" XTMUX_OBS_V2=1 "$PICKER" log emit bridge.probe a=1 >/dev/null 2>&1
+
+  hello="$(printf '%s\n' '{"id":1,"method":"bridge.hello"}' | br)"
+  { [ "$(br_field "$hello" 1 result.schema_version)" = "xtrm.xtmux.bridge.v1" ] \
+      && [ -n "$(br_field "$hello" 1 result.host_id)" ] \
+      && [ "$(br_field "$hello" 1 result.read_only)" = True ] \
+      && case "$(br_field "$hello" 1 result.capabilities)" in *topology.snapshot*journal.follow*) true ;; *) false ;; esac; } \
+    && ok "bridge: hello negotiates schema_version, host_id and the capability list" \
+    || nok "bridge: hello negotiates capabilities (got '$hello')"
+
+  # A remote read must be the SAME fact as the local read, or a viewer showing a
+  # remote host is showing something no local operator could ever reproduce.
+  br_topo="$(printf '%s\n' '{"id":"t","method":"topology.snapshot"}' | br | python3 -c "
+import sys,json
+for l in sys.stdin:
+    d=json.loads(l)
+    if d.get('id')=='t': print(json.dumps(d['result']['topology'].get('sessions'),sort_keys=True))
+" 2>/dev/null)"
+  local_topo="$(env TMUX="$br_env" XDG_STATE_HOME="$br_state" XTMUX_OBS_V2=1 "$PICKER" topology --json 2>/dev/null | python3 -c "
+import sys,json; print(json.dumps(json.load(sys.stdin).get('sessions'),sort_keys=True))" 2>/dev/null)"
+  { [ -n "$br_topo" ] && [ "$br_topo" = "$local_topo" ]; } \
+    && ok "bridge: topology.snapshot is the same payload as the local command" \
+    || nok "bridge: topology.snapshot matches the local command"
+
+  br_cap="$(printf '{"id":"c","method":"pane.capture","params":{"pane_id":"%s","lines":3}}\n' "$br_pane" | br)"
+  { [ "$(br_field "$br_cap" c result.capture.schema_version)" = "xtrm.xtmux.pane-capture.v1" ] \
+      && [ "$(br_field "$br_cap" c result.capture.returned_lines)" = 3 ]; } \
+    && ok "bridge: pane.capture returns the local pane-capture contract, bounded" \
+    || nok "bridge: pane.capture returns the local contract (got '$br_cap')"
+
+  # Default deny. A mutation name is refused AND leaves no trace — a rejection
+  # that still wrote a row would be the worst of both.
+  br_msgs_before="$(python3 -c "
+import sqlite3,sys
+try: print(sqlite3.connect(sys.argv[1]).execute('SELECT count(*) FROM messages').fetchone()[0])
+except Exception: print('ERR')" "$br_state/xtmux/observability.db" 2>/dev/null)"
+  mut="$(printf '%s\n' \
+    '{"id":"m1","method":"message.send","params":{"to":"$1","text":"pwned"}}' \
+    '{"id":"m2","method":"pane.input","params":{"pane_id":"%0","keys":"rm -rf /"}}' \
+    '{"id":"m3","method":"handoff.create"}' | br)"
+  br_msgs_after="$(python3 -c "
+import sqlite3,sys
+try: print(sqlite3.connect(sys.argv[1]).execute('SELECT count(*) FROM messages').fetchone()[0])
+except Exception: print('ERR')" "$br_state/xtmux/observability.db" 2>/dev/null)"
+  { [ "$(br_field "$mut" m1 error.code)" = XTMUX_BRIDGE_READ_ONLY ] \
+      && [ "$(br_field "$mut" m2 error.code)" = XTMUX_BRIDGE_READ_ONLY ] \
+      && [ "$(br_field "$mut" m3 error.code)" = XTMUX_BRIDGE_READ_ONLY ] \
+      && [ "$br_msgs_before" = "$br_msgs_after" ]; } \
+    && ok "bridge: every mutation method is refused, with no side effect" \
+    || nok "bridge: mutations refused with no side effect (before=$br_msgs_before after=$br_msgs_after out='$mut')"
+
+  # There is no fallthrough to the local CLI: a method that is not on the
+  # allowlist cannot be named into existence, however plausible it looks.
+  unk="$(printf '%s\n' '{"id":"u","method":"log.query"}' '{"id":"u2","method":"exec"}' | br)"
+  { [ "$(br_field "$unk" u error.code)" = XTMUX_BRIDGE_UNKNOWN_METHOD ] \
+      && [ "$(br_field "$unk" u2 error.code)" = XTMUX_BRIDGE_UNKNOWN_METHOD ]; } \
+    && ok "bridge: an unknown method is refused, never dispatched to the local CLI" \
+    || nok "bridge: unknown method refused (got '$unk')"
+
+  # Survival. A peer that can kill the server with one bad byte owns a
+  # denial-of-service primitive; the NEXT request is what proves we are alive.
+  garbage="$(printf '%s\n' 'not json at all' '{"id":"after1","method":"bridge.hello"}' | br)"
+  [ "$(br_field "$garbage" after1 result.schema_version)" = "xtrm.xtmux.bridge.v1" ] \
+    && ok "bridge: malformed JSON is answered and the next request still serves" \
+    || nok "bridge: malformed JSON does not kill the stream (got '$garbage')"
+
+  # An oversized frame must be refused by SIZE, before it is parsed, and the
+  # bytes it occupies must not be re-read as a fresh request when we resync.
+  big="$(python3 -c "
+import json
+print(json.dumps({'id':'big','method':'bridge.hello','params':{'pad':'A'*1200000}}))
+print(json.dumps({'id':'after2','method':'bridge.hello'}))" | br)"
+  { case "$big" in *XTMUX_BRIDGE_FRAME_TOO_LARGE*) true ;; *) false ;; esac \
+      && [ "$(br_field "$big" after2 result.schema_version)" = "xtrm.xtmux.bridge.v1" ]; } \
+    && ok "bridge: an oversized frame is refused by size and the stream resyncs" \
+    || nok "bridge: oversized frame refused and stream resyncs (got '$(printf '%s' "$big" | cut -c1-200)')"
+
+  # EOF is the peer hanging up (ssh exited, the viewer closed) — a graceful close,
+  # never a fault. It must also STOP the follow, or the process outlives its pipe.
+  printf '%s\n' '{"id":"f","method":"journal.follow","params":{"after_id":0}}' | br >/dev/null 2>&1
+  br_eof_rc=$?
+  [ "$br_eof_rc" = 0 ] && ok "bridge: EOF ends an active follow and exits 0" \
+    || nok "bridge: EOF exits 0 (rc=$br_eof_rc)"
+
+  # Reconnect: a viewer that resumes at its last committed id must not be handed a
+  # row it already materialized. Duplicates double-count; that is the whole reason
+  # the cursor exists.
+  env TMUX="$br_env" XDG_STATE_HOME="$br_state" XTMUX_OBS_V2=1 "$PICKER" log emit bridge.probe b=2 >/dev/null 2>&1
+  first="$(printf '%s\n' '{"id":"q1","method":"journal.query","params":{"after_id":0,"limit":1}}' | br)"
+  br_cursor="$(br_field "$first" q1 result.page.next_after_id)"
+  resumed="$(printf '{"id":"q2","method":"journal.query","params":{"after_id":%s}}\n' "$br_cursor" | br | python3 -c "
+import sys,json
+for l in sys.stdin:
+    d=json.loads(l)
+    if d.get('id')=='q2':
+        print(' '.join(str(i['journal_id']) for i in d['result']['page']['items']))
+" 2>/dev/null)"
+  dup=0
+  for jid in $resumed; do [ "$jid" -le "$br_cursor" ] && dup=1; done
+  { [ -n "$br_cursor" ] && [ "$br_cursor" -gt 0 ] && [ "$dup" = 0 ] && [ -n "$resumed" ]; } \
+    && ok "bridge: resuming at the last committed id replays nothing" \
+    || nok "bridge: reconnect replays nothing (cursor=$br_cursor resumed='$resumed')"
+
+  # There is no listen/bind mode. If one is ever added, it must be a decision
+  # someone makes on purpose — not a flag that quietly appears.
+  nostdio="$(env XDG_STATE_HOME="$br_state" XTMUX_OBS_V2=1 "$PICKER" bridge --listen 0.0.0.0:9000 </dev/null 2>&1 >/dev/null)"; ns_rc=$?
+  { [ "$ns_rc" -ne 0 ] && case "$nostdio" in *XTMUX_*) true ;; *) false ;; esac; } \
+    && ok "bridge: refuses anything but --stdio — no listening socket exists" \
+    || nok "bridge: refuses a listen mode (rc=$ns_rc out='$nostdio')"
+
+  command tmux -L "$br_sock" kill-server >/dev/null 2>&1 || true
+fi
+rm -rf "$br_state"
+
+echo
 echo "== readiness-aware handoff: --prompt-file / --wait-ready / --monitor (xtmux-j46.8) =="
 
 # The durable half of delegation. Before this bead the picker's handoff wrote only

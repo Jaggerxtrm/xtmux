@@ -819,7 +819,7 @@ json_requested() {
 json_command_state() {
   local command="$1" subcommand="${2:-}"
   case "$command:$subcommand" in
-    message-list:*|message-status:*|unread-count:*|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|safe-send-pointer:*|handoff:*|message-send:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|log:follow|context:--current|pane:capture) REPLY='ready' ;;
+    message-list:*|message-status:*|unread-count:*|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|safe-send-pointer:*|handoff:*|message-send:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|log:follow|context:--current|pane:capture|bridge:--stdio) REPLY='ready' ;;
     *) REPLY='unsupported' ;;
   esac
 }
@@ -1055,6 +1055,31 @@ log_cli_follow() {
   fi
   obs_runtime_argv
   exec "${OBS_ARGV[@]}" log-follow "$@"
+}
+
+# bridge --stdio — the read-only NDJSON surface a remote viewer reaches through
+# `ssh <host> xtmux bridge --stdio` (xtmux-j46.9). exec, never capture: this is an
+# unbounded bidirectional stream, and a command substitution would both buffer it
+# forever and swallow the signals that are supposed to end it.
+#
+# XTMUX_PICKER is how the runtime calls BACK into this script for topology, which
+# is implemented here in bash. Relaying the existing command is the whole point —
+# a second implementation of xtrm.xtmux.topology.v1 inside the runtime would be a
+# second thing to keep in sync, and drift between them is invisible to both.
+bridge_cli() {
+  local json=0 arg
+  for arg in "$@"; do [ "$arg" = '--json' ] && json=1; done
+  obs_v2_mode
+  if [ "$REPLY" != 'on' ]; then
+    command_error "$json" XTMUX_JSON_REQUIRES_V2 "bridge requires the V2 runtime: it serves the SQLite journal cursor, which the legacy JSONL store does not have" bridge 2
+    return $?
+  fi
+  if ! obs_available; then
+    command_error "$json" XTMUX_JSON_BACKEND_UNAVAILABLE "bridge backend is unavailable" bridge 1
+    return $?
+  fi
+  obs_runtime_argv
+  XTMUX_PICKER="$self" exec "${OBS_ARGV[@]}" bridge "$@"
 }
 
 # context --current [--json] — the runtime-origin DTO Specialists reads on every
@@ -1940,6 +1965,18 @@ PANE CONTENT — bounded, on-demand terminal preview.
 
     --lines above max_lines is CLAMPED, never silently honored. truncated means
     only "there is more above what you were given". Never journalled.
+
+REMOTE — read-only observation of another host, over your own ssh.
+  bridge --stdio   NDJSON request/response on stdin/stdout. Meant to be run as
+                   `ssh <host> xtmux bridge --stdio`: OpenSSH owns transport and
+                   auth, this stores no keys and listens on no socket.
+
+    methods:       bridge.hello, bridge.cancel, topology.snapshot, journal.query,
+                   journal.follow, pane.capture, health.get
+    read-only:     anything that would MUTATE is refused (XTMUX_BRIDGE_READ_ONLY),
+                   and anything not on that list is refused too — there is no
+                   fallthrough to the local CLI. Frames are size-capped; malformed
+                   input is answered and the stream keeps serving.
 
 OBSERVABILITY — the local event log and command telemetry.
   log emit  <type> [key=value ...]
@@ -3780,6 +3817,11 @@ case "${1:-}" in
   pane)
     shift
     pane_cli "$@"
+    exit $?
+    ;;
+  bridge)
+    shift
+    bridge_cli "$@"
     exit $?
     ;;
   message-send)
