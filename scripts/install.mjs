@@ -200,9 +200,9 @@ function install() {
   console.log("3/5 Installing Claude and existing Codex hooks");
   rmSync(claudeHooks, { recursive: true, force: true });
   mkdirSync(claudeHooks, { recursive: true });
-  for (const name of ["agent-state.sh", "auto-monitor-on-send.mjs", "auto-monitor-on-send.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs"]) {
-    const src = join(root, "hooks", "claude", name);
-    copyFileSync(src, join(claudeHooks, name));
+  copyFileSync(join(root, "scripts", "agent-state.sh"), join(claudeHooks, "agent-state.sh"));
+  for (const name of ["auto-monitor-on-send.mjs", "auto-monitor-on-send.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs"]) {
+    copyFileSync(join(root, "hooks", "claude", name), join(claudeHooks, name));
   }
   if (existsSync(codexRoot)) {
     rmSync(codexHooks, { recursive: true, force: true });

@@ -59,6 +59,11 @@ test("clean install, idempotent update, xtrm coexistence, and uninstall", () => 
   assert.deepEqual(readdirSync(join(home, ".claude", "hooks", "xtmux")).sort(), [
     "agent-state.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs", "auto-monitor-on-send.mjs", "auto-monitor-on-send.sh",
   ]);
+  assert.equal(
+    readFileSync(join(home, ".claude", "hooks", "xtmux", "agent-state.sh"), "utf8"),
+    readFileSync(join(root, "scripts", "agent-state.sh"), "utf8"),
+  );
+  assert.ok(json(join(root, "package.json")).files.includes("scripts/agent-state.sh"));
   const installedPackages = json(pi).packages;
   assert.deepEqual(installedPackages.slice(0, 3), ["npm:foreign", { source: "npm:@jaggerxtrm/other" }, "npm:@jaggerxtrm/xtmux-extra"]);
   assert.equal(installedPackages.filter((entry) => {
