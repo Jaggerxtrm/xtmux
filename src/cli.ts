@@ -27,7 +27,7 @@ commands:
   migrate                    apply pending schema migrations
   version [--json]           print schema version
 
-  message-send --to <sid> [--from <sid>] [--to-pane %N] [--from-pane %N] --text T [--bead ID] [--expects-reply true|false] [--message-key K] [--reply-to K] [--json]
+  message-send --to <sid> --from <sid> [--to-pane %N] [--from-pane %N] --text T [--bead ID] [--expects-reply true|false] [--message-key K] [--reply-to K] [--json]
   message-list --for <sid> [--pane %N] [--from <sid>] [--since <ms>] [--unacked] [--expects-reply] [--json] [--limit N]
   message-reply --in-reply-to <messageKey> --text T [--message-key K] [--json]
   message-cancel --message-key <messageKey> [--json]
