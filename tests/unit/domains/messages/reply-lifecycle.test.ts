@@ -7,6 +7,7 @@ import { migrate } from "../../../../src/db/schema.ts";
 import { sendMessage } from "../../../../src/domains/messages/send.ts";
 import { replyMessage } from "../../../../src/domains/messages/reply.ts";
 import { ackMessage } from "../../../../src/domains/messages/ack.ts";
+import { listMessages } from "../../../../src/domains/messages/list.ts";
 import { messageStatus } from "../../../../src/domains/messages/status.ts";
 import { listPendingObligations } from "../../../../src/domains/messages/obligations.ts";
 import { MessageError, type MessageErrorCode } from "../../../../src/domains/messages/errors.ts";
@@ -45,12 +46,56 @@ describe("message reply lifecycle", () => {
         summary: "reply body", payloadJson: JSON.stringify({ secret: "not journaled" }),
       }, now);
       expect(reply.fulfilled).toBe(true);
-      expect(messageStatus(db, "request-1")?.replyStatus).toBe("fulfilled");
+      expect(messageStatus(db, "request-1", { includeReplyState: true })?.replyStatus).toBe("fulfilled");
       expect(listPendingObligations(db, { senderId: "$requester", senderPaneId: "%1" })).toHaveLength(0);
       ackMessage(db, { messageId: original.messageId, ackedBy: "$target" }, now);
-      expect(messageStatus(db, "request-1")?.replyStatus).toBe("fulfilled");
+      expect(messageStatus(db, "request-1", { includeReplyState: true })?.replyStatus).toBe("fulfilled");
       const journal = db.raw.query<{ payload_json: string }, []>("SELECT payload_json FROM event_journal").all();
       expect(journal.every((row) => !row.payload_json.includes("private body") && !row.payload_json.includes("reply body"))).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("default status shape stays stable; opt-in projections expose reply correlation", () => {
+    const { db, cleanup, now } = setup();
+    try {
+      const original = sendMessage(db, {
+        messageKey: "request-1", senderId: "$s", senderPaneId: "%from",
+        recipientId: "$r", targetPaneId: "%to", summary: "work", expectsReply: true,
+      }, now);
+      sendMessage(db, {
+        messageKey: "reply-1", senderId: "$r", senderPaneId: "%to",
+        recipientId: "$s", targetPaneId: "%from", summary: "done", replyToMessageId: original.messageId,
+      }, now);
+
+      expect(messageStatus(db, "request-1")).toEqual({
+        messageKey: "request-1",
+        senderId: "$s",
+        recipientId: "$r",
+        beadId: null,
+        summary: "work",
+        expectsReply: true,
+        acked: false,
+        ackedAtMs: null,
+        ackedBy: null,
+      });
+
+      const enriched = messageStatus(db, "request-1", { includeReplyState: true });
+      expect(enriched?.replyStatus).toBe("fulfilled");
+      expect(enriched?.fulfilledByMessageKey).toBe("reply-1");
+      expect(enriched?.correlatedReply).toMatchObject({
+        messageKey: "reply-1",
+        senderId: "$r",
+        recipientId: "$s",
+        summary: "done",
+      });
+
+      const defaultRows = listMessages(db, { recipientId: "$r" });
+      expect("replyStatus" in defaultRows[0]!).toBe(false);
+      const enrichedRows = listMessages(db, { recipientId: "$r" }, { includeReplyState: true });
+      expect(enrichedRows[0]?.replyStatus).toBe("fulfilled");
+      expect(enrichedRows[0]?.correlatedReply?.messageKey).toBe("reply-1");
     } finally {
       cleanup();
     }
@@ -66,6 +111,76 @@ describe("message reply lifecycle", () => {
       expect(duplicate.messageId).toBe(first.messageId);
       expectCode(() => replyMessage(db, { messageKey: "reply-2", replyToMessageKey: "request-1", senderId: "$r", summary: "again" }, now), "XTMUX_ALREADY_FULFILLED");
       expectCode(() => sendMessage(db, { messageKey: "reply-1", senderId: "$r", recipientId: "$s", summary: "different", replyToMessageId: first.messageId }, now), "XTMUX_MESSAGE_KEY_CONFLICT");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("direct send rejects reply cycle before write and redacts rejection envelope", () => {
+    const { db, cleanup, now } = setup();
+    try {
+      const original = sendMessage(db, {
+        messageKey: "request-1",
+        senderId: "$s",
+        recipientId: "$r",
+        summary: "work",
+        expectsReply: true,
+      }, now);
+
+      expectCode(() => sendMessage(db, {
+        messageKey: "reply-cycle",
+        senderId: "$r",
+        recipientId: "$s",
+        summary: "secret body",
+        expectsReply: true,
+        replyToMessageId: original.messageId,
+      }, now), "XTMUX_INVALID_CORRELATION");
+
+      expect(db.raw.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM messages WHERE message_key = 'reply-cycle'").get()?.n).toBe(0);
+      expect(db.raw.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM event_journal WHERE correlation_id = 'reply-cycle' AND type = 'messages.sent'").get()?.n).toBe(0);
+
+      const rejection = db.raw.query<{ type: string; payload_json: string }, []>(
+        "SELECT type, payload_json FROM event_journal WHERE correlation_id = 'reply-cycle'",
+      ).get();
+      expect(rejection?.type).toBe("messages.reply.rejected");
+      expect(JSON.parse(rejection?.payload_json ?? "")).toEqual({
+        outcome: "rejected",
+        reply_to_message_id: original.messageId,
+      });
+      expect(rejection?.payload_json.includes("secret body")).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("direct send keeps plain obligation and correlated reply paths valid", () => {
+    const { db, cleanup, now } = setup();
+    try {
+      const pending = sendMessage(db, {
+        messageKey: "request-1",
+        senderId: "$s",
+        recipientId: "$r",
+        summary: "work",
+        expectsReply: true,
+      }, now);
+      expect(pending.expectsReply).toBe(true);
+      expect(pending.replyToMessageId).toBeNull();
+      expect(messageStatus(db, "request-1", { includeReplyState: true })?.replyStatus).toBe("pending");
+
+      const reply = sendMessage(db, {
+        messageKey: "reply-1",
+        senderId: "$r",
+        recipientId: "$s",
+        summary: "done",
+        replyToMessageId: pending.messageId,
+      }, now);
+      expect(reply.expectsReply).toBe(false);
+      expect(reply.replyToMessageId).toBe(pending.messageId);
+      expect(reply.fulfilled).toBe(true);
+      expect(db.raw.query<{ reply_to_message_id: number | null; expects_reply: number }, []>(
+        "SELECT reply_to_message_id, expects_reply FROM messages WHERE message_key = 'reply-1'",
+      ).get()).toEqual({ reply_to_message_id: pending.messageId, expects_reply: 0 });
+      expect(messageStatus(db, "request-1", { includeReplyState: true })?.fulfilledByMessageKey).toBe("reply-1");
     } finally {
       cleanup();
     }

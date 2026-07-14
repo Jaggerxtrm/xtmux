@@ -1,5 +1,5 @@
 import type { Db } from "../../db/connection.ts";
-import type { CorrelatedReply, MessageWithReceipt } from "./types.ts";
+import type { CorrelatedReply, MessageWithReceipt, MessageWithReplyState } from "./types.ts";
 
 export interface ListInput {
   recipientId: string;
@@ -11,17 +11,13 @@ export interface ListInput {
   limit?: number | undefined;
 }
 
-interface MessageListRow extends Omit<MessageWithReceipt, "replyStatus" | "fulfilledAtMs" | "correlatedReply"> {
-  correlated_reply_key: string | null;
-  correlated_reply_sender_id: string | null;
-  correlated_reply_sender_pane_id: string | null;
-  correlated_reply_recipient_id: string | null;
-  correlated_reply_target_pane_id: string | null;
-  correlated_reply_summary: string | null;
-  correlated_reply_created_at_ms: number | null;
+interface ListProjectionOptions {
+  includeReplyState?: boolean | undefined;
 }
 
-function replyStatus(row: MessageListRow): MessageWithReceipt["reply_status"] {
+interface MessageListRow extends Omit<MessageWithReplyState, "replyStatus" | "fulfilledAtMs" | "correlatedReply"> {}
+
+function replyStatus(row: MessageListRow): MessageWithReplyState["reply_status"] {
   if (row.cancelled_at_ms !== null) return "cancelled";
   if (row.expects_reply !== 1) return null;
   return row.fulfilled_at_ms === null ? "pending" : "fulfilled";
@@ -40,8 +36,56 @@ function correlatedReply(row: MessageListRow): CorrelatedReply | null {
   };
 }
 
+function baseProjection(row: MessageListRow): MessageWithReceipt {
+  return {
+    id: row.id,
+    message_key: row.message_key,
+    sender_id: row.sender_id,
+    sender_pane_id: row.sender_pane_id,
+    recipient_id: row.recipient_id,
+    target_pane_id: row.target_pane_id,
+    bead_id: row.bead_id,
+    summary: row.summary,
+    payload_json: row.payload_json,
+    expects_reply: row.expects_reply,
+    created_at_ms: row.created_at_ms,
+    acked_at_ms: row.acked_at_ms,
+    acked_by: row.acked_by,
+  };
+}
+
+function replyProjection(row: MessageListRow): MessageWithReplyState {
+  const status = replyStatus(row);
+  return {
+    ...baseProjection(row),
+    reply_to_message_id: row.reply_to_message_id,
+    fulfilled_by_message_id: row.fulfilled_by_message_id,
+    fulfilled_at_ms: row.fulfilled_at_ms,
+    cancelled_at_ms: row.cancelled_at_ms,
+    cancel_reason: row.cancel_reason,
+    reply_status: status,
+    fulfilled_by_message_key: row.fulfilled_by_message_key,
+    correlated_reply_key: row.correlated_reply_key,
+    correlated_reply_sender_id: row.correlated_reply_sender_id,
+    correlated_reply_sender_pane_id: row.correlated_reply_sender_pane_id,
+    correlated_reply_recipient_id: row.correlated_reply_recipient_id,
+    correlated_reply_target_pane_id: row.correlated_reply_target_pane_id,
+    correlated_reply_summary: row.correlated_reply_summary,
+    correlated_reply_created_at_ms: row.correlated_reply_created_at_ms,
+    replyStatus: status,
+    fulfilledAtMs: row.fulfilled_at_ms,
+    correlatedReply: correlatedReply(row),
+  };
+}
+
 /** Pure read. Correlated reply projection comes from SQLite, not marker files. */
-export function listMessages(db: Db, input: ListInput): MessageWithReceipt[] {
+export function listMessages(db: Db, input: ListInput): MessageWithReceipt[];
+export function listMessages(db: Db, input: ListInput, options: { includeReplyState: true }): MessageWithReplyState[];
+export function listMessages(
+  db: Db,
+  input: ListInput,
+  options?: ListProjectionOptions,
+): MessageWithReceipt[] | MessageWithReplyState[] {
   const clauses: string[] = ["m.recipient_id = ?"];
   const params: (string | number)[] = [input.recipientId];
   if (input.targetPaneId !== undefined) {
@@ -85,15 +129,5 @@ export function listMessages(db: Db, input: ListInput): MessageWithReceipt[] {
      ORDER BY m.id DESC
      LIMIT ${limit}
   `).all(...params);
-  return rows.map((row) => {
-    const status = replyStatus(row);
-    const projection = correlatedReply(row);
-    return {
-      ...row,
-      reply_status: status,
-      replyStatus: status,
-      fulfilledAtMs: row.fulfilled_at_ms,
-      correlatedReply: projection,
-    };
-  });
+  return options?.includeReplyState ? rows.map(replyProjection) : rows.map(baseProjection);
 }

@@ -40,7 +40,7 @@ interface ExistingMessage {
   reply_to_message_id: number | null;
 }
 
-function rejectEnvelope(db: Db, input: SendInput, error: MessageError, nowMs: number): void {
+function rejectEnvelope(db: Db, input: SendInput, _error: MessageError, nowMs: number): void {
   insertEnvelope(db, {
     type: input.replyToMessageId === undefined ? "messages.send.rejected" : "messages.reply.rejected",
     domain: "messages",
@@ -49,8 +49,7 @@ function rejectEnvelope(db: Db, input: SendInput, error: MessageError, nowMs: nu
     correlationId: input.messageKey,
     payload: {
       outcome: "rejected",
-      code: error.code,
-      message_id: input.replyToMessageId ?? null,
+      reply_to_message_id: input.replyToMessageId ?? null,
     },
     createdAtMs: nowMs,
   });
@@ -74,6 +73,15 @@ function sameMessage(existing: ExistingMessage, input: SendInput, expectsReply: 
  * positional shape because correlation remains optional in SendInput.
  */
 export function sendMessage(db: Db, input: SendInput, now: () => number = Date.now): SendResult {
+  const expectsReply = input.expectsReply ?? false;
+  if (expectsReply && input.replyToMessageId != null) {
+    const rejection = new MessageError("XTMUX_INVALID_CORRELATION", "reply target cannot itself expect reply", {
+      replyToMessageId: input.replyToMessageId,
+    });
+    rejectEnvelope(db, input, rejection, now());
+    throw rejection;
+  }
+
   const findByKey = db.raw.prepare<ExistingMessage, [string]>(
     "SELECT id, message_key, sender_id, sender_pane_id, recipient_id, target_pane_id, bead_id, summary, payload_json, expects_reply, created_at_ms, reply_to_message_id FROM messages WHERE message_key = ?",
   );
@@ -104,7 +112,7 @@ export function sendMessage(db: Db, input: SendInput, now: () => number = Date.n
   let result: SendResult = {
     messageId: 0,
     duplicate: false,
-    expectsReply: input.expectsReply ?? false,
+    expectsReply,
     createdAtMs: 0,
     fulfilled: false,
     replyToMessageId: input.replyToMessageId ?? null,
@@ -113,7 +121,6 @@ export function sendMessage(db: Db, input: SendInput, now: () => number = Date.n
   let rejection: MessageError | null = null;
   const tx = db.raw.transaction(() => {
     const existing = findByKey.get(input.messageKey);
-    const expectsReply = input.expectsReply ?? false;
     if (existing) {
       if (!sameMessage(existing, input, expectsReply)) {
         throw new MessageError("XTMUX_MESSAGE_KEY_CONFLICT", "message key already contains different payload or correlation", {
@@ -135,10 +142,10 @@ export function sendMessage(db: Db, input: SendInput, now: () => number = Date.n
       return;
     }
 
-    const original = input.replyToMessageId === undefined
+    const original = input.replyToMessageId == null
       ? null
       : findOriginal.get(input.replyToMessageId);
-    if (input.replyToMessageId !== undefined) {
+    if (input.replyToMessageId != null) {
       if (!original || original.message_key === input.messageKey || original.reply_to_message_id !== null || original.expects_reply !== 1) {
         throw new MessageError("XTMUX_INVALID_CORRELATION", "reply target is not a valid pending obligation", {
           messageId: input.replyToMessageId,
@@ -176,7 +183,9 @@ export function sendMessage(db: Db, input: SendInput, now: () => number = Date.n
         throw new MessageError("XTMUX_REPLY_TERMINAL", "reply target was cancelled", { messageId: original.id });
       }
       if (original.fulfilled_at_ms !== null) {
-        throw new MessageError("XTMUX_ALREADY_FULFILLED", "reply target already fulfilled", { messageId: original.id });
+        throw new MessageError("XTMUX_ALREADY_FULFILLED", "reply target already fulfilled", {
+          messageId: original.id,
+        });
       }
     }
 
@@ -196,7 +205,7 @@ export function sendMessage(db: Db, input: SendInput, now: () => number = Date.n
     );
     const messageId = row?.id ?? 0;
     insertReceipt.run(messageId, input.recipientId);
-    if (input.replyToMessageId !== undefined) fulfillOriginal.run(messageId, createdAtMs, input.replyToMessageId);
+    if (input.replyToMessageId != null) fulfillOriginal.run(messageId, createdAtMs, input.replyToMessageId);
     insertEnvelope(db, {
       eventKey: `messages.sent:${input.messageKey}`,
       type: "messages.sent",
@@ -214,7 +223,7 @@ export function sendMessage(db: Db, input: SendInput, now: () => number = Date.n
       },
       createdAtMs,
     });
-    if (input.replyToMessageId !== undefined) {
+    if (input.replyToMessageId != null) {
       insertEnvelope(db, {
         type: "messages.reply.linked",
         domain: "messages",
@@ -235,9 +244,9 @@ export function sendMessage(db: Db, input: SendInput, now: () => number = Date.n
       duplicate: false,
       expectsReply,
       createdAtMs,
-      fulfilled: input.replyToMessageId !== undefined,
+      fulfilled: input.replyToMessageId != null,
       replyToMessageId: input.replyToMessageId ?? null,
-      fulfilledMessageKey: input.replyToMessageId === undefined ? null : original?.message_key ?? null,
+      fulfilledMessageKey: input.replyToMessageId == null ? null : original?.message_key ?? null,
     };
   });
 
@@ -246,7 +255,7 @@ export function sendMessage(db: Db, input: SendInput, now: () => number = Date.n
   } catch (error) {
     if (error instanceof MessageError) {
       rejection = error;
-    } else if (input.replyToMessageId !== undefined
+    } else if (input.replyToMessageId != null
       && error instanceof Error
       && /msg_one_reply_per_request|UNIQUE constraint failed: messages.reply_to_message_id/i.test(error.message)) {
       rejection = new MessageError("XTMUX_ALREADY_FULFILLED", "reply target already fulfilled", {
