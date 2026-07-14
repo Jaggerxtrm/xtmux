@@ -728,17 +728,28 @@ obs_runtime_argv() {
   binary="$root/bin/xtmux-obs"
   if [ -x "$binary" ]; then
     OBS_ARGV=("$binary")
-  else
+  elif command -v bun >/dev/null 2>&1; then
     OBS_ARGV=("bun" "run" "$root/src/cli.ts")
+  else
+    # An npm install ships neither: bin/xtmux-obs is not in package.json `files:`
+    # (a compiled 100MB binary per platform is not a tarball), and bun is not a
+    # system dependency of a node user. scripts/xtmux-obs.mjs is the launcher for
+    # exactly that case — it resolves the VENDORED bun from the npm dependency.
+    # Without this rung the entire agent-JSON surface is unavailable on the one
+    # install path most users actually take.
+    OBS_ARGV=("node" "$root/scripts/xtmux-obs.mjs")
   fi
 }
 obs_available() {
   local root binary
   root="${self%/bin/*}"
   binary="$root/bin/xtmux-obs"
-  # Binary path: standalone. Fallback path: requires bun + cli.ts on disk.
+  # Binary path: standalone. Otherwise we need cli.ts plus something to run it:
+  # system bun, or node + the vendored-bun launcher.
   [ -x "$binary" ] && return 0
-  [ -f "$root/src/cli.ts" ] && command -v bun >/dev/null 2>&1
+  [ -f "$root/src/cli.ts" ] || return 1
+  command -v bun >/dev/null 2>&1 && return 0
+  [ -f "$root/scripts/xtmux-obs.mjs" ] && command -v node >/dev/null 2>&1
 }
 
 json_error() {
