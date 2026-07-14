@@ -409,3 +409,28 @@ Successful or failed wrapped commands emit a start event plus a typed result
 event such as `git.commit`, `git.push`, `bd.claim`, `bd.close`, or
 `git.pr.create`, including exit code and pane/session/bead context when tmux
 metadata is available.
+
+## Activity spans (`agent.activity`)
+
+The pi extension records one **completed span** per streamed agent activity —
+each thinking segment, each assistant text segment, and each tool execution —
+as an `agent.activity` event. It carries `activity` (`thinking` | `text` |
+`tool`), `segment_id`, `turn_index`, `started_at_ms`, `duration_ms`, and — for
+thinking/text only — `char_count`. From these a consumer computes exact segment
+durations, time-to-first-activity (a segment's `started_at_ms` minus the turn
+start), and segment counts.
+
+It is a completed span rather than a start/end pair on purpose: both the start
+time and the duration ride on one event, so nothing has to be correlated, and it
+is half the writes. It flows through the ordinary journal — `agent.activity` has
+no typed table — so it pages back through the same cursor (`log query
+--after-id`, `log follow`) as every other event, not a second stream.
+
+Two invariants that must never relax:
+
+- **`duration_ms` is OBSERVED STREAM DURATION** — wall-clock between the
+  provider's `*_start` and `*_end` stream events as this host saw them. It is
+  **not** provider compute time and must never be presented as such. A clock that
+  moves backward clamps it to `0`, never negative.
+- **No content, ever.** `char_count` is a length; thinking, text, and tool
+  results are never recorded.

@@ -1356,6 +1356,42 @@ esac
 rm -rf "$jc_state"
 
 echo
+echo "== activity spans: agent.activity telemetry (xtmux-j46.11) =="
+
+# The pi extension emits one completed span per thinking/text/tool segment. The
+# runtime has no typed writer for agent.activity — it must fall through to the
+# generic journal write and come back through the SAME cursor page as every other
+# event, so a materializer computes durations without a second schema.
+as_state="$(mktemp -d)"
+as_emit() { env XDG_STATE_HOME="$as_state" XTMUX_OBS_V2=1 "$PICKER" log emit agent.activity "$@" >/dev/null 2>&1; }
+if ! command -v python3 >/dev/null 2>&1; then
+  printf '  \033[33mskip\033[0m activity spans (python3 missing)\n'
+else
+  as_emit activity=thinking segment_id=0:1 turn_index=0 started_at_ms=1000 duration_ms=250 char_count=1400
+  as_emit activity=tool segment_id=toolcall-abc turn_index=0 started_at_ms=1300 duration_ms=80
+  as_page="$(env XDG_STATE_HOME="$as_state" XTMUX_OBS_V2=1 "$PICKER" log query --type agent.activity --after-id 0 --json 2>/dev/null)"
+  as_check="$(printf '%s' "$as_page" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+items=[i for i in d['items'] if i['event_type']=='agent.activity']
+by={i['payload']['activity']:i['payload'] for i in items}
+th=by.get('thinking',{}); to=by.get('tool',{})
+ok = (len(items)==2
+      and th.get('duration_ms')=='250' and th.get('char_count')=='1400'
+      and th.get('started_at_ms')=='1000' and th.get('turn_index')=='0'
+      # a tool span carries NO char_count — it is not text-bearing
+      and 'char_count' not in to and to.get('duration_ms')=='80'
+      # the schema is the ordinary journal page, not a second envelope
+      and d['schema_version']=='xtrm.xtmux.journal-page.v1')
+print('ok' if ok else 'no:'+json.dumps(by))
+" 2>/dev/null)"
+  [ "$as_check" = ok ] \
+    && ok "activity: spans journal through the generic path and page back with duration + char_count" \
+    || nok "activity: span round-trip ($as_check)"
+fi
+rm -rf "$as_state"
+
+echo
 echo "== journal follow: log follow --after-id (xtmux-j46.6) =="
 
 # The stream is a latency optimization over polling, never a second authority and
@@ -1498,17 +1534,36 @@ for line in sys.stdin.read().splitlines():
     || nok "bridge: hello negotiates capabilities (got '$hello')"
 
   # A remote read must be the SAME fact as the local read, or a viewer showing a
-  # remote host is showing something no local operator could ever reproduce.
-  br_topo="$(printf '%s\n' '{"id":"t","method":"topology.snapshot"}' | br | python3 -c "
+  # remote host is showing something no local operator could ever reproduce. Two
+  # reads milliseconds apart are compared, so this normalizes to the STABLE
+  # structure — session names, window/pane ids and geometry — and drops the fields
+  # that legitimately tick between calls (last_activity_ms; current_command as a
+  # pane's startup command exits into its successor). The skeleton is what the
+  # relay must preserve; the timestamps are not the relay's to freeze.
+  br_skeleton='
 import sys,json
+def pane(p):
+    return {"pane_id":p.get("pane_id"),"pane_index":p.get("pane_index"),
+            "active":p.get("active"),"width":p.get("width"),"height":p.get("height"),
+            "left":p.get("left"),"top":p.get("top"),"pid":p.get("pid")}
+def win(w):
+    return {"window_id":w.get("window_id"),"window_index":w.get("window_index"),
+            "panes":sorted((pane(p) for p in w.get("panes",[])), key=lambda x:str(x["pane_id"]))}
+def sess(s):
+    return {"name":s.get("name"),
+            "windows":sorted((win(w) for w in s.get("windows",[])), key=lambda x:str(x["window_id"]))}
+def skel(sessions):
+    return sorted((sess(s) for s in (sessions or [])), key=lambda x:str(x["name"]))
+'
+  br_topo="$(printf '%s\n' '{"id":"t","method":"topology.snapshot"}' | br | python3 -c "$br_skeleton
 for l in sys.stdin:
     d=json.loads(l)
-    if d.get('id')=='t': print(json.dumps(d['result']['topology'].get('sessions'),sort_keys=True))
+    if d.get('id')=='t': print(json.dumps(skel(d['result']['topology'].get('sessions'))))
 " 2>/dev/null)"
-  local_topo="$(env TMUX="$br_env" XDG_STATE_HOME="$br_state" XTMUX_OBS_V2=1 "$PICKER" topology --json 2>/dev/null | python3 -c "
-import sys,json; print(json.dumps(json.load(sys.stdin).get('sessions'),sort_keys=True))" 2>/dev/null)"
+  local_topo="$(env TMUX="$br_env" XDG_STATE_HOME="$br_state" XTMUX_OBS_V2=1 "$PICKER" topology --json 2>/dev/null | python3 -c "$br_skeleton
+print(json.dumps(skel(json.load(sys.stdin).get('sessions'))))" 2>/dev/null)"
   { [ -n "$br_topo" ] && [ "$br_topo" = "$local_topo" ]; } \
-    && ok "bridge: topology.snapshot is the same payload as the local command" \
+    && ok "bridge: topology.snapshot is the same structure as the local command" \
     || nok "bridge: topology.snapshot matches the local command"
 
   br_cap="$(printf '{"id":"c","method":"pane.capture","params":{"pane_id":"%s","lines":3}}\n' "$br_pane" | br)"
