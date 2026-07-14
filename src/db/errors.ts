@@ -23,3 +23,13 @@ export function isBusyError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return /database is locked|busy|SQLITE_BUSY/i.test(msg);
 }
+
+/**
+ * A collision on a UNIQUE column — for event_journal.event_key, this is how
+ * idempotency is enforced: the second writer of the same keyed event loses, and
+ * that is the intended outcome, not a failure.
+ */
+export function isUniqueViolation(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /UNIQUE constraint failed|SQLITE_CONSTRAINT_UNIQUE/i.test(msg);
+}

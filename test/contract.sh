@@ -751,6 +751,98 @@ fi
 rm -rf "$id_state"
 
 echo
+echo "== readiness lifecycle: agent.ready + durable agent domain (xtmux-j46.7) =="
+
+# Before this bead the hook wrote ONLY to events.jsonl: agent_instances and
+# agent_state_transitions had zero rows, so the V2 journal — the ordered feed the
+# Console graph consumes — knew nothing about agent lifecycle at all.
+rl_sock="xtmux-ready-$$"
+rl_state="$(mktemp -d)"
+rl_bin="$(mktemp -d)"
+# A real exec wrapper, not a symlink: the picker resolves its root from
+# BASH_SOURCE without dereferencing, so a symlink would send it hunting for the
+# runtime in the wrong tree.
+printf '#!/bin/sh\nexec %s/bin/tmux-session-picker "$@"\n' "$ROOT" > "$rl_bin/xtmux"
+chmod +x "$rl_bin/xtmux"
+
+if ! command tmux -L "$rl_sock" -f /dev/null new-session -d -s xtmux-ready 'sleep 100' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m readiness lifecycle (cannot start isolated tmux server)\n'
+else
+  rl_pane="$(command tmux -L "$rl_sock" list-panes -a -F '#{pane_id}' | head -1)"
+  rl_tmuxenv="$(command tmux -L "$rl_sock" display-message -p '#{socket_path},0,0')"
+  # The agent domain is V2-only by nature (it IS the SQLite store). The suite
+  # runs V1 by default because the goldens are V1-shaped, so opt this section in.
+  rl() {
+    env TMUX="$rl_tmuxenv" TMUX_PANE="$rl_pane" XDG_STATE_HOME="$rl_state" \
+      XTMUX_OBS_V2=1 PATH="$rl_bin:$PATH" "$AGENT_STATE" "$@" >/dev/null 2>&1
+  }
+  rl_db="$rl_state/xtmux/observability.db"
+  rl_q() { python3 -c "
+import sqlite3,sys
+try: c=sqlite3.connect(sys.argv[1]); print(c.execute(sys.argv[2]).fetchone()[0])
+except Exception: print('ERR')" "$rl_db" "$1" 2>/dev/null; }
+
+  # Agent A occupies the pane, runs a turn (the running->running storm Claude's
+  # PreToolUse/PostToolUse hooks produce), then exits. Agent B reuses the pane.
+  rl idle --new-instance; rl running; rl running; rl running; rl idle
+  rl off
+  rl idle --new-instance; rl running
+
+  [ "$(rl_q "SELECT count(*) FROM agent_instances")" = 2 ] \
+    && ok "readiness: a reused pane opens a second durable agent instance" \
+    || nok "readiness: a reused pane opens a second durable agent instance (got $(rl_q "SELECT count(*) FROM agent_instances"))"
+
+  # The whole point of the handshake: exactly once per occupation. `idle` recurs
+  # after every turn; ready must not, or a coordinator waiting on it wakes on a
+  # mid-session idle and delivers work to an agent that never re-initialized.
+  [ "$(rl_q "SELECT count(*) FROM event_journal WHERE type='agent.ready'")" = 2 ] \
+    && ok "readiness: exactly one agent.ready per agent instance" \
+    || nok "readiness: exactly one agent.ready per agent instance"
+
+  [ "$(rl_q "SELECT count(*) FROM event_journal WHERE type='agent.ready' AND instance_id IS NULL")" = 0 ] \
+    && ok "readiness: every agent.ready carries its instance id" \
+    || nok "readiness: every agent.ready carries its instance id"
+
+  # Transitions attach to the instance that produced them, not to whoever
+  # occupied the pane before. Without this a reused pane's first transitions
+  # would be filed under the previous agent.
+  [ "$(rl_q "SELECT count(*) FROM agent_state_transitions WHERE instance_id IS NULL")" = 0 ] \
+    && ok "readiness: transitions are attributed to an agent instance" \
+    || nok "readiness: transitions are attributed to an agent instance"
+
+  # The storm is dropped before it costs a process spawn: A did idle, running x3,
+  # idle, off -> 4 real transitions, not 6.
+  [ "$(rl_q "SELECT count(*) FROM agent_state_transitions")" = 6 ] \
+    && ok "readiness: repeated same-state hook fires do not write duplicate transitions" \
+    || nok "readiness: repeated same-state hook fires do not write duplicate transitions (got $(rl_q "SELECT count(*) FROM agent_state_transitions"), want 6)"
+
+  [ "$(rl_q "SELECT count(*) FROM agent_instances WHERE ended_at_ms IS NOT NULL")" = 1 ] \
+    && ok "readiness: off ends the instance, leaving the successor open" \
+    || nok "readiness: off ends the instance, leaving the successor open"
+
+  # A double-fired hook must be a no-op, not a second wake and not an error.
+  rl_inst="$(python3 -c "
+import sqlite3,sys
+c=sqlite3.connect(sys.argv[1]); print(c.execute(\"SELECT instance_id FROM event_journal WHERE type='agent.ready' LIMIT 1\").fetchone()[0])" "$rl_db" 2>/dev/null)"
+  env XTMUX_OBS_DB_PATH="$rl_db" "$ROOT/bin/xtmux-obs" log-emit agent.ready instance_id="$rl_inst" pane="$rl_pane" >/dev/null 2>&1
+  rc=$?
+  { [ "$rc" -eq 0 ] && [ "$(rl_q "SELECT count(*) FROM event_journal WHERE type='agent.ready'")" = 2 ]; } \
+    && ok "readiness: a re-emitted agent.ready is idempotent, not a duplicate or an error" \
+    || nok "readiness: a re-emitted agent.ready is idempotent (rc=$rc)"
+
+  # A pane running a plain shell is not a ready agent. "Pane exists" must never
+  # be mistaken for "agent can receive work" — that is the whole bead.
+  command tmux -L "$rl_sock" new-window -d 'sleep 100' 2>/dev/null || true
+  bare="$(command tmux -L "$rl_sock" list-panes -a -F '#{pane_id}' | tail -1)"
+  [ "$(rl_q "SELECT count(*) FROM event_journal WHERE type='agent.ready' AND pane_id='$bare'")" = 0 ] \
+    && ok "readiness: a pane with no agent emits no agent.ready" \
+    || nok "readiness: a pane with no agent emits no agent.ready"
+
+  command tmux -L "$rl_sock" kill-server >/dev/null 2>&1 || true
+fi
+rm -rf "$rl_state" "$rl_bin"
+
+echo
 echo "== runtime-origin contract: xtmux context --current --json (xtmux-j46.2) =="
 
 # This is the CROSS-REPO interface: xtrm-dev/specialists parses these exact field
@@ -879,6 +971,97 @@ else
   command tmux -L "$ctx_sock" kill-server >/dev/null 2>&1 || true
 fi
 rm -rf "$ctx_state"
+
+
+echo
+echo "== pane capture contract: bounded terminal preview (xtmux-j46.4) =="
+
+# The only command whose response SIZE a caller controls, and it is reachable
+# over the SSH bridge. The bound is the whole point of the test.
+cap_sock="xtmux-cap-$$"
+if ! command tmux -L "$cap_sock" -f /dev/null new-session -d -s xtmux-cap 'seq 1 400; sleep 100' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m pane capture (cannot start isolated tmux server)\n'
+else
+  cap_pane="$(command tmux -L "$cap_sock" list-panes -a -F '#{pane_id}' | head -1)"
+  # Let `seq` finish writing before capturing, or the assertions race the shell.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    command tmux -L "$cap_sock" capture-pane -p -t "$cap_pane" 2>/dev/null | grep -q '^400$' && break
+    sleep 0.2
+  done
+  # The runtime resolves panes on the socket TMUX names; point it at ours.
+  cap_run() {
+    env TMUX="$(command tmux -L "$cap_sock" display-message -p '#{socket_path},0,0')" \
+      "$PICKER" pane capture --pane "$cap_pane" "$@" 2>/dev/null
+  }
+  jnum() { printf '%s' "$1" | sed -n "s/.*\"$2\":\([0-9]*\).*/\1/p"; }
+
+  cap_json="$(cap_run --lines 10 --json)"
+  case "$cap_json" in
+    *'"schema_version":"xtrm.xtmux.pane-capture.v1"'*"\"pane_id\":\"$cap_pane\""*)
+      ok "pane capture: emits xtrm.xtmux.pane-capture.v1 for the requested pane" ;;
+    *) nok "pane capture: emits xtrm.xtmux.pane-capture.v1 (got '$cap_json')" ;;
+  esac
+
+  # "The last N lines" must mean N — not N plus however many blank rows the
+  # visible screen happens to contribute. tmux's own `-S -N` pads to screen
+  # height, so an unbounded passthrough would return ~34 lines for a request of 10.
+  got_lines="$(jnum "$cap_json" returned_lines)"
+  { [ "$got_lines" = 10 ] && [ "$(jnum "$cap_json" requested_lines)" = 10 ]; } \
+    && ok "pane capture: returns exactly the requested line count, not the screen height" \
+    || nok "pane capture: returns exactly the requested line count (got returned_lines=$got_lines)"
+
+  # The last N lines, in order — a capture that silently returned the FIRST N
+  # would look identical in every count-based assertion above.
+  case "$cap_json" in
+    *'400'*) ok "pane capture: content is the TAIL of the buffer" ;;
+    *) nok "pane capture: content is the TAIL of the buffer" ;;
+  esac
+
+  # A viewer over the bridge must never be able to ask for an unbounded buffer.
+  # Over-large requests are CLAMPED and the response says so — not honored, and
+  # not rejected outright (a rejection would push callers to retry-guess the cap).
+  big="$(cap_run --lines 999999 --json)"
+  big_ret="$(jnum "$big" returned_lines)"; big_max="$(jnum "$big" max_lines)"
+  { [ -n "$big_max" ] && [ "$(jnum "$big" requested_lines)" = 999999 ] \
+      && [ "$big_ret" -le "$big_max" ]; } \
+    && ok "pane capture: an over-large --lines is clamped to max_lines, and reported" \
+    || nok "pane capture: an over-large --lines is clamped (returned=$big_ret max=$big_max)"
+
+  # `truncated` has exactly one meaning: there is more above what you were given.
+  # A clamped request that still returned the WHOLE buffer is not truncated —
+  # reporting it as such would make a viewer render a "scroll for more"
+  # affordance over content that has no more.
+  case "$cap_json" in *'"truncated":true'*) t1=1 ;; *) t1=0 ;; esac
+  case "$big"      in *'"truncated":false'*) t2=1 ;; *) t2=0 ;; esac
+  { [ "$t1" = 1 ] && [ "$t2" = 1 ]; } \
+    && ok "pane capture: truncated means 'more above', not 'your request was clamped'" \
+    || nok "pane capture: truncated semantics (partial=$t1 whole-buffer=$t2)"
+
+  # Read-only by contract: this is polled by a viewer.
+  before="$(command tmux -L "$cap_sock" show-options -p -t "$cap_pane" 2>/dev/null)"
+  cap_run --lines 5 --json >/dev/null
+  after="$(command tmux -L "$cap_sock" show-options -p -t "$cap_pane" 2>/dev/null)"
+  [ "$before" = "$after" ] && ok "pane capture: read-only — writes no pane option" \
+    || nok "pane capture: read-only — writes no pane option"
+
+  # A dead pane must not silently fall back to a bystander pane: the viewer would
+  # render someone else's terminal under the dead pane's title.
+  out="$(env TMUX="$(command tmux -L "$cap_sock" display-message -p '#{socket_path},0,0')" \
+    "$PICKER" pane capture --pane '%99999' --lines 5 --json 2>/dev/null)"; rc=$?
+  { [ "$rc" -ne 0 ] && [ -z "$out" ]; } \
+    && ok "pane capture: dead pane -> non-zero, no bystander content" \
+    || nok "pane capture: dead pane -> non-zero, no bystander content (rc=$rc out='$out')"
+
+  # A pane target that is not a stable %id is a bug in the caller, not a lookup
+  # to guess at: session names and indexes are mutable and would rebind silently.
+  out="$(env TMUX="$(command tmux -L "$cap_sock" display-message -p '#{socket_path},0,0')" \
+    "$PICKER" pane capture --pane xtmux-cap --lines 5 --json 2>/dev/null)"; rc=$?
+  { [ "$rc" -ne 0 ] && [ -z "$out" ]; } \
+    && ok "pane capture: a non-%id target is refused, never resolved by name" \
+    || nok "pane capture: a non-%id target is refused (rc=$rc out='$out')"
+
+  command tmux -L "$cap_sock" kill-server >/dev/null 2>&1 || true
+fi
 
 
 echo
