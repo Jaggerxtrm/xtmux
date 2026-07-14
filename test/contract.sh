@@ -1040,16 +1040,16 @@ except Exception: print(0)" "$ctx_db" 2>/dev/null; }
       # active pane" — answers confidently and wrongly, and the caller persists that
       # fabricated origin forever. The only safe answers are: refuse, or resolve a
       # pane that actually exists on the invoking server.
+      # REFUSAL is the only correct answer, and the assertion says so. Accepting
+      # "any pane that exists on the invoking server" would let an implementation
+      # ignore an invalid TMUX_PANE entirely and fall back to whatever pane happens
+      # to be active — which is a fabricated origin wearing a valid-looking id, the
+      # exact failure the dead-pane assertion above already forbids.
       cross="$(env TMUX="$other_env" TMUX_PANE="$ctx_pane" XDG_STATE_HOME="$ctx_state" \
         XTMUX_HOST_ID_FILE="$ctx_hostfile" "$PICKER" context --current --json 2>/dev/null)"; cross_rc=$?
-      cross_pane="$(jget "$cross" tmux_pane_id)"
-      if [ "$cross_rc" -ne 0 ] && [ -z "$cross" ]; then
-        ok "context: never resolves a bystander tmux server (refused the absent pane)"
-      elif [ -n "$cross_pane" ] && command tmux -L "$other_sock" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx -- "$cross_pane"; then
-        ok "context: never resolves a bystander tmux server (answered about the invoking server)"
-      else
-        nok "context: never resolves a bystander tmux server (rc=$cross_rc pane='$cross_pane' does not exist on the invoking server)"
-      fi
+      { [ "$cross_rc" -ne 0 ] && [ -z "$cross" ]; } \
+        && ok "context: never resolves a bystander tmux server — refuses, never falls back to an active pane" \
+        || nok "context: never resolves a bystander tmux server (rc=$cross_rc got '$cross')"
     fi
     command tmux -L "$other_sock" kill-server >/dev/null 2>&1 || true
   else
@@ -1061,16 +1061,25 @@ except Exception: print(0)" "$ctx_db" 2>/dev/null; }
   # events they emit are attributed to two different "hosts" that are one machine.
   race_state="$(mktemp -d)"
   race_file="$race_state/xtmux/host-id"
-  for _ in 1 2 3 4 5 6 7 8; do
+  race_out="$race_state/answers"
+  mkdir -p "$race_out"
+  # Capture what each RACER actually returned. A post-race read would prove
+  # nothing: if two racers each invented an id and the last writer won the file,
+  # a ninth read would agree with the file and the test would pass while two
+  # events had already been emitted under two different host identities. The
+  # divergence lives in the racers' own answers, so that is what gets compared.
+  for i in 1 2 3 4 5 6 7 8; do
     ( env XDG_STATE_HOME="$race_state" XTMUX_HOST_ID_FILE="$race_file" TMUX="$ctx_tmuxenv" \
-        TMUX_PANE="$ctx_pane" "$PICKER" context --current --json >/dev/null 2>&1 ) &
+        TMUX_PANE="$ctx_pane" "$PICKER" context --current --json 2>/dev/null \
+        | sed -n 's/.*"host_id":"\([^"]*\)".*/\1/p' > "$race_out/$i" ) &
   done
   wait
-  race_hosts="$(env XDG_STATE_HOME="$race_state" XTMUX_HOST_ID_FILE="$race_file" TMUX="$ctx_tmuxenv" \
-    TMUX_PANE="$ctx_pane" "$PICKER" context --current --json 2>/dev/null | sed -n 's/.*"host_id":"\([^"]*\)".*/\1/p')"
-  { [ -n "$race_hosts" ] && [ "$race_hosts" = "$(cat "$race_file" 2>/dev/null)" ]; } \
-    && ok "context: concurrent first-run readers agree on one host_id" \
-    || nok "context: concurrent first-run readers agree on one host_id (reported '$race_hosts', file '$(cat "$race_file" 2>/dev/null)')"
+  race_uniq="$(cat "$race_out"/* 2>/dev/null | sort -u | grep -c . || true)"
+  race_answers="$(cat "$race_out"/* 2>/dev/null | sort -u | head -1)"
+  race_persisted="$(cat "$race_file" 2>/dev/null || true)"
+  { [ "$race_uniq" = 1 ] && [ -n "$race_answers" ] && [ "$race_answers" = "$race_persisted" ]; } \
+    && ok "context: concurrent first-run readers all return the one persisted host_id" \
+    || nok "context: concurrent first-run readers all return one host_id (distinct=$race_uniq answer='$race_answers' file='$race_persisted')"
   rm -rf "$race_state"
 
   case "$ctx_json" in
