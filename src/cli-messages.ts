@@ -15,6 +15,7 @@ import { sendMessage } from "./domains/messages/send.ts";
 import { computeUnread } from "./domains/messages/reconcile-unread.ts";
 import { messageStatus } from "./domains/messages/status.ts";
 import { MessageError } from "./domains/messages/errors.ts";
+import { captureRuntimeContext } from "./domains/identity/runtime-context.ts";
 
 interface Args {
   positional: string[];
@@ -57,6 +58,24 @@ function booleanFlag(flags: Map<string, string | boolean>, name: string, fallbac
 function fail(json: boolean, code: string, message: string, exitCode: number, detail: Record<string, unknown> = {}, includeErrorCode = false): number {
   process.stderr.write(json ? `${JSON.stringify({ code, ...(includeErrorCode ? { error_code: code } : {}), message, detail })}\n` : `${message}\n`);
   return exitCode;
+}
+
+export type LiveTmuxRequester =
+  | { ok: true; sessionId: string; paneId: string }
+  | { ok: false; code: "XTMUX_NOT_IN_TMUX" | "XTMUX_PANE_UNRESOLVED"; message: string; detail: Record<string, string> };
+
+export function liveTmuxRequester(): LiveTmuxRequester {
+  const result = captureRuntimeContext();
+  if (!result.ok) return { ok: false, ...result.error };
+  if (result.origin.tmux_pane_id !== process.env.TMUX_PANE) {
+    return {
+      ok: false,
+      code: "XTMUX_PANE_UNRESOLVED",
+      message: `xtmux context resolved a different pane than TMUX_PANE ${process.env.TMUX_PANE ?? ""}`,
+      detail: { pane: process.env.TMUX_PANE ?? "", resolved: result.origin.tmux_pane_id },
+    };
+  }
+  return { ok: true, sessionId: result.origin.tmux_session_id, paneId: result.origin.tmux_pane_id };
 }
 
 function identityKind(id: string, paneId?: string | null): "session" | "pane" | "name" | "unknown" {
@@ -114,7 +133,8 @@ export function cliMessageSend(db: Db, argv: string[]): number {
   const to = String(flags.get("to") ?? "");
   const from = String(flags.get("from") ?? "");
   const text = String(flags.get("text") ?? "");
-  if (!to || !from || !text) return fail(json, "XTMUX_INVALID_ARGUMENT", "message-send: --to, --from, and --text are required", 2);
+  const replyTo = flags.get("reply-to") as string | undefined;
+  if (!to || !text || (!from && !replyTo)) return fail(json, "XTMUX_INVALID_ARGUMENT", "message-send: --to, --from, and --text are required unless --reply-to supplies the live requester", 2);
   const messageKey =
     (flags.get("message-key") as string | undefined) ??
     (flags.get("id") as string | undefined) ??
@@ -124,45 +144,96 @@ export function cliMessageSend(db: Db, argv: string[]): number {
   if (expectsReply === null) return fail(json, "XTMUX_INVALID_ARGUMENT", "message-send: --expects-reply must be true or false", 2);
   const senderPaneId = (flags.get("from-pane") as string | undefined) ?? null;
   const targetPaneId = (flags.get("to-pane") as string | undefined) ?? null;
-  const replyTo = flags.get("reply-to") as string | undefined;
-  let replyToMessageId: number | undefined;
+  let result;
+  let responseSenderId = from;
+  let responseSenderPaneId = senderPaneId;
   if (replyTo) {
-    replyToMessageId = db.raw.query<{ id: number }, [string]>(
-      "SELECT id FROM messages WHERE message_key = ?",
-    ).get(replyTo)?.id;
-    if (replyToMessageId === undefined) {
-      return fail(json, "XTMUX_MESSAGE_NOT_FOUND", "message-send: reply target was not found", 5, { replyToMessageKey: replyTo });
+    const requester = liveTmuxRequester();
+    if (!requester.ok) return fail(json, requester.code, requester.message, 4, requester.detail);
+    const target = db.raw.query<{
+      id: number;
+      sender_id: string;
+      sender_pane_id: string | null;
+      recipient_id: string;
+      target_pane_id: string | null;
+    }, [string]>(
+      "SELECT id, sender_id, sender_pane_id, recipient_id, target_pane_id FROM messages WHERE message_key = ?",
+    ).get(replyTo);
+    if (!target) return fail(json, "XTMUX_MESSAGE_NOT_FOUND", "message-send: reply target was not found", 5, { replyToMessageKey: replyTo });
+    if (requester.sessionId !== target.recipient_id || (from && from !== requester.sessionId)) {
+      return fail(json, "XTMUX_WRONG_RECIPIENT", "message-send: live tmux requester is not original recipient", 4, {
+        replyToMessageKey: replyTo,
+      });
     }
+    if (target.target_pane_id !== null && requester.paneId !== target.target_pane_id) {
+      return fail(json, "XTMUX_WRONG_PANE", "message-send: live tmux pane is not original target pane", 4, {
+        replyToMessageKey: replyTo,
+      });
+    }
+    if (senderPaneId !== null && senderPaneId !== requester.paneId) {
+      return fail(json, "XTMUX_WRONG_PANE", "message-send: --from-pane does not match live tmux pane", 4, {
+        replyToMessageKey: replyTo,
+      });
+    }
+    if (to !== target.sender_id || targetPaneId !== target.sender_pane_id) {
+      return fail(json, "XTMUX_ENDPOINT_OVERRIDE", "message-send: reply endpoints must reverse original message", 4, {
+        replyToMessageKey: replyTo,
+      });
+    }
+    if (senderPaneId !== null && senderPaneId !== target.target_pane_id) {
+      return fail(json, "XTMUX_ENDPOINT_OVERRIDE", "message-send: reply sender pane must reverse original target pane", 4, {
+        replyToMessageKey: replyTo,
+      });
+    }
+    if (expectsReply) return fail(json, "XTMUX_INVALID_CORRELATION", "message-send: correlated reply cannot expect another reply", 4, { replyToMessageKey: replyTo });
+    responseSenderId = requester.sessionId;
+    responseSenderPaneId = target.target_pane_id === null ? null : requester.paneId;
+    try {
+      result = sendMessage(db, {
+        messageKey,
+        senderId: responseSenderId,
+        senderPaneId: responseSenderPaneId ?? undefined,
+        recipientId: target.sender_id,
+        targetPaneId: target.sender_pane_id ?? undefined,
+        beadId: bead || undefined,
+        summary: text,
+        expectsReply: false,
+        replyToMessageId: target.id,
+      });
+    } catch (error) {
+      if (!(error instanceof MessageError)) throw error;
+      return fail(json, error.code, error.message, 4, error.detail, true);
+    }
+  } else {
+    result = sendMessage(db, {
+      messageKey,
+      senderId: from,
+      senderPaneId: senderPaneId ?? undefined,
+      recipientId: to,
+      targetPaneId: targetPaneId ?? undefined,
+      beadId: bead || undefined,
+      summary: text,
+      expectsReply,
+    });
   }
-  const result = sendMessage(db, {
-    messageKey,
-    senderId: from,
-    senderPaneId: senderPaneId ?? undefined,
-    recipientId: to,
-    targetPaneId: targetPaneId ?? undefined,
-    beadId: bead || undefined,
-    summary: text,
-    expectsReply,
-    replyToMessageId,
-  });
   if (json) {
     const createdAtMs = db.raw.query<{ created_at_ms: number }, [string]>("SELECT created_at_ms FROM messages WHERE message_key = ?").get(messageKey)?.created_at_ms ?? null;
     process.stdout.write(JSON.stringify({
       messageKey,
       messageId: result.messageId,
       duplicate: result.duplicate,
-      senderId: from,
-      senderPaneId,
-      senderKind: identityKind(from, senderPaneId),
+      senderId: responseSenderId,
+      senderPaneId: responseSenderPaneId,
+      senderKind: identityKind(responseSenderId, responseSenderPaneId),
       recipientId: to,
       targetPaneId,
       recipientKind: identityKind(to, targetPaneId),
       beadId: bead || null,
-      expectsReply,
+      expectsReply: replyTo ? false : expectsReply,
       createdAtMs,
     }) + "\n");
   } else {
-    process.stdout.write(`message\t${messageKey}\t${from}\t${to}\t${bead}\t${text}\n`);
+    process.stdout.write(`message\t${messageKey}\t${responseSenderId}\t${to}\t${bead}\t${text}\n`);
   }
   return 0;
 }
@@ -276,16 +347,24 @@ export function cliMessageReply(db: Db, argv: string[]): number {
   if (!replyToMessageKey || !text) {
     return fail(json, "XTMUX_INVALID_ARGUMENT", "message-reply: --in-reply-to and --text are required", 2, {}, true);
   }
+  const requester = liveTmuxRequester();
+  if (!requester.ok) return fail(json, requester.code, requester.message, 4, requester.detail, true);
   const target = db.raw.query<{ recipient_id: string; target_pane_id: string | null }, [string]>(
     "SELECT recipient_id, target_pane_id FROM messages WHERE message_key = ?",
   ).get(replyToMessageKey);
   if (!target) return fail(json, "XTMUX_MESSAGE_NOT_FOUND", "message-reply: reply target was not found", 5, { replyToMessageKey }, true);
+  if (requester.sessionId !== target.recipient_id) {
+    return fail(json, "XTMUX_WRONG_RECIPIENT", "message-reply: live tmux requester is not original recipient", 4, { replyToMessageKey }, true);
+  }
+  if (target.target_pane_id !== null && requester.paneId !== target.target_pane_id) {
+    return fail(json, "XTMUX_WRONG_PANE", "message-reply: live tmux pane is not original target pane", 4, { replyToMessageKey }, true);
+  }
   try {
     const result = replyMessage(db, {
       messageKey,
       replyToMessageKey,
-      senderId: target.recipient_id,
-      senderPaneId: target.target_pane_id ?? undefined,
+      senderId: requester.sessionId,
+      senderPaneId: target.target_pane_id === null ? undefined : requester.paneId,
       summary: text,
     });
     if (json) process.stdout.write(JSON.stringify(result) + "\n");
@@ -302,10 +381,24 @@ export function cliMessageCancel(db: Db, argv: string[]): number {
   const json = flags.get("json") === true;
   const messageKey = String(flags.get("message-key") ?? "");
   if (!messageKey) return fail(json, "XTMUX_INVALID_ARGUMENT", "message-cancel: --message-key is required", 2, {}, true);
-  const row = db.raw.query<{ id: number; expects_reply: number; fulfilled_at_ms: number | null; cancelled_at_ms: number | null }, [string]>(
-    "SELECT id, expects_reply, fulfilled_at_ms, cancelled_at_ms FROM messages WHERE message_key = ?",
+  const requester = liveTmuxRequester();
+  if (!requester.ok) return fail(json, requester.code, requester.message, 4, requester.detail, true);
+  const row = db.raw.query<{
+    id: number;
+    sender_id: string;
+    sender_pane_id: string | null;
+    fulfilled_at_ms: number | null;
+    cancelled_at_ms: number | null;
+  }, [string]>(
+    "SELECT id, sender_id, sender_pane_id, fulfilled_at_ms, cancelled_at_ms FROM messages WHERE message_key = ?",
   ).get(messageKey);
   if (!row) return fail(json, "XTMUX_MESSAGE_NOT_FOUND", "message-cancel: message was not found", 5, { messageKey }, true);
+  if (requester.sessionId !== row.sender_id) {
+    return fail(json, "XTMUX_WRONG_RECIPIENT", "message-cancel: live tmux requester is not message owner", 4, { messageKey }, true);
+  }
+  if (row.sender_pane_id !== null && requester.paneId !== row.sender_pane_id) {
+    return fail(json, "XTMUX_WRONG_PANE", "message-cancel: live tmux pane is not message owner pane", 4, { messageKey }, true);
+  }
   if (row.fulfilled_at_ms !== null) return fail(json, "XTMUX_ALREADY_FULFILLED", "message-cancel: message was already fulfilled", 4, { messageKey }, true);
   if (row.cancelled_at_ms !== null) {
     const result = { messageKey, cancelled: false, cancelledAtMs: row.cancelled_at_ms };

@@ -72,8 +72,11 @@ describe("operational JSON", () => {
       const missingPane = cli(["obligations", "list", "--json"], ctx.env);
       expect(missingPane.exitCode).toBe(2);
       expect(missingPane.stdout).toBe("");
-      expect(JSON.parse(missingPane.stderr)).toEqual({ code: "XTMUX_PANE_REQUIRED", message: "obligations list --json requires --pane or a tmux pane context", detail: {} });
-      expect(JSON.parse(cli(["obligations", "list", "--pane", "%none", "--json"], ctx.env).stdout)).toEqual([]);
+      expect(JSON.parse(missingPane.stderr)).toMatchObject({ code: "XTMUX_NOT_IN_TMUX" });
+      const arbitraryPane = cli(["obligations", "list", "--pane", "%none", "--json"], ctx.env);
+      expect(arbitraryPane.exitCode).toBe(2);
+      expect(arbitraryPane.stdout).toBe("");
+      expect(JSON.parse(arbitraryPane.stderr)).toMatchObject({ code: "XTMUX_NOT_IN_TMUX" });
     } finally {
       ctx.cleanup();
     }
