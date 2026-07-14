@@ -162,8 +162,8 @@ describe("coordination CLI acceptance", () => {
       });
       db.close();
 
-      const rawRows = JSON.parse(raw(["message-list", "--for", "$worker", "--pane", "%worker", "--json"], ctx.env).stdout);
-      const pickerRows = JSON.parse(picker(["message-list", "--for", "$worker", "--pane", "%worker", "--json"], ctx.env).stdout);
+      const rawRows = JSON.parse(raw(["message-list", "--for", "$worker", "--pane", "%worker", "--expects-reply", "--json"], ctx.env).stdout);
+      const pickerRows = JSON.parse(picker(["message-list", "--for", "$worker", "--pane", "%worker", "--expects-reply", "--json"], ctx.env).stdout);
       for (const rows of [rawRows, pickerRows]) {
         expect(rows[0]).toMatchObject({
           messageKey: "projection-request",
@@ -190,6 +190,48 @@ describe("coordination CLI acceptance", () => {
       }
       expect(pickerHelp).toMatch(/safe-send-pointer[^\n]*--reply-to/i);
       expect(pickerHelp).toContain("wakeConsumed");
+    } finally {
+      ctx.cleanup();
+    }
+  });
+
+  test("raw and picker expose one durable, requester-owned wake consumption", () => {
+    const ctx = setup();
+    try {
+      const rawWait = raw(["wait-agent", "%target", "--interval", "0", "--timeout", "1", "--json"], ctx.env);
+      expect(rawWait.status).toBe(0);
+      const pending = JSON.parse(rawWait.stdout);
+      expect(pending).toMatchObject({
+        target: "%target",
+        requesterSessionId: "$worker",
+        requesterPaneId: "%worker",
+        targetSessionId: "$target",
+        targetPaneId: "%target",
+        state: "terminal",
+        terminalStatus: "done",
+        wakeDelivered: true,
+        wakeConsumed: false,
+      });
+
+      const pickerWait = picker(["wait-agent", "%target", "--interval", "0", "--timeout", "1", "--json"], ctx.env);
+      expect(pickerWait.status).toBe(0);
+      expect(JSON.parse(pickerWait.stdout)).toMatchObject({ waitId: pending.waitId, wakeDelivered: true, wakeConsumed: false });
+
+      const consumed = raw(["wait-agent", "%target", "--interval", "0", "--timeout", "1", "--consume", "--json"], ctx.env);
+      expect(consumed.status).toBe(0);
+      expect(JSON.parse(consumed.stdout)).toMatchObject({ waitId: pending.waitId, wakeConsumed: true });
+
+      const foreign = picker(["wait-agent", "%target", "--interval", "0", "--timeout", "1", "--consume", "--json"], {
+        ...ctx.env,
+        TMUX_PANE: "%other",
+        MOCK_SESSION: "$other",
+        MOCK_PANE: "%other",
+      });
+      expect(foreign.status).toBe(4);
+      expect(JSON.parse(foreign.stderr)).toMatchObject({ code: "XTMUX_WAIT_NOT_OWNER" });
+
+      const text = raw(["wait-agent", "%target", "--interval", "0", "--timeout", "1"], ctx.env);
+      expect(text).toMatchObject({ status: 0, stdout: "wait\t%target\tdone\n" });
     } finally {
       ctx.cleanup();
     }
