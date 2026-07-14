@@ -124,6 +124,8 @@ clear_optional_meta() {
   set_pane_option @agent_parent_session ""
 }
 
+prev_state="$(tmux show-options -p -t "$target" -qv @agent_state 2>/dev/null || true)"
+
 # a new agent occupation of the pane gets a fresh identity, written before the
 # state event so the event already carries it. ordinary transitions preserve the
 # id: rotating it per-idle would make every turn look like a new agent, and a
@@ -131,6 +133,39 @@ clear_optional_meta() {
 if [ "$new_instance" = 1 ]; then
   xtmux_gen_uuid
   set_pane_option @agent_instance_id "$REPLY"
+fi
+
+# Feed the durable agent domain (agent_instances / agent_state_transitions /
+# event_journal). Best-effort and bounded: a hook must never fail an agent turn,
+# and `xtmux` may not be on PATH at all in a bare environment.
+#
+# This runs on EVERY Claude PreToolUse/PostToolUse, so it is gated on an actual
+# state change. The store debounces same-state writes anyway, but that costs two
+# process spawns per tool call to discover; the pane option already knows.
+emit_v2() {
+  command -v xtmux >/dev/null 2>&1 || return 0
+  local instance host
+  instance="$(tmux show-options -p -t "$target" -qv @agent_instance_id 2>/dev/null || true)"
+  host_id; host="$REPLY"
+  timeout 2s xtmux log emit "$@" \
+    pane="$target" \
+    session="$(tmux display-message -p -t "$target" '#{session_id}' 2>/dev/null || true)" \
+    session_name="$(tmux display-message -p -t "$target" '#S' 2>/dev/null || true)" \
+    instance_id="$instance" \
+    host_id="$host" \
+    bead="$(tmux show-options -p -t "$target" -qv @agent_bead 2>/dev/null || true)" \
+    parent="$(tmux show-options -p -t "$target" -qv @agent_parent_session 2>/dev/null || true)" \
+    >/dev/null 2>&1 || true
+}
+
+if [ "$new_instance" = 1 ]; then
+  emit_v2 agent.instance.started runtime="${XTMUX_AGENT_RUNTIME:-}"
+  # The handshake. This hook only fires once the runtime has finished init and
+  # installed its control hooks — reaching this line IS the proof that the agent
+  # can receive work, which "the pane exists" never was. Distinct from `idle`,
+  # which recurs after every turn; exactly-once is enforced by the store's UNIQUE
+  # event_key, so a double-fired hook cannot wake a coordinator twice.
+  emit_v2 agent.ready runtime="${XTMUX_AGENT_RUNTIME:-}"
 fi
 
 # don't let a missing/dead pane fail the agent hook. the state is best-effort;
@@ -143,6 +178,20 @@ set_meta_from_env
 # bead/task pointers for a reused pane. @agent_instance_id deliberately survives
 # so a post-mortem can still attribute the pane's last occupation; the next
 # --new-instance overwrites it.
+# Only a real transition reaches the store. The running->running storm from
+# Claude's PreToolUse/PostToolUse hooks is the common case and is dropped here,
+# before it costs a process spawn. A new instance always emits: its first state
+# must land even if the pane happened to already read `idle`.
+#
+# Emitted BEFORE clear_optional_meta: `off` wipes @agent_bead, and the closing
+# event is precisely the one that most needs to say which bead the agent died on.
+if [ "$new_instance" = 1 ] || [ "$prev_state" != "$state" ]; then
+  emit_v2 agent.state state="$state" hook_event="${CLAUDE_HOOK_EVENT:-${PI_HOOK_EVENT:-}}"
+  # `|| true`: this is the if-body's last command, and a false test under set -e
+  # would take the whole hook down with it.
+  { [ "$state" = off ] && emit_v2 agent.instance.ended; } || true
+fi
+
 [ "$state" = off ] && clear_optional_meta
 log_agent_state_event
 

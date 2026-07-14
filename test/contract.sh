@@ -751,6 +751,98 @@ fi
 rm -rf "$id_state"
 
 echo
+echo "== readiness lifecycle: agent.ready + durable agent domain (xtmux-j46.7) =="
+
+# Before this bead the hook wrote ONLY to events.jsonl: agent_instances and
+# agent_state_transitions had zero rows, so the V2 journal — the ordered feed the
+# Console graph consumes — knew nothing about agent lifecycle at all.
+rl_sock="xtmux-ready-$$"
+rl_state="$(mktemp -d)"
+rl_bin="$(mktemp -d)"
+# A real exec wrapper, not a symlink: the picker resolves its root from
+# BASH_SOURCE without dereferencing, so a symlink would send it hunting for the
+# runtime in the wrong tree.
+printf '#!/bin/sh\nexec %s/bin/tmux-session-picker "$@"\n' "$ROOT" > "$rl_bin/xtmux"
+chmod +x "$rl_bin/xtmux"
+
+if ! command tmux -L "$rl_sock" -f /dev/null new-session -d -s xtmux-ready 'sleep 100' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m readiness lifecycle (cannot start isolated tmux server)\n'
+else
+  rl_pane="$(command tmux -L "$rl_sock" list-panes -a -F '#{pane_id}' | head -1)"
+  rl_tmuxenv="$(command tmux -L "$rl_sock" display-message -p '#{socket_path},0,0')"
+  # The agent domain is V2-only by nature (it IS the SQLite store). The suite
+  # runs V1 by default because the goldens are V1-shaped, so opt this section in.
+  rl() {
+    env TMUX="$rl_tmuxenv" TMUX_PANE="$rl_pane" XDG_STATE_HOME="$rl_state" \
+      XTMUX_OBS_V2=1 PATH="$rl_bin:$PATH" "$AGENT_STATE" "$@" >/dev/null 2>&1
+  }
+  rl_db="$rl_state/xtmux/observability.db"
+  rl_q() { python3 -c "
+import sqlite3,sys
+try: c=sqlite3.connect(sys.argv[1]); print(c.execute(sys.argv[2]).fetchone()[0])
+except Exception: print('ERR')" "$rl_db" "$1" 2>/dev/null; }
+
+  # Agent A occupies the pane, runs a turn (the running->running storm Claude's
+  # PreToolUse/PostToolUse hooks produce), then exits. Agent B reuses the pane.
+  rl idle --new-instance; rl running; rl running; rl running; rl idle
+  rl off
+  rl idle --new-instance; rl running
+
+  [ "$(rl_q "SELECT count(*) FROM agent_instances")" = 2 ] \
+    && ok "readiness: a reused pane opens a second durable agent instance" \
+    || nok "readiness: a reused pane opens a second durable agent instance (got $(rl_q "SELECT count(*) FROM agent_instances"))"
+
+  # The whole point of the handshake: exactly once per occupation. `idle` recurs
+  # after every turn; ready must not, or a coordinator waiting on it wakes on a
+  # mid-session idle and delivers work to an agent that never re-initialized.
+  [ "$(rl_q "SELECT count(*) FROM event_journal WHERE type='agent.ready'")" = 2 ] \
+    && ok "readiness: exactly one agent.ready per agent instance" \
+    || nok "readiness: exactly one agent.ready per agent instance"
+
+  [ "$(rl_q "SELECT count(*) FROM event_journal WHERE type='agent.ready' AND instance_id IS NULL")" = 0 ] \
+    && ok "readiness: every agent.ready carries its instance id" \
+    || nok "readiness: every agent.ready carries its instance id"
+
+  # Transitions attach to the instance that produced them, not to whoever
+  # occupied the pane before. Without this a reused pane's first transitions
+  # would be filed under the previous agent.
+  [ "$(rl_q "SELECT count(*) FROM agent_state_transitions WHERE instance_id IS NULL")" = 0 ] \
+    && ok "readiness: transitions are attributed to an agent instance" \
+    || nok "readiness: transitions are attributed to an agent instance"
+
+  # The storm is dropped before it costs a process spawn: A did idle, running x3,
+  # idle, off -> 4 real transitions, not 6.
+  [ "$(rl_q "SELECT count(*) FROM agent_state_transitions")" = 6 ] \
+    && ok "readiness: repeated same-state hook fires do not write duplicate transitions" \
+    || nok "readiness: repeated same-state hook fires do not write duplicate transitions (got $(rl_q "SELECT count(*) FROM agent_state_transitions"), want 6)"
+
+  [ "$(rl_q "SELECT count(*) FROM agent_instances WHERE ended_at_ms IS NOT NULL")" = 1 ] \
+    && ok "readiness: off ends the instance, leaving the successor open" \
+    || nok "readiness: off ends the instance, leaving the successor open"
+
+  # A double-fired hook must be a no-op, not a second wake and not an error.
+  rl_inst="$(python3 -c "
+import sqlite3,sys
+c=sqlite3.connect(sys.argv[1]); print(c.execute(\"SELECT instance_id FROM event_journal WHERE type='agent.ready' LIMIT 1\").fetchone()[0])" "$rl_db" 2>/dev/null)"
+  env XTMUX_OBS_DB_PATH="$rl_db" "$ROOT/bin/xtmux-obs" log-emit agent.ready instance_id="$rl_inst" pane="$rl_pane" >/dev/null 2>&1
+  rc=$?
+  { [ "$rc" -eq 0 ] && [ "$(rl_q "SELECT count(*) FROM event_journal WHERE type='agent.ready'")" = 2 ]; } \
+    && ok "readiness: a re-emitted agent.ready is idempotent, not a duplicate or an error" \
+    || nok "readiness: a re-emitted agent.ready is idempotent (rc=$rc)"
+
+  # A pane running a plain shell is not a ready agent. "Pane exists" must never
+  # be mistaken for "agent can receive work" — that is the whole bead.
+  command tmux -L "$rl_sock" new-window -d 'sleep 100' 2>/dev/null || true
+  bare="$(command tmux -L "$rl_sock" list-panes -a -F '#{pane_id}' | tail -1)"
+  [ "$(rl_q "SELECT count(*) FROM event_journal WHERE type='agent.ready' AND pane_id='$bare'")" = 0 ] \
+    && ok "readiness: a pane with no agent emits no agent.ready" \
+    || nok "readiness: a pane with no agent emits no agent.ready"
+
+  command tmux -L "$rl_sock" kill-server >/dev/null 2>&1 || true
+fi
+rm -rf "$rl_state" "$rl_bin"
+
+echo
 echo "== runtime-origin contract: xtmux context --current --json (xtmux-j46.2) =="
 
 # This is the CROSS-REPO interface: xtrm-dev/specialists parses these exact field
