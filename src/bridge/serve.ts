@@ -21,6 +21,18 @@ const FOLLOW_INTERVAL_MS = 500;
 // each opening the DB every tick — CPU, fd, and timer pressure from valid frames.
 export const MAX_FOLLOWS = 4;
 
+// Per-connection request-rate cap (defense-in-depth for the remote surface). Each
+// request is handled synchronously in the stdin listener, and topology.snapshot /
+// pane.capture spawnSync a subprocess that blocks the event loop for its duration
+// — so a flood of valid requests starves every active follow. This bounds the
+// blocking budget without touching legitimate use: a viewer polling topology and
+// opening a handful of panes stays far under it. It bounds, it does not eliminate:
+// the complete fix is async subprocess execution, a runtime-wide change out of
+// scope here (tracked separately). bridge.cancel is exempt — it REDUCES load, and
+// rate-limiting the one control that stops work would be perverse.
+export const RATE_WINDOW_MS = 1000;
+export const MAX_REQUESTS_PER_WINDOW = 20;
+
 interface Follow {
   cancelled: boolean;
 }
@@ -92,6 +104,19 @@ export async function serveBridge(deps: BridgeDeps, input: Readable, output: Wri
     })();
   };
 
+  // Sliding-window request counter. Timestamps older than the window are dropped
+  // on each check, so this is O(requests-in-window), not unbounded — a flood is
+  // capped, so the array cannot grow past MAX_REQUESTS_PER_WINDOW + 1.
+  const requestTimes: number[] = [];
+  const overRate = (): boolean => {
+    const nowMs = deps.now();
+    const cutoff = nowMs - RATE_WINDOW_MS;
+    while (requestTimes.length > 0 && requestTimes[0]! <= cutoff) requestTimes.shift();
+    if (requestTimes.length >= MAX_REQUESTS_PER_WINDOW) return true;
+    requestTimes.push(nowMs);
+    return false;
+  };
+
   const dispatch = (line: string): void => {
     if (line.trim() === "") return;
     let parsed: unknown;
@@ -105,6 +130,13 @@ export async function serveBridge(deps: BridgeDeps, input: Readable, output: Wri
     }
     const req = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
     const id = typeof req["id"] === "string" || typeof req["id"] === "number" ? (req["id"] as string | number) : null;
+
+    // Rate cap before any work, so a flood is turned away CHEAPLY rather than
+    // after spawning a subprocess. bridge.cancel is exempt (it reduces load).
+    if (req["method"] !== "bridge.cancel" && overRate()) {
+      writeFrame({ id, error: { code: "XTMUX_BRIDGE_RESOURCE_LIMIT", message: `at most ${MAX_REQUESTS_PER_WINDOW} requests per ${RATE_WINDOW_MS}ms per connection`, detail: { max_requests_per_window: MAX_REQUESTS_PER_WINDOW, window_ms: RATE_WINDOW_MS } } });
+      return;
+    }
 
     // A handler that throws (a DB open failing with SQLITE_BUSY, a bad payload
     // reaching a sink) runs synchronously inside the stdin 'data' listener, where

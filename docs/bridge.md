@@ -37,5 +37,10 @@ The forced command is the boundary; these are the in-process limits that keep on
 - **Default deny.** Methods dispatch from an allowlist. A mutation name is refused (`XTMUX_BRIDGE_READ_ONLY`), an unknown one is refused (`XTMUX_BRIDGE_UNKNOWN_METHOD`), and neither routes to the local CLI.
 - **Bounded frames.** Requests cap at 1 MiB, enforced on the unparsed buffer so a peer cannot stall the reader by never sending a newline.
 - **Bounded fan-out.** At most a few concurrent `journal.follow` streams per connection (`XTMUX_BRIDGE_RESOURCE_LIMIT` past the cap) — each stream is a poll loop, so the count is capped, not just duplicate ids.
+- **Rate-capped.** A flood of valid requests is turned away with `XTMUX_BRIDGE_RESOURCE_LIMIT` before any subprocess is spawned, so a compromised viewer key cannot pin the event loop. This bounds — it does not eliminate — event-loop pressure; the complete fix is async subprocess execution, a runtime-wide change deliberately out of the bridge's scope.
 - **Backpressure.** If the peer stops reading, the reader pauses rather than buffering replies without bound.
 - **Survivable.** Malformed input is answered and the stream keeps serving; the process exits only on a graceful EOF.
+
+## Scope of what a viewer can see
+
+`topology.snapshot` enumerates **every** session, window, and pane on the host's tmux server, and `pane.capture` can read the content of any live pane on that server. This is intentional and the two are deliberately the same set: the bridge is whole-host observation, and capture must not be able to reach anything topology does not already reveal (nor is there a per-viewer topology filter for it to bypass). The access boundary is therefore the **key**, not the method — a bridge key is a grant to observe the whole host, so issue it only to a viewer trusted with that, via the forced-command deployment above. If you need to expose only part of a host, run the bridge under an account that can only see those sessions; the bridge does not partition a shared tmux server.
