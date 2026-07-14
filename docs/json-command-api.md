@@ -66,6 +66,7 @@ Categories are closed: **agent-json** gains/retains structured output for agents
 | `picker:audit` | agent-json | TSV findings → audit finding array | .3 |
 | `picker:context` | agent-json | `context --current --json` → `xtrm.runtime-origin.v1` for the invoking pane; read-only; exempt from the V2-mode gate (reads tmux + host-id file, not the store) | j46.2 |
 | `picker:pane` | agent-json | `pane capture --pane %N [--lines N] --json` → `xtrm.xtmux.pane-capture.v1`; read-only; exempt from the V2-mode gate (reads live tmux, not the store) | j46.4 |
+| `picker:bridge` | agent-json | `bridge --stdio` → execs the runtime's NDJSON bridge and hands it the pipe. Never captured: the stream is unbounded and a command substitution would swallow the signals meant to end it. Passes `XTMUX_PICKER` so the runtime can call back for `topology.snapshot` | j46.9 |
 | `picker:handoff` | guarded-admin | creates prompt file and may inject pointer; explicit confirmation | .2 |
 | `picker:mux-help` | interactive-only | human cheatsheet | — |
 | `picker:help` | interactive-only | grouped command reference incl. `--json` output field names; text by design — a `--json` help would just be a second surface to keep in sync | .15 |
@@ -129,6 +130,7 @@ Compiled plumbing remains documented even when it is not exposed as a picker or 
 | `obs:handoff` | agent-json | `handoff create` writes the durable handoff record and (optionally) registers its monitor in ONE SQLite transaction — a failed insert leaves neither, which two separate picker→runtime invocations could never guarantee. `handoff attempt` appends one delivery_attempts row per pointer injection. Idempotent on `handoff_key`: a retry reuses the record and the monitor, and only the attempt row is added | j46.8 |
 | `obs:log-follow` | agent-json | polling stream over `journalPage()` — one item per line, same envelope as the page. Advances its cursor only AFTER a row is written, so a crash mid-line replays a row (absorbed by `event_key`) rather than skipping it | j46.6 |
 | `obs:pane` | agent-json | `pane capture` → `xtrm.xtmux.pane-capture.v1`; bounded at `max_lines`, over-large requests clamped not rejected; opens no DB; content never journalled | j46.4 |
+| `obs:bridge` | agent-json | `bridge --stdio` → `xtrm.xtmux.bridge.v1` NDJSON over the ssh pipe. The only REMOTELY reachable surface, so: methods are dispatched from an allowlist (default deny — a mutation name is refused with `XTMUX_BRIDGE_READ_ONLY`, an unrecognised one with `XTMUX_BRIDGE_UNKNOWN_METHOD`, and neither routes anywhere); frames are capped at `max_frame_bytes` and every caller-sizeable result reuses the local clamp; malformed input answers with an error and keeps serving. No listen/bind mode exists — OpenSSH owns transport | j46.9 |
 | `obs:monitor` | agent-json | mixed dispatcher; only list is a normal query | .2 |
 | `obs:monitor:register` | guarded-admin | poller-internal mutation | .2 |
 | `obs:monitor:adopt` | guarded-admin | poller-internal mutation | .2 |

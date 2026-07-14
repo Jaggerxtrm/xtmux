@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { loadConfig } from "./config.ts";
-import { openDb } from "./db/connection.ts";
+import { openDb, openReadOnlyDb } from "./db/connection.ts";
 import { migrate } from "./db/schema.ts";
 import { checkHealth } from "./db/health.ts";
 import { DbError } from "./db/errors.ts";
@@ -19,6 +19,8 @@ import { listObligations } from "../extensions/pi-inbox-reply.ts";
 import { captureRuntimeContext } from "./domains/identity/runtime-context.ts";
 import { capturePane } from "./domains/identity/pane-capture.ts";
 import { createHandoffWithMonitor, markSent, HandoffKeyConflictError } from "./domains/handoffs/lifecycle.ts";
+import { serveBridge } from "./bridge/serve.ts";
+import { defaultTopology } from "./bridge/stdio.ts";
 
 function usage(): string {
   return `usage: xtmux-obs <command>
@@ -47,6 +49,7 @@ commands:
   shadow-record --domain X --command Y --diff-kind Z [--v1-snippet S --v2-snippet S]
                                           record a shadow divergence (picker-internal)
   handoff create|attempt                       durable handoff and delivery attempt
+  bridge --stdio                               read-only NDJSON bridge over ssh (j46.9)
 `;
 }
 
@@ -141,6 +144,32 @@ async function main(argv: string[]): Promise<number> {
         }
         process.stdout.write(JSON.stringify(result.capture) + "\n");
         return 0;
+      }
+      case "bridge": {
+        // The only remotely-reachable surface. --stdio is mandatory and is the
+        // ONLY mode: there is no listen/bind option, by design — transport is
+        // OpenSSH's problem, and a bridge that could open a socket would be a
+        // service to secure rather than a pipe someone already authenticated.
+        if (!argv.slice(3).includes("--stdio")) {
+          process.stderr.write(JSON.stringify({ code: "XTMUX_INVALID_ARGUMENT", message: "usage: xtmux bridge --stdio", detail: {} }) + "\n");
+          return 2;
+        }
+        return await serveBridge(
+          {
+            // READ-ONLY handle, and never migrate(): a remote peer must not cause
+            // a write lock, schema DDL, or a migration insert as a side effect of
+            // reading. Opened per request and closed again — a long-held handle
+            // would pin resources across a session that can outlive any
+            // connection, and open-per-read keeps a stale handle from surviving a
+            // local checkpoint.
+            db: () => openReadOnlyDb(cfg),
+            dbPath: cfg.dbPath,
+            topology: defaultTopology,
+            now: () => Date.now(),
+          },
+          process.stdin,
+          process.stdout,
+        );
       }
       case "obligations": {
         const json = argv.slice(4).includes("--json");
