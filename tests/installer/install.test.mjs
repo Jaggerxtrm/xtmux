@@ -20,12 +20,20 @@ test("clean install, idempotent update, xtrm coexistence, and uninstall", () => 
     theme: "dark",
     hooks: {
       Stop: [
-        { _source: "xtrm-global", hooks: [{ type: "command", command: "node /x/.xtrm/hooks/stop.mjs" }] },
+        { _source: "xtrm-global", hooks: [{ type: "command", command: "node /x/.xtrm/hooks/auto-monitor-stop.mjs" }] },
         { hooks: [{ type: "command", command: "user-stop" }] },
       ],
     },
   }));
-  writeFileSync(pi, JSON.stringify({ packages: ["npm:foreign"] }));
+  writeFileSync(pi, JSON.stringify({ packages: [
+    "npm:foreign",
+    "npm:@jaggerxtrm/xtmux",
+    "npm:@jaggerxtrm/xtmux@1.2.3",
+    { source: "npm:@jaggerxtrm/xtmux" },
+    { source: "npm:@jaggerxtrm/xtmux@2.0.0" },
+    { source: "npm:@jaggerxtrm/other" },
+    "npm:@jaggerxtrm/xtmux-extra",
+  ] }));
 
   const first = run(home);
   assert.equal(first.status, 0, first.stderr);
@@ -51,8 +59,13 @@ test("clean install, idempotent update, xtrm coexistence, and uninstall", () => 
   assert.deepEqual(readdirSync(join(home, ".claude", "hooks", "xtmux")).sort(), [
     "agent-state.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs", "auto-monitor-on-send.mjs", "auto-monitor-on-send.sh",
   ]);
-  assert.equal(json(pi).packages[0], "npm:foreign");
-  assert.equal(json(pi).packages.filter((entry) => typeof entry === "string" && entry.endsWith("/.pi/agent/packages/xtmux")).length, 1);
+  const installedPackages = json(pi).packages;
+  assert.deepEqual(installedPackages.slice(0, 3), ["npm:foreign", { source: "npm:@jaggerxtrm/other" }, "npm:@jaggerxtrm/xtmux-extra"]);
+  assert.equal(installedPackages.filter((entry) => {
+    const packageSource = typeof entry === "string" ? entry : entry?.source;
+    return packageSource === "npm:@jaggerxtrm/xtmux" || packageSource?.startsWith("npm:@jaggerxtrm/xtmux@");
+  }).length, 0);
+  assert.equal(installedPackages.filter((entry) => typeof entry === "string" && entry.endsWith("/.pi/agent/packages/xtmux")).length, 1);
   assert.deepEqual(json(join(home, ".pi", "agent", "packages", "xtmux", "package.json")).pi.extensions, ["./extensions/pi-agent-state.ts", "./extensions/pi-auto-monitor.ts"]);
   for (const name of ["xtmux", "tmux-session-picker", "xtmux-obs", "xtmux-monitor", "xtmux-changelog"]) assert.ok(existsSync(join(home, ".local", "bin", name)));
   for (const name of ["agent-state.sh", "git-pane-status.sh"]) assert.ok(existsSync(join(home, ".tmux", "scripts", name)));
@@ -63,7 +76,7 @@ test("clean install, idempotent update, xtrm coexistence, and uninstall", () => 
   assert.equal(after.theme, "dark");
   assert.equal(after.hooks.Stop.some((entry) => entry._source === "xtmux"), false);
   assert.equal(after.hooks.Stop.some((entry) => entry._source === "xtrm-global"), true);
-  assert.deepEqual(json(pi).packages, ["npm:foreign"]);
+  assert.deepEqual(json(pi).packages, ["npm:foreign", { source: "npm:@jaggerxtrm/other" }, "npm:@jaggerxtrm/xtmux-extra"]);
   rmSync(home, { recursive: true, force: true });
 });
 

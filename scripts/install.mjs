@@ -87,6 +87,7 @@ function hash(wrapper) {
 }
 
 function owned(wrapper) {
+  if (wrapper && Object.hasOwn(wrapper, "_source") && wrapper._source !== source) return false;
   if (wrapper?._source === source) return true;
   const commands = Array.isArray(wrapper?.hooks) ? wrapper.hooks.map((hook) => hook?.command).filter(Boolean) : [];
   return commands.length > 0 && commands.every((command) =>
@@ -158,10 +159,20 @@ function mergeCodex(removeOnly = false) {
   writeJson(codexSettings, settings);
 }
 
+const CANONICAL_PI_PACKAGE = "npm:@jaggerxtrm/xtmux";
+
+function isCanonicalPiPackage(entry) {
+  const packageSource = typeof entry === "string" ? entry : entry?.source;
+  return typeof packageSource === "string" &&
+    (packageSource === CANONICAL_PI_PACKAGE || packageSource.startsWith(`${CANONICAL_PI_PACKAGE}@`));
+}
+
 function mergePi(removeOnly = false) {
   const settings = readJson(piSettings);
   const packages = Array.isArray(settings.packages) ? settings.packages : [];
-  settings.packages = packages.filter((entry) => entry !== piPackage && entry?.source !== piPackage);
+  settings.packages = packages.filter((entry) =>
+    !isCanonicalPiPackage(entry) && entry !== piPackage && entry?.source !== piPackage
+  );
   if (!removeOnly) settings.packages.push(piPackage);
   writeJson(piSettings, settings);
 }
