@@ -35,6 +35,7 @@ field name here or there and the contract test fails.
 | Monitor mutation | arm: `monitorId`, `target`, `sessionId`, `paneId`, `state`, `startedAtMs`; kill: `monitorId`, `status` |
 | Session inventory | `{ "mode", "sessions", "panes" }`; rows retain dashboard concepts as camelCase: IDs/names, state, bead/task, repo/branch, dirty/shared-worktree flags, idle age in milliseconds, and path |
 | Topology snapshot | `schema_version`, `generated_at_ms`, `host`, `sessions[]` → `windows[]` → `panes[]`; snake_case is intentional cross-repository contract `xtrm.xtmux.topology.v1`, with stable `$N`/`@N`/`%N` IDs and optional `agent` metadata |
+| Pane capture | `schema_version`, `pane_id`, `captured_at_ms`, `requested_lines`, `returned_lines`, `max_lines`, `truncated`, `content`; snake_case cross-repository contract `xtrm.xtmux.pane-capture.v1`. `truncated` means only "there is more above what you were given" — a request clamped to `max_lines` against a shorter buffer still returns everything and is not truncated |
 | Audit finding | `severity`, `kind`, `sessionId`, `sessionName`, `paneId`, `paneIndex`, `path`, `repo`, `detail` |
 | Worktree collision | `path`, `sessionCount`, `paneCount`, `sessionNames` |
 | Event | existing journal keys normalized to `createdAtMs`, `type`, `sessionId`, `paneId`, `beadId`, `correlationId`, and bounded `detail` |
@@ -63,6 +64,7 @@ Categories are closed: **agent-json** gains/retains structured output for agents
 | `picker:topology` | agent-json | one bounded `tmux list-panes -a -F` pass → versioned nested topology snapshot; no pane content | j46.3 |
 | `picker:audit` | agent-json | TSV findings → audit finding array | .3 |
 | `picker:context` | agent-json | `context --current --json` → `xtrm.runtime-origin.v1` for the invoking pane; read-only; exempt from the V2-mode gate (reads tmux + host-id file, not the store) | j46.2 |
+| `picker:pane` | agent-json | `pane capture --pane %N [--lines N] --json` → `xtrm.xtmux.pane-capture.v1`; read-only; exempt from the V2-mode gate (reads live tmux, not the store) | j46.4 |
 | `picker:handoff` | guarded-admin | creates prompt file and may inject pointer; explicit confirmation | .2 |
 | `picker:mux-help` | interactive-only | human cheatsheet | — |
 | `picker:help` | interactive-only | grouped command reference incl. `--json` output field names; text by design — a `--json` help would just be a second surface to keep in sync | .15 |
@@ -122,6 +124,7 @@ Compiled plumbing remains documented even when it is not exposed as a picker or 
 | `obs:log-query` | agent-json | NDJSON → array in JSON mode | .4 |
 | `obs:delivery-record` | guarded-admin | picker-internal delivery evidence | .4 |
 | `obs:context` | agent-json | resolves the invoking pane → `xtrm.runtime-origin.v1`; cross-repo contract consumed by xtrm-dev/specialists; opens no DB | j46.2 |
+| `obs:pane` | agent-json | `pane capture` → `xtrm.xtmux.pane-capture.v1`; bounded at `max_lines`, over-large requests clamped not rejected; opens no DB; content never journalled | j46.4 |
 | `obs:monitor` | agent-json | mixed dispatcher; only list is a normal query | .2 |
 | `obs:monitor:register` | guarded-admin | poller-internal mutation | .2 |
 | `obs:monitor:adopt` | guarded-admin | poller-internal mutation | .2 |

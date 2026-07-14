@@ -974,6 +974,97 @@ rm -rf "$ctx_state"
 
 
 echo
+echo "== pane capture contract: bounded terminal preview (xtmux-j46.4) =="
+
+# The only command whose response SIZE a caller controls, and it is reachable
+# over the SSH bridge. The bound is the whole point of the test.
+cap_sock="xtmux-cap-$$"
+if ! command tmux -L "$cap_sock" -f /dev/null new-session -d -s xtmux-cap 'seq 1 400; sleep 100' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m pane capture (cannot start isolated tmux server)\n'
+else
+  cap_pane="$(command tmux -L "$cap_sock" list-panes -a -F '#{pane_id}' | head -1)"
+  # Let `seq` finish writing before capturing, or the assertions race the shell.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    command tmux -L "$cap_sock" capture-pane -p -t "$cap_pane" 2>/dev/null | grep -q '^400$' && break
+    sleep 0.2
+  done
+  # The runtime resolves panes on the socket TMUX names; point it at ours.
+  cap_run() {
+    env TMUX="$(command tmux -L "$cap_sock" display-message -p '#{socket_path},0,0')" \
+      "$PICKER" pane capture --pane "$cap_pane" "$@" 2>/dev/null
+  }
+  jnum() { printf '%s' "$1" | sed -n "s/.*\"$2\":\([0-9]*\).*/\1/p"; }
+
+  cap_json="$(cap_run --lines 10 --json)"
+  case "$cap_json" in
+    *'"schema_version":"xtrm.xtmux.pane-capture.v1"'*"\"pane_id\":\"$cap_pane\""*)
+      ok "pane capture: emits xtrm.xtmux.pane-capture.v1 for the requested pane" ;;
+    *) nok "pane capture: emits xtrm.xtmux.pane-capture.v1 (got '$cap_json')" ;;
+  esac
+
+  # "The last N lines" must mean N — not N plus however many blank rows the
+  # visible screen happens to contribute. tmux's own `-S -N` pads to screen
+  # height, so an unbounded passthrough would return ~34 lines for a request of 10.
+  got_lines="$(jnum "$cap_json" returned_lines)"
+  { [ "$got_lines" = 10 ] && [ "$(jnum "$cap_json" requested_lines)" = 10 ]; } \
+    && ok "pane capture: returns exactly the requested line count, not the screen height" \
+    || nok "pane capture: returns exactly the requested line count (got returned_lines=$got_lines)"
+
+  # The last N lines, in order — a capture that silently returned the FIRST N
+  # would look identical in every count-based assertion above.
+  case "$cap_json" in
+    *'400'*) ok "pane capture: content is the TAIL of the buffer" ;;
+    *) nok "pane capture: content is the TAIL of the buffer" ;;
+  esac
+
+  # A viewer over the bridge must never be able to ask for an unbounded buffer.
+  # Over-large requests are CLAMPED and the response says so — not honored, and
+  # not rejected outright (a rejection would push callers to retry-guess the cap).
+  big="$(cap_run --lines 999999 --json)"
+  big_ret="$(jnum "$big" returned_lines)"; big_max="$(jnum "$big" max_lines)"
+  { [ -n "$big_max" ] && [ "$(jnum "$big" requested_lines)" = 999999 ] \
+      && [ "$big_ret" -le "$big_max" ]; } \
+    && ok "pane capture: an over-large --lines is clamped to max_lines, and reported" \
+    || nok "pane capture: an over-large --lines is clamped (returned=$big_ret max=$big_max)"
+
+  # `truncated` has exactly one meaning: there is more above what you were given.
+  # A clamped request that still returned the WHOLE buffer is not truncated —
+  # reporting it as such would make a viewer render a "scroll for more"
+  # affordance over content that has no more.
+  case "$cap_json" in *'"truncated":true'*) t1=1 ;; *) t1=0 ;; esac
+  case "$big"      in *'"truncated":false'*) t2=1 ;; *) t2=0 ;; esac
+  { [ "$t1" = 1 ] && [ "$t2" = 1 ]; } \
+    && ok "pane capture: truncated means 'more above', not 'your request was clamped'" \
+    || nok "pane capture: truncated semantics (partial=$t1 whole-buffer=$t2)"
+
+  # Read-only by contract: this is polled by a viewer.
+  before="$(command tmux -L "$cap_sock" show-options -p -t "$cap_pane" 2>/dev/null)"
+  cap_run --lines 5 --json >/dev/null
+  after="$(command tmux -L "$cap_sock" show-options -p -t "$cap_pane" 2>/dev/null)"
+  [ "$before" = "$after" ] && ok "pane capture: read-only — writes no pane option" \
+    || nok "pane capture: read-only — writes no pane option"
+
+  # A dead pane must not silently fall back to a bystander pane: the viewer would
+  # render someone else's terminal under the dead pane's title.
+  out="$(env TMUX="$(command tmux -L "$cap_sock" display-message -p '#{socket_path},0,0')" \
+    "$PICKER" pane capture --pane '%99999' --lines 5 --json 2>/dev/null)"; rc=$?
+  { [ "$rc" -ne 0 ] && [ -z "$out" ]; } \
+    && ok "pane capture: dead pane -> non-zero, no bystander content" \
+    || nok "pane capture: dead pane -> non-zero, no bystander content (rc=$rc out='$out')"
+
+  # A pane target that is not a stable %id is a bug in the caller, not a lookup
+  # to guess at: session names and indexes are mutable and would rebind silently.
+  out="$(env TMUX="$(command tmux -L "$cap_sock" display-message -p '#{socket_path},0,0')" \
+    "$PICKER" pane capture --pane xtmux-cap --lines 5 --json 2>/dev/null)"; rc=$?
+  { [ "$rc" -ne 0 ] && [ -z "$out" ]; } \
+    && ok "pane capture: a non-%id target is refused, never resolved by name" \
+    || nok "pane capture: a non-%id target is refused (rc=$rc out='$out')"
+
+  command tmux -L "$cap_sock" kill-server >/dev/null 2>&1 || true
+fi
+
+
+echo
 echo "== rename contract =="
 
 if ! command -v tmux >/dev/null 2>&1; then

@@ -810,7 +810,7 @@ json_requested() {
 json_command_state() {
   local command="$1" subcommand="${2:-}"
   case "$command:$subcommand" in
-    message-list:*|message-status:*|unread-count:*|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|safe-send-pointer:*|handoff:*|message-send:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|context:--current) REPLY='ready' ;;
+    message-list:*|message-status:*|unread-count:*|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|safe-send-pointer:*|handoff:*|message-send:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|context:--current|pane:capture) REPLY='ready' ;;
     *) REPLY='unsupported' ;;
   esac
 }
@@ -828,17 +828,20 @@ json_request_preflight() {
       return 2
       ;;
   esac
-  # Read-only identity/topology commands are exempt from the V2-mode gate.
+  # Read-only identity/topology/content commands are exempt from the V2-mode gate.
   # XTMUX_OBS_V2 selects the observability STORE (SQLite vs legacy JSONL);
   # these commands read only live tmux and the host-id file. Gating them on
   # that flag would make a valid graph depend on an unrelated event store.
-  if [ "$command" != context ] && [ "$command" != topology ]; then
-    obs_v2_mode; local mode="$REPLY"
-    if [ "$mode" != 'on' ]; then
-      json_error XTMUX_JSON_REQUIRES_V2 "$command --json requires the V2 runtime" "$command"
-      return 2
-    fi
-  fi
+  case "$command" in
+    context|topology|pane) : ;;
+    *)
+      obs_v2_mode; local mode="$REPLY"
+      if [ "$mode" != 'on' ]; then
+        json_error XTMUX_JSON_REQUIRES_V2 "$command --json requires the V2 runtime" "$command"
+        return 2
+      fi
+      ;;
+  esac
   if [ "$command" != topology ] && ! obs_available; then
     json_error XTMUX_JSON_BACKEND_UNAVAILABLE "$command --json backend is unavailable" "$command"
     return 1
@@ -1022,6 +1025,24 @@ context_cli() {
     return 1
   fi
   obs_call_strict context "$@"
+}
+
+# pane capture --pane %N [--lines N] [--json] — bounded, read-only terminal
+# preview for a Console viewer. Kept out of `topology` on purpose: topology is
+# identity and must stay cheap enough to poll; pane content is unbounded and is
+# fetched on demand, one pane at a time.
+pane_cli() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    capture)
+      if ! obs_available; then
+        json_error XTMUX_RUNTIME_UNAVAILABLE "xtmux pane capture requires the V2 runtime (bin/xtmux-obs or bun + src/cli.ts)" "pane"
+        return 1
+      fi
+      obs_call_strict pane capture "$@"
+      ;;
+    *) printf 'usage: pane capture --pane <%%id> [--lines N] [--json]\n' >&2; return 2 ;;
+  esac
 }
 
 message_send() {
@@ -1867,6 +1888,19 @@ SESSIONS & DASHBOARD — inventory for orchestrators.
                    parent_session_id, last_transition
                    topology uses stable $/@/% ids, omits absent agent metadata,
                    and never includes pane content.
+
+PANE CONTENT — bounded, on-demand terminal preview.
+  pane capture --pane <%id> [--lines N] [--json]
+                   the last N lines of one pane, ANSI escapes intact. Kept out
+                   of topology: topology is identity and stays cheap to poll.
+
+  json output:
+    pane capture   schema_version, pane_id, captured_at_ms, requested_lines,
+                   returned_lines, max_lines, truncated, content
+
+    --lines above max_lines is CLAMPED, never silently honored. truncated means
+    only "there is more above what you were given". Content is opaque to xtmux:
+    never parsed, never journalled.
 
 OBSERVABILITY — the local event log and command telemetry.
   log emit  <type> [key=value ...]
@@ -3518,6 +3552,11 @@ case "${1:-}" in
   context)
     shift
     context_cli "$@"
+    exit $?
+    ;;
+  pane)
+    shift
+    pane_cli "$@"
     exit $?
     ;;
   message-send)
