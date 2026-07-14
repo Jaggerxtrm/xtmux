@@ -4,6 +4,7 @@ import { openDb } from "./db/connection.ts";
 import { migrate } from "./db/schema.ts";
 import { checkHealth } from "./db/health.ts";
 import { DbError } from "./db/errors.ts";
+import { MessageError } from "./domains/messages/errors.ts";
 import { cliMessageAck, cliMessageList, cliMessageSend, cliMessageStatus, cliUnreadCount } from "./cli-messages.ts";
 import { cliLogEmit, cliLogTail, cliLogQuery } from "./cli-log.ts";
 import { recordDelivery } from "./domains/deliveries/attempt.ts";
@@ -256,7 +257,7 @@ async function main(argv: string[]): Promise<number> {
         return 2;
     }
   } catch (err) {
-    if (err instanceof DbError) {
+    if (err instanceof DbError || err instanceof MessageError) {
       process.stderr.write(JSON.stringify(err.toJSON()) + "\n");
       return 3;
     }
