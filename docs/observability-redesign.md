@@ -375,6 +375,8 @@ Heartbeat is an in-place update of `updated_at_ms` + `heartbeat_at_ms`. Never in
 ```sql
 CREATE TABLE handoffs (
     id                    TEXT PRIMARY KEY,
+    handoff_key           TEXT UNIQUE,
+    monitor_id            TEXT,
     source_instance_id    TEXT,
     source_session_id     TEXT,
     target_session_id     TEXT,
@@ -401,7 +403,11 @@ CREATE INDEX ho_state   ON handoffs(state, created_at_ms);
 
 State closed set: `created`, `sent`, `delivery_failed`, `accepted`, `completed`, `cancelled`.
 
-Prompt-file body is NEVER stored — only path + hash + short summary.
+Prompt-file body is NEVER stored — only path + hash + short summary. Readiness-aware
+handoffs validate an existing local file before delivery. The handoff key is the
+idempotency handle: duplicate creates reuse one row and, when requested, one linked
+monitor. Monitor registration and handoff intent commit in one transaction. Pointer
+injection appends `delivery_attempts`; `send-keys` success is not acceptance.
 
 ### 4.8 `command_runs` (PRD §13)
 

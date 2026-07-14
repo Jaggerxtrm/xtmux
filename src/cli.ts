@@ -18,6 +18,7 @@ import { auditCommand } from "./commands/audit.ts";
 import { listObligations } from "../extensions/pi-inbox-reply.ts";
 import { captureRuntimeContext } from "./domains/identity/runtime-context.ts";
 import { capturePane } from "./domains/identity/pane-capture.ts";
+import { createHandoffWithMonitor, markSent } from "./domains/handoffs/lifecycle.ts";
 
 function usage(): string {
   return `usage: xtmux-obs <command>
@@ -44,6 +45,7 @@ commands:
   shadow-summary                          shadow-mode divergence rollup
   shadow-record --domain X --command Y --diff-kind Z [--v1-snippet S --v2-snippet S]
                                           record a shadow divergence (picker-internal)
+  handoff create|attempt                       durable handoff and delivery attempt
 `;
 }
 
@@ -247,7 +249,8 @@ async function main(argv: string[]): Promise<number> {
       case "log-emit":
       case "log-tail":
       case "log-query":
-      case "delivery-record": {
+      case "delivery-record":
+      case "handoff": {
         const db = openDb(cfg);
         try {
           migrate(db);
@@ -262,6 +265,7 @@ async function main(argv: string[]): Promise<number> {
             case "log-tail":         return cliLogTail(db, rest);
             case "log-query":        return cliLogQuery(db, rest);
             case "delivery-record":  return cliDeliveryRecord(db, rest);
+            case "handoff":          return cliHandoff(db, rest);
           }
         } finally {
           db.close();
@@ -292,6 +296,79 @@ async function main(argv: string[]): Promise<number> {
  * (safe-send-pointer, second-Enter injection) without embedding a Bun call
  * per side effect. Flags mirror recordDelivery() input.
  */
+function cliHandoff(db: import("./db/connection.ts").Db, argv: string[]): number {
+  const sub = argv[0] ?? "";
+  const flags = new Map<string, string>();
+  for (let i = 1; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (!arg.startsWith("--")) continue;
+    const next = argv[i + 1];
+    if (next !== undefined && !next.startsWith("--")) {
+      flags.set(arg.slice(2), next);
+      i++;
+    } else {
+      flags.set(arg.slice(2), "true");
+    }
+  }
+  if (sub === "attempt") {
+    const id = flags.get("id");
+    if (!id) { process.stderr.write("handoff attempt: --id required\n"); return 2; }
+    const result = markSent(db, {
+      id,
+      succeeded: flags.get("succeeded") !== "false",
+      failureCode: flags.get("failure-code"),
+      payloadSummary: flags.get("summary"),
+    });
+    process.stdout.write(JSON.stringify({ handoffId: id, deliveryId: result.deliveryId, state: result.newState }) + "\n");
+    return result.newState === "sent" ? 0 : 1;
+  }
+  if (sub !== "create") {
+    process.stderr.write("usage: handoff create|attempt ...\n");
+    return 2;
+  }
+  const id = flags.get("id") ?? flags.get("key");
+  const promptFile = flags.get("prompt-file");
+  const paneId = flags.get("target-pane");
+  const beadId = flags.get("bead");
+  if (!id || !promptFile || !paneId || !beadId) {
+    process.stderr.write("handoff create: --id --prompt-file --target-pane --bead required\n");
+    return 2;
+  }
+  const monitorId = flags.get("monitor-id");
+  const nowMs = Date.now();
+  const result = createHandoffWithMonitor(db, {
+    id,
+    handoffKey: flags.get("key") ?? id,
+    sourceInstanceId: flags.get("source-instance"),
+    sourceSessionId: flags.get("source-session"),
+    targetSessionId: flags.get("target-session"),
+    targetPaneId: paneId,
+    beadId,
+    parentSessionId: flags.get("parent-session"),
+    promptFile,
+    summary: flags.get("summary"),
+  }, monitorId ? {
+    monitorId,
+    target: flags.get("target") ?? paneId,
+    paneId,
+    sessionId: flags.get("target-session"),
+    instanceId: flags.get("instance-id"),
+    state: flags.get("monitor-state") ?? "waiting-ready",
+    timeoutMs: flags.get("monitor-timeout-ms") ? Number(flags.get("monitor-timeout-ms")) : undefined,
+    intervalMs: Number(flags.get("monitor-interval-ms") ?? 1000),
+  } : undefined, () => nowMs);
+  process.stdout.write(JSON.stringify({
+    handoffId: result.handoff.id,
+    handoffKey: flags.get("key") ?? id,
+    promptFile,
+    promptFileHash: result.handoff.hash,
+    duplicate: result.handoff.duplicate,
+    monitorId: result.monitorId,
+    monitorDuplicate: result.monitorDuplicate,
+  }) + "\n");
+  return 0;
+}
+
 function cliDeliveryRecord(db: import("./db/connection.ts").Db, argv: string[]): number {
   const flags = new Map<string, string>();
   for (let i = 0; i < argv.length; i++) {

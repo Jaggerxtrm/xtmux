@@ -1749,6 +1749,7 @@ never send while working
 
 safe handoff
   handoff --target <pane> --bead <id> --note 'NO push'
+  handoff --target <pane> --prompt-file /tmp/task.md --wait-ready 2m --monitor --yes
   safe-send-pointer <pane> 'leggi /tmp/file.txt e seguilo'
   add --yes only after inspecting the printed command
 
@@ -1846,6 +1847,9 @@ DELEGATION — hand work to another pane without fragmenting its prompt.
   handoff          --target <target> --bead <id> [--note <text>] [--file <path>]
                    [--yes] [json]   writes the /tmp prompt file, keeps the bead as
                                     the contract, prints the exact send command
+  handoff          --target <target> --prompt-file <path> [--wait-ready <dur>]
+                   [--monitor] [--handoff-key <key>] [--yes] [json]
+                                    uses existing file; durable, readiness-aware path
   safe-send-pointer [--yes] [--double-enter|--no-double-enter] [--force-freeform]
                    <target> <slash-command | /tmp pointer> [json]
                    Refuses working targets, multiline payloads and $(...).
@@ -1853,7 +1857,8 @@ DELEGATION — hand work to another pane without fragmenting its prompt.
                    panes eat via paste-detection; pi/Codex panes do not get it.
 
   json output:
-    handoff        target, paneId, beadId, promptFile, sent, createdAtMs
+    handoff        target, paneId, beadId, promptFile, handoffKey, monitorId, sent,
+                   durable, createdAtMs
 
 IDENTITY — who is this pane, for cross-tool job attribution.
   context --current [--json]   the runtime origin of the INVOKING pane, as
@@ -2815,8 +2820,119 @@ handoff_default_file() {
   REPLY="${TMPDIR:-/tmp}/xtmux-handoff-${safe}.txt"
 }
 
+handoff_prompt_file_allowed() {
+  local file="$1" real root
+  case "$file" in /*) ;; *) return 1 ;; esac
+  [ -f "$file" ] && [ -r "$file" ] || return 1
+  real="$(realpath -e -- "$file" 2>/dev/null || readlink -f -- "$file" 2>/dev/null || true)"
+  [ -n "$real" ] || return 1
+  for root in "${TMPDIR:-/tmp}" "$PWD" "${XDG_STATE_HOME:-$HOME/.local/state}"; do
+    root="$(realpath -m -- "$root" 2>/dev/null || printf '%s' "$root")"
+    case "$real" in "$root"/*) return 0 ;; esac
+  done
+  return 1
+}
+
+handoff_ready_seen() {
+  local pane="$1" out
+  obs_available || return 1
+  obs_runtime_argv
+  out="$("${OBS_ARGV[@]}" log-query --type agent.ready --pane "$pane" --limit 20 --json 2>/dev/null || true)"
+  printf '%s\n' "$out" | grep -F '"type":"agent.ready"' >/dev/null 2>&1
+}
+
+handoff_wait_ready() {
+  local target="$1" pane="$2" timeout="$3" json="$4" start now elapsed
+  start="$(date +%s)"
+  while :; do
+    handoff_ready_seen "$pane" && return 0
+    now="$(date +%s)"; elapsed=$(( now - start ))
+    if [ "$timeout" -gt 0 ] && [ "$elapsed" -ge "$timeout" ]; then
+      if [ "$json" = 1 ]; then
+        json_error XTMUX_READY_TIMEOUT "handoff: agent.ready timeout target=$target pane=$pane elapsed=${elapsed}s" handoff
+      else
+        printf 'handoff: agent.ready timeout target=%s pane=%s elapsed=%ss\n' "$target" "$pane" "$elapsed" >&2
+      fi
+      return 124
+    fi
+    sleep 1
+  done
+}
+
+handoff_v2() {
+  local execute="$1" json="$2" target="$3" bead="$4" prompt_file="$5" wait_ready="$6" monitor="$7" handoff_key="$8" parent="$9" pane="${10}"; shift 10
+  local target_session source_session monitor_id safe_key state create_out ready_timeout
+  handoff_prompt_file_allowed "$prompt_file" || {
+    command_error "$json" XTMUX_PROMPT_FILE_REJECTED "handoff: prompt file must be readable existing file under local allowed path: $prompt_file" handoff 2
+    return $?
+  }
+  current_tmux_session_id; source_session="$REPLY"
+  resolve_to_session_id "$target" && target_session="$REPLY" || target_session=''
+  [ -n "$bead" ] || bead='prompt-file'
+  [ -n "$handoff_key" ] || handoff_key="ho-$(date +%s)-$$-${RANDOM}"
+  safe_key="$(printf '%s' "$handoff_key" | tr -cs 'A-Za-z0-9._-' '-')"
+  [ -n "$safe_key" ] || safe_key="ho-$(date +%s)-$$"
+  monitor_id="hm-$safe_key"
+  if [ "$execute" != 1 ]; then
+    if [ "$json" = 1 ]; then
+      printf '{"target":"%s","paneId":"%s","beadId":"%s","promptFile":"%s","handoffKey":"%s","monitorId":%s,"sent":false,"dryRun":true}\n' \
+        "$(json_escape "$target")" "$(json_escape "$pane")" "$(json_escape "$bead")" "$(json_escape "$prompt_file")" "$(json_escape "$handoff_key")" \
+        "$([ "$monitor" = 1 ] && printf '"%s"' "$(json_escape "$monitor_id")" || printf null)"
+    else
+      printf 'prompt-file\t%s\n' "$prompt_file"
+      printf 'handoff-key\t%s\n' "$handoff_key"
+      printf 'dry-run\tno durable writes or delivery\n'
+    fi
+    return 0
+  fi
+  obs_available || { command_error "$json" XTMUX_RUNTIME_UNAVAILABLE 'handoff: durable handoff requires V2 runtime' handoff 1; return $?; }
+  obs_runtime_argv
+  local create_args=(handoff create --id "$handoff_key" --key "$handoff_key" --target "$target" --target-pane "$pane" --bead "$bead" --prompt-file "$prompt_file")
+  [ -n "$target_session" ] && create_args+=(--target-session "$target_session")
+  [ -n "$source_session" ] && create_args+=(--source-session "$source_session")
+  [ -n "$parent" ] && create_args+=(--parent-session "$parent")
+  if [ "$monitor" = 1 ]; then
+    create_args+=(--monitor-id "$monitor_id" --monitor-state waiting-ready --monitor-interval-ms 1000)
+    [ "$wait_ready" -gt 0 ] && create_args+=(--monitor-timeout-ms "$((wait_ready * 1000))")
+  fi
+  create_out="$("${OBS_ARGV[@]}" "${create_args[@]}" 2>/dev/null)" || {
+    if [ "$json" = 1 ]; then json_error XTMUX_HANDOFF_CREATE_FAILED 'handoff: durable registration failed' handoff; else printf '%s\n' "$create_out" >&2; fi
+    return 1
+  }
+  if [ "$wait_ready" -gt 0 ]; then
+    handoff_wait_ready "$target" "$pane" "$wait_ready" "$json" || {
+      local ready_rc=$?
+      if [ "$monitor" = 1 ]; then
+        "${OBS_ARGV[@]}" monitor terminate --id "$monitor_id" --status timeout >/dev/null 2>&1 || true
+      fi
+      return "$ready_rc"
+    }
+  fi
+  tmux set-option -p -t "$pane" -q @agent_bead "$bead" 2>/dev/null || true
+  tmux set-option -p -t "$pane" -q @agent_prompt_file "$prompt_file" 2>/dev/null || true
+  [ -n "$parent" ] && tmux set-option -p -t "$pane" -q @agent_parent_session "$parent" 2>/dev/null || true
+  local pointer="leggi $prompt_file e seguilo. contratto durevole: bd show $bead. report finale nel bead."
+  safe_pointer_payload "$pointer" || return 2
+  local delivery_rc=0
+  set +e
+  XTMUX_HANDOFF_ID="$handoff_key" safe_send_pointer --yes "$target" "$pointer" >/dev/null
+  delivery_rc=$?
+  set -e
+  if [ "$delivery_rc" -ne 0 ]; then
+    if [ "$json" = 1 ]; then
+      json_error XTMUX_HANDOFF_DELIVERY_FAILED "handoff: pointer injection failed target=$target pane=$pane" handoff
+    fi
+    return "$delivery_rc"
+  fi
+  if [ "$json" = 1 ]; then
+    printf '{"target":"%s","paneId":"%s","beadId":"%s","promptFile":"%s","handoffKey":"%s","monitorId":%s,"sent":true,"durable":true}\n' \
+      "$(json_escape "$target")" "$(json_escape "$pane")" "$(json_escape "$bead")" "$(json_escape "$prompt_file")" "$(json_escape "$handoff_key")" \
+      "$([ "$monitor" = 1 ] && printf '"%s"' "$(json_escape "$monitor_id")" || printf null)"
+  fi
+}
+
 handoff() {
-  local execute=0 json=0 target='' bead='' note='' file='' parent='' arg pane state bead_line pointer qtarget qpointer
+  local execute=0 json=0 target='' bead='' note='' file='' prompt_file='' wait_ready=0 monitor=0 handoff_key='' parent='' arg pane state bead_line pointer qtarget qpointer new_mode=0
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
@@ -2831,12 +2947,27 @@ handoff() {
       --note=*) note="${arg#--note=}" ;;
       --file) [ "$#" -gt 0 ] || return 2; file="$1"; shift ;;
       --file=*) file="${arg#--file=}" ;;
+      --prompt-file) [ "$#" -gt 0 ] || return 2; prompt_file="$1"; shift; new_mode=1 ;;
+      --prompt-file=*) prompt_file="${arg#--prompt-file=}"; new_mode=1 ;;
+      --wait-ready) [ "$#" -gt 0 ] || return 2; parse_wait_duration "$1" || return 2; wait_ready="$REPLY"; new_mode=1; shift ;;
+      --wait-ready=*) parse_wait_duration "${arg#--wait-ready=}" || return 2; wait_ready="$REPLY"; new_mode=1 ;;
+      --monitor) monitor=1; new_mode=1 ;;
+      --handoff-key) [ "$#" -gt 0 ] || return 2; handoff_key="$1"; new_mode=1; shift ;;
+      --handoff-key=*) handoff_key="${arg#--handoff-key=}"; new_mode=1 ;;
       --parent) [ "$#" -gt 0 ] || return 2; parent="$1"; shift ;;
       --parent=*) parent="${arg#--parent=}" ;;
       -h|--help) return 2 ;;
       *) printf 'handoff: unknown arg: %s\n' "$arg" >&2; return 2 ;;
     esac
   done
+  if [ "$new_mode" = 1 ]; then
+    [ -n "$target" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'usage: handoff --target <target> --prompt-file <path> [--wait-ready <dur>] [--monitor] [--yes]' handoff 2; return $?; }
+    [ -n "$prompt_file" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'handoff: --prompt-file required with readiness-aware flags' handoff 2; return $?; }
+    resolve_tmux_pane "$target" || { command_error "$json" XTMUX_TARGET_NOT_FOUND "handoff: target not found: $target" handoff 1; return $?; }
+    pane="$REPLY"
+    handoff_v2 "$execute" "$json" "$target" "$bead" "$prompt_file" "$wait_ready" "$monitor" "$handoff_key" "$parent" "$pane"
+    return $?
+  fi
   [ -n "$target" ] && [ -n "$bead" ] || { command_error "$json" XTMUX_INVALID_ARGUMENT 'usage: handoff --target <pane/session> --bead <id> [--note text] [--file /tmp/x] [--yes]' handoff 2; return $?; }
   resolve_tmux_pane "$target" || { command_error "$json" XTMUX_TARGET_NOT_FOUND "handoff: target not found: $target" handoff 1; return $?; }
   pane="$REPLY"
@@ -3014,32 +3145,39 @@ safe_send_pointer() {
     fi
   fi
   if [ "$execute" = 1 ]; then
+    local send_rc=0 second_rc=0
+    set +e
     tmux send-keys -t "$pane" "$payload" Enter
-    if [ "$double_enter" = 1 ]; then
+    send_rc=$?
+    if [ "$send_rc" = 0 ] && [ "$double_enter" = 1 ]; then
       sleep 2
       tmux send-keys -t "$pane" Enter
+      second_rc=$?
+      [ "$second_rc" = 0 ] || send_rc="$second_rc"
     fi
+    set -e
     current_tmux_session_id; _from_session="$REPLY"
-    obs_v2_mode
-    if [ "$REPLY" = 'on' ]; then
-      # V2: pane pointer is a DELIVERY attempt, not a durable message. Semantic
-      # separation per PRD §7 / docs/observability-redesign.md §4.4.
+    obs_v2_mode; local send_mode="$REPLY"
+    local target_sid='' summary
+    resolve_to_session_id "$target" && target_sid="$REPLY" || target_sid="$target"
+    summary="$(printf '%s' "$payload" | head -c 80)"
+    if [ -n "${XTMUX_HANDOFF_ID:-}" ] && [ "$send_mode" = 'on' ]; then
       obs_runtime_argv
-      local target_sid=''
-      resolve_to_session_id "$target" && target_sid="$REPLY" || target_sid="$target"
-      local summary
-      summary="$(printf '%s' "$payload" | head -c 80)"
+      "${OBS_ARGV[@]}" handoff attempt --id "$XTMUX_HANDOFF_ID" --summary "$summary" \
+        --succeeded "$([ "$send_rc" = 0 ] && printf true || printf false)" \
+        $([ "$send_rc" = 0 ] || printf '%s' '--failure-code target_gone') >/dev/null 2>&1 || true
+    elif [ "$send_mode" = 'on' ]; then
+      # V2: pane pointer is a DELIVERY attempt, not a durable message.
+      obs_runtime_argv
       "${OBS_ARGV[@]}" delivery-record \
-        --kind pane_pointer \
-        --source-session "${_from_session:-unknown}" \
-        --target-session "$target_sid" \
-        --target-pane "$pane" \
-        --summary "$summary" \
-        --succeeded true 2>/dev/null || true
+        --kind pane_pointer --source-session "${_from_session:-unknown}" \
+        --target-session "$target_sid" --target-pane "$pane" --summary "$summary" \
+        --succeeded "$([ "$send_rc" = 0 ] && printf true || printf false)" 2>/dev/null || true
     else
       log_event message.sent via=safe-send-pointer from="${_from_session:-unknown}" to="$target" pane="$pane" text="$payload" state="${state:-unknown}" double_enter="$double_enter" force_freeform="$force_freeform"
     fi
     [ "$json" = 1 ] || printf 'sent target=%s pane=%s state=%s double_enter=%s\n' "$target" "$pane" "${state:-unknown}" "$double_enter"
+    return "$send_rc"
   fi
   if [ "$json" = 1 ]; then
     printf '{"target":"%s","paneId":"%s","state":"%s","doubleEnter":%s,"sent":%s}\n' \
