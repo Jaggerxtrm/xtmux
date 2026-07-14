@@ -1001,6 +1001,78 @@ else
   [ "$before" = "$after" ] && ok "context: read-only — writes no pane option" \
     || nok "context: read-only — writes no pane option"
 
+  # Read-only means read-only IN THE STORE too, not just in pane options.
+  # Specialists calls this on every `sp run`; if it lazily opened an agent
+  # instance, every job dispatch would manufacture a phantom agent, and the
+  # pane-option check above would never notice.
+  ctx_db="$ctx_state/xtmux/observability.db"
+  ctx_rows() { python3 -c "
+import sqlite3,sys
+try: print(sqlite3.connect(sys.argv[1]).execute('SELECT count(*) FROM agent_instances').fetchone()[0])
+except Exception: print(0)" "$ctx_db" 2>/dev/null; }
+  rows_before="$(ctx_rows)"
+  ctx_run >/dev/null; ctx_run >/dev/null
+  rows_after="$(ctx_rows)"
+  [ "$rows_before" = "$rows_after" ] \
+    && ok "context: read-only — opens no agent instance in the store" \
+    || nok "context: read-only — opens no agent instance (rows $rows_before -> $rows_after)"
+
+  # Two live tmux servers. The pane id %N is only unique WITHIN a server, so a
+  # resolver that ignores which socket it was invoked from can hand back a
+  # confidently-wrong pane that exists on the other server — the worst outcome
+  # available here, because the caller persists it as a verified origin forever.
+  other_sock="xtmux-ctx-other-$$"
+  if command tmux -L "$other_sock" -f /dev/null new-session -d -s xtmux-ctx-other 'sleep 100' 2>/dev/null; then
+    other_env="$(command tmux -L "$other_sock" display-message -p '#{socket_path},0,0')"
+    # Every fresh tmux server numbers its first pane %0, so naming %0 across two
+    # servers proves NOTHING — the answer matches whichever server you asked. Burn
+    # the low ids on the second server so the id we probe with exists ONLY on the
+    # first one: now "resolved it anyway" and "refused" are distinguishable answers.
+    command tmux -L "$other_sock" new-window -d 'sleep 100' 2>/dev/null || true
+    command tmux -L "$other_sock" kill-pane -t "$ctx_pane" 2>/dev/null || true
+    # NOT `display-message -t <pane>`: tmux exits 0 with EMPTY output for a dead
+    # pane target, so an existence check on its exit code always says "alive".
+    if command tmux -L "$other_sock" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx -- "$ctx_pane"; then
+      printf '  \033[33mskip\033[0m context bystander-server case (could not make %s absent on the 2nd server)\n' "$ctx_pane"
+    else
+      # TMUX names the second server; TMUX_PANE names a pane that lives only on the
+      # first. A resolver that consults the wrong socket — or falls back to "some
+      # active pane" — answers confidently and wrongly, and the caller persists that
+      # fabricated origin forever. The only safe answers are: refuse, or resolve a
+      # pane that actually exists on the invoking server.
+      cross="$(env TMUX="$other_env" TMUX_PANE="$ctx_pane" XDG_STATE_HOME="$ctx_state" \
+        XTMUX_HOST_ID_FILE="$ctx_hostfile" "$PICKER" context --current --json 2>/dev/null)"; cross_rc=$?
+      cross_pane="$(jget "$cross" tmux_pane_id)"
+      if [ "$cross_rc" -ne 0 ] && [ -z "$cross" ]; then
+        ok "context: never resolves a bystander tmux server (refused the absent pane)"
+      elif [ -n "$cross_pane" ] && command tmux -L "$other_sock" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx -- "$cross_pane"; then
+        ok "context: never resolves a bystander tmux server (answered about the invoking server)"
+      else
+        nok "context: never resolves a bystander tmux server (rc=$cross_rc pane='$cross_pane' does not exist on the invoking server)"
+      fi
+    fi
+    command tmux -L "$other_sock" kill-server >/dev/null 2>&1 || true
+  else
+    printf '  \033[33mskip\033[0m context bystander-server case (cannot start a second tmux server)\n'
+  fi
+
+  # Concurrent first-run. Several panes start at once on a fresh machine and all
+  # race to create the host id; if the writer is not atomic they disagree, and the
+  # events they emit are attributed to two different "hosts" that are one machine.
+  race_state="$(mktemp -d)"
+  race_file="$race_state/xtmux/host-id"
+  for _ in 1 2 3 4 5 6 7 8; do
+    ( env XDG_STATE_HOME="$race_state" XTMUX_HOST_ID_FILE="$race_file" TMUX="$ctx_tmuxenv" \
+        TMUX_PANE="$ctx_pane" "$PICKER" context --current --json >/dev/null 2>&1 ) &
+  done
+  wait
+  race_hosts="$(env XDG_STATE_HOME="$race_state" XTMUX_HOST_ID_FILE="$race_file" TMUX="$ctx_tmuxenv" \
+    TMUX_PANE="$ctx_pane" "$PICKER" context --current --json 2>/dev/null | sed -n 's/.*"host_id":"\([^"]*\)".*/\1/p')"
+  { [ -n "$race_hosts" ] && [ "$race_hosts" = "$(cat "$race_file" 2>/dev/null)" ]; } \
+    && ok "context: concurrent first-run readers agree on one host_id" \
+    || nok "context: concurrent first-run readers agree on one host_id (reported '$race_hosts', file '$(cat "$race_file" 2>/dev/null)')"
+  rm -rf "$race_state"
+
   case "$ctx_json" in
     *XDG_STATE_HOME*|*"$ctx_sock"*|*PATH*) nok "context: leaks no environment" ;;
     *) ok "context: leaks no environment" ;;
