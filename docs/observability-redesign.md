@@ -936,3 +936,470 @@ Phase 1/2 captured (this session, in worktree `xtmux-xt-claude-hnjk`):
 Phase 1 captured (concurrent, in worktree `xtmux-xt-claude-ojsx`): `normalize.sed` + monitor/telemetry/audit-focused fixtures — merged at Phase 1 close.
 
 Remaining fixtures (owner phase in parens): `message-send` (3), `message-ack` (3), `monitor-agent` (4), `monitor-kill` (4), `handoff` (6), `safe-send-pointer` (3/6), `telemetry` (7).
+
+---
+
+## 17. Reply-obligation and outbound-wake state machines (xtmux-3ua)
+
+**Decision.** SQLite is sole source of truth for reply obligations, correlated
+replies, outbound waits, monitor linkage, terminal wakes, and wake consumption.
+The three runtime marker directories are compatibility inputs only during one
+bounded migration. No steady-state writer, reader, deleter, hook, extension, or
+CLI path reads a marker directory. A restart derives all pending state by SQL;
+Pi and Claude reloads do not recreate fulfilled work from process memory.
+
+**Identity rule.** Reply authority uses stable session identity (`session_id`)
+plus optional pane identity (`pane_id`). A monitor target alone never identifies
+its requester. `message-ack` remains receipt-only. Only an explicit reply carrying
+`reply_to_message_key` can fulfil an obligation; target, bead, text, send order,
+or safe-send-pointer output never clears one.
+
+### 17.1 Phase-1 audit: current marker ownership
+
+This table records current behavior, not target behavior. Every current-state
+claim in this subsection has a file:line citation.
+
+| Directory | Writer path | Reader path | Deleter path | TTL / override | Duplicate write meaning | Stale file meaning |
+|---|---|---|---|---|---|---|
+| `xtmux-reply-obligations` | Pi creates directory and atomically writes `reply-to-<sender>[-for-<pane>]_pending` from `recordObligation`; inbound discovery calls it after `message-list`, and ack result handling calls it again. [`extensions/pi-inbox-reply.ts:140-154`, `extensions/pi-inbox-reply.ts:204-224`] | `readObligations` scans matching names, `listObligations` projects them, render/widget and `before_agent_start` consume them. [`extensions/pi-inbox-reply.ts:106-138`, `extensions/pi-inbox-reply.ts:250-320`] | `clearObligation` removes sender/pane path after any parsed message-send or safe-send-pointer result; reads also remove expired, invalid, or malformed files. [`extensions/pi-inbox-reply.ts:118-123`, `extensions/pi-inbox-reply.ts:326-335`] | `XTMUX_REPLY_OBLIGATION_TTL_MS`, default 3,600,000 ms; expiry uses marker mtime. [`extensions/pi-inbox-reply.ts:47-58`, `extensions/pi-inbox-reply.ts:110-116`] | Same sender/pane path is replaced by atomic temp-write/rename; it refreshes a snapshot and does not prove a second inbound message or fulfilment. [`extensions/pi-inbox-reply.ts:140-154`] | File older than TTL is deleted and obligation disappears even when SQLite message remains expected and unfulfilled. [`extensions/pi-inbox-reply.ts:110-123`] |
+| `xtmux-outbound-expectations` | Pi writes JSON `{target, monitorId, paneId, createdAtMs}` after auto-monitor arm, using an atomic temp-write/rename. [`extensions/pi-inbox-reply.ts:74-82`, `extensions/pi-auto-monitor.ts:98-100`] | Pi reads names for its own pane, then compares stored monitor IDs with `monitor-list --json` to find a monitor no longer active. [`extensions/pi-inbox-reply.ts:84-103`, `extensions/pi-inbox-reply.ts:232-245`] | Reader removes malformed, invalid, or over-8-hour files; completed files are removed after monitor-list comparison. [`extensions/pi-inbox-reply.ts:84-103`, `extensions/pi-inbox-reply.ts:245-247`] | Hard-coded 28,800,000 ms (8 h); no environment override in reader. Auto-monitor timeout/interval defaults are separate `8h`/`60s` settings. [`extensions/pi-inbox-reply.ts:84-95`, `extensions/pi-auto-monitor.ts:17-22`, `extensions/pi-auto-monitor.ts:28-31`] | Same target/pane filename is replaced, so duplicate arm records latest monitor ID; it is not an idempotent database transition and can overwrite a prior wait. [`extensions/pi-inbox-reply.ts:74-82`] | Expired, corrupt, or no-longer-listed monitor file is removed; a live SQLite monitor may therefore lose requester wake context. [`extensions/pi-inbox-reply.ts:84-103`, `extensions/pi-inbox-reply.ts:232-247`] |
+| `xtmux-auto-monitor` | Claude PostToolUse hook touches `<sanitized-target>_pending` after successful send/pointer recognition; it may touch even when another monitor is active. [`.xtrm/hooks/auto-monitor-on-send.mjs:20-50`, `.xtrm/hooks/auto-monitor-on-send.mjs:152-167`] | Claude Stop drain hook scans every `_pending` file; Pi does not read this directory. [`.xtrm/hooks/auto-monitor-drain-stop.mjs:18-55`, `.xtrm/hooks/auto-monitor-drain-stop.mjs:81-98`] | Claude PostToolUse consumed hook removes target marker after a wait-agent command; drain-stop prunes old markers; its reason also tells users to `rm -f` manually. [`.xtrm/hooks/auto-monitor-consumed.mjs:10-12`, `.xtrm/hooks/auto-monitor-consumed.mjs:36-45`, `.xtrm/hooks/auto-monitor-drain-stop.mjs:41-51`, `.xtrm/hooks/auto-monitor-drain-stop.mjs:73-76`] | `XTMUX_AUTO_MONITOR_TTL_MS`, default 3,600,000 ms; `XTMUX_AUTO_MONITOR_DRAIN_DISABLE=1` bypasses gate and `XTMUX_AUTO_MONITOR_DISABLE=1` bypasses sender hook. [`.xtrm/hooks/auto-monitor-drain-stop.mjs:16-21`, `.xtrm/hooks/auto-monitor-drain-stop.mjs:81-83`, `.xtrm/hooks/auto-monitor-on-send.mjs:23-26`, `.xtrm/hooks/auto-monitor-on-send.mjs:142-143`] | Touching same target updates mtime; it means another send observed, not a distinct requester/target wait. An existing monitor does not suppress touch. [`.xtrm/hooks/auto-monitor-on-send.mjs:124-132`, `.xtrm/hooks/auto-monitor-on-send.mjs:160-165`] | Old marker is pruned before Stop, so a forgotten monitor-arm gate silently stops blocking after TTL; foreign target identity cannot be distinguished from same-name target. [`.xtrm/hooks/auto-monitor-drain-stop.mjs:31-55`] |
+
+The repository's `.claude/settings.json` currently registers SessionStart,
+PreToolUse, PostToolUse, and Stop hooks but no `xtmux-auto-monitor` triple;
+those hook files therefore require explicit packaging/registration during the
+cutover. [`.claude/settings.json:1-164`]
+
+The current SQLite runtime already has durable messages, receipts, and monitor
+rows. `messages` stores sender/recipient/pane hints and `expects_reply`, while
+receipts store read/ack state; receipts are not a fulfilment relation.
+[`src/db/migrations/0002_messages.ts:14-39`, `src/db/migrations/0009_message_reply_expectation.ts:7-12`]
+`sendMessage` inserts message and receipt atomically, deduplicates by
+`message_key`, and journals `messages.sent`; it has no reply link.
+[`src/domains/messages/send.ts:21-28`, `src/domains/messages/send.ts:62-101`]
+`ackMessage` validates recipient and updates only receipt columns, with
+idempotent `already-acked`; it has no fulfilment side effect.
+[`src/domains/messages/ack.ts:21-25`, `src/domains/messages/ack.ts:52-80`]
+The CLI defaults `expectsReply` to true when `--bead` is present, and the picker
+passes that option through. [`src/cli-messages.ts:107-132`, `bin/tmux-session-picker:961-1032`]
+Current list JSON projects message and receipt fields only, while current
+monitor rows contain target/session/pane and terminal status but no requester or
+wake-consumption columns. [`src/cli-messages.ts:160-192`, `src/domains/monitors/store.ts:328-355`, `src/db/migrations/0003_domains_4_7_8.ts:18-43`]
+
+### 17.2 Relational design and SQL migration sketch
+
+Migration 0010, `reply_links_and_outbound_waits`, extends `messages` and adds
+one table where existing rows cannot express requester-owned waits. Existing
+migration registration is ordered and checksummed by `schema.ts`; this sketch
+belongs after 0009 and must be registered there, not run by this ADR.
+[`src/db/schema.ts:43-60`, `src/db/schema.ts:90-115`]
+
+#### Reply obligation: extend `messages`
+
+A separate obligation table is unnecessary: an obligation is a projection of one
+message with `expects_reply=1`, no cancellation, and no correlated reply. The
+message row is already its durable key and retention unit. A self-FK reply link
+and fulfilment columns preserve the relation without duplicating identity.
+
+```sql
+ALTER TABLE messages ADD COLUMN reply_to_message_id INTEGER
+  REFERENCES messages(id) ON DELETE RESTRICT;
+ALTER TABLE messages ADD COLUMN fulfilled_by_message_id INTEGER
+  REFERENCES messages(id) ON DELETE RESTRICT;
+ALTER TABLE messages ADD COLUMN fulfilled_at_ms INTEGER;
+ALTER TABLE messages ADD COLUMN cancelled_at_ms INTEGER;
+ALTER TABLE messages ADD COLUMN cancel_reason TEXT;
+
+ALTER TABLE messages ADD CONSTRAINT messages_reply_shape CHECK (
+  reply_to_message_id IS NULL OR reply_to_message_id <> id
+);
+ALTER TABLE messages ADD CONSTRAINT messages_fulfilment_shape CHECK (
+  (fulfilled_by_message_id IS NULL AND fulfilled_at_ms IS NULL)
+  OR (fulfilled_by_message_id IS NOT NULL AND fulfilled_at_ms IS NOT NULL)
+);
+ALTER TABLE messages ADD CONSTRAINT messages_terminal_obligation CHECK (
+  cancelled_at_ms IS NULL OR fulfilled_at_ms IS NULL
+);
+
+CREATE UNIQUE INDEX msg_one_reply_per_request
+  ON messages(reply_to_message_id)
+  WHERE reply_to_message_id IS NOT NULL;
+CREATE INDEX msg_pending_obligation
+  ON messages(sender_id, sender_pane_id, created_at_ms, id)
+  WHERE expects_reply = 1
+    AND fulfilled_at_ms IS NULL
+    AND cancelled_at_ms IS NULL;
+CREATE INDEX msg_reply_target
+  ON messages(reply_to_message_id, sender_id, sender_pane_id, id);
+CREATE INDEX msg_fulfilled_retention
+  ON messages(fulfilled_at_ms, cancelled_at_ms, id)
+  WHERE expects_reply = 1;
+```
+
+The implementation must use a migration-safe table rebuild if deployed SQLite
+cannot add named table constraints with `ALTER TABLE`; this is a sketch, not a
+claim that shown statements are exact migration syntax. Existing unique
+`message_key` remains send idempotency key.
+
+#### Outbound wait: add `outbound_waits`
+
+A new table is necessary. `monitors` describes target lifecycle and is shared by
+callers; it has no requester, originating wait, or one-time wake receipt. Adding
+requester columns directly to `monitors` would allow multiple waits to claim one
+monitor and would lose wait history when duplicate arms race.
+
+```sql
+CREATE TABLE outbound_waits (
+    id                    TEXT PRIMARY KEY,
+    requester_session_id  TEXT NOT NULL,
+    requester_pane_id     TEXT NOT NULL,
+    target_session_id     TEXT NOT NULL,
+    target_pane_id        TEXT NOT NULL,
+    related_message_id    INTEGER,
+    monitor_id            TEXT,
+    state                 TEXT NOT NULL,
+    terminal_status       TEXT,
+    terminal_at_ms        INTEGER,
+    wake_delivered_at_ms  INTEGER,
+    wake_consumed_at_ms   INTEGER,
+    created_at_ms         INTEGER NOT NULL,
+    updated_at_ms         INTEGER NOT NULL,
+    expires_at_ms         INTEGER,
+    CHECK (state IN ('registered','armed','terminal','consumed','cancelled','expired')),
+    CHECK (terminal_status IS NULL OR terminal_status IN
+           ('done','timeout','killed','target_gone','process_gone','error')),
+    CHECK ((state IN ('terminal','consumed') AND terminal_status IS NOT NULL)
+           OR state NOT IN ('terminal','consumed')),
+    CHECK (wake_consumed_at_ms IS NULL OR wake_delivered_at_ms IS NOT NULL),
+    FOREIGN KEY (related_message_id) REFERENCES messages(id) ON DELETE SET NULL,
+    FOREIGN KEY (monitor_id) REFERENCES monitors(id) ON DELETE SET NULL
+);
+CREATE UNIQUE INDEX ow_monitor_once ON outbound_waits(monitor_id)
+  WHERE monitor_id IS NOT NULL;
+CREATE INDEX ow_requester_pending
+  ON outbound_waits(requester_session_id, requester_pane_id, state, updated_at_ms)
+  WHERE state IN ('registered','armed','terminal');
+CREATE INDEX ow_target_active
+  ON outbound_waits(target_session_id, target_pane_id, state, updated_at_ms)
+  WHERE state IN ('registered','armed');
+CREATE INDEX ow_wake_delivery
+  ON outbound_waits(requester_session_id, requester_pane_id, wake_delivered_at_ms, id)
+  WHERE state = 'terminal' AND wake_consumed_at_ms IS NULL;
+CREATE INDEX ow_retention ON outbound_waits(updated_at_ms, state);
+```
+
+Every requester query includes both requester columns:
+
+```sql
+SELECT id, target_session_id, target_pane_id, monitor_id, state,
+       terminal_status, terminal_at_ms, wake_delivered_at_ms,
+       wake_consumed_at_ms, created_at_ms, updated_at_ms
+  FROM outbound_waits
+ WHERE requester_session_id = :session_id
+   AND requester_pane_id = :pane_id
+   AND state IN ('registered','armed','terminal')
+ ORDER BY created_at_ms, id;
+```
+
+Registration, arm, terminal transition, wake delivery, and consumption each run
+in an immediate transaction and emit one journal envelope. Arm uses
+`UPDATE ... WHERE state='registered' AND monitor_id IS NULL`; zero rows means
+`duplicate-arm`, not a second monitor. Terminal monitor reconciliation joins
+`outbound_waits.monitor_id = monitors.id`; it never scans a marker directory.
+A monitor with no wait is retained as an orphan monitor and cannot deliver a
+wake. Wake delivery is idempotent by wait ID; consumption is
+`UPDATE ... WHERE state='terminal' AND wake_consumed_at_ms IS NULL`, so exactly
+one caller receives `consumed:true`.
+
+### 17.3 Reply-obligation state machine
+
+States are derived, not copied: `pending` means expected, neither cancelled nor
+fulfilled; `fulfilled` means both fulfilment columns are set; `cancelled` means
+`cancelled_at_ms` is set. A reply row is a normal message with
+`reply_to_message_id`; explicit reply validates original row, reversed session
+and pane identities, and one-reply uniqueness before inserting. No text or bead
+matching is permitted.
+
+| Transition case | Guard and input | SQLite transition | Concrete API result | Journal outcome |
+|---|---|---|---|---|
+| Send with implicit expectation | `message-send` has `--bead`, no explicit false, valid identities | Insert `expects_reply=1` message and receipt; fulfilment NULL | `duplicate:false`, `expectsReply:true`, key/id returned | `messages.sent` with IDs, panes, intent; no body |
+| Send without expectation | Explicit false or no bead and no true flag | Insert `expects_reply=0`; no pending projection | JSON returns `expectsReply:false`; reply-to rejected | `messages.sent` with false intent |
+| Ack before reply | Recipient calls unchanged `message-ack` | Update only receipt ack columns; obligation stays pending | `status:acked`; obligation still listed | `messages.ack`; no fulfilment event |
+| Correlated reply | `message-reply --in-reply-to K` from original recipient to original sender | Insert reply FK and atomically set original fulfilment columns | `fulfilled:true`, `duplicate:false`, both keys returned | `messages.reply.linked` with IDs/identities |
+| Reply before late ack | Valid reply while original receipt is unacked | Fulfil original; receipt remains unacked | Reply succeeds; later ack independently returns acked/already-acked | Link event, then receipt event only |
+| Duplicate ack | Correct recipient repeats ack | No row change; first timestamp/by preserved | `status:already-acked`, original fulfilment unchanged | No second mutation event |
+| Duplicate reply | Same reply key retries, or same original already has reply | Same key returns existing reply; another key hits unique correlation conflict | Same-key `duplicate:true`; different-key `XTMUX_REPLY_ALREADY_LINKED`, no partial write | `messages.reply.duplicate` or `messages.reply.rejected` |
+| Invalid correlation | Missing key, unknown key, self-link, non-expecting original, or reply cycle | Transaction rolls back; no message, receipt, or fulfilment update | `XTMUX_REPLY_INVALID_CORRELATION`, exit 4 | `messages.reply.rejected` with reason code and IDs only |
+| Cross-recipient reply | Sender is not original recipient, or destination is not original sender | Transaction rolls back; original remains pending | `XTMUX_REPLY_WRONG_PARTICIPANT`, exit 4 | Rejected event with expected/actual session and pane IDs |
+| Cross-pane reply | Original has target pane and reply sender pane differs, or explicit destination pane differs | Transaction rolls back; original remains pending | `XTMUX_REPLY_WRONG_PANE`, exit 4 | Rejected event with pane IDs, no body |
+| Cancellation | Owner sends `message-cancel --message-key K` before fulfilment | Set `cancelled_at_ms/reason` only when pending; never clear receipt | `cancelled:true`; later reply rejected as cancelled | `messages.obligation.cancelled` |
+| Cancellation race with reply | Reply and cancel race in separate writers | First committed terminal transition wins; second sees fulfilled/cancelled and rolls back | One success; other `XTMUX_REPLY_TERMINAL` | Exactly one terminal event; loser rejection records outcome |
+| Retention prune | Fulfilled/cancelled original, required receipt state complete, age past message TTL | Delete reply and original in one transaction only after journal/import cutoff; pending rows excluded | `retention` reports deleted pair; no obligation appears | `messages.obligation.pruned` with IDs/count, no body |
+| Restart/reload | Process exits after any committed transition | SQL projection recomputes pending/fulfilled/cancelled; no marker read | Same state before and after restart | No synthetic transition event |
+
+`message-list` must expose correlation without requiring extension file access.
+Its pane-scoped SQL is executable directly against SQLite:
+
+```sql
+SELECT m.message_key, m.sender_id, m.sender_pane_id,
+       m.recipient_id, m.target_pane_id, m.bead_id, m.summary,
+       m.created_at_ms, m.expects_reply,
+       r.acked_at_ms, r.acked_by,
+       m.fulfilled_at_ms, linked.message_key AS fulfilled_by_message_key,
+       linked.message_key AS correlated_reply_key,
+       linked.sender_id AS correlated_reply_sender_id,
+       linked.sender_pane_id AS correlated_reply_sender_pane_id,
+       linked.recipient_id AS correlated_reply_recipient_id,
+       linked.target_pane_id AS correlated_reply_target_pane_id,
+       linked.summary AS correlated_reply_summary,
+       linked.created_at_ms AS correlated_reply_created_at_ms
+  FROM messages AS m
+  LEFT JOIN message_receipts AS r
+    ON r.message_id = m.id AND r.recipient_id = m.recipient_id
+  LEFT JOIN messages AS linked
+    ON linked.reply_to_message_id = m.id
+ WHERE m.recipient_id = :session_id
+   AND (m.target_pane_id = :pane_id OR m.target_pane_id IS NULL)
+ ORDER BY m.id DESC
+ LIMIT :limit;
+```
+
+The correlated projection is `null` or:
+
+```json
+{"messageKey":"reply-key","senderId":"$target","senderPaneId":"%target-pane","recipientId":"$requester","targetPaneId":"%requester-pane","summary":"short reply","createdAtMs":1730000000000}
+```
+
+### 17.4 Outbound-wait state machine
+
+A wait is owned by `(requester_session_id, requester_pane_id)` and targets
+`(target_session_id, target_pane_id)`. `monitor_id` is a nullable linkage until
+arm. Terminal state is absorbing for monitor observation; wake delivery and
+consumption are separate idempotent facts.
+
+| Transition case | Guard and input | SQLite transition | Concrete API result | Journal outcome |
+|---|---|---|---|---|
+| Requester registers wait | Valid requester and target session/pane, unique wait ID | Insert `outbound_waits(state='registered', monitor_id=NULL)` | `waitId`, `state:registered`, requester/target IDs | `wait.registered` |
+| Monitor arm | Registered wait and monitor belongs to same target pane | Insert monitor, set wait `armed` and `monitor_id` in one transaction | `monitorId`, `waitId`, `state:armed` | `wait.monitor.armed` and `monitor.started` |
+| Terminal wake delivered | Linked monitor reaches done/timeout/killed/etc | Set wait `terminal`, terminal fields, `wake_delivered_at_ms` once | `delivered:true`, terminal status, `consumed:false` | `wait.terminal`, then `wait.wake.delivered` |
+| Wake consumed | Requester owns wait and terminal wake is unconsumed | Set `state='consumed'`, `wake_consumed_at_ms` once | `consumed:true`; second call false/already-consumed | `wait.wake.consumed` once |
+| Replay after restart | Same requester queries terminal unconsumed wait after process restart | Read existing terminal row; do not re-arm or redeliver | `replayed:true`, same wait/monitor/status; consumption still one-time | `wait.wake.replayed`; no new arm |
+| Duplicate arm | Same wait already armed or terminal | Conditional update affects zero rows; existing monitor returned | `duplicate:true`, existing `monitorId`; no second monitor | `wait.monitor.duplicate` |
+| Orphan monitor | Monitor terminalizes with no matching `outbound_waits` row | Preserve monitor terminal history; create no wait or wake | `monitor-list` marks `orphan:true` or internal report; no requester wake | `wait.monitor.orphan` |
+| Cross-session isolation | Caller session/pane differs from requester columns | No update and no wake delivery/consumption | `XTMUX_WAIT_NOT_OWNER`, exit 4 | `wait.validation_failed` with expected/actual IDs |
+| Cross-pane isolation | Same session but wrong requester pane | No update; target pane is not enough authority | `XTMUX_WAIT_NOT_OWNER`, exit 4 | Validation event with pane IDs |
+| Invalid monitor linkage | Arm target pane/session differs from wait target | Transaction rolls back monitor link | `XTMUX_WAIT_TARGET_MISMATCH`, exit 4 | `wait.validation_failed` |
+| Cancellation/timeout | Owner cancels, or expiry applies before arm | Set `cancelled`/`expired`; terminal monitor cannot deliver wake | `state:cancelled` or `state:expired`; `consumed:false` | `wait.cancelled` or `wait.expired` |
+| Restart during arm | Process dies before commit | No half-row is visible; retry registers/arms idempotently | Existing committed state returned, otherwise safe retry | No phantom event |
+| Retention prune | Consumed/cancelled/expired wait older than wait TTL | Delete wait only after terminal facts are journaled; active/registered/armed preserved | Retention report counts row; no future wake | `wait.pruned` |
+
+### 17.5 CLI and JSON contracts
+
+JSON is one object per mutation and one array for list commands. All IDs are
+canonical database/session/pane IDs. Human TSV remains compatibility output;
+these shapes define new machine behavior.
+
+**`message-send`** (current implicit default retained):
+
+```json
+{"messageKey":"m-1","messageId":41,"duplicate":false,"senderId":"$requester","senderPaneId":"%1","recipientId":"$target","targetPaneId":"%2","beadId":"xtmux-3ua.2","expectsReply":true,"createdAtMs":1730000000000}
+```
+
+`--bead` implies `expectsReply:true`; `--expects-reply=false` is explicit opt
+out. Duplicate same key returns same row and `duplicate:true`; conflicting
+payload or correlation is a validation error, never overwrite.
+
+**`message-list --for $requester --pane %1 --expects-reply --json`** returns:
+
+```json
+[{"messageKey":"m-1","senderId":"$target","senderPaneId":"%2","recipientId":"$requester","targetPaneId":"%1","beadId":"xtmux-3ua.2","summary":"work","createdAtMs":1730000000000,"expectsReply":true,"acked":true,"ackedAtMs":1730000000100,"ackedBy":"$requester","replyStatus":"pending","fulfilledAtMs":null,"fulfilledByMessageKey":null,"correlatedReply":null}]
+```
+
+For fulfilled messages `replyStatus` is `fulfilled`, timestamps are non-null,
+and `correlatedReply` has the exact reply projection above. For cancelled rows
+it is `cancelled`. `--unacked` filters receipt ack only and never means
+unfulfilled.
+
+**`message-reply --in-reply-to m-1 --text T --json`** is explicit fulfilment:
+
+```json
+{"messageKey":"reply-m-1-1","messageId":42,"duplicate":false,"replyToMessageKey":"m-1","fulfilledMessageKey":"m-1","fulfilled":true,"senderId":"$requester","senderPaneId":"%1","recipientId":"$target","targetPaneId":"%2","createdAtMs":1730000000200}
+```
+
+The operation derives reversed endpoints from `m-1`; caller-provided endpoint
+or pane overrides are rejected. Optional `--message-key` controls idempotence.
+`message-cancel --message-key m-1 --json` returns
+`{"messageKey":"m-1","cancelled":true,"cancelledAtMs":1730000000300}`.
+
+**`message-ack`** remains receipt-only and unchanged:
+
+```json
+{"messageKey":"m-1","status":"acked","acked":true,"ackedAtMs":1730000000100,"ackedBy":"$requester"}
+```
+
+Repeat returns `status:"already-acked"`; wrong recipient returns structured
+error and performs no fulfilment or receipt mutation.
+
+**`wait-agent`** registers/reads one requester-owned wait and returns:
+
+```json
+{"waitId":"w-1","target":"$target","requesterSessionId":"$requester","requesterPaneId":"%1","targetSessionId":"$target","targetPaneId":"%2","state":"terminal","monitorId":"mon-1","terminalStatus":"done","wakeDelivered":true,"wakeConsumed":false,"replayed":false,"startedAtMs":1730000000000,"completedAtMs":1730000000400,"timeoutMs":1800000,"intervalMs":30000}
+```
+
+`wait-agent --consume` sets one-time consumption and returns
+`wakeConsumed:true`; a non-owner gets `XTMUX_WAIT_NOT_OWNER`.
+
+**`monitor-agent`** registers or idempotently arms a wait and returns:
+
+```json
+{"monitorId":"mon-1","waitId":"w-1","target":"$target","requesterSessionId":"$requester","requesterPaneId":"%1","sessionId":"$target","paneId":"%2","state":"working","startedAtMs":1730000000000,"timeoutMs":1800000,"intervalMs":30000,"terminalStatus":null,"wakeDelivered":false}
+```
+
+A direct monitor with no wait is legal for compatibility, but it cannot produce a
+requester wake and is reported orphaned when terminal.
+
+**`monitor-list --json`** returns array rows including current lifecycle and
+wait ownership:
+
+```json
+[{"monitorId":"mon-1","waitId":"w-1","target":"$target","requesterSessionId":"$requester","requesterPaneId":"%1","sessionId":"$target","paneId":"%2","state":"done","startedAtMs":1730000000000,"updatedAtMs":1730000000400,"timeoutMs":1800000,"intervalMs":30000,"terminalStatus":"done","terminalAtMs":1730000000400,"wakeDelivered":true,"wakeConsumed":false,"orphan":false}]
+```
+
+Every extension and hook consumes these fields through JSON; none opens a runtime
+file. `extensions/coordination-json.ts` must recognize explicit reply and wait
+results rather than treating any target-bearing send as fulfilment.
+[`extensions/coordination-json.ts:1-47`]
+
+### 17.6 Legacy migration and marker deletion
+
+Migration runs once under `obs-migrate --apply`, records deterministic
+`event_key` and source path/line, and deletes only validated recognized files
+after commit. Existing migration rules already require idempotence and report
+malformed source locations rather than silently dropping them.
+[`docs/observability-redesign.md:660-685`]
+
+| Directory | Plan | Validation and corrupt/foreign-file safety |
+|---|---|---|
+| `xtmux-reply-obligations` | **Import once then delete.** Parse marker JSON, find `message_key`, verify expected recipient/pane and current pending SQL projection. No new obligation row is inserted; import records provenance and SQL remains authority. | Recognized malformed JSON, missing message, wrong recipient, or fulfilled/cancelled message is journaled as `legacy.marker.discarded` with reason and then quarantined/deleted only after a durable report. Unrecognized filename or foreign pane/name is not deleted; move to a migration quarantine directory outside runtime reads. |
+| `xtmux-outbound-expectations` | **Import once then delete when representable.** Validate target, requester pane, monitor ID, and matching live SQLite monitor/wait; attach existing wait to monitor if safe, otherwise do not invent requester identity. | Corrupt JSON, unknown monitor, target mismatch, or duplicate monitor is recorded with source hash and safely discarded after report. Foreign filename stays quarantined. Never infer requester session from target or process environment. |
+| `xtmux-auto-monitor` | **Safe-discard unrepresentable markers; import matched waits once.** Target-only marker cannot establish requester identity. If an exact registered wait and target pane match, mark/import its gate and delete marker; otherwise discard as legacy evidence, not as a new wait. | Malformed, foreign, or ambiguous target is hashed and journaled, then quarantined before deletion. No manual `rm` path remains after cutover. A marker never causes a monitor to be created without a durable requester wait. |
+
+Migration order is: stop new marker writers, snapshot directory manifests,
+validate/import in one bounded pass, commit journal provenance, rename recognized
+files to quarantine, verify SQL projections, then remove quarantine after the
+configured grace period. A crash before deletion reruns by deterministic
+`event_key`; a crash after deletion leaves committed SQL or a journaled discard.
+No migration path reads arbitrary file contents after the manifest hash and no
+foreign file is interpreted as a marker.
+
+### 17.7 Retention and restart rules
+
+Defaults follow §6: messages 30 days, delivery 7 days. Add
+`XTMUX_OBS_REPLY_RETENTION_DAYS` (default 30) and
+`XTMUX_OBS_WAIT_RETENTION_DAYS` (default 30); invalid or negative values fail
+configuration rather than becoming zero. Pruning is transactional and reports
+counts.
+
+- Pending obligations (`expects_reply=1`, no fulfilment/cancellation) are never
+  pruned, regardless of age or database size pressure.
+- An original message with no receipt ack is never pruned. A correlated reply is
+  retained with its original until both are eligible; deleting only the reply
+  would not resurrect the obligation, but deleting the pair is the only allowed
+  terminal cleanup.
+- Fulfilled and cancelled originals retain terminal columns through the reply
+  retention window. Prune removes reply plus original in one transaction only
+  after terminal age, receipt policy, and migration-import cutoff pass.
+- Active `outbound_waits` in `registered` or `armed` state are never pruned.
+  Terminal undelivered waits are preserved until consumed or explicit expiry;
+  consumed/cancelled/expired waits are prunable after wait TTL.
+- Active monitors (`terminal_status IS NULL`) and monitors linked to incomplete
+  waits are never pruned. Terminal monitor history may prune only after its wait
+  terminal/wake facts are retained or journaled.
+- A cancellation is absorbing. A late reply cannot clear cancellation, and a
+  prune cannot remove cancellation before the terminal retention cutoff.
+- After restart, pending/fulfilled/cancelled obligations and pending/terminal/
+  consumed waits are SQL queries. No mtime, process-local `Set`, hook bypass, or
+  stale monitor-list absence changes state.
+
+### 17.8 Journal event contract
+
+All events use `event_journal` envelope fields `type`, `domain`,
+`session_id`, `pane_id`, `correlation_id`, `payload_json`, and `created_at_ms`;
+`event_key` is deterministic for idempotent import or one mutation. Existing
+journal storage and redaction rules remain normative. [`docs/observability-redesign.md:791-801`]
+Required event payloads are:
+
+| Event name | Required fields | Redaction rule |
+|---|---|---|
+| `messages.sent` | message ID/key, sender/recipient session IDs, sender/target pane IDs, expects-reply, bead ID if present | IDs and bounded bead ID allowed; summary/body excluded |
+| `messages.ack` | message ID/key, recipient session/pane, acked-by, outcome | IDs allowed; no message body |
+| `messages.reply.linked` | original and reply IDs/keys, reversed session/pane IDs, correlation outcome, timestamp | IDs/outcome allowed; summary and payload bodies excluded |
+| `messages.reply.duplicate` | original key, existing reply key, attempted key, requester/recipient IDs | IDs and duplicate outcome only |
+| `messages.reply.rejected` | attempted key, original key if parsed, reason code, expected/actual session/pane IDs | IDs/reason allowed; secrets, full body, raw args excluded |
+| `messages.obligation.cancelled` | message key/id, owner session/pane, reason code, timestamp | Reason must be enum/bounded text; no body |
+| `messages.obligation.pruned` | original/reply IDs or count, retention cutoff, outcome | IDs/count/cutoff allowed; no bodies |
+| `wait.registered` | wait ID, requester/target session and pane IDs, related message ID, expiry | IDs/status allowed; no payload |
+| `wait.monitor.armed` | wait ID, monitor ID, requester/target identities, duplicate flag | IDs/status only |
+| `wait.monitor.duplicate` | wait ID, existing monitor ID, requester identity, outcome | IDs/status only |
+| `monitor.started` | monitor ID, target/session/pane, state, timeout/interval | IDs and bounded state allowed |
+| `monitor.state` | monitor ID, session/pane, from/to state | IDs and enum states only |
+| `monitor.done`, `monitor.timeout`, `monitor.killed`, `monitor.target_gone`, `monitor.process_gone`, `monitor.error` | monitor ID, target session/pane, terminal status/time, bounded detail code | IDs/status/detail code only; no pane output body |
+| `wait.terminal` | wait/monitor IDs, terminal status/time, target/requester identities | IDs/status/detail code; no pane output body |
+| `wait.wake.delivered` | wait/monitor IDs, requester session/pane, delivery timestamp, duplicate flag | IDs/status only |
+| `wait.wake.consumed` | wait ID, requester session/pane, consumer process/session, timestamp | IDs/status only |
+| `wait.wake.replayed` | wait/monitor IDs, requester identity, terminal status, restart marker | IDs/status only |
+| `wait.wake.orphan` | monitor ID, target session/pane, no-wait reason | IDs/status only |
+| `wait.validation_failed` | operation, wait/monitor ID if known, expected/actual identities, reason code | IDs/reason only; no raw command/body |
+| `legacy.marker.imported` | source directory/name/hash, source line if applicable, imported wait/message key, outcome | Path basename/hash/IDs allowed; file contents excluded |
+| `legacy.marker.discarded` | source directory/name/hash, reason code, quarantine status | Hash/basename/reason only; secrets and contents excluded |
+| `wait.cancelled` / `wait.expired` | wait ID, requester identity, reason, timestamp | IDs and bounded reason only |
+| `wait.pruned` | wait IDs/count, cutoff, terminal state | IDs/count/cutoff only |
+
+No event stores secrets, credentials, full message summaries, payload JSON,
+prompt-file bodies, raw hook stdin, full command argv, stdout, or stderr. Hashes
+are preferred for forensic linkage. Validation failures are journaled after
+sanitizing input and never echo attacker-controlled text into the event.
+
+### 17.9 Epic implementation map
+
+| Child | ADR sections implemented, tested, or documented |
+|---|---|
+| `xtmux-3ua.2` | §17.2 reply DDL; §17.3 all reply transitions; §17.5 message contracts; §17.7 retention; §17.8 message events |
+| `xtmux-3ua.3` | §17.2 `outbound_waits`; §17.4 wait transitions; §17.5 wait/monitor JSON; §17.7 wait retention |
+| `xtmux-3ua.4` | §17.3 projection; §17.5 exact CLI contracts and error outcomes |
+| `xtmux-3ua.5` | §17.3/§17.4 transition tables; §17.7 restart/concurrency/retention invariants; §17.8 journal assertions |
+| `xtmux-3ua.6` | §17.1 Pi marker audit; §17.4 wake consumption; §17.5 extension JSON boundary; §17.7 restart behavior |
+| `xtmux-3ua.7` | §17.1 Claude marker audit; §17.4 monitor arm/terminal wake; §17.6 marker deletion and no-marker cutover |
+| `xtmux-3ua.8` | §17.6 all three legacy migration plans, quarantine, idempotence, and artifact cutover |
+| `xtmux-3ua.9` | §17.3/§17.4 semantics; §17.5 CLI shapes; §17.6 upgrade behavior and §17.8 troubleshooting evidence |
+| `xtmux-3ua.10` | §17.3 explicit reply/no heuristic rule; §17.4 requester-owned wake; §17.5 operator-facing contracts |
+| `xtmux-3ua.11` | §17.4 restart and one-time wake; §17.5 packed Pi/Claude contracts; §17.6 cleanup verification |
+| `xtmux-3ua.12` | §17.1 citations; §17.2 FKs/indexes; §17.3/§17.4 adversarial transitions; §17.6 corrupt-file safety; §17.8 redaction |
+
+### 17.10 Open questions and ADR risks for adversarial review
+
+1. **Reply pane strictness.** §17.3 “Cross-pane reply” row rejects a reply when
+   the original target pane is gone or the runtime can only recover session ID.
+   Should pane identity degrade to session identity after pane teardown, or must
+   it reject forever? Attack row: cross-pane reply and restart projection.
+2. **One reply versus multiple valid replies.** `msg_one_reply_per_request`
+   makes correlation one-to-one. If a recipient legitimately needs a correction
+   or streamed completion, this schema rejects second reply rather than modelling
+   versions. Attack row: duplicate reply and correlated reply; decide whether a
+   future reply sequence is required before migration 0010.
+3. **Wake delivery crash window.** Delivery is recorded before extension/Claude
+   notification. A process can crash after `wake_delivered_at_ms` and before
+   user-visible notification; replay returns the recorded wake, but delivery
+   semantics need an adversarial proof that no caller treats “delivered” as
+   “consumed.” Attack row: terminal wake delivered, wake consumed, replay after
+   restart.
+4. **Legacy target-only markers.** `xtmux-auto-monitor` stores only a sanitized
+   target filename and no requester identity [`.xtrm/hooks/auto-monitor-on-send.mjs:36-38`].
+   Importing it risks cross-session wake; discarding it risks losing a genuine
+   active gate. Attack row: legacy migration and orphan monitor; require fixture
+   evidence for both outcomes.
+5. **Terminal retention and late writers.** Pruning fulfilled originals plus
+   replies depends on import cutoff and event-journal retention. A delayed old
+   client could submit a correlated reply after prune and receive unknown-key
+   rejection. Attack row: retention prune and late reply; verify this is explicit,
+   observable failure rather than silent new obligation.
