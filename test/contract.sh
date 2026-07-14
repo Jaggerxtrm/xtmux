@@ -1418,6 +1418,153 @@ noc="$(jf_obs log-follow --once --json)"; noc_rc=$?
 rm -rf "$jf_state"
 
 echo
+echo "== readiness-aware handoff: --prompt-file / --wait-ready / --monitor (xtmux-j46.8) =="
+
+# The durable half of delegation. Before this bead the picker's handoff wrote only
+# V1 log_event lines, so handoffs/ and delivery_attempts/ had zero rows while the
+# domain code sat there fully written — the same dead-domain shape as j46.7.
+hd_sock="xtmux-ho-$$"
+hd_state="$(mktemp -d)"
+hd_bin="$(mktemp -d)"
+hd_db="$hd_state/xtmux/observability.db"
+printf '#!/bin/sh\nexec %s/bin/tmux-session-picker "$@"\n' "$ROOT" > "$hd_bin/xtmux"
+chmod +x "$hd_bin/xtmux"
+hd_q() { python3 -c "
+import sqlite3,sys
+try: print(sqlite3.connect(sys.argv[1]).execute(sys.argv[2]).fetchone()[0])
+except Exception as e: print('ERR')" "$hd_db" "$1" 2>/dev/null; }
+
+if ! command tmux -L "$hd_sock" -f /dev/null new-session -d -s xtmux-ho 'sleep 100' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m readiness-aware handoff (cannot start isolated tmux server)\n'
+else
+  hd_pane="$(command tmux -L "$hd_sock" list-panes -a -F '#{pane_id}' | head -1)"
+  hd_env="$(command tmux -L "$hd_sock" display-message -p '#{socket_path},0,0')"
+  hd() {
+    env TMUX="$hd_env" TMUX_PANE="$hd_pane" XDG_STATE_HOME="$hd_state" \
+      XTMUX_OBS_V2=1 PATH="$hd_bin:$PATH" "$PICKER" "$@"
+  }
+  hd_prompt="$hd_state/task.md"
+  printf 'do the thing\n' > "$hd_prompt"
+
+  # An existing prompt file is DELIVERED, not overwritten: a coordinator that
+  # already wrote the contract must not have it silently replaced by a generated one.
+  # --yes: without it handoff is a DRY RUN by design (no send, and therefore no
+  # durable record either — there is no attempt to be durable about).
+  hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$hd_prompt" --handoff-key k1 --yes --json >/dev/null 2>&1
+  { [ "$(hd_q "SELECT count(*) FROM handoffs WHERE prompt_file='$hd_prompt'")" = 1 ] \
+      && [ "$(cat "$hd_prompt")" = "do the thing" ]; } \
+    && ok "handoff: --prompt-file delivers that exact file and writes one durable record" \
+    || nok "handoff: --prompt-file delivers that exact file (rows=$(hd_q "SELECT count(*) FROM handoffs"))"
+
+  # The record exists BEFORE the first delivery attempt. If the attempt were
+  # recorded first, a crash between the two would leave an attempt pointing at a
+  # handoff that does not exist — an orphan the consumer cannot interpret.
+  { [ "$(hd_q "SELECT count(*) FROM handoffs")" -ge 1 ] \
+      && [ "$(hd_q "SELECT (SELECT min(created_at_ms) FROM handoffs) <= coalesce((SELECT min(attempted_at_ms) FROM delivery_attempts), 1e18)")" = 1 ]; } \
+    && ok "handoff: the durable record is written before the first delivery attempt" \
+    || nok "handoff: the durable record is written before the first delivery attempt"
+
+  # A prompt path that does not exist is rejected PRE-delivery: nothing sent, and
+  # no half-written handoff row left behind for a file that was never readable.
+  before_rows="$(hd_q "SELECT count(*) FROM handoffs")"
+  bad_out="$(hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file /nonexistent/nope.md --handoff-key k-bad --yes --json 2>/dev/null)"; bad_rc=$?
+  { [ "$bad_rc" -ne 0 ] && [ -z "$bad_out" ] \
+      && [ "$(hd_q "SELECT count(*) FROM handoffs")" = "$before_rows" ]; } \
+    && ok "handoff: a missing prompt file is rejected pre-delivery, writing nothing" \
+    || nok "handoff: a missing prompt file is rejected pre-delivery (rc=$bad_rc rows $before_rows -> $(hd_q "SELECT count(*) FROM handoffs"))"
+
+  # Idempotency. A retry with the same key must not fork the delegation into two
+  # handoffs or arm a second monitor — but each injection IS a separate attempt,
+  # and the attempt log is append-only precisely so a redelivery is visible.
+  hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$hd_prompt" --handoff-key k-idem --monitor --yes --json >/dev/null 2>&1
+  hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$hd_prompt" --handoff-key k-idem --monitor --yes --json >/dev/null 2>&1
+  hd_h="$(hd_q "SELECT count(*) FROM handoffs WHERE handoff_key='k-idem'")"
+  hd_m="$(hd_q "SELECT count(DISTINCT monitor_id) FROM handoffs WHERE handoff_key='k-idem' AND monitor_id IS NOT NULL")"
+  hd_a="$(hd_q "SELECT count(*) FROM delivery_attempts WHERE related_handoff_id=(SELECT id FROM handoffs WHERE handoff_key='k-idem')")"
+  { [ "$hd_h" = 1 ] && [ "$hd_m" = 1 ] && [ "$hd_a" = 2 ]; } \
+    && ok "handoff: same key twice — one handoff, one monitor, two delivery attempts" \
+    || nok "handoff: same key twice — one handoff, one monitor, two delivery attempts (got h=$hd_h m=$hd_m a=$hd_a)"
+
+  # A missing --bead must be REFUSED, never defaulted. The first implementation
+  # substituted the literal string 'prompt-file', which then landed in the durable
+  # row and in the journal envelope's bead_id — a fabricated reference to a bead
+  # that does not exist, indistinguishable downstream from a real one.
+  nb_out="$(hd handoff --target "$hd_pane" --prompt-file "$hd_prompt" --handoff-key k-nobead --yes --json 2>/dev/null)"; nb_rc=$?
+  { [ "$nb_rc" -ne 0 ] && [ -z "$nb_out" ] \
+      && [ "$(hd_q "SELECT count(*) FROM handoffs WHERE bead_id NOT LIKE 'xtmux-%'")" = 0 ]; } \
+    && ok "handoff: a missing --bead is refused, never defaulted to a fabricated id" \
+    || nok "handoff: a missing --bead is refused (rc=$nb_rc bead_id='$(hd_q "SELECT bead_id FROM handoffs WHERE handoff_key=\'k-nobead\'")')"
+
+  # send-keys success is NOT acceptance. The handoff must not claim a terminal
+  # 'accepted' state just because tmux took the keystrokes — only the target's own
+  # readiness/state change can say that, and nothing has said it here.
+  st="$(hd_q "SELECT state FROM handoffs WHERE handoff_key='k-idem'")"
+  [ "$st" != "accepted" ] && [ "$st" != "completed" ] \
+    && ok "handoff: a delivered pointer is an attempt, never acceptance (state=$st)" \
+    || nok "handoff: a delivered pointer must not be recorded as acceptance (state=$st)"
+
+  # Readiness belongs to the AGENT INSTANCE, not to the pane. `log query` is a
+  # history query, so a pane whose PREVIOUS occupant readied and exited still has
+  # an agent.ready row — and a pane-scoped check would see it, stop waiting, and
+  # inject the pointer into a pane whose current agent has not finished
+  # initializing. That is the exact failure readiness exists to prevent.
+  #
+  # Give the pane a stale ready event from a DEAD instance, then a fresh instance
+  # id that has readied nothing. --wait-ready must still time out.
+  env TMUX="$hd_env" TMUX_PANE="$hd_pane" XDG_STATE_HOME="$hd_state" XTMUX_OBS_V2=1 \
+    PATH="$hd_bin:$PATH" "$AGENT_STATE" idle --new-instance >/dev/null 2>&1
+  command tmux -L "$hd_sock" set-option -p -t "$hd_pane" -q @agent_instance_id "successor-with-no-ready" 2>/dev/null || true
+  stale_t0="$(date +%s)"
+  stale_err="$(hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$hd_prompt" --handoff-key k-stale --wait-ready 2s --yes --json 2>&1 >/dev/null)"; stale_rc=$?
+  stale_elapsed=$(( $(date +%s) - stale_t0 ))
+  { [ "$stale_rc" -ne 0 ] && [ "$stale_elapsed" -ge 2 ] \
+      && case "$stale_err" in *XTMUX_READY_TIMEOUT*) true ;; *) false ;; esac; } \
+    && ok "handoff: --wait-ready ignores a PREVIOUS instance's agent.ready on the same pane" \
+    || nok "handoff: --wait-ready ignores a previous instance's agent.ready (rc=$stale_rc elapsed=${stale_elapsed}s err='$stale_err')"
+
+  # An idempotency key promises "the SAME delegation, sent again". A retry that
+  # changed the bead is a DIFFERENT delegation wearing a used key: silently
+  # returning the old row would leave the durable record describing one thing while
+  # the pointer delivered another.
+  conf_err="$(hd handoff --target "$hd_pane" --bead xtmux-j46.99 --prompt-file "$hd_prompt" --handoff-key k-idem --yes --json 2>&1 >/dev/null)"; conf_rc=$?
+  conf_bead="$(hd_q "SELECT bead_id FROM handoffs WHERE handoff_key='k-idem'")"
+  { [ "$conf_rc" -ne 0 ] && [ "$conf_bead" = "xtmux-j46.8" ] \
+      && case "$conf_err" in *XTMUX_HANDOFF_KEY_CONFLICT*) true ;; *) false ;; esac; } \
+    && ok "handoff: a reused key describing a DIFFERENT delegation is refused, not silently absorbed" \
+    || nok "handoff: a reused key with different inputs is refused (rc=$conf_rc bead now '$conf_bead' err='$conf_err')"
+
+  # A prompt file the pointer cannot reference must be refused BEFORE anything
+  # durable is written. It used to pass the path check, create the handoff row, and
+  # only then have its pointer rejected — leaving a handoff that claims a
+  # delegation nobody ever attempted.
+  # NOT under $hd_state: XDG_STATE_HOME is itself a mktemp dir under /tmp, so a
+  # file there is perfectly pointer-legal. The case being tested is a path that
+  # handoff_prompt_file_allowed accepts ($PWD) but a pointer may not reference.
+  outside="$ROOT/.xtmux-contract-outside-$$.md"
+  printf 'unreachable by pointer\n' > "$outside"
+  rows_before="$(hd_q "SELECT count(*) FROM handoffs")"
+  out_err="$(hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$outside" --handoff-key k-outside --yes --json 2>&1 >/dev/null)"; out_rc=$?
+  { [ "$out_rc" -ne 0 ] && [ "$(hd_q "SELECT count(*) FROM handoffs")" = "$rows_before" ]; } \
+    && ok "handoff: an undeliverable prompt path leaves no orphan durable record" \
+    || nok "handoff: an undeliverable prompt path leaves no orphan record (rc=$out_rc rows $rows_before -> $(hd_q "SELECT count(*) FROM handoffs"))"
+  rm -f "$outside"
+
+  # --wait-ready against a pane that never emits agent.ready must time out as a
+  # STRUCTURED refusal, not hang forever and not send anyway.
+  t0="$(date +%s)"
+  to_out="$(hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$hd_prompt" --handoff-key k-to --wait-ready 2s --yes --json 2>/dev/null)"; to_rc=$?
+  to_err="$(hd handoff --target "$hd_pane" --bead xtmux-j46.8 --prompt-file "$hd_prompt" --handoff-key k-to2 --wait-ready 2s --yes --json 2>&1 >/dev/null)"
+  elapsed=$(( $(date +%s) - t0 ))
+  { [ "$to_rc" -ne 0 ] && [ -z "$to_out" ] && [ "$elapsed" -lt 30 ] \
+      && case "$to_err" in *XTMUX_READY_TIMEOUT*) true ;; *) false ;; esac; } \
+    && ok "handoff: --wait-ready times out as a structured refusal, never hangs" \
+    || nok "handoff: --wait-ready times out as a structured refusal (rc=$to_rc elapsed=${elapsed}s err='$to_err')"
+
+  command tmux -L "$hd_sock" kill-server >/dev/null 2>&1 || true
+fi
+rm -rf "$hd_state" "$hd_bin"
+
+echo
 echo "== rename contract =="
 
 if ! command -v tmux >/dev/null 2>&1; then
@@ -2025,10 +2172,19 @@ echo "== help surface (xtmux-d0a.15) =="
 "$PICKER" help >"$WORK/help.out" 2>&1
 _help_lines="$(wc -l <"$WORK/help.out" | tr -d ' ')"
 
-if [ "$_help_lines" -ge 50 ] && [ "$_help_lines" -le 160 ]; then
-  ok "help: grouped and scannable ($_help_lines lines, bd/sp/xt band is 50-160)"
+# The band was 50-160, chosen when the CLI was smaller. Epic j46 added five real
+# command families (context, topology, pane capture, the log cursor + follow,
+# readiness-aware handoff) and help hit exactly 160 — after which every new command
+# could only be documented by deleting explanation from an existing one, which is
+# how help decays into a list of flags nobody can act on. Re-set to 200 ONCE,
+# deliberately, rather than nudged by +5 whenever it trips: the guard is here to
+# stop help becoming a manual, and the checks that keep help HONEST (the two-way
+# dispatch-table cross-check and the field-names-vs-live-output check below) are
+# untouched and are the ones that actually catch rot.
+if [ "$_help_lines" -ge 50 ] && [ "$_help_lines" -le 200 ]; then
+  ok "help: grouped and scannable ($_help_lines lines, band is 50-200)"
 else
-  nok "help: grouped and scannable ($_help_lines lines, want 50-160)"
+  nok "help: grouped and scannable ($_help_lines lines, want 50-200)"
 fi
 
 # the authoritative command list: the top-level dispatch arms themselves
