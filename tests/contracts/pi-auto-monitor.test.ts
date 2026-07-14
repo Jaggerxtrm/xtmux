@@ -65,8 +65,8 @@ esac
     await expect(autoHandler?.({
       type: "tool_result", toolName: "bash", isError: false,
       input: { command: "another reworded send" },
-      content: [{ type: "text", text: "{not-json" }],
-    })).rejects.toThrow("Malformed xtmux JSON result");
+      content: [{ type: "text", text: JSON.stringify({ messageKey: "m2", status: "acked", acked: "invalid" }) }],
+    })).rejects.toThrow("Incompatible xtmux message-ack JSON result");
   } finally {
     for (const key of ["TMUX", "TMUX_PANE", "XDG_RUNTIME_DIR", "XTMUX_PICKER", "XTMUX_TMUX", "XTMUX_AUTO_MONITOR_SKIP_TARGETS", "XTMUX_AUTO_MONITOR_DISABLE"] as const) {
       if (old[key] === undefined) delete process.env[key];
