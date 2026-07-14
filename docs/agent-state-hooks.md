@@ -119,6 +119,21 @@ tmux-session-picker handoff --target %42 --bead xtmux-mux.9 --note 'NO push'
 the exact `safe-send-pointer --yes` command, and refuses working targets before
 creating the prompt file.
 
+Readiness-aware delivery uses existing local prompt files. Path validation happens
+before any send; `--yes` remains mandatory for durable writes and tmux delivery:
+
+```sh
+tmux-session-picker handoff --target %42 --prompt-file /tmp/task.md \
+  --wait-ready 2m --monitor --handoff-key task-42 --json --yes
+```
+
+This writes one `handoffs` row before delivery, optionally registers one linked
+`monitors` row in same SQLite transaction, and appends one `delivery_attempts` row
+per pointer injection. `send-keys` success means injection only, not acceptance.
+Retry with same `--handoff-key` reuses handoff and monitor rows while appending
+another attempt. `agent.ready` is queried by target pane; timeout returns structured
+`XTMUX_READY_TIMEOUT` and sends nothing.
+
 for end-of-session hygiene, run the read-only audit report:
 
 ```sh
