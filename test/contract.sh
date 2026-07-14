@@ -1597,6 +1597,46 @@ for l in sys.stdin:
     && ok "bridge: refuses anything but --stdio — no listening socket exists" \
     || nok "bridge: refuses a listen mode (rc=$ns_rc out='$nostdio')"
 
+  # Follow fan-out is capped per connection. Excess follows are the DoS: unique
+  # ids each spin up their own 500ms poll loop, so it is the COUNT that has to be
+  # bounded, not just duplicate ids. Beyond the cap → structured refusal.
+  fan="$(python3 -c "
+for i in range(12): print('{\"id\":\"ff%d\",\"method\":\"journal.follow\",\"params\":{\"after_id\":0}}' % i)" | br)"
+  fan_rej="$(printf '%s' "$fan" | grep -o XTMUX_BRIDGE_RESOURCE_LIMIT | wc -l | tr -d ' ')"
+  { [ "$fan_rej" -ge 1 ]; } \
+    && ok "bridge: concurrent follows are capped per connection, excess refused" \
+    || nok "bridge: follow fan-out is capped (resource-limit rejections=$fan_rej)"
+
+  # READ-ONLY in the SQLite sense, not just the method sense. A remote read must
+  # never write: no DDL, no BEGIN IMMEDIATE write lock, no migration-row insert,
+  # and — the observable proof — it must not CREATE the store. Point the bridge at
+  # a state dir with no database and assert the query fails structurally AND no
+  # observability.db appears. If the bridge migrated on read (as it did before
+  # this fix), the file would be there.
+  ro_state="$(mktemp -d)"
+  # The same fresh state makes EVERY read throw at the DB open — which is exactly
+  # the condition that must NOT crash the process. So this one session also proves
+  # survival of both throw paths: a synchronous handler throw (journal.query) is
+  # answered structurally AND a later hello on the same connection still serves;
+  # a throw inside the detached follow loop (Finding 1: an unhandled rejection
+  # there would terminate Node) comes back as a stream error, not a dead pipe.
+  ro_out="$(printf '%s\n' \
+    '{"id":"ro","method":"journal.query","params":{"after_id":0}}' \
+    '{"id":"rof","method":"journal.follow","params":{"after_id":0}}' \
+    '{"id":"roh","method":"bridge.hello"}' \
+    | env TMUX="$br_env" XDG_STATE_HOME="$ro_state" XTMUX_OBS_V2=1 "$PICKER" bridge --stdio 2>/dev/null)"
+  ro_err="$(br_field "$ro_out" ro error.code)"
+  ro_alive="$(br_field "$ro_out" roh result.schema_version)"
+  ro_db_created=0; [ -e "$ro_state/xtmux/observability.db" ] && ro_db_created=1
+  { [ -n "$ro_err" ] && [ "$ro_db_created" = 0 ]; } \
+    && ok "bridge: a read against a fresh host errors structurally and creates no database" \
+    || nok "bridge: read-only never initializes state (err='$ro_err' db_created=$ro_db_created)"
+  { [ "$ro_alive" = "xtrm.xtmux.bridge.v1" ] \
+      && case "$ro_out" in *XTMUX_BRIDGE_STREAM_ERROR*) true ;; *) false ;; esac; } \
+    && ok "bridge: a throwing read (sync or in the follow loop) never crashes the process" \
+    || nok "bridge: handler throws do not crash the process (alive='$ro_alive' out='$(printf '%s' "$ro_out" | tr '\n' '|' | cut -c1-200)')"
+  rm -rf "$ro_state"
+
   command tmux -L "$br_sock" kill-server >/dev/null 2>&1 || true
 fi
 rm -rf "$br_state"

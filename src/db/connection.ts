@@ -58,6 +58,41 @@ export function openDb(cfg: Config): Db {
   };
 }
 
+/**
+ * Open the store for a remote read (the bridge). Read-only in the SQLite sense,
+ * not just the method sense: `readonly: true` so the connection CANNOT write, no
+ * `journal_mode = WAL` (that pragma is itself a write and takes an exclusive
+ * lock), no `PRAGMA optimize` on close, and — critically — NO migrate(). A remote
+ * peer must never cause schema DDL, a BEGIN IMMEDIATE write lock, or a
+ * migration-row insert as a side effect of asking to read. If the DB is missing
+ * or behind, the read fails loudly (caught upstream and returned as a structured
+ * error) rather than silently initializing state on the peer's behalf.
+ */
+export function openReadOnlyDb(cfg: Config): Db {
+  let raw: Database;
+  try {
+    raw = new Database(cfg.dbPath, { readonly: true });
+  } catch (err) {
+    throw new DbError("XTMUX_DB_OPEN_FAILED", `read-only open failed: ${cfg.dbPath}`, {
+      cause: err instanceof Error ? err.message : String(err),
+    });
+  }
+  try {
+    // A connection setting, not a write: safe on a read-only handle, and it lets
+    // a bridge read wait out a local writer's WAL checkpoint instead of failing.
+    raw.exec(`PRAGMA busy_timeout = ${cfg.busyTimeoutMs};`);
+  } catch (err) {
+    raw.close();
+    throw new DbError("XTMUX_DB_OPEN_FAILED", `read-only pragma setup failed: ${cfg.dbPath}`, {
+      cause: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return {
+    raw,
+    close(): void { raw.close(); },
+  };
+}
+
 // installSlowQueryWrapper — proxy Database.prepare so every statement's
 // .all/.get/.run is timed. On exceeding `threshold` ms, insert a db.slow_query
 // envelope into event_journal directly (bypassing journal.ts::insertEnvelope

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { loadConfig } from "./config.ts";
-import { openDb } from "./db/connection.ts";
+import { openDb, openReadOnlyDb } from "./db/connection.ts";
 import { migrate } from "./db/schema.ts";
 import { checkHealth } from "./db/health.ts";
 import { DbError } from "./db/errors.ts";
@@ -156,10 +156,13 @@ async function main(argv: string[]): Promise<number> {
         }
         return await serveBridge(
           {
-            // Opened per request and closed again: a bridge session can outlive
-            // any reasonable connection-holding, and a long-held handle would
-            // pin a WAL that local commands then contend with.
-            db: () => { const db = openDb(cfg); migrate(db); return db; },
+            // READ-ONLY handle, and never migrate(): a remote peer must not cause
+            // a write lock, schema DDL, or a migration insert as a side effect of
+            // reading. Opened per request and closed again — a long-held handle
+            // would pin resources across a session that can outlive any
+            // connection, and open-per-read keeps a stale handle from surviving a
+            // local checkpoint.
+            db: () => openReadOnlyDb(cfg),
             dbPath: cfg.dbPath,
             topology: defaultTopology,
             now: () => Date.now(),

@@ -15,17 +15,33 @@ import {
 
 const FOLLOW_INTERVAL_MS = 500;
 
+// One connection is one process (stdio), so this is a per-peer cap. A viewer
+// follows one journal; the small headroom is for a reconnect that races its own
+// teardown. Without a cap, a peer opens an unbounded number of 500ms poll loops,
+// each opening the DB every tick — CPU, fd, and timer pressure from valid frames.
+export const MAX_FOLLOWS = 4;
+
 interface Follow {
   cancelled: boolean;
-}
-
-function writeFrame(out: Writable, frame: unknown): void {
-  out.write(JSON.stringify(frame) + "\n");
 }
 
 export async function serveBridge(deps: BridgeDeps, input: Readable, output: Writable): Promise<number> {
   const follows = new Map<string | number, Follow>();
   let buffer = "";
+
+  // Honor stdout backpressure. If the peer stops reading, out.write() returns
+  // false and Node buffers in memory without bound — a remote peer growing our
+  // RSS by refusing to read is a denial-of-service. Pause the input side while
+  // the socket is not draining so we stop producing replies we cannot flush.
+  let draining = false;
+  const writeFrame = (frame: unknown): void => {
+    const ok = output.write(JSON.stringify(frame) + "\n");
+    if (!ok && !draining) {
+      draining = true;
+      input.pause();
+      output.once("drain", () => { draining = false; input.resume(); });
+    }
+  };
   // Set after an oversized frame: everything up to the NEXT newline belongs to
   // that frame and must be thrown away, or we would parse its tail as if it were
   // a fresh request — which is how an attacker smuggles one.
@@ -35,31 +51,44 @@ export async function serveBridge(deps: BridgeDeps, input: Readable, output: Wri
   const startFollow = (id: string | number, afterId: number): void => {
     const follow: Follow = { cancelled: false };
     follows.set(id, follow);
+    // A DETACHED async task. Any throw it does not catch becomes an
+    // unhandledRejection, which on modern Node terminates the process — so this
+    // whole body is wrapped, and deps.db() (which opens the DB and can throw
+    // SQLITE_BUSY whenever a local writer holds the lock past busy_timeout) is
+    // INSIDE the try. A remote peer must not be able to kill the server by timing
+    // a follow poll against local DB contention.
     void (async () => {
       let cursor = afterId;
-      while (!follow.cancelled && !closed) {
-        const db = deps.db();
-        let done = false;
-        try {
-          const result = journalPage(db, { afterId: cursor, limit: 500 });
-          if (!result.ok) {
-            writeFrame(output, { id, error: result.error });
-            done = true;
-          } else if (result.page.items.length > 0) {
-            writeFrame(output, { id, streaming: true, result: { host_id: readHostId(), page: result.page } });
-            // Advance only after the page is written. A crash between the two
-            // replays one page — which the consumer's own cursor absorbs —
-            // whereas advancing first would DROP it, silently and forever.
-            cursor = result.page.next_after_id;
+      try {
+        while (!follow.cancelled && !closed) {
+          const db = deps.db();
+          let done = false;
+          try {
+            const result = journalPage(db, { afterId: cursor, limit: 500 });
+            if (!result.ok) {
+              writeFrame({ id, error: result.error });
+              done = true;
+            } else if (result.page.items.length > 0) {
+              writeFrame({ id, streaming: true, result: { host_id: readHostId(), page: result.page } });
+              // Advance only after the page is written. A crash between the two
+              // replays one page — which the consumer's own cursor absorbs —
+              // whereas advancing first would DROP it, silently and forever.
+              cursor = result.page.next_after_id;
+            }
+          } finally {
+            db.close();
           }
-        } finally {
-          db.close();
+          if (done) break;
+          await new Promise((r) => setTimeout(r, FOLLOW_INTERVAL_MS));
         }
-        if (done) break;
-        await new Promise((r) => setTimeout(r, FOLLOW_INTERVAL_MS));
+        if (!closed) writeFrame({ id, result: { done: true } });
+      } catch (err) {
+        // The stream ends, the process does not. The peer can re-follow from its
+        // last cursor once whatever contended the DB has cleared.
+        if (!closed) writeFrame({ id, error: { code: "XTMUX_BRIDGE_STREAM_ERROR", message: "follow stream ended on an internal error", detail: { cause: err instanceof Error ? err.message : String(err) } } });
+      } finally {
+        follows.delete(id);
       }
-      follows.delete(id);
-      if (!closed) writeFrame(output, { id, result: { done: true } });
     })();
   };
 
@@ -71,15 +100,33 @@ export async function serveBridge(deps: BridgeDeps, input: Readable, output: Wri
     } catch {
       // Malformed JSON is the peer's problem, not ours: answer and keep serving.
       // We have no id to echo, because the id lived in the bytes we could not read.
-      writeFrame(output, { id: null, error: { code: "XTMUX_BRIDGE_INVALID_JSON", message: "request frame is not valid JSON" } });
+      writeFrame({ id: null, error: { code: "XTMUX_BRIDGE_INVALID_JSON", message: "request frame is not valid JSON" } });
       return;
     }
     const req = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
     const id = typeof req["id"] === "string" || typeof req["id"] === "number" ? (req["id"] as string | number) : null;
 
+    // A handler that throws (a DB open failing with SQLITE_BUSY, a bad payload
+    // reaching a sink) runs synchronously inside the stdin 'data' listener, where
+    // an uncaught throw becomes an uncaughtException and exits the process.
+    // Answer with the request's own id and survive.
+    try {
+      dispatchOne(req, id, parsed);
+    } catch (err) {
+      writeFrame({ id, error: { code: "XTMUX_BRIDGE_INTERNAL", message: "request failed", detail: { cause: err instanceof Error ? err.message : String(err) } } });
+    }
+  };
+
+  const dispatchOne = (req: Record<string, unknown>, id: string | number | null, parsed: unknown): void => {
     if (req["method"] === "journal.follow" && id !== null) {
       if (follows.has(id)) {
-        writeFrame(output, { id, error: { code: "XTMUX_BRIDGE_INVALID_REQUEST", message: "a follow is already active for this id" } });
+        writeFrame({ id, error: { code: "XTMUX_BRIDGE_INVALID_REQUEST", message: "a follow is already active for this id" } });
+        return;
+      }
+      // Per-peer follow cap. Excess follows are the DoS: unique ids each spin up
+      // their own poll loop, so the count — not just duplicate ids — must be bounded.
+      if (follows.size >= MAX_FOLLOWS) {
+        writeFrame({ id, error: { code: "XTMUX_BRIDGE_RESOURCE_LIMIT", message: `at most ${MAX_FOLLOWS} concurrent follows per connection`, detail: { max_follows: MAX_FOLLOWS } } });
         return;
       }
       const params = req["params"] && typeof req["params"] === "object" ? (req["params"] as Record<string, unknown>) : {};
@@ -88,7 +135,7 @@ export async function serveBridge(deps: BridgeDeps, input: Readable, output: Wri
       if (!Number.isFinite(afterId) || afterId < 0) {
         // No implicit "from the beginning". A follow that silently starts at 0
         // replays the whole journal into a consumer that asked to resume.
-        writeFrame(output, { id, error: { code: "XTMUX_BRIDGE_INVALID_REQUEST", message: "journal.follow needs params.after_id (use 0 to start from the beginning)" } });
+        writeFrame({ id, error: { code: "XTMUX_BRIDGE_INVALID_REQUEST", message: "journal.follow needs params.after_id (use 0 to start from the beginning)" } });
         return;
       }
       startFollow(id, afterId);
@@ -104,18 +151,22 @@ export async function serveBridge(deps: BridgeDeps, input: Readable, output: Wri
       }
     }
 
-    writeFrame(output, handleRequest(deps, parsed));
+    writeFrame(handleRequest(deps, parsed));
   };
 
+  // The limit is in BYTES, so measure bytes. buffer.length counts UTF-16 code
+  // units; a frame of 3-byte UTF-8 characters is one code unit each, so a
+  // code-unit check would admit ~3x the documented byte budget before tripping.
+  const bytes = (s: string): number => Buffer.byteLength(s, "utf8");
   return await new Promise<number>((resolve) => {
     input.setEncoding("utf8");
     input.on("data", (chunk: string) => {
       // Bound the UNPARSED buffer, not just a complete frame: a peer that never
       // sends a newline would otherwise grow it without limit.
-      if (buffer.length + chunk.length > MAX_FRAME_BYTES && !resyncing && !chunk.includes("\n")) {
+      if (bytes(buffer) + bytes(chunk) > MAX_FRAME_BYTES && !resyncing && !chunk.includes("\n")) {
         buffer = "";
         resyncing = true;
-        writeFrame(output, { id: null, error: { code: "XTMUX_BRIDGE_FRAME_TOO_LARGE", message: `request frame exceeds ${MAX_FRAME_BYTES} bytes`, detail: { max_frame_bytes: MAX_FRAME_BYTES } } });
+        writeFrame({ id: null, error: { code: "XTMUX_BRIDGE_FRAME_TOO_LARGE", message: `request frame exceeds ${MAX_FRAME_BYTES} bytes`, detail: { max_frame_bytes: MAX_FRAME_BYTES } } });
         return;
       }
       buffer += chunk;
@@ -128,16 +179,16 @@ export async function serveBridge(deps: BridgeDeps, input: Readable, output: Wri
           resyncing = false;
           continue;
         }
-        if (line.length > MAX_FRAME_BYTES) {
-          writeFrame(output, { id: null, error: { code: "XTMUX_BRIDGE_FRAME_TOO_LARGE", message: `request frame exceeds ${MAX_FRAME_BYTES} bytes`, detail: { max_frame_bytes: MAX_FRAME_BYTES } } });
+        if (bytes(line) > MAX_FRAME_BYTES) {
+          writeFrame({ id: null, error: { code: "XTMUX_BRIDGE_FRAME_TOO_LARGE", message: `request frame exceeds ${MAX_FRAME_BYTES} bytes`, detail: { max_frame_bytes: MAX_FRAME_BYTES } } });
           continue;
         }
         dispatch(line);
       }
-      if (buffer.length > MAX_FRAME_BYTES) {
+      if (bytes(buffer) > MAX_FRAME_BYTES) {
         buffer = "";
         resyncing = true;
-        writeFrame(output, { id: null, error: { code: "XTMUX_BRIDGE_FRAME_TOO_LARGE", message: `request frame exceeds ${MAX_FRAME_BYTES} bytes`, detail: { max_frame_bytes: MAX_FRAME_BYTES } } });
+        writeFrame({ id: null, error: { code: "XTMUX_BRIDGE_FRAME_TOO_LARGE", message: `request frame exceeds ${MAX_FRAME_BYTES} bytes`, detail: { max_frame_bytes: MAX_FRAME_BYTES } } });
       }
     });
     // EOF is a graceful close, not a fault: the peer hung up (ssh exited, the
