@@ -49,7 +49,7 @@ commands:
   telemetry start|finish                                 correlated command runs (3xs.7)
   audit ingest [--partial]                               persist audit findings from stdin (3xs.8)
 
-  obs-migrate --dry-run|--apply|--status  legacy JSONL importer + report
+  obs-migrate --dry-run|--apply|--status  legacy JSONL/monitor import + idempotent marker reconciliation
   retention                                apply per-domain retention; prints RetentionReport
   shadow-summary                          shadow-mode divergence rollup
   shadow-record --domain X --command Y --diff-kind Z [--v1-snippet S --v2-snippet S]

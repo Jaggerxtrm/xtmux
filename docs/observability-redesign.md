@@ -739,14 +739,20 @@ Sources:
 - `events.jsonl.1` … `events.jsonl.N`
 - legacy monitor TSV directory (`/tmp/xtmux-monitor-*`)
 - optional agent-state audit log
+- former `xtmux-reply-obligations`, `xtmux-outbound-expectations`, and
+  `xtmux-auto-monitor` runtime marker directories
 
-This importer does not read the former Pi/Claude coordination marker directories.
-Messages and waits already persisted in SQLite remain authoritative; marker-only
-age, target, or filename data cannot establish requester ownership or fulfilment.
+Messages and waits already persisted in SQLite remain authoritative. The bounded
+marker reconciliation accepts only safe current-user files whose contents and
+names validate against those rows; marker-only age, target, or filename data
+cannot establish requester ownership or fulfilment. `--apply` records redacted
+evidence, deletes recognized markers, and quarantines foreign entries without
+following symlinks. `--dry-run` changes neither files nor SQLite.
 
 Rules:
 
-- All source files preserved (importer never deletes).
+- Historical JSONL, TSV, and audit sources are preserved; marker cleanup follows
+  the bounded rules above.
 - Deterministic legacy `event_key = sha256(source_path + ':' + line_number + ':' + payload)` — enables safe rerun without duplicate imports.
 - Idempotent: reapply → zero new rows.
 - Malformed records: reported with `source_path:line`, never silently dropped.
@@ -892,13 +898,14 @@ xtmux monitor-list --json
 
 After package upgrade, reload Pi or start a fresh Pi process and start fresh
 Claude sessions so they load the markerless hooks/extensions. Existing SQLite
-rows need no conversion. `obs-migrate` remains the non-destructive JSONL/monitor
-TSV importer; it never infers a requester or reply from old marker names.
+rows need no conversion. Every install/update invokes `obs-migrate` to import
+historical JSONL/monitor TSV data and run bounded, idempotent reconciliation of
+former runtime markers against existing SQLite state; each accepted marker is
+processed once, and marker names alone never infer a requester or reply.
 
-The installer and runtime do not require `XDG_RUNTIME_DIR` for coordination and
-do not clean arbitrary runtime paths. Former `xtmux-reply-obligations`,
-`xtmux-outbound-expectations`, and `xtmux-auto-monitor` directories are ignored.
-Normal OS runtime cleanup may remove them after old processes exit.
+The installer and runtime do not require `XDG_RUNTIME_DIR` for steady-state
+coordination. Outside reconciliation, former marker directories are ignored and
+arbitrary runtime paths are not cleaned.
 
 ---
 

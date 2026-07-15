@@ -55,16 +55,19 @@ xtmux monitor-list --json
 ```
 
 Old `xtmux-reply-obligations`, `xtmux-outbound-expectations`, and
-`xtmux-auto-monitor` runtime directories are neither imported nor read by the
-new hooks/extensions. They were projections of durable message/monitor state,
-not authority. Do not restore marker readers or use marker age/absence to infer
-completion; re-arm a fresh wait when `obligations list` shows a pending send with
-no covering monitor. `obs-migrate` remains limited to legacy JSONL and monitor
-TSV import.
+`xtmux-auto-monitor` runtime directories are never consulted by steady-state
+hooks/extensions. They were projections of durable message/monitor state, not
+authority. On every install/update invocation, `obs-migrate` validates recognized
+markers against existing SQLite rows, records redacted evidence, and cleans or
+quarantines them. Idempotency means each accepted marker is processed once. It
+never uses marker age or absence alone to infer completion.
 
-No `XDG_RUNTIME_DIR` is required for coordination. The installer does not delete
-arbitrary runtime directories; stale marker files may be removed by normal OS
-runtime cleanup after all old agent processes have exited.
+No `XDG_RUNTIME_DIR` is required for coordination. Outside that bounded upgrade
+reconciliation, the installer does not inspect or delete arbitrary runtime
+paths; normal OS cleanup may remove unrelated stale files after old processes
+exit.
+
+On every install/update, the installer runs the bounded `obs-migrate --apply` reconciliation against the configured `XDG_RUNTIME_DIR`. Only current-user, non-group/world-writable legacy directories and files are eligible. Recognized reply, outbound-wake, and Claude monitor markers are validated against SQLite, recorded without message bodies, then removed; foreign or symlink entries are moved to `${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/legacy-marker-quarantine` instead of being followed or deleted. Unsafe directories are left untouched and reported. Re-running after reconciliation scans no accepted markers.
 
 ## Uninstall
 
@@ -73,7 +76,7 @@ xtmux-install --uninstall
 npm uninstall --global @jaggerxtrm/xtmux
 ```
 
-Run `xtmux-install --uninstall` first so npm has not yet removed the cleanup command. It removes only xtmux-owned links, the grouped Pi package, Claude/Codex hook files, and owned settings entries.
+Run `xtmux-install --uninstall` first so npm has not yet removed the cleanup command. It removes only xtmux-owned links, the grouped Pi package, Claude/Codex hook files, and owned settings entries. Installed directory snapshots prevent update or uninstall from deleting files added or modified by the user; when such a directory is preserved, installer state is retained so a later install cannot mistake it for an unowned clean directory. Pre-snapshot installs are adopted only when every managed file still matches the packaged payload.
 
 ## Conflict avoidance and xtrm coexistence
 

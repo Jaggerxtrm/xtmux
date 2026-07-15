@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Db } from "../db/connection.ts";
 import { importLegacyJsonl, manifestSources, type ImportCounts } from "./legacy-jsonl.ts";
 import { importLegacyMonitorTsv, type MonitorImportCounts } from "./legacy-monitor-tsv.ts";
+import { reconcileLegacyMarkers, type LegacyMarkerReport } from "./legacy-markers.ts";
 
 function defaultSources(): string[] {
   const state = process.env["XDG_STATE_HOME"] ?? join(homedir(), ".local", "state");
@@ -22,6 +23,8 @@ function defaultSources(): string[] {
 export interface RunOptions {
   apply: boolean;             // false = dry-run
   sources?: string[];
+  legacyRuntimeDir?: string;
+  legacyQuarantineDir?: string;
 }
 
 export interface RunReport {
@@ -29,6 +32,7 @@ export interface RunReport {
   mode: "dry-run" | "apply";
   counts: ImportCounts;
   monitorCounts: MonitorImportCounts;
+  legacyMarkers: LegacyMarkerReport;
   sources: Array<{ path: string; sizeBytes: number; mtimeMs: number; sha256: string }>;
   durationMs: number;
 }
@@ -47,6 +51,13 @@ export function runMigration(db: Db, opts: RunOptions, now: () => number = Date.
   // Reconstruct typed monitor rows from historical .tsv files (xtmux-3xs.13).
   // Uses default source dir (${XTMUX_PICKER_STATE:-${TMPDIR:-/tmp}/tmux-picker-state-<uid>}/monitors).
   const monitorCounts = importLegacyMonitorTsv(db, { apply: opts.apply, now });
+  const state = process.env["XDG_STATE_HOME"] ?? join(homedir(), ".local", "state");
+  const legacyMarkers = reconcileLegacyMarkers(db, {
+    apply: opts.apply,
+    runtimeDir: opts.legacyRuntimeDir ?? process.env["XDG_RUNTIME_DIR"] ?? "/tmp",
+    quarantineDir: opts.legacyQuarantineDir ?? join(state, "xtmux", "legacy-marker-quarantine"),
+    now,
+  });
 
   const completedAtMs = now();
   if (opts.apply) {
@@ -66,7 +77,7 @@ export function runMigration(db: Db, opts: RunOptions, now: () => number = Date.
         completedAtMs,
         "apply",
         JSON.stringify(manifest),
-        JSON.stringify(counts),
+        JSON.stringify({ ...counts, legacyMarkers }),
         counts.orphanAcks,
         counts.malformedRecords,
         counts.unsupportedTypes,
@@ -79,6 +90,7 @@ export function runMigration(db: Db, opts: RunOptions, now: () => number = Date.
     mode: opts.apply ? "apply" : "dry-run",
     counts,
     monitorCounts,
+    legacyMarkers,
     sources: manifest,
     durationMs: completedAtMs - startedAtMs,
   };

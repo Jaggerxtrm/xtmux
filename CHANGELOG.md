@@ -73,7 +73,7 @@ All notable changes to this project are documented here.
 - SQLite reply-obligation model (migration 0010, cycle guard, opt-in correlated projection) — xtmux-3ua.2 (#24) ([a45aa05](https://github.com/Jaggerxtrm/xtmux/commit/a45aa052ed476ca685018ab8936498d7e92117c2))
 
 ### Migration
-- Upgrade note: reload Pi or start fresh Pi/Claude sessions after installation; legacy coordination marker directories are ignored, while existing SQLite messages and waits remain authoritative
+- Upgrade note: reload Pi or start fresh Pi/Claude sessions after installation; steady-state coordination ignores legacy marker directories, while each install/update runs bounded, idempotent, redacted reconciliation against authoritative SQLite messages and waits
 - Phase 9 legacy JSONL importer + shadow-mode substrate (xtmux-3xs.9) ([3f90149](https://github.com/Jaggerxtrm/xtmux/commit/3f901493c44f0a2440afdebc5db27e4dd227229f))
 - Reconstruct monitors rows from legacy .tsv (xtmux-3xs.13) ([93576ae](https://github.com/Jaggerxtrm/xtmux/commit/93576ae1336e4bc16075f54d4e3f0a4d0fe9b89c))
 
