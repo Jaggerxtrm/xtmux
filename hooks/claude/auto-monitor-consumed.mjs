@@ -1,47 +1,43 @@
 #!/usr/bin/env node
-// auto-monitor-consumed — PostToolUse hook, matcher: Monitor|Bash
-//
-// When Claude arms Monitor(command: "...wait-agent <target>...") or runs a
-// foreground Bash wait-agent, this hook clears the <target>_pending marker so
-// the Stop-drain gate lets the turn end.
-//
-// Silent — no output. Best-effort — never crashes the tool loop.
+// PostToolUse(Monitor|Bash): consume a completed requester-owned SQLite wake.
+// Active native Monitor arms remain untouched; repeated completion hooks are
+// idempotent and no runtime marker files are read or deleted.
 
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 
-const STATE_DIR = `${process.env.XDG_RUNTIME_DIR || "/tmp"}/xtmux-auto-monitor`;
+const PICKER = process.env.XTMUX_PICKER || `${process.env.HOME}/.local/bin/xtmux`;
 
 function readInput() {
-  try {
-    return JSON.parse(readFileSync(0, "utf-8"));
-  } catch {
-    return null;
-  }
+  try { return JSON.parse(readFileSync(0, "utf8")); } catch { return null; }
 }
 
-function pendingPath(target) {
-  return `${STATE_DIR}/${target.replace(/[^A-Za-z0-9._:%$-]/g, "_")}_pending`;
+function extractWaitTarget(command) {
+  if (typeof command !== "string") return null;
+  return command.match(/\bwait-agent\s+['"]?([^\s'"]+)['"]?/)?.[1] ?? null;
 }
 
-function extractWaitTarget(cmd) {
-  if (!cmd || typeof cmd !== "string") return null;
-  const m = cmd.match(/\bwait-agent\s+['"]?([^\s'"]+)['"]?/);
-  return m ? m[1] : null;
+function picker(args, command) {
+  const result = spawnSync(PICKER, args, { encoding: "utf8", timeout: 5000 });
+  if (result.status !== 0) throw new Error(`${command} failed: ${(result.stderr || result.error?.message || `exit ${result.status}`).trim()}`);
+  try { return JSON.parse(result.stdout || ""); }
+  catch (error) { throw new Error(`Malformed ${command} JSON: ${error instanceof Error ? error.message : String(error)}`); }
 }
 
 function main() {
   const input = readInput();
-  if (!input) return;
-
-  // Monitor tool: input.tool_input.command; Bash tool: same shape.
-  const cmd = input.tool_input?.command;
-  const target = extractWaitTarget(cmd);
-  if (!target) return;
-
+  const target = extractWaitTarget(input?.tool_input?.command);
+  if (!target || (input.tool_response?.exitCode ?? input.exit_code ?? 0) !== 0) return;
   try {
-    rmSync(pendingPath(target), { force: true });
-  } catch {
-    // Best-effort.
+    const rows = picker(["monitor-list", "--json"], "monitor-list");
+    if (!Array.isArray(rows)) throw new Error("Incompatible monitor-list JSON result");
+    const pending = rows.find((row) => row?.requesterPaneId === process.env.TMUX_PANE
+      && (row.target === target || row.paneId === target || row.sessionId === target)
+      && row.terminalStatus !== null && row.wakeDelivered === true && row.wakeConsumed === false);
+    if (!pending) return;
+    picker(["wait-agent", target, "--consume", "--timeout", "0", "--interval", "0", "--json"], "wait-agent --consume");
+  } catch (error) {
+    process.stderr.write(`[auto-monitor] ${String(error instanceof Error ? error.message : error).slice(0, 400)}\n`);
   }
 }
 
