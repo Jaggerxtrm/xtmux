@@ -309,7 +309,7 @@ describe("Pi SQLite reply obligations", () => {
     await h.emit("session_shutdown");
   });
 
-  test("caps ack and status work at 20 per cycle and drains durably across restart", async () => {
+  test("caps ack, status, and wake work at 20 per settled cycle and drains durably across restart", async () => {
     isolate();
     process.env.XTMUX_INBOX_POLL_INTERVAL_S = "60";
     const state = store();
@@ -321,27 +321,47 @@ describe("Pi SQLite reply obligations", () => {
       messageKey: `in-${index}`, senderId: `$sender-${index}`, recipientId: "$me", targetPaneId: "%me",
       beadId: `work-${index}`, summary: "private", expectsReply: true, acked: false, replyStatus: "pending",
     }));
+    state.monitors = Array.from({ length: 25 }, (_, index) => ({
+      monitorId: `monitor-${index}`, waitId: `wait-${index}`, target: `peer:${index}.1`, requesterPaneId: "%me",
+      terminalStatus: "done", wakeDelivered: true, wakeConsumed: false,
+    }));
+    const mutationCalls = (calls: string[][]) => calls.filter((args) =>
+      args[0] === "message-ack" || args[0] === "message-status" || args[0] === "wait-agent");
 
     const first = harness(state);
     await first.emit("session_start");
     await Bun.sleep(0);
-    const firstWork = first.pickerCalls.filter((args) => args[0] === "message-ack" || args[0] === "message-status");
+    const firstWork = mutationCalls(first.pickerCalls);
     expect(firstWork).toHaveLength(20);
     expect(firstWork.every((args) => args[0] === "message-ack")).toBe(true);
     expect(new Set(firstWork.map((args) => args[1])).size).toBe(20);
 
+    await first.emit("agent_start");
+    for (let index = 0; index < 3; index++) {
+      await first.emit("tool_result", { toolName: "bash", isError: false, content: jsonResult({
+        messageKey: `tool-${index}`, duplicate: false, senderId: "$me", recipientId: "$peer",
+      }) });
+    }
+    await first.emit("agent_end");
     first.setPendingMessages(false);
     await first.emit("agent_settled");
     await Bun.sleep(0);
-    const settledWork = first.pickerCalls.filter((args) => args[0] === "message-ack" || args[0] === "message-status");
-    expect(settledWork).toHaveLength(40);
-    expect(new Set(settledWork.map((args) => args[1])).size).toBe(40);
+    const boundaryWork = mutationCalls(first.pickerCalls);
+    expect(boundaryWork).toHaveLength(20);
+    expect(new Set(boundaryWork.map((args) => args[1])).size).toBe(20);
+
+    first.setPendingMessages(false);
+    await first.emit("agent_settled");
+    await Bun.sleep(0);
+    const nextCycleWork = mutationCalls(first.pickerCalls);
+    expect(nextCycleWork).toHaveLength(40);
+    expect(new Set(nextCycleWork.map((args) => args[1])).size).toBe(40);
     await first.emit("session_shutdown");
 
     const restarted = harness(state);
     await restarted.emit("session_start");
     await Bun.sleep(0);
-    const restartWork = restarted.pickerCalls.filter((args) => args[0] === "message-ack" || args[0] === "message-status");
+    const restartWork = mutationCalls(restarted.pickerCalls);
     expect(restartWork).toHaveLength(20);
     expect(restartWork.every((args) => Number(args[1]!.slice(3)) >= 40)).toBe(true);
     expect(restarted.widgets.get("xtmux-inbox")!.join("\n").length).toBeLessThanOrEqual(2000);

@@ -87,6 +87,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
   let awaiting: PendingReply[] = [];
   let unread = 0;
   let degradation = "";
+  let cycleBudget: OperationBudget = { remaining: MAX_CYCLE_OPERATIONS };
 
   async function execJson(args: string[], command: string): Promise<unknown> {
     const result = await pi.exec(PICKER, args, { timeout: 2000 });
@@ -199,7 +200,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     setWidget(ctx, lines.length ? lines : undefined);
   }
 
-  async function refresh(ctx: ExtensionContext, budget: OperationBudget = { remaining: MAX_CYCLE_OPERATIONS }): Promise<boolean> {
+  async function refresh(ctx: ExtensionContext, budget: OperationBudget = cycleBudget): Promise<boolean> {
     if (refreshPromise) return refreshPromise;
     refreshPromise = (async () => {
       try {
@@ -282,15 +283,15 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
   }
 
   async function runCycle(ctx: ExtensionContext): Promise<void> {
-    const budget = { remaining: MAX_CYCLE_OPERATIONS };
-    await refresh(ctx, budget);
+    await refresh(ctx);
     if (ctx.hasPendingMessages()) return;
-    const completed = await consumeWakes(ctx, budget);
+    const completed = await consumeWakes(ctx, cycleBudget);
     scheduleContinuation(ctx, completed > 0);
   }
 
   pi.on("session_start", async (_event, ctx) => {
     stopped = false;
+    cycleBudget = { remaining: MAX_CYCLE_OPERATIONS };
     ownPaneId = await tmuxValue("#{pane_id}", process.env.TMUX_PANE || "");
     ownSessionId = ownPaneId ? await tmuxValue("#{session_id}", ownPaneId) : "";
     await runCycle(ctx);
@@ -313,7 +314,13 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
 
   pi.on("agent_start", async (_event, ctx) => { await refresh(ctx); });
 
-  pi.on("agent_settled", async (_event, ctx) => { await runCycle(ctx); });
+  pi.on("agent_settled", async (_event, ctx) => {
+    try {
+      await runCycle(ctx);
+    } finally {
+      cycleBudget = { remaining: MAX_CYCLE_OPERATIONS };
+    }
+  });
 
   pi.on("tool_result", async (event, ctx) => {
     if (event.toolName !== "bash" || event.isError) return;
