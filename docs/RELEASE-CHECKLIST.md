@@ -15,6 +15,39 @@
 | clean install/update/uninstall | installer contract tests plus packed-artifact smoke before publication |
 | actual npm publish | blocked by the explicit goal constraint until packed install, contents, idempotency, coexistence, and changelog consumption pass |
 
+## Phase 2 coordination release gates
+
+- [ ] Build the runtime before help/smoke checks: `bun run build`.
+- [ ] Run `bun test`, `bash test/contract.sh`, installer tests, typecheck, and
+      `scripts/verify-json-api.sh`; JSON examples must parse and picker/raw help
+      must name the same flags and fields.
+- [ ] Pack the npm artifact and verify it contains migrations 0010/0011, the
+      grouped Pi package sources, all owned Claude hooks, and the updated public
+      docs. Run clean install, update, and uninstall smoke from that tarball.
+- [ ] Upgrade smoke starts fresh Claude and Pi sessions (or `/reload` for Pi),
+      verifies `xtmux-obs health`, `obligations list`, pane-scoped `message-list
+      --expects-reply`, and `monitor-list`, then completes one correlated reply
+      and one delivered/consumed wake across process restart.
+- [ ] Repeat coordination smoke with `XDG_RUNTIME_DIR` unset and assert no
+      `xtmux-reply-obligations`, `xtmux-outbound-expectations`, or
+      `xtmux-auto-monitor` directory is created or consulted.
+- [ ] Verify ack-only leaves `replyStatus:"pending"`, failed safe-send leaves the
+      obligation pending, wrong requester/pane cannot reply or consume, and a
+      same-target older wait does not cover a newer obligation.
+- [ ] Verify Pi bounds: outgoing obligations default to 200 rows and inbox reads
+      pass `--limit 500`; `monitor-list` remains unbounded and Pi must fail closed
+      after parsing more than 500 monitor rows. Successful cycles cap work at 20
+      reply keys/mutations, 22 widget rows, and bounded continuation text;
+      backend/JSON failures remain visible and do not promote summaries to
+      instructions.
+- [ ] Compare `README.md`, `docs/json-command-api.md`, architecture/install docs,
+      `xtmux help`, raw `xtmux-obs --help`, packaged hooks/extensions, and the
+      operator skills. No surface may teach ack-as-reply, runtime-marker TTL, or
+      target-only requester ownership.
+- [ ] Confirm the upgrade note says xtmux installs Codex hooks only into an
+      existing `~/.codex`; it never installs Codex CLI. Do not publish until all
+      gates above pass.
+
 ## Multiplexed coordination findings
 
 Pane `xtmux:1.1` (Claude Code) inspected the repository, live global Claude config, and hook history. It found that xtrm regeneration had removed the three auto-monitor registrations while leaving their scripts behind, and that the old hook default hardcoded `/home/dawid/dev/xtmux`. It recommended a dedicated `~/.claude/hooks/xtmux` namespace, atomic read/merge/write, deterministic ownership, and preserving every foreign wrapper. The installer implements that layout and the hardcoded path now defaults to `$HOME/.local/bin/xtmux`.
