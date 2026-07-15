@@ -89,20 +89,64 @@ tmux-session-picker monitor-list
 tmux-session-picker monitor-kill <id>
 ```
 
-active monitor records are stored under the picker state dir and removed when the
-monitor completes or is killed.
+monitor and requester-wake rows are durable in
+`${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/observability.db`. Terminal
+unconsumed wakes survive restart; `wait-agent --consume` claims one only for the
+session and pane that registered it.
 
-Pi `extensions/pi-agent-state.ts` also publishes `agent.turn.done` on `agent_end`, including a compact last assistant message when the pi `turn_end`/`agent_end` event payload exposes it. If `@agent_parent_session` is set, it emits a short log-backed `message.sent` to the parent.
+Pi `extensions/pi-agent-state.ts` also publishes `agent.turn.done` on `agent_end`, including a compact last assistant message when the pi `turn_end`/`agent_end` event payload exposes it. If `@agent_parent_session` is set, it emits a short SQLite-backed message to the parent.
 
-state transitions and orchestration actions are also written to the xtmux JSONL
-event log (default `${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/events.jsonl`,
-override with `XTMUX_EVENT_LOG_FILE`). Use:
+state transitions and orchestration actions write typed rows and bounded
+forensic envelopes to the SQLite event journal. Use:
 
 ```sh
 tmux-session-picker log tail 50
 tmux-session-picker log query --pane %42 --since 1h
-tmux-session-picker message-send --to orchestrator --bead xtmux-team.4 --text 'done; notes in bead'
-tmux-session-picker message-list --for orchestrator --unacked
+tmux-session-picker message-send --to orchestrator --bead xtmux-team.4 --text 'done; notes in bead' --json
+tmux-session-picker message-list --for orchestrator --pane "$TMUX_PANE" --expects-reply --json
+```
+
+### reply and wake closed loops
+
+A message with `--bead` expects a reply unless it explicitly uses
+`--expects-reply=false`. `message-ack` records receipt only; it never clears the
+sender's obligation. The original recipient must correlate the response:
+
+```sh
+xtmux message-reply --in-reply-to <messageKey> --text 'done; notes in bead' --json
+# or, only after successful pane injection:
+xtmux safe-send-pointer --yes --reply-to <messageKey> %42 \
+  'leggi /tmp/reply.txt e seguilo' --json
+```
+
+`message-reply` and `message-cancel` derive authority from the live tmux session
+and pane. Endpoint overrides, cross-pane replies, second replies, and
+non-requester wake consumption fail without partial mutation.
+
+Claude's PostToolUse hook verifies the SQLite obligation. At Stop it blocks once
+when the sender pane lacks an active or consumed requester-owned wait that is at
+least as new as the obligation, and supplies the exact native `Monitor(command:
+"xtmux wait-agent ... --wait-for-transition --consume ...")` call. The consumed
+hook claims a delivered wake once. Hook database failure blocks with an
+`obligations list --json` diagnostic; `stop_hook_active` prevents a recursive
+Stop loop.
+
+Pi re-queries `obligations list`, pane-scoped `message-list`, `unread-count`, and
+`monitor-list`. It acknowledges at most 20 receipts/wakes per cycle, displays at
+most 20 reply keys in a bounded widget/prompt, queues only one continuation while
+idle, and resumes remaining SQLite work on later cycles or restart. Unsafe IDs
+are hidden, malformed/incompatible coordination JSON degrades visibly, and
+message summaries are never inserted as instructions.
+
+Neither loop reads, writes, expires, or asks the operator to delete
+`xtmux-reply-obligations`, `xtmux-outbound-expectations`, or
+`xtmux-auto-monitor` runtime marker directories. Troubleshoot durable state with:
+
+```sh
+xtmux obligations list --pane "$TMUX_PANE" --json
+xtmux message-list --for "$(tmux display-message -p '#{session_id}')" \
+  --pane "$TMUX_PANE" --expects-reply --json
+xtmux monitor-list --json
 ```
 
 press `?` in the picker (or run `tmux-session-picker mux-help`) for a concise
@@ -319,14 +363,11 @@ extensions discovered from these locations:
 - `.pi/extensions/*.ts` (project-local, after project trust)
 - `.pi/extensions/*/index.ts` (project-local, after project trust)
 
-install the shipped extension globally:
-
-```sh
-mkdir -p ~/.pi/agent/extensions
-ln -sf "$PWD/extensions/pi-agent-state.ts" ~/.pi/agent/extensions/xtmux-agent-state.ts
-```
-
-or reference it from pi `settings.json` via the documented `extensions` array:
+the npm installer registers one grouped Pi package with
+`pi-agent-state.ts` and `pi-auto-monitor.ts` as entrypoints;
+`pi-auto-monitor.ts` initializes `pi-inbox-reply.ts` internally. After upgrade,
+run `/reload` or start a fresh Pi session. For a source-only setup, reference the
+entrypoints from Pi `settings.json` via its documented `extensions` array:
 
 ```json
 {
@@ -334,8 +375,7 @@ or reference it from pi `settings.json` via the documented `extensions` array:
 }
 ```
 
-the extension is self-contained typescript (no npm install needed) and calls the
-shared script with `pi.exec(...)`. override the script path if needed:
+the state extension calls the shared script with `pi.exec(...)`. override the script path if needed:
 
 ```sh
 XTMUX_AGENT_STATE_SCRIPT=/custom/path/agent-state.sh pi
@@ -386,7 +426,9 @@ panes. claude code can emit `needs-input` via `Notification`.
 
 a minimal codex hook example is in `examples/codex/hooks.agent-state.json`. it
 sets `running` on `UserPromptSubmit` and `idle` on `SessionStart`, matching the
-hook event names already used by this repo's `.codex/hooks.json`.
+hook event names already used by this repo's `.codex/hooks.json`. The installer
+adds these files only when `~/.codex` already exists; xtmux never installs the
+Codex CLI.
 
 codex WAIT/DONE event coverage is intentionally not asserted here because this
 repo currently has no verified codex equivalent for claude `Notification`/`Stop`.

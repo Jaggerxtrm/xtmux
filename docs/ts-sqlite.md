@@ -1,8 +1,8 @@
 ## SCOPE
 
-This epic replaces xtmux’s flat JSONL observability and message-routing implementation with a typed, indexed SQLite runtime.
+This epic replaced xtmux’s flat JSONL observability and message-routing implementation with a typed, indexed SQLite runtime. Sections 1–26 preserve the original PRD; §27 records the shipped Phase 2 coordination contract and overrides earlier future-tense descriptions.
 
-The work is broader than optimizing `message-list`. It separates four concerns that are currently mixed inside `events.jsonl`, tmux options, temporary TSV files, and shell control flow:
+The work was broader than optimizing `message-list`. It separated four concerns formerly mixed inside `events.jsonl`, tmux options, temporary TSV files, and shell control flow:
 
 ```text
 durable operational state
@@ -11,7 +11,7 @@ historical/audit events
 live tmux and picker UI projections
 ```
 
-The target architecture is **Rung C: SQLite-backed runtime and observability**, implemented primarily in Bun/TypeScript, while preserving the existing shell picker as the stable tmux and fzf integration layer.
+The shipped architecture is **Rung C: SQLite-backed runtime and observability**, implemented primarily in Bun/TypeScript, while preserving the existing shell picker as the stable tmux and fzf integration layer.
 
 Rung A and Rung B remain useful only as compatibility or benchmark baselines. They are not acceptable end states for this epic.
 
@@ -321,9 +321,7 @@ Required invariants:
 * message insertion succeeds independently from tmux projection updates;
 * message query complexity depends on recipient queue size and result limit, not total observability volume.
 
-The current implementation writes `message.sent`, then separately mutates `@agent_unread_count` and `@agent_unread_since` as best-effort delivery signals.
-
-The current acknowledgement path appends `message.ack` and separately decrements the tmux unread counter.
+The shipped implementation inserts messages and receipts atomically in SQLite, then mutates `@agent_unread_count` and `@agent_unread_since` only as best-effort projections. `message-ack` updates receipt state only; explicit correlation in §27 owns reply fulfilment.
 
 ### Unread tmux options
 
@@ -537,9 +535,9 @@ V2 must correlate those operations.
 
 ## 11. MONITOR RUNTIME
 
-Migrate the complete monitor registry from temporary TSV files into SQLite.
+The complete monitor registry is stored in SQLite. Legacy temporary TSV files are importer inputs only.
 
-Current monitor state includes:
+Monitor state includes:
 
 ```text
 monitor id
@@ -554,9 +552,7 @@ last update
 terminal event
 ```
 
-The current runtime maintains this in files under `/tmp`, updates them on every polling cycle, and removes them when the monitor process exits.
-
-`monitor-list` currently scans those files, checks PIDs, removes stale records, observes panes, and rewrites the TSV records.
+The runtime updates monitor heartbeat/current state in place and persists terminal status. `monitor-list` reconciles SQLite rows against live tmux/process probes; it does not scan or rewrite a runtime TSV registry.
 
 Suggested conceptual model:
 
@@ -1362,3 +1358,85 @@ The epic is complete when:
 * legacy data migrates non-destructively and idempotently;
 * V2 meets the full-command p99 performance target;
 * no mandatory daemon or broker has been introduced.
+
+---
+
+## 27. SHIPPED PHASE 2 COORDINATION CONTRACT
+
+SQLite is the sole steady-state authority for reply obligations, correlated
+replies, outbound waits, monitor linkage, terminal wakes, and wake consumption.
+The former Pi/Claude runtime marker directories are not read, written, expired,
+or migrated by the coordination loops.
+
+### 27.1 Message correlation
+
+Migration 0010 rebuilds `messages` with `expects_reply`,
+`reply_to_message_id`, `fulfilled_by_message_id`, `fulfilled_at_ms`,
+`cancelled_at_ms`, and `cancel_reason`. It adds:
+
+* unique `msg_one_reply_per_request` for one fulfilling reply;
+* partial `msg_pending_obligation` keyed by sender session/pane and creation;
+* `msg_reply_target` for correlation reads;
+* `msg_fulfilled_retention` for terminal cleanup.
+
+`message-send --bead` defaults to an expected reply; explicit false is FYI-only.
+`message-ack` is receipt-only. `message-reply --in-reply-to <messageKey>`
+requires the live original recipient pane, derives reversed endpoints, and
+inserts reply + fulfilment atomically. Same-key retry is idempotent; a different
+second reply, wrong session/pane, endpoint override, cancellation race, or busy
+database returns a structured error without partial mutation. Owner cancellation
+is terminal. `safe-send-pointer --reply-to` calls the reply path only after a
+successful injection.
+
+### 27.2 Requester-owned waits
+
+Migration 0011 adds `outbound_waits` with requester/target session and pane IDs,
+optional related message and monitor IDs, states `unarmed`, `armed`,
+`terminal-unconsumed`, `consumed`, `cancelled`, and `expired`, terminal/wake
+timestamps, and expiry. Its indexes enforce one wait per monitor and bound
+requester-pending, target-active, wake-delivery, and retention queries.
+
+A target does not identify its requester. Arm, wake delivery, and consumption
+validate both requester columns. `--wait-for-transition` requires a target to
+enter working state and leave it; Claude additionally requires a covering wait
+whose start is no earlier than the obligation. Terminal rows and one-time wakes
+replay after restart. Monitors with no linked wait are retained as orphans and
+cannot wake a requester.
+
+### 27.3 Markerless consumers and bounds
+
+Claude PostToolUse verifies the SQLite obligation; Stop supplies the exact native
+Monitor wait when a fresh requester-owned wait is missing; PostToolUse consumes
+a completed wake idempotently. Database/shape failures produce bounded
+operator-facing diagnostics and no marker fallback.
+
+Pi accepts only complete single coordination JSON envelopes. Each cycle reads at
+most 500 rows, performs at most 20 ack/wake mutations, publishes at most 20
+validated reply keys, caps its widget at 22 rows / 2000 characters and prompt
+addition at 1600 characters, and queues one continuation while idle. Remaining
+work stays durable for later cycles or restart. Unsafe metadata is hidden and
+message summaries are never promoted into instructions.
+
+### 27.4 Retention and telemetry
+
+`XTMUX_OBS_REPLY_RETENTION_DAYS` and `XTMUX_OBS_WAIT_RETENTION_DAYS` default to
+30. Pending obligations, unacknowledged original/reply rows, active waits, and
+terminal unconsumed wakes are preserved. Eligible reply/original pairs delete
+together; only old consumed/cancelled/expired waits prune.
+
+Typed rows are authority; bounded journal evidence includes
+`messages.reply.linked`, `messages.reply.rejected`,
+`messages.obligation.pruned`, `wait.registered`, `wait.monitor.armed`,
+`wait.terminal`, `wait.wake.delivered`, `wait.wake.consumed`,
+`wait.wake.orphan`, `wait.validation_failed`, `wait.cancelled`, `wait.expired`,
+and `wait.pruned`. Message and prompt bodies are excluded.
+
+### 27.5 Upgrade/operator boundary
+
+Schema migrations apply automatically on database open. Upgrade the npm package,
+reload/start fresh Pi, and start fresh Claude sessions. Existing SQLite message
+and wait rows remain authoritative. `obs-migrate` continues to import legacy
+JSONL/monitor TSV data only; it does not infer requester or reply state from
+marker names. Coordination works with `XDG_RUNTIME_DIR` unset. Troubleshoot with
+`xtmux-obs health`, `obligations list --json`, pane-scoped `message-list --expects-reply
+--json`, and `monitor-list --json`, not runtime-directory inspection.

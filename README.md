@@ -86,9 +86,9 @@ and clean up tmux-based agent work.
   - `@agent_prompt_file`
   - `@agent_parent_session`
   - `@agent_last_transition`
-- `wait-agent`: block until an agent pane leaves working/running state
-- `monitor-agent` / `monitor-list` / `monitor-kill`: registered background waits
-- `safe-send-pointer`: dry-run-first safe wrapper around `tmux send-keys`; auto-appends a delayed second Enter for Claude Code targets (paste-detection consumes the first) and no-ops the second Enter for pi/Codex/shell panes; opt-in `--force-freeform` bypasses only the slash/tmp payload check while keeping the multiline + shell-substitution guards
+- `wait-agent`: requester-owned SQLite wait that blocks until an agent pane leaves working/running state; `--consume` claims a terminal wake once
+- `monitor-agent` / `monitor-list` / `monitor-kill`: durable background monitors linked to requester session and pane identity
+- `safe-send-pointer`: dry-run-first safe wrapper around `tmux send-keys`; `--reply-to <messageKey>` records a correlated reply only after successful injection; Claude targets receive the required delayed second Enter
 - `handoff`: generate `/tmp` prompt file + exact safe-send command for a bead
 - `dashboard`: agent-readable TSV inventory for orchestrators
 - `audit`: read-only hygiene report separating warnings from cleanup candidates
@@ -96,21 +96,28 @@ and clean up tmux-based agent work.
 - opt-in command telemetry wrappers for `git`, `bd`, and `gh pr` actions
 - `mux-help`: concise multiplexing safety cheatsheet, also available with `?`
   inside the picker
-- local JSONL event log for state/message/handoff/monitor/audit events
-- log-backed message channel between sessions/panes
+- typed SQLite state plus an append-only event journal for state/message/handoff/monitor/audit events
+- SQLite-backed message channel between sessions/panes, with receipt ack separate from reply fulfilment
 
 ## Operator quickstart
 
 ```sh
-xtmux health
+xtmux-obs health
 xtmux dashboard sessions-only
-xtmux message-send --to <session-or-pane> --bead <id> --text 'status'
-xtmux message-list --for "$(tmux display-message -p '#{session_id}')" --unacked
+xtmux message-send --to '$42' --to-pane '%7' --bead xtmux-demo.1 --text 'status' --json
+xtmux message-list --for "$(tmux display-message -p '#{session_id}')" \
+  --pane "$TMUX_PANE" --expects-reply --json
 ```
 
-The SQLite runtime is default-on. Set `XTMUX_OBS_V2=0` for temporary rollback or
-`XTMUX_OBS_V2=shadow` for V1-authoritative comparison. Data lives at
-`${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/observability.db`.
+A bead implies `expectsReply:true`; use `--expects-reply=false` for FYI-only
+messages. `message-ack` records receipt only. The original recipient fulfils an
+obligation with `message-reply --in-reply-to <messageKey> --text ...`, or with
+`safe-send-pointer --reply-to <messageKey>` after successful pane injection.
+
+SQLite is the source of truth at
+`${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/observability.db`. Set
+`XTMUX_OBS_V2=0` only for temporary legacy rollback or `XTMUX_OBS_V2=shadow` for
+comparison; neither mode makes runtime marker files authoritative.
 
 ## Files
 
@@ -300,12 +307,12 @@ tmux-session-picker dashboard expanded
 # read-only hygiene report
 tmux-session-picker audit
 
-# wait for one target to become non-working
-tmux-session-picker wait-agent %42 --timeout 30m --interval 30s
+# wait for one target to complete a fresh working cycle and consume its wake once
+tmux-session-picker wait-agent %42 --wait-for-transition --consume --timeout 30m --interval 30s
 
-# registered background waits
-tmux-session-picker monitor-agent %42 --timeout 30m --interval 30s
-tmux-session-picker monitor-list
+# requester-owned background waits
+tmux-session-picker monitor-agent %42 --wait-for-transition --timeout 30m --interval 30s
+tmux-session-picker monitor-list --json
 tmux-session-picker monitor-kill <id>
 
 # safe handoff primitives
@@ -317,6 +324,8 @@ tmux-session-picker safe-send-pointer --yes --no-double-enter %42 '/compact'
 # shell-substitution guards STILL enforced. Without --yes, prints a confirmation banner
 # showing exactly what is bypassed:
 tmux-session-picker safe-send-pointer --force-freeform %42 'stop and check the migration order first'
+# Correlate only after successful injection:
+tmux-session-picker safe-send-pointer --yes --reply-to msg-123 %42 'leggi /tmp/reply.txt e seguilo' --json
 tmux-session-picker handoff --target %42 --bead xtmux-mux.9 --note 'NO push'
 tmux-session-picker handoff --yes --target %42 --bead xtmux-mux.9 --note 'NO push'
 
@@ -328,10 +337,11 @@ tmux-session-picker log emit custom.event pane=%42 bead=xtmux-team.1 text=hello
 tmux-session-picker log tail 50
 tmux-session-picker log query --type message.sent --bead xtmux-team.4 --since 1h
 
-# log-backed message channel
-tmux-session-picker message-send --from orch --to worker --bead xtmux-team.4 --text 'blocked on data'
-tmux-session-picker message-list --for worker --unacked
-tmux-session-picker message-ack <message-id> --by worker
+# SQLite-backed message channel: ack receipt, then reply explicitly
+tmux-session-picker message-send --to worker --bead xtmux-team.4 --text 'blocked on data' --json
+tmux-session-picker message-list --for worker --pane %42 --expects-reply --json
+tmux-session-picker message-ack <messageKey> --by worker --json
+tmux-session-picker message-reply --in-reply-to <messageKey> --text 'resolved' --json
 
 # opt-in command telemetry; does not shadow git/bd/gh unless you alias it yourself
 tmux-session-picker telemetry git -- commit -m 'message'
@@ -352,7 +362,8 @@ Important safety defaults:
 - `handoff` is dry-run unless `--yes`/`--send` is given.
 - `handoff` refuses working targets before writing the prompt-file.
 - `audit` is read-only.
-- `message-send` writes to the xtmux event log and, when the target resolves, sets `@agent_unread_count`/`@agent_unread_since` on the recipient session and pings any attached client via `tmux display-message`. It does not inject text into panes. Targets are normalized to `#{session_id}` so `--for` finds messages regardless of the alias the recipient uses (name / `$N` / `%N` / `session:window.pane`). `$N`/`%N`/`@N` targets that do not resolve exit nonzero with stderr and log `message.failed`. The event log rotates at `XTMUX_EVENT_LOG_MAX_BYTES` (default 10 MB, keeps `XTMUX_EVENT_LOG_KEEP=3` backfiles).
+- `message-send` commits a message and receipt to SQLite and updates tmux unread options only as a best-effort projection. It does not inject text into panes. `--bead` implies a reply obligation unless explicitly disabled. Acking the receipt never fulfils that obligation; only a correlated reply or owner cancellation does.
+- Reply and wait mutations require the live requester session and pane. A monitor owned by another pane, or one older than the obligation it is meant to cover, cannot satisfy the gate. Timeouts return `124`; ownership, pane, endpoint, and duplicate-reply conflicts are structured errors with no partial mutation.
 - `telemetry git|bd|gh` is explicit opt-in and forwards to the real command while logging start/end events.
 
 ### Maintenance
@@ -414,31 +425,17 @@ Bead derivation is conservative: it only derives dot-number ids such as
 `xtmux-rib.16` from session names or worktree/path conventions. Loose numeric
 slugs are ignored.
 
-## Event log and message channel
+## Event journal and message channel
 
-The event log is a local JSONL file. Default path:
+Typed tables in `observability.db` are authoritative; `event_journal` is the
+append-only forensic stream queried by `log tail`, `log query`, and `log follow`.
+Message bodies are not copied into coordination lifecycle events.
 
-```text
-${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/events.jsonl
-```
-
-Override it with `XTMUX_EVENT_LOG_FILE`. Every event has at least:
-
-```json
-{"ts":"...","ts_epoch":123,"type":"message.sent"}
-```
-
-Useful event types currently emitted:
-
-- `agent.state` from `scripts/agent-state.sh`
-- `agent.turn.done` from the pi extension when an agent turn ends
-- `message.sent` / `message.ack` from the message channel
-- `handoff.created` / `handoff.sent`
-- `monitor.started` / `monitor.done` / `monitor.timeout` / `monitor.killed`
-- `audit.run`
-- `git.command`, `git.commit`, `git.push`, `git.merge` from `telemetry git -- ...`
-- `bd.command`, `bd.create`, `bd.claim`, `bd.update`, `bd.close`, `bd.remember` from `telemetry bd -- ...`
-- `git.pr.create`, `git.pr.merge`, `gh.command` from `telemetry gh -- ...`
+Useful coordination events include `messages.sent`, `messages.ack`,
+`messages.reply.linked`, `messages.reply.rejected`, `messages.cancelled`,
+`wait.registered`, `wait.monitor.armed`, `wait.terminal`,
+`wait.wake.delivered`, `wait.wake.consumed`, `wait.wake.orphan`, and
+`wait.validation_failed`.
 
 CLI:
 
@@ -448,17 +445,21 @@ tmux-session-picker log tail [n]
 tmux-session-picker log query [--type t] [--pane %42] [--session s] [--bead id] [--since 1h] [--limit n]
 
 tmux-session-picker message-send --to <session|pane> [--from sender] [--bead id] --text 'short update'
-tmux-session-picker message-list --for <session|pane> [--unacked] [--since 1h]
-tmux-session-picker message-ack <message-id> [--by session]
+tmux-session-picker message-list --for <session|pane> [--pane %N] [--unacked] [--expects-reply] [--since 1h]
+tmux-session-picker message-ack <messageKey> [--by session]
+tmux-session-picker message-reply --in-reply-to <messageKey> --text 'result'
+tmux-session-picker message-cancel --message-key <messageKey>
 
 tmux-session-picker telemetry git -- <git-args...>
 tmux-session-picker telemetry bd -- <bd-args...>
 tmux-session-picker telemetry gh -- <gh-args...>
 ```
 
-The message channel is intentionally log-backed. Use it for short status updates
-between orchestrator/team panes without scraping `capture-pane` and without
-injecting text into another pane. Beads remain the durable task contract.
+Use the message channel for short status updates between orchestrator/team panes
+without scraping `capture-pane` or injecting text into another pane. Beads remain
+the durable task contract. Pending replies and unconsumed wakes survive process
+restart because Pi and Claude re-query SQLite; no runtime marker directory is
+read, written, or cleaned during steady-state coordination.
 
 Command telemetry is intentionally explicit. xtmux does not install aliases or
 shadow `git`, `bd`, or `gh`. If an operator wants automatic logging in a pane,
@@ -508,8 +509,7 @@ actions.
 | `${TMPDIR:-/tmp}/tmux-picker-cache-$UID/git-table` | path->git-root and root->status cache |
 | `${TMPDIR:-/tmp}/tmux-picker-state-$UID/filter` | active `Ctrl-f` content filter |
 | `${TMPDIR:-/tmp}/tmux-picker-state-$UID/list-mode` | `expanded` / `sessions-only` nesting mode |
-| `${TMPDIR:-/tmp}/tmux-picker-state-$UID/monitors/*.tsv` | active monitor registry |
-| `${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/events.jsonl` | event log (override with `XTMUX_EVENT_LOG_FILE`) |
+| `${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/observability.db` | authoritative messages, receipts, reply links, waits, monitors, and event journal |
 
 The list output itself is never cached. Agent state and attention ranking are
 always read fresh.
@@ -527,7 +527,9 @@ always read fresh.
 | `TMUX_GIT_TOPLEVEL` | — | caller-supplied repo root for `git-pane-status.sh` fast path |
 | `XTMUX_AGENT_STATE_LOG` | `0` | `1` logs agent-state transitions for hook debugging |
 | `XTMUX_AGENT_STATE_LOG_FILE` | `~/.cache/xtmux/agent-state.log` | legacy transition log path |
-| `XTMUX_EVENT_LOG_FILE` | `${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/events.jsonl` | JSONL event log path |
+| `XTMUX_INBOX_POLL_INTERVAL_S` | `30` | Pi coordination SQLite refresh interval |
+| `XTMUX_AUTO_MONITOR_TIMEOUT` | `8h` | Pi auto-monitor timeout |
+| `XTMUX_AUTO_MONITOR_INTERVAL` | `60s` | Pi auto-monitor poll interval |
 
 ### Full monitoring terminal
 
