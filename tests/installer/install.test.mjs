@@ -222,6 +222,21 @@ test("upgrade reconciles a valid legacy reply marker without leaking its summary
   rmSync(home, { recursive: true, force: true });
 });
 
+test("adopts an unchanged pre-snapshot install by content", () => {
+  const home = mkdtempSync(join(tmpdir(), "xtmux-pre-snapshot-clean-"));
+  assert.equal(run(home).status, 0);
+  const statePath = join(home, ".local", "state", "xtmux", "installer.json");
+  const state = json(statePath);
+  delete state.snapshots;
+  writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+
+  const update = run(home);
+  assert.equal(update.status, 0, update.stderr);
+  assert.equal(run(home, "--uninstall").status, 0);
+  assert.equal(existsSync(statePath), false);
+  rmSync(home, { recursive: true, force: true });
+});
+
 test("refuses foreign product directories and uninstall preserves later user-owned changes", () => {
   const foreignHome = mkdtempSync(join(tmpdir(), "xtmux-foreign-package-"));
   const foreignPackage = join(foreignHome, ".pi", "agent", "packages", "xtmux");

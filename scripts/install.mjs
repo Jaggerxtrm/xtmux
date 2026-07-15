@@ -69,7 +69,8 @@ function snapshotDirectory(path) {
 }
 
 function sameSnapshot(actual, expected) {
-  return actual !== null && expected && JSON.stringify(actual) === JSON.stringify(expected);
+  const canonical = (snapshot) => Object.fromEntries(Object.entries(snapshot || {}).sort(([a], [b]) => a.localeCompare(b)));
+  return actual !== null && expected && JSON.stringify(canonical(actual)) === JSON.stringify(canonical(expected));
 }
 
 function installerState() {
