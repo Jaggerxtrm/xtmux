@@ -1,7 +1,8 @@
 export type CoordinationResult =
-  | { kind: "message-send"; target: string }
+  | { kind: "message-send"; messageKey: string; target: string }
+  | { kind: "message-reply"; messageKey: string; replyToMessageKey: string; target: string }
   | { kind: "message-ack"; messageKey: string }
-  | { kind: "safe-send-pointer"; target: string };
+  | { kind: "safe-send-pointer"; target: string; replyToMessageKey?: string };
 
 function textOf(content: unknown): string {
   if (typeof content === "string") return content;
@@ -25,11 +26,9 @@ function findJsonObjectEnd(text: string): number | null {
       else if (character === '"') inString = false;
       continue;
     }
-    if (character === '"') {
-      inString = true;
-    } else if (character === "{") {
-      depth++;
-    } else if (character === "}") {
+    if (character === '"') inString = true;
+    else if (character === "{") depth++;
+    else if (character === "}") {
       depth--;
       if (depth === 0) return index + 1;
       if (depth < 0) return null;
@@ -38,51 +37,116 @@ function findJsonObjectEnd(text: string): number | null {
   return null;
 }
 
-function hasCoordinationField(text: string): boolean {
-  return /"(?:duplicate|recipientId|messageKey|senderId|status|acked|doubleEnter|sent|target)"\s*:/.test(text);
+function hasCoordinationShape(text: string): boolean {
+  const has = (field: string) => new RegExp(`"${field}"\\s*:`).test(text);
+  return (has("messageKey") && has("recipientId"))
+    || (has("messageKey") && has("status") && has("acked"))
+    || (has("messageKey") && has("replyToMessageKey"))
+    || (has("target") && has("sent") && has("doubleEnter"));
+}
+
+function hasAdditionalJsonValue(text: string): boolean {
+  if (text.length > 2048) return true;
+  for (const line of text.split(/\r?\n/)) {
+    const candidate = line.trim().replace(/^(?:\[[^\]\r\n]{1,160}\]\s*)+/, "");
+    if (!candidate) continue;
+    try {
+      const value = JSON.parse(candidate);
+      if (value === null || typeof value !== "object") return true;
+    } catch {
+      // Keep scanning bounded non-JSON middleware diagnostics.
+    }
+  }
+  for (let start = 0; start < text.length; start++) {
+    if (text[start] === "{") {
+      const end = findJsonObjectEnd(text.slice(start));
+      if (end !== null) {
+        try {
+          if (record(JSON.parse(text.slice(start, start + end)))) return true;
+        } catch {
+          // Plain middleware diagnostics may contain non-JSON braces.
+        }
+      }
+    }
+    if (text[start] !== "[") continue;
+    for (let end = start + 1; end < text.length; end++) {
+      if (text[end] !== "]") continue;
+      try {
+        if (Array.isArray(JSON.parse(text.slice(start, end + 1)))) return true;
+      } catch {
+        // Bracketed diagnostics such as [done] are plain text, not JSON.
+      }
+    }
+  }
+  return false;
 }
 
 function malformedJsonResult(error: unknown): Error {
   return new Error(`Malformed xtmux JSON result: ${error instanceof Error ? error.message : String(error)}`);
 }
 
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
 export function coordinationResult(content: unknown): CoordinationResult | null {
   const text = textOf(content);
   if (!text.startsWith("{")) return null;
-
   const objectEnd = findJsonObjectEnd(text);
   if (objectEnd === null) {
-    if (hasCoordinationField(text)) throw malformedJsonResult("incomplete JSON object");
+    if (hasCoordinationShape(text)) throw malformedJsonResult("incomplete JSON object");
     return null;
   }
+  if (hasAdditionalJsonValue(text.slice(objectEnd))) return null;
 
   let value: Record<string, unknown>;
   try {
-    const parsed: unknown = JSON.parse(text.slice(0, objectEnd));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    value = parsed as Record<string, unknown>;
+    const parsed = record(JSON.parse(text.slice(0, objectEnd)));
+    if (!parsed) return null;
+    value = parsed;
   } catch (error) {
-    if (!hasCoordinationField(text.slice(0, objectEnd))) return null;
+    if (!hasCoordinationShape(text.slice(0, objectEnd))) return null;
     throw malformedJsonResult(error);
   }
 
-  if ("duplicate" in value || ("recipientId" in value && "messageKey" in value)) {
+  const hasAll = (candidate: Record<string, unknown>, fields: string[]) => fields.every((field) => field in candidate);
+  if (hasAll(value, ["messageKey", "duplicate", "replyToMessageKey", "fulfilled", "senderId", "recipientId"])) {
+    if (typeof value.messageKey !== "string" || typeof value.duplicate !== "boolean" || typeof value.replyToMessageKey !== "string"
+      || typeof value.fulfilled !== "boolean" || typeof value.senderId !== "string" || typeof value.recipientId !== "string") {
+      throw new Error("Incompatible xtmux message-reply JSON result");
+    }
+    return { kind: "message-reply", messageKey: value.messageKey, replyToMessageKey: value.replyToMessageKey, target: value.recipientId };
+  }
+  if (hasAll(value, ["messageKey", "duplicate", "senderId", "recipientId"])) {
     if (typeof value.messageKey !== "string" || typeof value.duplicate !== "boolean" || typeof value.senderId !== "string" || typeof value.recipientId !== "string") {
       throw new Error("Incompatible xtmux message-send JSON result");
     }
-    return { kind: "message-send", target: value.recipientId };
+    return { kind: "message-send", messageKey: value.messageKey, target: value.recipientId };
   }
-  if ("status" in value && "messageKey" in value) {
-    if (typeof value.messageKey !== "string" || typeof value.status !== "string" || typeof value.acked !== "boolean") {
+  if (hasAll(value, ["messageKey", "status", "acked"])
+    && (value.status === "acked" || value.status === "already-acked")) {
+    if (typeof value.messageKey !== "string" || value.acked !== true) {
       throw new Error("Incompatible xtmux message-ack JSON result");
     }
     return { kind: "message-ack", messageKey: value.messageKey };
   }
-  if ("doubleEnter" in value || ("sent" in value && "target" in value)) {
-    if (typeof value.target !== "string" || typeof value.sent !== "boolean" || typeof value.doubleEnter !== "boolean") {
+
+  const nestedInjection = record(value.injection);
+  const injection = nestedInjection && hasAll(nestedInjection, ["target", "sent", "doubleEnter"])
+    ? nestedInjection
+    : hasAll(value, ["target", "sent", "doubleEnter"]) ? value : null;
+  if (injection) {
+    if (typeof injection.target !== "string" || typeof injection.sent !== "boolean" || typeof injection.doubleEnter !== "boolean") {
       throw new Error("Incompatible xtmux safe-send-pointer JSON result");
     }
-    return value.sent ? { kind: "safe-send-pointer", target: value.target } : null;
+    if (!injection.sent) return null;
+    const fulfilment = record(value.fulfilment);
+    if ("fulfilment" in value && !fulfilment) throw new Error("Incompatible xtmux safe-send-pointer JSON result");
+    const replyToMessageKey = fulfilment?.replyToMessageKey;
+    if (fulfilment && (typeof fulfilment.fulfilled !== "boolean" || typeof replyToMessageKey !== "string")) {
+      throw new Error("Incompatible xtmux safe-send-pointer JSON result");
+    }
+    return { kind: "safe-send-pointer", target: injection.target, ...(typeof replyToMessageKey === "string" ? { replyToMessageKey } : {}) };
   }
   return null;
 }
