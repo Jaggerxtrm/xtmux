@@ -79,20 +79,40 @@ function installerState() {
   return state;
 }
 
-const managedFiles = {
-  piPackage: ["package.json", ...readdirSync(join(root, "extensions")).map((name) => `extensions/${name}`)].sort(),
-  claudeHooks: ["agent-state.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs", "auto-monitor-on-send.mjs", "auto-monitor-on-send.sh"].sort(),
-  codexHooks: ["agent-state.sh"],
+const PI_PACKAGE_MANIFEST = {
+  name: "@jaggerxtrm/xtmux-pi-local",
+  private: true,
+  pi: { extensions: ["./extensions/pi-agent-state.ts", "./extensions/pi-auto-monitor.ts"] },
 };
+const managedSources = {
+  claudeHooks: {
+    "agent-state.sh": join(root, "scripts", "agent-state.sh"),
+    ...Object.fromEntries(["auto-monitor-on-send.mjs", "auto-monitor-on-send.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs"]
+      .map((name) => [name, join(root, "hooks", "claude", name)])),
+  },
+  codexHooks: { "agent-state.sh": join(root, "scripts", "agent-state.sh") },
+};
+
+function expectedManagedSnapshot(key) {
+  const expected = {};
+  if (key === "piPackage") {
+    expected["package.json"] = createHash("sha256").update(`${JSON.stringify(PI_PACKAGE_MANIFEST, null, 2)}\n`).digest("hex");
+    for (const name of readdirSync(join(root, "extensions"))) {
+      expected[`extensions/${name}`] = createHash("sha256").update(readFileSync(join(root, "extensions", name))).digest("hex");
+    }
+    return expected;
+  }
+  for (const [name, sourcePath] of Object.entries(managedSources[key])) {
+    expected[name] = createHash("sha256").update(readFileSync(sourcePath)).digest("hex");
+  }
+  return expected;
+}
 
 function manageableDirectory(path, key, state = installerState()) {
   if (!existsSync(path)) return true;
   const snapshot = snapshotDirectory(path);
   if (state?.snapshots && Object.hasOwn(state.snapshots, key)) return sameSnapshot(snapshot, state.snapshots[key]);
-  const files = Object.keys(snapshot || {}).sort();
-  if (JSON.stringify(files) !== JSON.stringify(managedFiles[key])) return false;
-  if (key !== "piPackage") return true;
-  try { return readJson(join(path, "package.json")).name === "@jaggerxtrm/xtmux-pi-local"; } catch { return false; }
+  return sameSnapshot(snapshot, expectedManagedSnapshot(key));
 }
 
 function assertManageableDirectory(path, key, state) {
@@ -100,7 +120,10 @@ function assertManageableDirectory(path, key, state) {
 }
 
 function removeManagedDirectory(path, key, state) {
-  if (manageableDirectory(path, key, state)) rmSync(path, { recursive: true, force: true });
+  if (!existsSync(path)) return true;
+  if (!manageableDirectory(path, key, state)) return false;
+  rmSync(path, { recursive: true, force: true });
+  return true;
 }
 
 function lstatSafe(path) {
@@ -281,11 +304,7 @@ function install() {
   removeManagedDirectory(piPackage, "piPackage", state);
   mkdirSync(piPackage, { recursive: true });
   cpSync(join(root, "extensions"), join(piPackage, "extensions"), { recursive: true });
-  writeJson(join(piPackage, "package.json"), {
-    name: "@jaggerxtrm/xtmux-pi-local",
-    private: true,
-    pi: { extensions: ["./extensions/pi-agent-state.ts", "./extensions/pi-auto-monitor.ts"] },
-  });
+  writeJson(join(piPackage, "package.json"), PI_PACKAGE_MANIFEST);
   mergePi();
 
   console.log("3/5 Installing Claude and existing Codex hooks");
@@ -338,14 +357,14 @@ function remove() {
   for (const dst of Object.keys(compatibilityLinks)) if (ownedLink(dst)) rmSync(dst, { force: true });
   console.log("2/4 Removing grouped Pi extensions");
   mergePi(true);
-  removeManagedDirectory(piPackage, "piPackage", state);
+  const piRemoved = removeManagedDirectory(piPackage, "piPackage", state);
   console.log("3/4 Removing Claude/Codex hooks and owned settings entries");
   mergeClaude(true);
   mergeCodex(true);
-  removeManagedDirectory(claudeHooks, "claudeHooks", state);
-  removeManagedDirectory(codexHooks, "codexHooks", state);
+  const claudeRemoved = removeManagedDirectory(claudeHooks, "claudeHooks", state);
+  const codexRemoved = removeManagedDirectory(codexHooks, "codexHooks", state);
   console.log("4/4 Removing installer state");
-  if (state?.source === source) rmSync(statePath, { force: true });
+  if (state?.source === source && piRemoved && claudeRemoved && codexRemoved) rmSync(statePath, { force: true });
   console.log("Uninstall complete");
 }
 

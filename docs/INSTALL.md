@@ -48,7 +48,7 @@ xtmux-install --uninstall
 npm uninstall --global @jaggerxtrm/xtmux
 ```
 
-Run `xtmux-install --uninstall` first so npm has not yet removed the cleanup command. It removes only xtmux-owned links, the grouped Pi package, Claude/Codex hook files, and owned settings entries. Installed directory snapshots prevent update or uninstall from deleting files added or modified by the user.
+Run `xtmux-install --uninstall` first so npm has not yet removed the cleanup command. It removes only xtmux-owned links, the grouped Pi package, Claude/Codex hook files, and owned settings entries. Installed directory snapshots prevent update or uninstall from deleting files added or modified by the user; when such a directory is preserved, installer state is retained so a later install cannot mistake it for an unowned clean directory. Pre-snapshot installs are adopted only when every managed file still matches the packaged payload.
 
 ## Conflict avoidance and xtrm coexistence
 
