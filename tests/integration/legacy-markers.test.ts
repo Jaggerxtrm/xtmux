@@ -139,6 +139,88 @@ describe("legacy coordination marker reconciliation", () => {
     }
   });
 
+  test("discards every non-object JSON shape without crashing or leaking content", () => {
+    const root = mkdtempSync(join(tmpdir(), "xtmux-legacy-markers-shapes-"));
+    const runtime = join(root, "runtime");
+    const cfg: Config = { dbPath: join(root, "state", "observability.db"), mode: "on", busyTimeoutMs: 3000 };
+    const db = openDb(cfg);
+    try {
+      migrate(db, () => NOW);
+      const hostile = ["null", "[]", '"secret-string"', "42", "true"];
+      for (const [i, value] of hostile.entries()) {
+        marker(runtime, "xtmux-reply-obligations", `reply-to-$sender${i}-for-%pane${i}_pending`, value);
+        marker(runtime, "xtmux-outbound-expectations", `wait-for-$target${i}-from-%pane${i}_pending`, value);
+      }
+
+      const first = reconcileLegacyMarkers(db, {
+        apply: true, runtimeDir: runtime, quarantineDir: join(root, "quarantine"), now: () => NOW,
+      });
+      expect(first).toMatchObject({ scanned: 10, imported: 0, discarded: 10, cleanupFailures: 0 });
+      expect(first.byReason.invalid_shape).toBe(10);
+      expect(readdirSync(runtime)).toEqual([]);
+
+      const events = db.raw.query<{ event_key: string; payload_json: string }, []>(
+        "SELECT event_key, payload_json FROM event_journal WHERE type = 'legacy.marker.discarded' ORDER BY event_key",
+      ).all();
+      expect(events).toHaveLength(10);
+      expect(new Set(events.map((event) => event.event_key)).size).toBe(10);
+      expect(events.every((event) => {
+        const payload = JSON.parse(event.payload_json) as Record<string, unknown>;
+        return payload.reason === "invalid_shape" && payload.outcome === "discarded";
+      })).toBe(true);
+      expect(events.map((event) => event.payload_json).join("\n")).not.toContain("secret-string");
+
+      const second = reconcileLegacyMarkers(db, {
+        apply: true, runtimeDir: runtime, quarantineDir: join(root, "quarantine"), now: () => NOW,
+      });
+      expect(second).toMatchObject({ scanned: 0, imported: 0, discarded: 0 });
+      expect(db.raw.query<{ n: number }, []>(
+        "SELECT COUNT(*) AS n FROM event_journal WHERE type = 'legacy.marker.discarded'",
+      ).get()?.n).toBe(10);
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("leaves unreadable legacy directories untouched and records deterministic evidence", () => {
+    if (process.platform === "win32" || process.geteuid?.() === 0) return;
+    const root = mkdtempSync(join(tmpdir(), "xtmux-legacy-markers-unreadable-"));
+    const runtime = join(root, "runtime");
+    const dir = join(runtime, "xtmux-auto-monitor");
+    const path = marker(runtime, "xtmux-auto-monitor", "$target_pending", "");
+    const cfg: Config = { dbPath: join(root, "state", "observability.db"), mode: "on", busyTimeoutMs: 3000 };
+    const db = openDb(cfg);
+    try {
+      migrate(db, () => NOW);
+      chmodSync(dir, 0o000);
+      const first = reconcileLegacyMarkers(db, {
+        apply: true, runtimeDir: runtime, quarantineDir: join(root, "quarantine"), now: () => NOW,
+      });
+      expect(first).toMatchObject({ scanned: 0, rejectedDirectories: 1 });
+      expect(first.byReason.directory_read_failed).toBe(1);
+
+      const second = reconcileLegacyMarkers(db, {
+        apply: true, runtimeDir: runtime, quarantineDir: join(root, "quarantine"), now: () => NOW,
+      });
+      expect(second.byReason.directory_read_failed).toBe(1);
+      const events = db.raw.query<{ event_key: string; payload_json: string }, []>(
+        "SELECT event_key, payload_json FROM event_journal WHERE type = 'legacy.marker.directory_rejected'",
+      ).all();
+      expect(events).toHaveLength(1);
+      expect(JSON.parse(events[0]!.payload_json)).toEqual({
+        path_class: "xtmux-auto-monitor", reason: "directory_read_failed", outcome: "rejected",
+      });
+      expect(events[0]!.payload_json).not.toContain(root);
+      chmodSync(dir, 0o700);
+      expect(Bun.file(path).size).toBe(0);
+    } finally {
+      try { chmodSync(dir, 0o700); } catch {}
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("rejects a shared writable legacy directory without arming its forged wait", () => {
     const root = mkdtempSync(join(tmpdir(), "xtmux-legacy-markers-unowned-"));
     const runtime = join(root, "runtime");

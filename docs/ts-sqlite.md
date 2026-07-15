@@ -971,11 +971,17 @@ events.jsonl
 events.jsonl.1 ... events.jsonl.N
 legacy monitor TSV directory
 optional agent-state audit log
+xtmux-reply-obligations runtime directory
+xtmux-outbound-expectations runtime directory
+xtmux-auto-monitor runtime directory
 ```
 
 The importer must:
 
-* preserve all source files;
+* preserve historical JSONL, TSV, and audit source files;
+* reconcile only safe current-user marker files against existing SQLite rows;
+* record redacted deterministic marker evidence, delete recognized markers, and
+  quarantine foreign entries without following symlinks;
 * be idempotent;
 * use deterministic legacy identities;
 * avoid duplicate imports;
@@ -1440,8 +1446,9 @@ and `wait.pruned`. Message and prompt bodies are excluded.
 
 Schema migrations apply automatically on database open. Upgrade the npm package,
 reload/start fresh Pi, and start fresh Claude sessions. Existing SQLite message
-and wait rows remain authoritative. `obs-migrate` continues to import legacy
-JSONL/monitor TSV data only; it does not infer requester or reply state from
-marker names. Coordination works with `XDG_RUNTIME_DIR` unset. Troubleshoot with
+and wait rows remain authoritative. Every install/update invokes `obs-migrate`
+to import legacy JSONL/monitor TSV data and run bounded, idempotent reconciliation
+of former runtime markers against existing SQLite rows; each accepted marker is
+processed once, and marker names alone never infer requester or reply state. Coordination works with `XDG_RUNTIME_DIR` unset. Troubleshoot with
 `xtmux-obs health`, `obligations list --json`, pane-scoped `message-list --expects-reply
 --json`, and `monitor-list --json`, not runtime-directory inspection.

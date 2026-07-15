@@ -150,9 +150,10 @@ Steady-state Claude and Pi coordination reads only SQLite. Legacy
 operator-cleanup role. Upgrade the package, reload Pi, and start fresh Claude
 sessions so the new hooks/extensions are loaded. Existing durable message and
 wait rows remain queryable; inspect them with `obligations list`, `message-list
---expects-reply`, and `monitor-list`. `obs-migrate` remains the legacy
-JSONL/monitor-TSV importer and does not make coordination marker files
-operational again.
+--expects-reply`, and `monitor-list`. Every install/update invokes `obs-migrate`
+to import legacy JSONL/monitor-TSV data and run bounded, idempotent reconciliation
+of former runtime markers against existing SQLite rows. Each accepted marker is
+processed once; this cleanup does not make marker files operational state again.
 
 ## Picker dispatcher matrix
 

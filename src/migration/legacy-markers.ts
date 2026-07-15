@@ -35,7 +35,7 @@ type FileAction = "delete" | "quarantine";
 interface DirectoryRejection {
   path: string;
   pathClass: PathClass;
-  reason: "unsafe_directory_ownership" | "unsafe_directory_type";
+  reason: "unsafe_directory_ownership" | "unsafe_directory_type" | "directory_stat_failed" | "directory_read_failed";
 }
 
 interface MarkerPlan {
@@ -92,13 +92,18 @@ function validTimestamp(value: unknown, nowMs: number, ttlMs: number, mtimeMs: n
   return "ok";
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+}
+
 function replyPlan(db: Db, plan: MarkerPlan, text: string, mtimeMs: number, nowMs: number): MarkerPlan {
-  let value: Record<string, unknown>;
+  let value: unknown;
   try {
-    value = JSON.parse(text) as Record<string, unknown>;
+    value = JSON.parse(text);
   } catch {
     return { ...plan, reason: "malformed_json" };
   }
+  if (!isPlainObject(value)) return { ...plan, reason: "invalid_shape" };
   const senderId = value.senderId;
   const messageKey = value.messageKey ?? value.message_key;
   const beadId = value.beadId;
@@ -134,12 +139,13 @@ function replyPlan(db: Db, plan: MarkerPlan, text: string, mtimeMs: number, nowM
 }
 
 function outboundPlan(db: Db, plan: MarkerPlan, text: string, mtimeMs: number, nowMs: number, apply: boolean): MarkerPlan {
-  let value: Record<string, unknown>;
+  let value: unknown;
   try {
-    value = JSON.parse(text) as Record<string, unknown>;
+    value = JSON.parse(text);
   } catch {
     return { ...plan, reason: "malformed_json" };
   }
+  if (!isPlainObject(value)) return { ...plan, reason: "invalid_shape" };
   const target = value.target;
   const monitorId = value.monitorId;
   const paneId = value.paneId;
@@ -276,22 +282,32 @@ export function reconcileLegacyMarkers(db: Db, options: LegacyMarkerOptions): Le
 
   for (const pathClass of PATH_CLASSES) {
     const dir = join(options.runtimeDir, pathClass);
+    let stat;
+    try {
+      stat = lstatSync(dir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      rejections.push({ path: dir, pathClass, reason: "directory_stat_failed" });
+      manifests.push({ pathClass, files: 0, sha256: sha256("rejected:directory_stat_failed") });
+      continue;
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      rejections.push({ path: dir, pathClass, reason: "unsafe_directory_type" });
+      manifests.push({ pathClass, files: 0, sha256: sha256("rejected") });
+      continue;
+    }
+    const euid = process.geteuid?.();
+    if ((euid !== undefined && stat.uid !== euid) || (stat.mode & 0o022) !== 0) {
+      rejections.push({ path: dir, pathClass, reason: "unsafe_directory_ownership" });
+      manifests.push({ pathClass, files: 0, sha256: sha256("rejected") });
+      continue;
+    }
     let entries;
     try {
-      const stat = lstatSync(dir);
-      if (!stat.isDirectory() || stat.isSymbolicLink()) {
-        rejections.push({ path: dir, pathClass, reason: "unsafe_directory_type" });
-        manifests.push({ pathClass, files: 0, sha256: sha256("rejected") });
-        continue;
-      }
-      const euid = process.geteuid?.();
-      if ((euid !== undefined && stat.uid !== euid) || (stat.mode & 0o022) !== 0) {
-        rejections.push({ path: dir, pathClass, reason: "unsafe_directory_ownership" });
-        manifests.push({ pathClass, files: 0, sha256: sha256("rejected") });
-        continue;
-      }
       entries = readdirSync(dir, { withFileTypes: true });
     } catch {
+      rejections.push({ path: dir, pathClass, reason: "directory_read_failed" });
+      manifests.push({ pathClass, files: 0, sha256: sha256("rejected:directory_read_failed") });
       continue;
     }
     const hashes: string[] = [];

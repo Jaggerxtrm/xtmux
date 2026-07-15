@@ -325,8 +325,7 @@ function install() {
   mergeClaude();
   mergeCodex();
 
-  console.log("5/5 Reconciling legacy markers and saving installer state");
-  runLegacyMigration();
+  console.log("5/5 Saving installer state and reconciling legacy markers");
   writeJson(statePath, {
     source,
     version: pkg.version,
@@ -341,6 +340,7 @@ function install() {
       codexHooks: existsSync(codexRoot) ? snapshotDirectory(codexHooks) : null,
     },
   });
+  runLegacyMigration();
   if (installTmuxHooks) {
     const result = spawnSync(join(home, ".local", "bin", "xtmux"), ["install-hooks", join(home, ".local", "bin", "xtmux")], { stdio: "inherit" });
     if (result.status !== 0) throw new Error("tmux hook installation failed; is a tmux server running?");

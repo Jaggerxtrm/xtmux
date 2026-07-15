@@ -15,11 +15,14 @@ const isolatedEnv = (home) => ({
   TMPDIR: join(home, "tmp"),
   XTMUX_OBS_DB_PATH: join(home, ".local", "state", "xtmux", "observability.db"),
 });
-const run = (home, ...args) => {
+const runWithEnv = (home, env, ...args) => {
   mkdirSync(join(home, "runtime"), { recursive: true });
   mkdirSync(join(home, "tmp"), { recursive: true });
-  return spawnSync(process.execPath, [installer, "--home", home, ...args], { cwd: root, encoding: "utf8", env: isolatedEnv(home) });
+  return spawnSync(process.execPath, [installer, "--home", home, ...args], {
+    cwd: root, encoding: "utf8", env: { ...isolatedEnv(home), ...env },
+  });
 };
+const run = (home, ...args) => runWithEnv(home, {}, ...args);
 const json = (path) => JSON.parse(readFileSync(path, "utf8"));
 
 test("clean install, idempotent update, xtrm coexistence, and uninstall", () => {
@@ -219,6 +222,37 @@ test("upgrade reconciles a valid legacy reply marker without leaking its summary
   });
   const rerunRows = JSON.parse(rerun.stdout);
   assert.equal(JSON.parse(rerunRows[0].counts_json).legacyMarkers.scanned, 0);
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("persists replacement ownership when migration fails", () => {
+  const home = mkdtempSync(join(tmpdir(), "xtmux-migration-failure-"));
+  const blockedDb = join(home, "blocked-observability-db");
+  mkdirSync(blockedDb, { recursive: true });
+
+  const failed = runWithEnv(home, { XTMUX_OBS_DB_PATH: blockedDb });
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /legacy marker reconciliation failed/);
+  const hooks = join(home, ".claude", "hooks", "xtmux");
+  const changedHook = join(hooks, "agent-state.sh");
+  const statePath = join(home, ".local", "state", "xtmux", "installer.json");
+  assert.equal(existsSync(changedHook), true, "assets must have been replaced before the injected migration failure");
+  assert.equal(existsSync(statePath), true, "replacement snapshots must survive migration failure");
+
+  writeFileSync(changedHook, "user-modified-after-failure\n");
+  const retry = run(home);
+  assert.notEqual(retry.status, 0);
+  assert.match(retry.stderr, /refusing to replace user-owned directory/);
+  assert.equal(readFileSync(changedHook, "utf8"), "user-modified-after-failure\n");
+
+  for (let i = 0; i < 2; i++) {
+    const removed = run(home, "--uninstall");
+    assert.equal(removed.status, 0, removed.stderr);
+    assert.equal(readFileSync(changedHook, "utf8"), "user-modified-after-failure\n");
+    assert.equal(existsSync(statePath), true, "state must remain while a modified managed directory is preserved");
+  }
+  assert.notEqual(run(home).status, 0);
+  assert.equal(readFileSync(changedHook, "utf8"), "user-modified-after-failure\n");
   rmSync(home, { recursive: true, force: true });
 });
 
