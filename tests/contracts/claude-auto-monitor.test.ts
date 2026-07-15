@@ -87,6 +87,7 @@ case "$target" in
   %202|'$202') pane='%202'; session='$202' ;;
   %103|'$103') pane='%103'; session='$103' ;;
   %104|'$104') pane='%104'; session='$104' ;;
+  %105|'$105') pane='%105'; session='$105' ;;
 esac
 format="\${!#}"
 case "$1" in
@@ -101,7 +102,7 @@ case "$1" in
 esac
 `);
   chmodSync(join(BIN, "tmux"), 0o755);
-  for (const pane of ["%100", "%200", "%101", "%201", "%102", "%202", "%103", "%104"]) setState(pane, "done");
+  for (const pane of ["%100", "%200", "%101", "%201", "%102", "%202", "%103", "%104", "%105"]) setState(pane, "done");
 });
 afterAll(() => rmSync(TEST_ROOT, { recursive: true, force: true }));
 
@@ -181,6 +182,40 @@ describe("Claude SQLite auto-monitor hooks", () => {
     setState("%104", "working"); await Bun.sleep(80); setState("%104", "done");
     expect(await new Promise<number | null>((resolve) => fresh.on("close", resolve))).toBe(0);
     expect(later.createdAtMs).toBeLessThanOrEqual(Number(monitorRows().filter((row) => row.paneId === "%104").at(-1)?.startedAtMs));
+  });
+
+  test("the generated transition wait replaces a terminal-unconsumed wait", async () => {
+    sendExpected("unconsumed-a", "$105", "%105");
+    const old = spawn("bun", [CLI, "wait-agent", "%105", "--wait-for-transition", "--timeout", "5s", "--interval", "10ms", "--json"], { cwd: ROOT, env: baseEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    let oldOutput = ""; old.stdout!.on("data", (chunk) => oldOutput += chunk);
+    await waitUntil(() => monitorRows().some((row) => row.paneId === "%105" && row.terminalStatus === null));
+    setState("%105", "working"); await Bun.sleep(80); setState("%105", "done");
+    expect(await new Promise<number | null>((resolve) => old.on("close", resolve))).toBe(0);
+    expect(JSON.parse(oldOutput)).toMatchObject({ terminalStatus: "done", wakeConsumed: false });
+
+    await Bun.sleep(5);
+    const later = sendExpected("unconsumed-b", "$105", "%105");
+    const blocked = JSON.parse(stop().stdout);
+    const generated = blocked.reason.match(/Monitor\(command: "([^"]+)"/)?.[1];
+    expect(generated).toBe("xtmux wait-agent %105 --wait-for-transition --consume --timeout 30m --interval 30s");
+    const [binary, ...args] = generated!.split(" ");
+    expect(binary).toBe("xtmux");
+
+    const previousCount = monitorRows().filter((row) => row.paneId === "%105").length;
+    const fresh = spawn("bun", [CLI, ...args], { cwd: ROOT, env: baseEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    try {
+      await waitUntil(() => monitorRows().filter((row) => row.paneId === "%105").length > previousCount);
+      const latest = monitorRows().filter((row) => row.paneId === "%105").at(-1);
+      expect(fresh.exitCode).toBeNull();
+      expect(latest).toMatchObject({ terminalStatus: null });
+      expect(Number(latest?.startedAtMs)).toBeGreaterThanOrEqual(later.createdAtMs);
+      expect(stop().stdout).toBe("");
+    } finally {
+      if (fresh.exitCode === null) {
+        fresh.kill();
+        await new Promise<number | null>((resolve) => fresh.on("close", resolve));
+      }
+    }
   });
 
   test("Stop is pane-isolated and loop-safe across stale sessions", () => {

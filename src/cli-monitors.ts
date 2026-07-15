@@ -190,7 +190,7 @@ export function cliWaitAgent(db: Db, argv: string[], nowMs: number): number {
     const existing = listAllWaits(db).find((row) => row.requesterSessionId === requester.sessionId && row.requesterPaneId === requester.paneId
       && row.targetSessionId === target.sessionId && row.targetPaneId === target.paneId
       && ["unarmed", "armed", "terminal-unconsumed", "consumed"].includes(row.state)
-      && (!transitionRequired || row.state !== "consumed"));
+      && (!transitionRequired || ["unarmed", "armed"].includes(row.state)));
     const existingAny = listAllWaits(db).find((row) => row.targetSessionId === target.sessionId && row.targetPaneId === target.paneId
       && ["unarmed", "armed", "terminal-unconsumed", "consumed"].includes(row.state));
     if (flags.get("consume") === true && existingAny && !existing) {
