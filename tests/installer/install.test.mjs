@@ -236,8 +236,12 @@ test("persists replacement ownership when migration fails", () => {
   const hooks = join(home, ".claude", "hooks", "xtmux");
   const changedHook = join(hooks, "agent-state.sh");
   const statePath = join(home, ".local", "state", "xtmux", "installer.json");
-  assert.equal(existsSync(changedHook), true, "assets must have been replaced before the injected migration failure");
-  assert.equal(existsSync(statePath), true, "replacement snapshots must survive migration failure");
+  const failedState = json(statePath);
+  assert.equal(
+    typeof failedState.snapshots?.claudeHooks?.["agent-state.sh"],
+    "string",
+    "replacement snapshots must survive migration failure",
+  );
 
   writeFileSync(changedHook, "user-modified-after-failure\n");
   const retry = run(home);
