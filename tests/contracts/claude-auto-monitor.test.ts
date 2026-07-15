@@ -117,6 +117,27 @@ describe("Claude SQLite auto-monitor hooks", () => {
     expect(existsSync(join(TEST_ROOT, "runtime", "xtmux-auto-monitor"))).toBe(false);
   });
 
+  test("on-send scrubs hostile sender and recipient metadata without losing the obligation", () => {
+    const sentinel = join(TEST_ROOT, "on-send-sentinel");
+    const sender = `$sender-$(touch ${sentinel})`;
+    const recipient = `$recipient-\";touch ${sentinel}`;
+    const env = baseEnv();
+    const sent = cli(["message-send", "--to", recipient, "--from", env.MOCK_SESSION!, "--from-pane", "%100",
+      "--bead", "xtmux-3ua.7", "--text", "hostile metadata", "--message-key", "hostile-on-send", "--json"], env);
+    expect(sent.status).toBe(0);
+
+    const response = { ...JSON.parse(sent.stdout), senderId: sender };
+    const diagnostic = postSend(response, "xtmux message-send --json", env).stderr;
+    expect(diagnostic).toContain("durable reply expected");
+    expect(diagnostic).not.toContain(sender);
+    expect(diagnostic).not.toContain(recipient);
+    expect(existsSync(sentinel)).toBe(false);
+    const obligations = cli(["obligations", "list", "--json"], env);
+    expect(obligations.status).toBe(0);
+    expect(JSON.parse(obligations.stdout)).toEqual(expect.arrayContaining([expect.objectContaining({ messageKey: "hostile-on-send" })]));
+    expect(cli(["message-cancel", "--message-key", "hostile-on-send", "--json"], env).status).toBe(0);
+  });
+
   test("Stop blocks with exact native Monitor command until this pane has a durable arm", async () => {
     sendExpected("expected-a", "$101", "%101");
     const payload = JSON.parse(stop().stdout);

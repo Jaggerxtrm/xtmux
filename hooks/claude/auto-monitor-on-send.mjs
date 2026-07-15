@@ -74,7 +74,7 @@ function main() {
     if (!Array.isArray(obligations) || !obligations.some((row) => row?.messageKey === message.messageKey)) {
       throw new Error(`obligations list did not return ${message.messageKey}`);
     }
-    process.stderr.write(`[auto-monitor] durable reply expected from ${target}; Stop will require a native Monitor arm.\n`);
+    process.stderr.write("[auto-monitor] durable reply expected; Stop will require a native Monitor arm.\n");
   } catch (error) {
     process.stderr.write(`[auto-monitor] ${String(error instanceof Error ? error.message : error).slice(0, 400)}\n`);
   }
