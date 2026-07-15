@@ -47,15 +47,23 @@ function hasCoordinationShape(text: string): boolean {
 }
 
 function hasAdditionalJsonValue(text: string): boolean {
-  const lines = text.split(/\r?\n/);
-  for (let line = 0; line < lines.length; line++) {
-    const tail = lines.slice(line).join("\n").trimStart();
-    if (tail.startsWith("{")) return true;
-    if (!tail.startsWith("[")) continue;
-    for (let end = 1; end < tail.length; end++) {
-      if (tail[end] !== "]") continue;
+  if (text.length > 2048) return true;
+  for (let start = 0; start < text.length; start++) {
+    if (text[start] === "{") {
+      const end = findJsonObjectEnd(text.slice(start));
+      if (end !== null) {
+        try {
+          if (record(JSON.parse(text.slice(start, start + end)))) return true;
+        } catch {
+          // Plain middleware diagnostics may contain non-JSON braces.
+        }
+      }
+    }
+    if (text[start] !== "[") continue;
+    for (let end = start + 1; end < text.length; end++) {
+      if (text[end] !== "]") continue;
       try {
-        if (Array.isArray(JSON.parse(tail.slice(0, end + 1)))) return true;
+        if (Array.isArray(JSON.parse(text.slice(start, end + 1)))) return true;
       } catch {
         // Bracketed diagnostics such as [done] are plain text, not JSON.
       }
