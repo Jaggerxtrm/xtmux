@@ -48,12 +48,38 @@ test("recognizes exactly one coordination envelope before non-JSON middleware te
   });
 });
 
+test("ignores lone and partial command sentinels", () => {
+  const values = [
+    { fulfilled: true },
+    { duplicate: false },
+    { injection: "diagnostic" },
+    { status: "done" },
+    { messageKey: "m1", fulfilled: true },
+    { messageKey: "m1", duplicate: false },
+    { messageKey: "m1", recipientId: "$recipient" },
+    { messageKey: "m1", replyToMessageKey: "request-1", fulfilled: true },
+    { messageKey: "m1", status: "done", acked: false },
+    { messageKey: "m1", cancelled: true, status: "cancelled" },
+    { injection: { target: "%recipient", sent: true } },
+    { target: "%recipient", sent: true },
+    { waitId: "wait-1", target: "$worker", status: "done" },
+    { monitorId: "monitor-1", target: "$worker", status: "armed" },
+  ];
+  for (const value of values) {
+    const json = JSON.stringify(value);
+    expect(() => coordinationResult(json)).not.toThrow();
+    expect(coordinationResult(json)).toBeNull();
+  }
+});
+
 test("retains actionable errors only for xtmux-shaped malformed output", () => {
   expect(() => coordinationResult('{"messageKey":"m1","recipientId":"$recipient"')).toThrow(
     "Malformed xtmux JSON result",
   );
   expect(() => coordinationResult('{"status":"running"')).not.toThrow();
   expect(coordinationResult('{"status":"running"')).toBeNull();
+  expect(() => coordinationResult('{"injection":"diagnostic"')).not.toThrow();
+  expect(coordinationResult('{"injection":"diagnostic"')).toBeNull();
 });
 
 test("retains actionable errors for incompatible coordination contracts", () => {
@@ -66,4 +92,8 @@ test("retains actionable errors for incompatible coordination contracts", () => 
   expect(() => coordinationResult(JSON.stringify({
     injection: { target: "%recipient", sent: true, doubleEnter: "true" },
   }))).toThrow("Incompatible xtmux safe-send-pointer JSON result");
+  expect(() => coordinationResult(JSON.stringify({
+    messageKey: "reply-1", duplicate: false, replyToMessageKey: "m1", fulfilled: "true",
+    senderId: "$recipient", recipientId: "$sender",
+  }))).toThrow("Incompatible xtmux message-reply JSON result");
 });

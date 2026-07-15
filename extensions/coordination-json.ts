@@ -42,8 +42,7 @@ function hasCoordinationShape(text: string): boolean {
   return (has("messageKey") && has("recipientId"))
     || (has("messageKey") && has("status") && has("acked"))
     || (has("messageKey") && has("replyToMessageKey"))
-    || (has("target") && has("sent") && has("doubleEnter"))
-    || has("injection");
+    || (has("target") && has("sent") && has("doubleEnter"));
 }
 
 function hasAdditionalJsonValue(text: string): boolean {
@@ -110,33 +109,39 @@ export function coordinationResult(content: unknown): CoordinationResult | null 
     throw malformedJsonResult(error);
   }
 
-  if ("replyToMessageKey" in value || "fulfilled" in value) {
-    if (typeof value.messageKey !== "string" || typeof value.replyToMessageKey !== "string"
+  const hasAll = (candidate: Record<string, unknown>, fields: string[]) => fields.every((field) => field in candidate);
+  if (hasAll(value, ["messageKey", "duplicate", "replyToMessageKey", "fulfilled", "senderId", "recipientId"])) {
+    if (typeof value.messageKey !== "string" || typeof value.duplicate !== "boolean" || typeof value.replyToMessageKey !== "string"
       || typeof value.fulfilled !== "boolean" || typeof value.senderId !== "string" || typeof value.recipientId !== "string") {
       throw new Error("Incompatible xtmux message-reply JSON result");
     }
     return { kind: "message-reply", messageKey: value.messageKey, replyToMessageKey: value.replyToMessageKey, target: value.recipientId };
   }
-  if ("duplicate" in value || ("recipientId" in value && "messageKey" in value)) {
+  if (hasAll(value, ["messageKey", "duplicate", "senderId", "recipientId"])) {
     if (typeof value.messageKey !== "string" || typeof value.duplicate !== "boolean" || typeof value.senderId !== "string" || typeof value.recipientId !== "string") {
       throw new Error("Incompatible xtmux message-send JSON result");
     }
     return { kind: "message-send", messageKey: value.messageKey, target: value.recipientId };
   }
-  if ("status" in value && "messageKey" in value) {
-    if (typeof value.messageKey !== "string" || typeof value.status !== "string" || typeof value.acked !== "boolean") {
+  if (hasAll(value, ["messageKey", "status", "acked"])
+    && (value.status === "acked" || value.status === "already-acked")) {
+    if (typeof value.messageKey !== "string" || value.acked !== true) {
       throw new Error("Incompatible xtmux message-ack JSON result");
     }
     return { kind: "message-ack", messageKey: value.messageKey };
   }
 
-  const injection = "injection" in value ? record(value.injection) : value;
-  if ("injection" in value || "doubleEnter" in value || ("sent" in value && "target" in value)) {
-    if (!injection || typeof injection.target !== "string" || typeof injection.sent !== "boolean" || typeof injection.doubleEnter !== "boolean") {
+  const nestedInjection = record(value.injection);
+  const injection = nestedInjection && hasAll(nestedInjection, ["target", "sent", "doubleEnter"])
+    ? nestedInjection
+    : hasAll(value, ["target", "sent", "doubleEnter"]) ? value : null;
+  if (injection) {
+    if (typeof injection.target !== "string" || typeof injection.sent !== "boolean" || typeof injection.doubleEnter !== "boolean") {
       throw new Error("Incompatible xtmux safe-send-pointer JSON result");
     }
     if (!injection.sent) return null;
     const fulfilment = record(value.fulfilment);
+    if ("fulfilment" in value && !fulfilment) throw new Error("Incompatible xtmux safe-send-pointer JSON result");
     const replyToMessageKey = fulfilment?.replyToMessageKey;
     if (fulfilment && (typeof fulfilment.fulfilled !== "boolean" || typeof replyToMessageKey !== "string")) {
       throw new Error("Incompatible xtmux safe-send-pointer JSON result");
