@@ -39,6 +39,8 @@ npm update --global @jaggerxtrm/xtmux
 
 Updates replace only entries tagged with `_source: "xtmux"`. Re-running installation is idempotent.
 
+During upgrade, the installer runs the bounded `obs-migrate --apply` reconciliation once against the configured `XDG_RUNTIME_DIR`. Only current-user, non-group/world-writable legacy directories and files are eligible. Recognized reply, outbound-wake, and Claude monitor markers are validated against SQLite, recorded without message bodies, then removed; foreign or symlink entries are moved to `${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/legacy-marker-quarantine` instead of being followed or deleted. Unsafe directories are left untouched and reported. Re-running after reconciliation scans no accepted markers.
+
 ## Uninstall
 
 ```sh
@@ -46,7 +48,7 @@ xtmux-install --uninstall
 npm uninstall --global @jaggerxtrm/xtmux
 ```
 
-Run `xtmux-install --uninstall` first so npm has not yet removed the cleanup command. It removes only xtmux-owned links, the grouped Pi package, Claude/Codex hook files, and owned settings entries.
+Run `xtmux-install --uninstall` first so npm has not yet removed the cleanup command. It removes only xtmux-owned links, the grouped Pi package, Claude/Codex hook files, and owned settings entries. Installed directory snapshots prevent update or uninstall from deleting files added or modified by the user.
 
 ## Conflict avoidance and xtrm coexistence
 

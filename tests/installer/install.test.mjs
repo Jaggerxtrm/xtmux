@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync, readdirSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, existsSync, readdirSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -7,7 +7,19 @@ import test from "node:test";
 
 const root = resolve(import.meta.dirname, "../..");
 const installer = join(root, "scripts", "install.mjs");
-const run = (home, ...args) => spawnSync(process.execPath, [installer, "--home", home, ...args], { cwd: root, encoding: "utf8" });
+const isolatedEnv = (home) => ({
+  ...process.env,
+  HOME: home,
+  XDG_STATE_HOME: join(home, ".local", "state"),
+  XDG_RUNTIME_DIR: join(home, "runtime"),
+  TMPDIR: join(home, "tmp"),
+  XTMUX_OBS_DB_PATH: join(home, ".local", "state", "xtmux", "observability.db"),
+});
+const run = (home, ...args) => {
+  mkdirSync(join(home, "runtime"), { recursive: true });
+  mkdirSync(join(home, "tmp"), { recursive: true });
+  return spawnSync(process.execPath, [installer, "--home", home, ...args], { cwd: root, encoding: "utf8", env: isolatedEnv(home) });
+};
 const json = (path) => JSON.parse(readFileSync(path, "utf8"));
 
 test("clean install, idempotent update, xtrm coexistence, and uninstall", () => {
@@ -167,4 +179,68 @@ test("merges hooks for existing Codex without installing Codex CLI", () => {
   assert.deepEqual(json(hooks).hooks, { SessionStart: [{ hooks: [{ type: "command", command: "foreign-codex-hook" }] }] });
   assert.equal(existsSync(join(home, ".codex/hooks/xtmux")), false);
   rmSync(home, { recursive: true, force: true });
+});
+
+test("upgrade reconciles a valid legacy reply marker without leaking its summary", () => {
+  const home = mkdtempSync(join(tmpdir(), "xtmux-upgrade-marker-"));
+  const env = isolatedEnv(home);
+  mkdirSync(env.XDG_RUNTIME_DIR, { recursive: true });
+  mkdirSync(env.TMPDIR, { recursive: true });
+  const seed = spawnSync(process.execPath, [join(root, "scripts", "xtmux-obs.mjs"),
+    "message-send", "--to", "$recipient", "--from", "$sender", "--to-pane", "%recipient", "--from-pane", "%sender",
+    "--text", "installer secret", "--bead", "xtmux-3ua.8", "--expects-reply", "true", "--message-key", "installer-pending", "--json",
+  ], { cwd: root, encoding: "utf8", env });
+  assert.equal(seed.status, 0, seed.stderr);
+  const dir = join(env.XDG_RUNTIME_DIR, "xtmux-reply-obligations");
+  mkdirSync(dir, { recursive: true });
+  chmodSync(dir, 0o700);
+  const legacyMarker = join(dir, "reply-to-$sender-for-%recipient_pending");
+  writeFileSync(legacyMarker, JSON.stringify({
+    senderId: "$sender", messageKey: "installer-pending", beadId: "xtmux-3ua.8",
+    summary: "installer secret", acceptedAtMs: Date.now(), paneId: "%recipient",
+  }), { mode: 0o600 });
+  chmodSync(legacyMarker, 0o600);
+
+  const first = run(home);
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(existsSync(dir), false);
+  const status = spawnSync(join(home, ".local", "bin", "xtmux-obs"), ["obs-migrate", "--status"], {
+    cwd: root, encoding: "utf8", env,
+  });
+  assert.equal(status.status, 0, status.stderr);
+  const rows = JSON.parse(status.stdout);
+  const counts = JSON.parse(rows[0].counts_json);
+  assert.equal(counts.legacyMarkers.imported, 1);
+  assert.equal(rows[0].counts_json.includes("installer secret"), false);
+
+  assert.equal(run(home).status, 0);
+  const rerun = spawnSync(join(home, ".local", "bin", "xtmux-obs"), ["obs-migrate", "--status"], {
+    cwd: root, encoding: "utf8", env,
+  });
+  const rerunRows = JSON.parse(rerun.stdout);
+  assert.equal(JSON.parse(rerunRows[0].counts_json).legacyMarkers.scanned, 0);
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("refuses foreign product directories and uninstall preserves later user-owned changes", () => {
+  const foreignHome = mkdtempSync(join(tmpdir(), "xtmux-foreign-package-"));
+  const foreignPackage = join(foreignHome, ".pi", "agent", "packages", "xtmux");
+  mkdirSync(foreignPackage, { recursive: true });
+  writeFileSync(join(foreignPackage, "user.txt"), "foreign");
+  const refused = run(foreignHome);
+  assert.notEqual(refused.status, 0);
+  assert.equal(readFileSync(join(foreignPackage, "user.txt"), "utf8"), "foreign");
+  rmSync(foreignHome, { recursive: true, force: true });
+
+  const changedHome = mkdtempSync(join(tmpdir(), "xtmux-user-change-"));
+  assert.equal(run(changedHome).status, 0);
+  const hooks = join(changedHome, ".claude", "hooks", "xtmux");
+  writeFileSync(join(hooks, "agent-state.sh"), "user-modified\n");
+  const update = run(changedHome);
+  assert.notEqual(update.status, 0);
+  assert.equal(readFileSync(join(hooks, "agent-state.sh"), "utf8"), "user-modified\n");
+  const removed = run(changedHome, "--uninstall");
+  assert.equal(removed.status, 0, removed.stderr);
+  assert.equal(readFileSync(join(hooks, "agent-state.sh"), "utf8"), "user-modified\n");
+  rmSync(changedHome, { recursive: true, force: true });
 });

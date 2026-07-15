@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
@@ -52,6 +52,57 @@ function writeJson(path, data) {
   renameSync(tmp, path);
 }
 
+function snapshotDirectory(path) {
+  if (!lstatSafe(path)?.isDirectory()) return null;
+  const snapshot = {};
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const item = join(dir, entry.name);
+      if (entry.isDirectory()) walk(item);
+      else if (entry.isFile()) snapshot[relative(path, item)] = createHash("sha256").update(readFileSync(item)).digest("hex");
+      else if (entry.isSymbolicLink()) snapshot[relative(path, item)] = `link:${readlinkSync(item)}`;
+      else snapshot[relative(path, item)] = "unsupported";
+    }
+  };
+  walk(path);
+  return snapshot;
+}
+
+function sameSnapshot(actual, expected) {
+  return actual !== null && expected && JSON.stringify(actual) === JSON.stringify(expected);
+}
+
+function installerState() {
+  if (!existsSync(statePath)) return null;
+  const state = readJson(statePath);
+  if (state.source !== source) throw new Error(`refusing foreign installer state: ${statePath}`);
+  return state;
+}
+
+const managedFiles = {
+  piPackage: ["package.json", ...readdirSync(join(root, "extensions")).map((name) => `extensions/${name}`)].sort(),
+  claudeHooks: ["agent-state.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs", "auto-monitor-on-send.mjs", "auto-monitor-on-send.sh"].sort(),
+  codexHooks: ["agent-state.sh"],
+};
+
+function manageableDirectory(path, key, state = installerState()) {
+  if (!existsSync(path)) return true;
+  const snapshot = snapshotDirectory(path);
+  if (state?.snapshots && Object.hasOwn(state.snapshots, key)) return sameSnapshot(snapshot, state.snapshots[key]);
+  const files = Object.keys(snapshot || {}).sort();
+  if (JSON.stringify(files) !== JSON.stringify(managedFiles[key])) return false;
+  if (key !== "piPackage") return true;
+  try { return readJson(join(path, "package.json")).name === "@jaggerxtrm/xtmux-pi-local"; } catch { return false; }
+}
+
+function assertManageableDirectory(path, key, state) {
+  if (!manageableDirectory(path, key, state)) throw new Error(`refusing to replace user-owned directory: ${path}`);
+}
+
+function removeManagedDirectory(path, key, state) {
+  if (manageableDirectory(path, key, state)) rmSync(path, { recursive: true, force: true });
+}
+
 function lstatSafe(path) {
   try { return lstatSync(path); } catch { return undefined; }
 }
@@ -81,6 +132,19 @@ function link(src, dst) {
   }
   mkdirSync(dirname(dst), { recursive: true });
   symlinkSync(src, dst);
+}
+
+function preflightInstall() {
+  for (const dst of [
+    ...Object.keys(bins).map((name) => join(home, ".local", "bin", name)),
+    ...Object.keys(compatibilityLinks),
+  ]) {
+    const current = lstatSafe(dst);
+    if (current && (!current.isSymbolicLink() || !ownedLink(dst))) throw new Error(`refusing to replace existing file: ${dst}`);
+  }
+  for (const path of [claudeSettings, piSettings, ...(existsSync(codexRoot) ? [codexSettings] : [])]) {
+    if (existsSync(path)) readJson(path);
+  }
 }
 
 function hash(wrapper) {
@@ -130,7 +194,7 @@ function mergeClaude(removeOnly = false) {
   }
   if (!removeOnly) for (const [event, entries] of Object.entries(canonicalHooks())) next[event] = [...entries, ...(next[event] || [])];
   settings.hooks = next;
-  if (existsSync(claudeSettings)) copyFileSync(claudeSettings, `${claudeSettings}.pre-xtmux`);
+  if (existsSync(claudeSettings) && !existsSync(`${claudeSettings}.pre-xtmux`)) copyFileSync(claudeSettings, `${claudeSettings}.pre-xtmux`);
   writeJson(claudeSettings, settings);
 }
 
@@ -156,7 +220,7 @@ function mergeCodex(removeOnly = false) {
     next.UserPromptSubmit = [{ hooks: [{ type: "command", command: `bash "${script}" running`, statusMessage: "marking pane running" }] }, ...(next.UserPromptSubmit || [])];
   }
   settings.hooks = next;
-  if (existsSync(codexSettings)) copyFileSync(codexSettings, `${codexSettings}.pre-xtmux`);
+  if (existsSync(codexSettings) && !existsSync(`${codexSettings}.pre-xtmux`)) copyFileSync(codexSettings, `${codexSettings}.pre-xtmux`);
   writeJson(codexSettings, settings);
 }
 
@@ -178,7 +242,33 @@ function mergePi(removeOnly = false) {
   writeJson(piSettings, settings);
 }
 
+function runLegacyMigration() {
+  const stateHome = process.env.XDG_STATE_HOME || join(home, ".local", "state");
+  const runtimeDir = process.env.XDG_RUNTIME_DIR || "/tmp";
+  const result = spawnSync(process.execPath, [join(root, "scripts", "xtmux-obs.mjs"), "obs-migrate", "--apply"], {
+    cwd: root,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: home,
+      XDG_STATE_HOME: stateHome,
+      XDG_RUNTIME_DIR: runtimeDir,
+      XTMUX_OBS_DB_PATH: process.env.XTMUX_OBS_DB_PATH || join(stateHome, "xtmux", "observability.db"),
+      XTMUX_OBS_V2: "1",
+    },
+  });
+  if (result.status !== 0) throw new Error(`legacy marker reconciliation failed: ${(result.stderr || result.error?.message || "unknown error").trim().slice(0, 600)}`);
+  const report = JSON.parse(result.stdout);
+  console.log(`    legacy markers: ${report.legacyMarkers.imported} imported, ${report.legacyMarkers.discarded} discarded, ${report.legacyMarkers.quarantined} quarantined`);
+}
+
 function install() {
+  const state = installerState();
+  preflightInstall();
+  assertManageableDirectory(piPackage, "piPackage", state);
+  assertManageableDirectory(claudeHooks, "claudeHooks", state);
+  if (existsSync(codexRoot)) assertManageableDirectory(codexHooks, "codexHooks", state);
+
   console.log("1/5 Installing command links");
   for (const [name, src] of Object.entries(bins)) link(src, join(home, ".local", "bin", name));
   for (const [dst, src] of Object.entries(compatibilityLinks)) link(src, dst);
@@ -188,7 +278,7 @@ function install() {
     const legacy = join(home, ".pi", "agent", "extensions", name);
     if (ownedLink(legacy)) rmSync(legacy, { force: true });
   }
-  rmSync(piPackage, { recursive: true, force: true });
+  removeManagedDirectory(piPackage, "piPackage", state);
   mkdirSync(piPackage, { recursive: true });
   cpSync(join(root, "extensions"), join(piPackage, "extensions"), { recursive: true });
   writeJson(join(piPackage, "package.json"), {
@@ -199,14 +289,14 @@ function install() {
   mergePi();
 
   console.log("3/5 Installing Claude and existing Codex hooks");
-  rmSync(claudeHooks, { recursive: true, force: true });
+  removeManagedDirectory(claudeHooks, "claudeHooks", state);
   mkdirSync(claudeHooks, { recursive: true });
   copyFileSync(join(root, "scripts", "agent-state.sh"), join(claudeHooks, "agent-state.sh"));
   for (const name of ["auto-monitor-on-send.mjs", "auto-monitor-on-send.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs"]) {
     copyFileSync(join(root, "hooks", "claude", name), join(claudeHooks, name));
   }
   if (existsSync(codexRoot)) {
-    rmSync(codexHooks, { recursive: true, force: true });
+    removeManagedDirectory(codexHooks, "codexHooks", state);
     mkdirSync(codexHooks, { recursive: true });
     copyFileSync(join(root, "scripts", "agent-state.sh"), join(codexHooks, "agent-state.sh"));
   }
@@ -215,8 +305,22 @@ function install() {
   mergeClaude();
   mergeCodex();
 
-  console.log("5/5 Saving installer state");
-  writeJson(statePath, { source, version: pkg.version, packageRoot: root, piPackage, claudeHooks, codexHooks: existsSync(codexRoot) ? codexHooks : null, installedAt: new Date().toISOString() });
+  console.log("5/5 Reconciling legacy markers and saving installer state");
+  runLegacyMigration();
+  writeJson(statePath, {
+    source,
+    version: pkg.version,
+    packageRoot: root,
+    piPackage,
+    claudeHooks,
+    codexHooks: existsSync(codexRoot) ? codexHooks : null,
+    installedAt: new Date().toISOString(),
+    snapshots: {
+      piPackage: snapshotDirectory(piPackage),
+      claudeHooks: snapshotDirectory(claudeHooks),
+      codexHooks: existsSync(codexRoot) ? snapshotDirectory(codexHooks) : null,
+    },
+  });
   if (installTmuxHooks) {
     const result = spawnSync(join(home, ".local", "bin", "xtmux"), ["install-hooks", join(home, ".local", "bin", "xtmux")], { stdio: "inherit" });
     if (result.status !== 0) throw new Error("tmux hook installation failed; is a tmux server running?");
@@ -225,6 +329,7 @@ function install() {
 }
 
 function remove() {
+  const state = installerState();
   console.log("1/4 Removing owned command links");
   for (const name of Object.keys(bins)) {
     const dst = join(home, ".local", "bin", name);
@@ -233,14 +338,14 @@ function remove() {
   for (const dst of Object.keys(compatibilityLinks)) if (ownedLink(dst)) rmSync(dst, { force: true });
   console.log("2/4 Removing grouped Pi extensions");
   mergePi(true);
-  rmSync(piPackage, { recursive: true, force: true });
+  removeManagedDirectory(piPackage, "piPackage", state);
   console.log("3/4 Removing Claude/Codex hooks and owned settings entries");
   mergeClaude(true);
   mergeCodex(true);
-  rmSync(claudeHooks, { recursive: true, force: true });
-  rmSync(codexHooks, { recursive: true, force: true });
+  removeManagedDirectory(claudeHooks, "claudeHooks", state);
+  removeManagedDirectory(codexHooks, "codexHooks", state);
   console.log("4/4 Removing installer state");
-  rmSync(statePath, { force: true });
+  if (state?.source === source) rmSync(statePath, { force: true });
   console.log("Uninstall complete");
 }
 
