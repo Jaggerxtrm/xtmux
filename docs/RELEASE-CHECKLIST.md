@@ -34,9 +34,12 @@
 - [ ] Verify ack-only leaves `replyStatus:"pending"`, failed safe-send leaves the
       obligation pending, wrong requester/pane cannot reply or consume, and a
       same-target older wait does not cover a newer obligation.
-- [ ] Verify Pi bounds: at most 500 rows read, 20 reply keys/mutations per cycle,
-      22 widget rows, and bounded continuation text; backend/JSON failures remain
-      visible and do not promote summaries to instructions.
+- [ ] Verify Pi bounds: outgoing obligations default to 200 rows and inbox reads
+      pass `--limit 500`; `monitor-list` remains unbounded and Pi must fail closed
+      after parsing more than 500 monitor rows. Successful cycles cap work at 20
+      reply keys/mutations, 22 widget rows, and bounded continuation text;
+      backend/JSON failures remain visible and do not promote summaries to
+      instructions.
 - [ ] Compare `README.md`, `docs/json-command-api.md`, architecture/install docs,
       `xtmux help`, raw `xtmux-obs --help`, packaged hooks/extensions, and the
       operator skills. No surface may teach ack-as-reply, runtime-marker TTL, or

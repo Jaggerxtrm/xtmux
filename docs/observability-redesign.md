@@ -23,7 +23,7 @@ Rejected alternatives:
 - `bin/tmux-session-picker` remains the public entry point (shell). It owns tmux/fzf interaction, session/pane discovery, `capture-pane`, ANSI rendering, switch/jump/rename/interrupt/approve/kill, and V1 codepaths while V2 is disabled.
 - Bun/TypeScript owns SQLite connection + schema + migrations, transactional domain mutations, message/receipt queries, runtime-object state machines, retention/reconciliation, legacy migration, contract tests, benchmark harness, structured errors, output formatting for delegated commands.
 - Prefer Bun's native SQLite; do not spawn `sqlite3` CLI (PRD §3, §25).
-- No mandatory daemon or broker. Each invocation opens the DB, verifies schema, runs a bounded op, closes.
+- No mandatory daemon or broker. Each invocation opens the DB, verifies schema, runs one command, and closes; lock waits are bounded, but commands without a public limit may read full history.
 
 Database path: `${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/observability.db`.
 
@@ -947,13 +947,17 @@ a completed wake idempotently. Invalid target metadata blocks for manual
 inspection; database failure emits a bounded diagnostic and the Stop loop guard
 allows the next Stop while the operator repairs the backend.
 
-Pi derives actions only from complete single JSON command envelopes. On each
-cycle it queries at most 500 obligation/inbox/monitor rows, performs at most 20
-ack or wake-consume mutations, exposes at most 20 validated reply keys, caps the
-widget at 22 rows / 2000 characters and prompt additions at 1600 characters,
-and queues one idle continuation. Remaining work stays in SQLite for later
-cycles or restart. Unsafe identifiers are hidden, backend/JSON failures degrade
-visibly, and message summaries are never promoted into instructions.
+Pi derives actions only from complete single JSON command envelopes. The
+outgoing-obligation SQL query defaults to 200 rows and the inbox explicitly
+passes `--limit 500`. `monitor-list --json` has no CLI limit: it selects full
+monitor history, and Pi fails closed after parsing when that array exceeds 500
+rows. A successful cycle performs at most 20 ack or wake-consume mutations,
+exposes at most 20 validated reply keys, caps the widget at 22 rows / 2000
+characters and prompt additions at 1600 characters, and queues one idle
+continuation. Budget-deferred work stays in SQLite for later cycles or restart;
+over-limit monitor history instead surfaces coordination wake degradation for
+manual inspection. Unsafe identifiers are hidden and message summaries are
+never promoted into instructions.
 
 ### 14.4 Journal evidence
 

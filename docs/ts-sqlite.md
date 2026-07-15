@@ -184,7 +184,7 @@ extensions/
 
 The command names, stdout formats, stderr formats, and exit semantics remain compatible unless a documented V2-only option is explicitly used.
 
-No mandatory daemon or broker is introduced. Each invocation opens the database, verifies the schema, performs a bounded operation, and closes.
+No mandatory daemon or broker is introduced. Each invocation opens the database, verifies the schema, performs one operation, and closes. Database lock waits are bounded; commands without a public limit may still read full history.
 
 Prefer Bun’s runtime-native SQLite support over spawning the `sqlite3` CLI.
 
@@ -1410,12 +1410,17 @@ Monitor wait when a fresh requester-owned wait is missing; PostToolUse consumes
 a completed wake idempotently. Database/shape failures produce bounded
 operator-facing diagnostics and no marker fallback.
 
-Pi accepts only complete single coordination JSON envelopes. Each cycle reads at
-most 500 rows, performs at most 20 ack/wake mutations, publishes at most 20
+Pi accepts only complete single coordination JSON envelopes. The outgoing-
+obligation SQL query defaults to 200 rows and the inbox passes `--limit 500`.
+`monitor-list --json` currently has no CLI limit and selects full monitor
+history; Pi fails closed after parsing if that array exceeds 500 rows. A
+successful cycle performs at most 20 ack/wake mutations, publishes at most 20
 validated reply keys, caps its widget at 22 rows / 2000 characters and prompt
-addition at 1600 characters, and queues one continuation while idle. Remaining
-work stays durable for later cycles or restart. Unsafe metadata is hidden and
-message summaries are never promoted into instructions.
+addition at 1600 characters, and queues one continuation while idle. Work
+skipped by the mutation budget stays durable for later cycles or restart;
+over-limit monitor history produces visible wake degradation instead of partial
+consumption. Unsafe metadata is hidden and message summaries are never promoted
+into instructions.
 
 ### 27.4 Retention and telemetry
 

@@ -132,11 +132,15 @@ hook claims a delivered wake once. Hook database failure blocks with an
 Stop loop.
 
 Pi re-queries `obligations list`, pane-scoped `message-list`, `unread-count`, and
-`monitor-list`. It acknowledges at most 20 receipts/wakes per cycle, displays at
-most 20 reply keys in a bounded widget/prompt, queues only one continuation while
-idle, and resumes remaining SQLite work on later cycles or restart. Unsafe IDs
-are hidden, malformed/incompatible coordination JSON degrades visibly, and
-message summaries are never inserted as instructions.
+`monitor-list`. Outgoing obligations use the SQL default limit of 200 and the
+inbox passes `--limit 500`. `monitor-list --json` currently reads full history;
+if its parsed array exceeds 500 rows, Pi fails closed with coordination wake
+degradation rather than consuming a partial batch. A successful cycle
+acknowledges at most 20 receipts/wakes, displays at most 20 reply keys in a
+bounded widget/prompt, and queues only one continuation while idle. Mutation-
+budget work resumes on later cycles or restart. Unsafe IDs are hidden,
+malformed/incompatible coordination JSON degrades visibly, and message summaries
+are never inserted as instructions.
 
 Neither loop reads, writes, expires, or asks the operator to delete
 `xtmux-reply-obligations`, `xtmux-outbound-expectations`, or

@@ -10,7 +10,7 @@ This document defines the shipped machine boundary. Human output remains the def
 - **Time:** absolute times are integer Unix milliseconds named `*AtMs`; durations are integer milliseconds named `*Ms`. Human age labels never appear in JSON.
 - **Identity:** authoritative tmux identities are `sessionId` (`$N`) and `paneId` (`%N`). `sessionName` is display metadata. With no valid `$TMUX` context, current identity is `null`; mutations require an explicit target. `TMUX_PANE` alone is not authority.
 - **Ordering:** message arrays are newest-first by `createdAtMs`, then `messageKey`; event arrays are oldest-first by `createdAtMs`, then event key; monitors are `startedAtMs`, then `monitorId`; collisions are by `path`; audit findings are severity, kind, session name, then pane ID. Dashboard/session ordering preserves its documented attention ranking and uses IDs as final tie-breakers.
-- **Bounds:** list commands honor `--limit` and retain their documented default. Raw arrays are intentionally not wrapped solely to advertise truncation. A shortened string carries an adjacent `*Truncated: true` field; payloads are never silently cut.
+- **Bounds:** commands that expose `--limit` honor it and retain their documented default. Raw arrays are intentionally not wrapped solely to advertise truncation. `monitor-list --json` exposes no limit and currently returns full monitor history. A shortened string carries an adjacent `*Truncated: true` field; payloads are never silently cut.
 - **Errors:** JSON-mode failures leave stdout empty and write one `{ "code": string, "message": string, "detail": object }` object plus `\n` to stderr. `detail` is bounded and excludes message bodies, secrets, tokens, credentials, and raw command output.
 - **Exit status:** preserve the command's exact semantic status: `0` success; `1` missing/external failure where already defined; `2` usage or invalid input; `3` structured storage/schema failure; `4` authority/conflict rejection; `5` not found; `75` working-target refusal; `124` timeout. JSON changes the representation, never the control signal.
 - **Mutations:** validation completes before state changes. Cancellation or failed confirmation leaves state unchanged. Results identify the affected resource and outcome; they do not echo sensitive input.
@@ -134,10 +134,13 @@ message/wait mutations rolled back. Public codes include:
 
 Pi accepts only complete single coordination JSON envelopes. Incompatible or
 malformed xtmux-shaped output degrades visibly instead of being treated as a
-send/reply. Inbox work is bounded to 500 rows, 20 displayed reply keys, 20 SQLite
-mutations per cycle, 22 widget rows, and bounded prompt/widget text. Unsafe
-message keys, counterpart IDs, or bead IDs are hidden and require manual inbox
-inspection; inbound summaries are never promoted to instructions.
+send/reply. The outgoing-obligation query is SQL-limited to 200 rows by default,
+and the inbox passes `--limit 500`. `monitor-list --json` has no CLI limit: it
+reads full monitor history, after which Pi fails closed if the parsed array
+exceeds 500 rows. A successful cycle performs at most 20 SQLite mutations,
+displays at most 20 reply keys and 22 widget rows, and bounds prompt/widget text.
+Unsafe message keys, counterpart IDs, or bead IDs are hidden and require manual
+inbox inspection; inbound summaries are never promoted to instructions.
 
 ## Upgrade boundary
 

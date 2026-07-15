@@ -117,7 +117,7 @@ This reverts commit 6c542c1a42d0ee0be959fd84bca4546d6c6de868. ([c35590c](https:/
 - Bash prefilter cuts auto-monitor no-match cost 40ms→10ms ([268c801](https://github.com/Jaggerxtrm/xtmux/commit/268c8016be0405bf6bbf910c5a66a625b9737da8))
 
 ### Pi extensions
-- Re-query SQLite for inbox obligations and monitor wakes, with bounded 500-row reads, 20 mutations/reply keys per cycle, and safe degradation on backend or JSON failures
+- Re-query SQLite for inbox obligations and monitor wakes: obligations default to 200 rows, inbox reads request 500, unbounded monitor history fails closed above 500 after parsing, and successful cycles cap mutations/reply keys at 20
 - Add inbox and deferred reply reminders ([6f224ed](https://github.com/Jaggerxtrm/xtmux/commit/6f224ede119554f6964ddefdfa03200a71606c77))
 - Scope inbox counts to current pane ([c215728](https://github.com/Jaggerxtrm/xtmux/commit/c21572833fd35ff7344ef38617f66ca3c7ff8cb7))
 - Detect reply obligations while idle ([b4f93da](https://github.com/Jaggerxtrm/xtmux/commit/b4f93da169c63fa96fa0fb76264e917acdc7e630))
