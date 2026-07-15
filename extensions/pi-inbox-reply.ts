@@ -40,8 +40,13 @@ interface MonitorWake {
   wakeConsumed: boolean;
 }
 
+interface OperationBudget {
+  remaining: number;
+}
+
 const MAX_DB_ROWS = 500;
 const MAX_BATCH_ROWS = 20;
+const MAX_CYCLE_OPERATIONS = 20;
 const MAX_WIDGET_ROWS = 22;
 const MAX_WIDGET_CHARS = 2000;
 const MAX_PROMPT_CHARS = 1600;
@@ -122,7 +127,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     if (length + line.length <= MAX_WIDGET_CHARS) lines.push(line);
   }
 
-  async function loadState(): Promise<void> {
+  async function loadState(budget: OperationBudget): Promise<void> {
     if (!ownSessionId || !ownPaneId) {
       replies = [];
       awaiting = [];
@@ -139,12 +144,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
       if (typeof value.messageKey !== "string" || typeof value.senderId !== "string" || typeof value.recipientId !== "string" || value.replyStatus !== "pending") {
         throw new Error("obligations list returned incompatible JSON");
       }
-      let beadId = typeof value.beadId === "string" ? value.beadId : "";
-      if (!beadId) {
-        const status = await execJson(["message-status", value.messageKey, "--json"], "message-status");
-        if (!status || typeof status !== "object") throw new Error("message-status returned incompatible JSON");
-        beadId = typeof (status as { beadId?: unknown }).beadId === "string" ? (status as { beadId: string }).beadId : "";
-      }
+      const beadId = typeof value.beadId === "string" ? value.beadId : "";
       outgoing.push(SAFE_TOKEN.test(value.senderId) ? pendingReply(value.messageKey, value.recipientId, beadId) : { blocked: true });
     }
 
@@ -162,7 +162,10 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
       }
       if (!value.expectsReply || value.replyStatus !== "pending" || value.recipientId !== ownSessionId) continue;
       incoming.push(pendingReply(value.messageKey, value.senderId, value.beadId));
-      if (!value.acked) await execJson(["message-ack", value.messageKey, "--by", ownSessionId, "--json"], "message-ack");
+      if (!value.acked && budget.remaining > 0) {
+        budget.remaining--;
+        await execJson(["message-ack", value.messageKey, "--by", ownSessionId, "--json"], "message-ack");
+      }
     }
 
     const unreadValue = await execJson(["unread-count", "--for", ownSessionId, "--pane", ownPaneId], "unread-count");
@@ -196,11 +199,11 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     setWidget(ctx, lines.length ? lines : undefined);
   }
 
-  async function refresh(ctx: ExtensionContext): Promise<boolean> {
+  async function refresh(ctx: ExtensionContext, budget: OperationBudget = { remaining: MAX_CYCLE_OPERATIONS }): Promise<boolean> {
     if (refreshPromise) return refreshPromise;
     refreshPromise = (async () => {
       try {
-        await loadState();
+        await loadState(budget);
         degradation = "";
         return true;
       } catch {
@@ -217,7 +220,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     }
   }
 
-  async function consumeWakes(ctx: ExtensionContext): Promise<number> {
+  async function consumeWakes(ctx: ExtensionContext, budget: OperationBudget): Promise<number> {
     if (!ownPaneId) return 0;
     try {
       const value = await execJson(["monitor-list", "--json"], "monitor-list");
@@ -231,7 +234,8 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
         if (wake.requesterPaneId === ownPaneId && wake.terminalStatus && wake.wakeDelivered && !wake.wakeConsumed) pending.push(wake);
       }
       let consumed = 0;
-      for (const wake of pending.slice(0, MAX_BATCH_ROWS)) {
+      for (const wake of pending.slice(0, budget.remaining)) {
+        budget.remaining--;
         const result = await execJson([
           "wait-agent", wake.target, "--consume", "--json", "--timeout", "0", "--interval", "0",
         ], "wait-agent --consume");
@@ -265,7 +269,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     continuationQueued = true;
     queueMicrotask(async () => {
       try {
-        if (!await refresh(ctx)) return;
+        if (!await refresh(ctx, { remaining: 0 })) return;
         if (stopped || ctx.hasPendingMessages() || (!hasWake && replies.length === 0)) return;
         pi.sendUserMessage(continuationText(hasWake), { deliverAs: "followUp" });
       } catch {
@@ -278,9 +282,10 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
   }
 
   async function runCycle(ctx: ExtensionContext): Promise<void> {
-    await refresh(ctx);
+    const budget = { remaining: MAX_CYCLE_OPERATIONS };
+    await refresh(ctx, budget);
     if (ctx.hasPendingMessages()) return;
-    const completed = await consumeWakes(ctx);
+    const completed = await consumeWakes(ctx, budget);
     scheduleContinuation(ctx, completed > 0);
   }
 

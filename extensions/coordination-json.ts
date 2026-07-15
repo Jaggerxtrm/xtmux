@@ -48,6 +48,16 @@ function hasCoordinationShape(text: string): boolean {
 
 function hasAdditionalJsonValue(text: string): boolean {
   if (text.length > 2048) return true;
+  for (const line of text.split(/\r?\n/)) {
+    const candidate = line.trim().replace(/^(?:\[[^\]\r\n]{1,160}\]\s*)+/, "");
+    if (!candidate) continue;
+    try {
+      const value = JSON.parse(candidate);
+      if (value === null || typeof value !== "object") return true;
+    } catch {
+      // Keep scanning bounded non-JSON middleware diagnostics.
+    }
+  }
   for (let start = 0; start < text.length; start++) {
     if (text[start] === "{") {
       const end = findJsonObjectEnd(text.slice(start));

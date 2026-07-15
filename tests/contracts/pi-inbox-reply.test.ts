@@ -309,6 +309,45 @@ describe("Pi SQLite reply obligations", () => {
     await h.emit("session_shutdown");
   });
 
+  test("caps ack and status work at 20 per cycle and drains durably across restart", async () => {
+    isolate();
+    process.env.XTMUX_INBOX_POLL_INTERVAL_S = "60";
+    const state = store();
+    state.obligations = Array.from({ length: 500 }, (_, index) => ({
+      messageKey: `out-${index}`, senderId: "$me", senderPaneId: "%me", recipientId: `$peer-${index}`,
+      targetPaneId: `%peer-${index}`, summary: "private", replyStatus: "pending", beadId: null,
+    }));
+    state.inbound = Array.from({ length: 500 }, (_, index) => ({
+      messageKey: `in-${index}`, senderId: `$sender-${index}`, recipientId: "$me", targetPaneId: "%me",
+      beadId: `work-${index}`, summary: "private", expectsReply: true, acked: false, replyStatus: "pending",
+    }));
+
+    const first = harness(state);
+    await first.emit("session_start");
+    await Bun.sleep(0);
+    const firstWork = first.pickerCalls.filter((args) => args[0] === "message-ack" || args[0] === "message-status");
+    expect(firstWork).toHaveLength(20);
+    expect(firstWork.every((args) => args[0] === "message-ack")).toBe(true);
+    expect(new Set(firstWork.map((args) => args[1])).size).toBe(20);
+
+    first.setPendingMessages(false);
+    await first.emit("agent_settled");
+    await Bun.sleep(0);
+    const settledWork = first.pickerCalls.filter((args) => args[0] === "message-ack" || args[0] === "message-status");
+    expect(settledWork).toHaveLength(40);
+    expect(new Set(settledWork.map((args) => args[1])).size).toBe(40);
+    await first.emit("session_shutdown");
+
+    const restarted = harness(state);
+    await restarted.emit("session_start");
+    await Bun.sleep(0);
+    const restartWork = restarted.pickerCalls.filter((args) => args[0] === "message-ack" || args[0] === "message-status");
+    expect(restartWork).toHaveLength(20);
+    expect(restartWork.every((args) => Number(args[1]!.slice(3)) >= 40)).toBe(true);
+    expect(restarted.widgets.get("xtmux-inbox")!.join("\n").length).toBeLessThanOrEqual(2000);
+    await restarted.emit("session_shutdown");
+  });
+
   test("terminal requester wake is consumed once and remains consumed after restart", async () => {
     isolate();
     const state = store();

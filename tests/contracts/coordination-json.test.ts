@@ -10,6 +10,10 @@ test("ignores unrelated JSON, NDJSON, and multi-command JSON", () => {
     '{"messageKey":"m1","duplicate":false,"senderId":"$s","recipientId":"$r"}\n[done] {"other":1}',
     '[{"messageKey":"m1"}]',
   ];
+  const send = '{"messageKey":"m1","duplicate":false,"senderId":"$s","recipientId":"$r"}';
+  for (const scalar of ["true", "false", "123", "-4.5e2", '"hidden"', "null"]) {
+    values.push(`${send}\n${scalar}`, `${send}\n[done] ${scalar}`);
+  }
   for (const value of values) {
     expect(() => coordinationResult(value)).not.toThrow();
     expect(coordinationResult(value)).toBeNull();
@@ -37,6 +41,9 @@ test("recognizes exactly one coordination envelope before non-JSON middleware te
     kind: "message-send", messageKey: "m2", target: "$recipient",
   });
   expect(coordinationResult(`${send}\n[done] status {not-json}`)).toEqual({
+    kind: "message-send", messageKey: "m2", target: "$recipient",
+  });
+  expect(coordinationResult(`${send}\n[progress] 12 items; reported "hidden" value`)).toEqual({
     kind: "message-send", messageKey: "m2", target: "$recipient",
   });
 });
