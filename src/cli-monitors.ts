@@ -186,9 +186,11 @@ export function cliWaitAgent(db: Db, argv: string[], nowMs: number): number {
   try {
     const requester = requesterIdentity();
     const target = resolveTarget(targetName);
+    const transitionRequired = flags.get("wait-for-transition") === true;
     const existing = listAllWaits(db).find((row) => row.requesterSessionId === requester.sessionId && row.requesterPaneId === requester.paneId
       && row.targetSessionId === target.sessionId && row.targetPaneId === target.paneId
-      && ["unarmed", "armed", "terminal-unconsumed", "consumed"].includes(row.state));
+      && ["unarmed", "armed", "terminal-unconsumed", "consumed"].includes(row.state)
+      && (!transitionRequired || ["unarmed", "armed"].includes(row.state)));
     const existingAny = listAllWaits(db).find((row) => row.targetSessionId === target.sessionId && row.targetPaneId === target.paneId
       && ["unarmed", "armed", "terminal-unconsumed", "consumed"].includes(row.state));
     if (flags.get("consume") === true && existingAny && !existing) {
@@ -200,7 +202,6 @@ export function cliWaitAgent(db: Db, argv: string[], nowMs: number): number {
     if (!existing || existing.terminalStatus === null) {
       adopt(db, created.monitorId, process.pid, Date.now());
       let state = created.state;
-      const transitionRequired = flags.get("wait-for-transition") === true;
       const startedAtMs = Date.now();
       let observedWorking = !transitionRequired || isWorking(state);
       while (true) {

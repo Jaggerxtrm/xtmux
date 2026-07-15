@@ -1,101 +1,94 @@
 #!/usr/bin/env node
-// auto-monitor-drain-stop — Stop hook
-//
-// If any <target>_pending files exist under the auto-monitor state dir, block
-// stop with a reason that includes the exact Monitor(wait-agent) invocation
-// the assistant must call. This forces Claude to arm a native wake mechanism
-// before going idle — the only path into Claude Code's task-notification pipe.
-//
-// Silent when nothing is pending (exit 0). Prunes stale entries (>TTL) first
-// so a forgotten pending never permanently blocks stop.
-//
-// Loop guard: honors `stop_hook_active` from the hook input — Claude Code sets
-// this on subsequent Stop triggers to signal "the assistant is already reacting
-// to a prior block". We refuse to block twice in a row.
-//
-// Bypass: XTMUX_AUTO_MONITOR_DRAIN_DISABLE=1 skips the gate entirely.
+// Stop: block once when this live pane owns a durable reply expectation without
+// a requester-owned SQLite monitor arm. Terminal wakes must be consumed once.
 
-import { readFileSync, readdirSync, statSync, rmSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 
-const STATE_DIR = `${process.env.XDG_RUNTIME_DIR || "/tmp"}/xtmux-auto-monitor`;
-const TTL_MS = Number(process.env.XTMUX_AUTO_MONITOR_TTL_MS) || 3600 * 1000;
+const PICKER = process.env.XTMUX_PICKER || `${process.env.HOME}/.local/bin/xtmux`;
+const SKIP_TARGETS = new Set((process.env.XTMUX_AUTO_MONITOR_SKIP_TARGETS || "").split(":").filter(Boolean));
 
 function readInput() {
-  try {
-    return JSON.parse(readFileSync(0, "utf-8"));
-  } catch {
-    return null;
-  }
+  try { return JSON.parse(readFileSync(0, "utf8")); } catch { return null; }
 }
 
-function listPending() {
-  let entries;
-  try {
-    entries = readdirSync(STATE_DIR);
-  } catch {
-    return [];
+function pickerJson(args, command) {
+  const result = spawnSync(PICKER, args, { encoding: "utf8", timeout: 5000 });
+  if (result.status !== 0) {
+    const detail = String(result.stderr || result.error?.message || `exit ${result.status}`).trim().replace(/\s+/g, " ").slice(0, 400);
+    throw new Error(`${command} failed${detail ? `: ${detail}` : ""}`);
   }
-  const now = Date.now();
-  const alive = [];
-  for (const name of entries) {
-    if (!name.endsWith("_pending")) continue;
-    const path = `${STATE_DIR}/${name}`;
-    let mtime;
-    try {
-      mtime = statSync(path).mtimeMs;
-    } catch {
-      continue;
-    }
-    if (now - mtime > TTL_MS) {
-      try { rmSync(path, { force: true }); } catch { /* best-effort */ }
-      continue;
-    }
-    const target = name.slice(0, -"_pending".length);
-    alive.push(target);
-  }
-  return alive;
+  try { return JSON.parse(result.stdout || ""); }
+  catch (error) { throw new Error(`Malformed ${command} JSON: ${error instanceof Error ? error.message : String(error)}`); }
 }
 
-function buildReason(targets) {
-  const lines = [
-    `You sent to ${targets.length === 1 ? "" : "these targets "}${targets.join(", ")} and have not armed a Monitor for ${targets.length === 1 ? "it" : "them"}.`,
-    "",
-    "Without a Monitor(wait-agent) arm, replies from these targets will NOT wake you from idle. The auto-monitor daemon feeds pi and shadow-mode audit but does not reach Claude Code's task-notification pipe.",
-    "",
-    "For each pending target, invoke:",
-    "",
-  ];
-  for (const t of targets) {
-    lines.push(
-      `  Monitor(command: "tmux-session-picker wait-agent ${t} --wait-for-transition --timeout 30m --interval 30s", description: "reply from ${t}", timeout_ms: 1800000)`,
-    );
-  }
-  lines.push(
-    "",
-    "Then finish your turn. If a reply is not expected (e.g. one-way notification), you can clear the marker manually:",
-    `  rm -f ${STATE_DIR}/<target>_pending`,
-  );
-  return lines.join("\n");
+function targetExists(target) {
+  const result = spawnSync("tmux", ["display-message", "-p", "-t", target, "#{pane_id}"], { stdio: "ignore", timeout: 2000 });
+  return result.status !== 1;
+}
+
+function block(reason) {
+  process.stdout.write(JSON.stringify({ decision: "block", reason: reason.slice(0, 1000) }) + "\n");
+}
+
+const CANONICAL_TMUX_HANDLE = /^[$%][0-9]+$/;
+
+function monitorTarget(obligation) {
+  const target = obligation?.targetPaneId || obligation?.recipientId;
+  return typeof target === "string" && CANONICAL_TMUX_HANDLE.test(target) ? target : null;
+}
+
+function commandFor(target) {
+  if (!CANONICAL_TMUX_HANDLE.test(target)) throw new Error("noncanonical monitor target");
+  return `Monitor(command: "xtmux wait-agent ${target} --wait-for-transition --consume --timeout 30m --interval 30s", description: "reply from ${target}", timeout_ms: 1800000)`;
 }
 
 function main() {
   if (process.env.XTMUX_AUTO_MONITOR_DRAIN_DISABLE === "1") return;
-
   const input = readInput();
-  if (!input) return;
+  if (!input || input.stop_hook_active) return;
 
-  // Loop guard: never block twice in a row.
-  if (input.stop_hook_active) return;
+  try {
+    const obligations = pickerJson(["obligations", "list", "--json"], "obligations list");
+    if (!Array.isArray(obligations)) throw new Error("Incompatible obligations list JSON result");
+    const invalid = obligations.filter((row) => typeof row?.messageKey !== "string"
+      || typeof row?.senderId !== "string" || typeof row?.recipientId !== "string"
+      || typeof row?.createdAtMs !== "number" || !Number.isFinite(row.createdAtMs)
+      || monitorTarget(row) === null);
+    if (invalid.length > 0) {
+      block(`Auto-monitor rejected ${invalid.length} noncanonical target value(s). Inspect or cancel the affected obligations with: xtmux obligations list --json`);
+      return;
+    }
+    const pending = obligations.filter((row) => {
+      const target = monitorTarget(row);
+      return target !== null && !SKIP_TARGETS.has(row.recipientId)
+        && !SKIP_TARGETS.has(target) && targetExists(target);
+    });
+    if (pending.length === 0) return;
 
-  const pending = listPending();
-  if (pending.length === 0) return;
+    const monitors = pickerJson(["monitor-list", "--json"], "monitor-list");
+    if (!Array.isArray(monitors)) throw new Error("Incompatible monitor-list JSON result");
+    const unarmed = pending.filter((obligation) => !monitors.some((monitor) => {
+      const sameRequester = monitor?.requesterSessionId === obligation.senderId
+        && monitor?.requesterPaneId === obligation.senderPaneId;
+      const sameTarget = monitor?.sessionId === obligation.recipientId
+        && (obligation.targetPaneId === null || obligation.targetPaneId === undefined || monitor?.paneId === obligation.targetPaneId);
+      const fresh = typeof monitor?.startedAtMs === "number" && Number.isFinite(monitor.startedAtMs)
+        && monitor.startedAtMs >= obligation.createdAtMs;
+      return sameRequester && sameTarget && fresh && (monitor.terminalStatus === null || monitor.wakeConsumed === true);
+    }));
+    if (unarmed.length === 0) return;
 
-  const payload = {
-    decision: "block",
-    reason: buildReason(pending),
-  };
-  process.stdout.write(JSON.stringify(payload) + "\n");
-  process.exit(0);
+    const targets = [...new Set(unarmed.map(monitorTarget))];
+    block([
+      `Durable replies are expected for ${targets.join(", ")}, but this pane has no active or consumed SQLite wait.`,
+      "Arm each native Claude wake exactly as follows:",
+      ...targets.map(commandFor),
+      "For a one-way message, send it with --expects-reply=false instead of bypassing this gate.",
+    ].join("\n\n"));
+  } catch (error) {
+    block(`xtmux auto-monitor database gate unavailable: ${String(error instanceof Error ? error.message : error).slice(0, 600)}\nRun: xtmux obligations list --json\nThe Stop loop guard allows the next Stop while you repair the CLI or database.`);
+  }
 }
 
 main();
