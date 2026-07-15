@@ -1,6 +1,6 @@
 # JSON command API contract
 
-This document freezes the additive JSON boundary for `xtmux-d0a`. Runtime behavior is unchanged by this contract task. Human output remains the default; selected commands gain `--json`. `XTMUX_OBS_V2=0` remains the V1 escape hatch.
+This document defines the shipped machine boundary. Human output remains the default; selected commands accept `--json`. SQLite is authoritative in normal operation. `XTMUX_OBS_V2=0` is a temporary legacy escape hatch, not an alternate source for reply obligations or wakes.
 
 ## Conventions
 
@@ -10,7 +10,7 @@ This document freezes the additive JSON boundary for `xtmux-d0a`. Runtime behavi
 - **Time:** absolute times are integer Unix milliseconds named `*AtMs`; durations are integer milliseconds named `*Ms`. Human age labels never appear in JSON.
 - **Identity:** authoritative tmux identities are `sessionId` (`$N`) and `paneId` (`%N`). `sessionName` is display metadata. With no valid `$TMUX` context, current identity is `null`; mutations require an explicit target. `TMUX_PANE` alone is not authority.
 - **Ordering:** message arrays are newest-first by `createdAtMs`, then `messageKey`; event arrays are oldest-first by `createdAtMs`, then event key; monitors are `startedAtMs`, then `monitorId`; collisions are by `path`; audit findings are severity, kind, session name, then pane ID. Dashboard/session ordering preserves its documented attention ranking and uses IDs as final tie-breakers.
-- **Bounds:** list commands honor `--limit` and retain their documented default. Raw arrays are intentionally not wrapped solely to advertise truncation. A shortened string carries an adjacent `*Truncated: true` field; payloads are never silently cut.
+- **Bounds:** commands that expose `--limit` honor it and retain their documented default. Raw arrays are intentionally not wrapped solely to advertise truncation. `monitor-list --json` exposes no limit and currently returns full monitor history. A shortened string carries an adjacent `*Truncated: true` field; payloads are never silently cut.
 - **Errors:** JSON-mode failures leave stdout empty and write one `{ "code": string, "message": string, "detail": object }` object plus `\n` to stderr. `detail` is bounded and excludes message bodies, secrets, tokens, credentials, and raw command output.
 - **Exit status:** preserve the command's exact semantic status: `0` success; `1` missing/external failure where already defined; `2` usage or invalid input; `3` structured storage/schema failure; `4` authority/conflict rejection; `5` not found; `75` working-target refusal; `124` timeout. JSON changes the representation, never the control signal.
 - **Mutations:** validation completes before state changes. Cancellation or failed confirmation leaves state unchanged. Results identify the affected resource and outcome; they do not echo sensitive input.
@@ -30,9 +30,10 @@ field name here or there and the contract test fails.
 | Result | Stable fields |
 |---|---|
 | Message | `messageKey`, `senderId`, `senderPaneId`, `senderKind`, `recipientId`, `targetPaneId`, `recipientKind`, `beadId`, `summary`, `createdAtMs`, `expectsReply`, `acked`, `ackedAtMs`, `ackedBy` |
-| Message mutation | send: `messageKey`, `senderId`, `senderKind`, `recipientId`, `recipientKind`, `targetPaneId`, `beadId`, `expectsReply`, `createdAtMs`; ack: `messageKey`, `acked`, `ackedAtMs`, `ackedBy`, `status` |
-| Monitor | `monitorId`, `target`, `sessionId`, `paneId`, `state`, `startedAtMs`, `updatedAtMs`, `timeoutMs`, `intervalMs`, `terminalStatus`, `terminalAtMs`, `terminalDetail` |
-| Monitor mutation | arm: `monitorId`, `target`, `sessionId`, `paneId`, `state`, `startedAtMs`; kill: `monitorId`, `status` |
+| Message mutation | send: `messageKey`, `messageId`, `duplicate`, `senderId`, `senderPaneId`, `senderKind`, `recipientId`, `recipientKind`, `targetPaneId`, `beadId`, `expectsReply`, `createdAtMs`; ack: `messageKey`, `acked`, `ackedAtMs`, `ackedBy`, `status`; reply: `messageKey`, `messageId`, `duplicate`, `replyToMessageKey`, `fulfilledMessageKey`, `fulfilled`, `senderId`, `senderPaneId`, `recipientId`, `targetPaneId`, `createdAtMs`; cancel: `messageKey`, `cancelled`, `cancelledAtMs` |
+| Message reply projection | `replyStatus`, `fulfilledAtMs`, `fulfilledByMessageKey`, `correlatedReply`; `correlatedReply` contains `messageKey`, `senderId`, `senderPaneId`, `recipientId`, `targetPaneId`, `summary`, `createdAtMs` |
+| Monitor | `monitorId`, `waitId` when linked, `target`, `requesterSessionId`, `requesterPaneId`, `sessionId`, `paneId`, `state`, `startedAtMs`, `updatedAtMs`, `timeoutMs`, `intervalMs`, `terminalStatus`, `terminalAtMs`, `wakeDelivered`, `wakeConsumed`, `orphan` |
+| Monitor mutation | arm: `monitorId`, `waitId`, `target`, `requesterSessionId`, `requesterPaneId`, `sessionId`, `paneId`, `state`, `startedAtMs`, `timeoutMs`, `intervalMs`, `terminalStatus`, `wakeDelivered`; kill: `monitorId`, `status` |
 | Session inventory | `{ "mode", "sessions", "panes" }`; rows retain dashboard concepts as camelCase: IDs/names, state, bead/task, repo/branch, dirty/shared-worktree flags, idle age in milliseconds, and path |
 | Topology snapshot | `schema_version`, `generated_at_ms`, `host`, `sessions[]` → `windows[]` → `panes[]`; snake_case is intentional cross-repository contract `xtrm.xtmux.topology.v1`, with stable `$N`/`@N`/`%N` IDs and optional `agent` metadata |
 | Journal page | `schema_version`, `items[]`, `next_after_id`, `oldest_available_id`, `latest_available_id`, `has_more`; snake_case cross-repository contract `xtrm.xtmux.journal-page.v1`. Each item carries `journal_id` (the committed SQLite rowid — the only monotonic cursor; never page by timestamp or `event_key`), `event_type`, `occurred_at_ms`, `recorded_at_ms`, `host_id`, optional `session_id`/`pane_id`/`agent_instance_id`/`bead_id`/`correlation_id`, and `payload`. `--after-id` is **exclusive**; ordering is strictly `journal_id` ASC; an empty page echoes the requested cursor rather than rewinding to 0. A cursor predating retained history returns `XTMUX_CURSOR_EXPIRED` with `oldest_available_id` to re-anchor on — never a silent jump to the next surviving page |
@@ -41,9 +42,117 @@ field name here or there and the contract test fails.
 | Worktree collision | `path`, `sessionCount`, `paneCount`, `sessionNames` |
 | Event | existing journal keys normalized to `createdAtMs`, `type`, `sessionId`, `paneId`, `beadId`, `correlationId`, and bounded `detail` |
 | Handoff | `target`, `paneId`, `beadId`, `promptFile`, `sent`, `createdAtMs` |
-| Wait | `target`, `sessionId`, `paneId`, `state`, `status`, `startedAtMs`, `completedAtMs`, `timeoutMs`, `intervalMs` |
+| Wait | `waitId`, `target`, `requesterSessionId`, `requesterPaneId`, `targetSessionId`, `targetPaneId`, `state`, `monitorId`, `terminalStatus`, `wakeDelivered`, `wakeConsumed`, `replayed`, `startedAtMs`, `completedAtMs`, `timeoutMs`, `intervalMs` |
 
 Domain-specific existing objects remain authoritative for `HealthReport`, `MessageStatus`, `UnreadStats`, migration reports, retention reports, shadow summaries, and obligation rows.
+
+## Correlated coordination lifecycle
+
+A send with `--bead` defaults to `expectsReply:true`; an FYI send opts out with
+`--expects-reply=false`. The returned `messageKey` is the correlation handle:
+
+```sh
+xtmux message-send --to '$20' --to-pane '%8' --bead work-7 \
+  --text 'status requested' --json
+```
+
+```json
+{"messageKey":"msg-100","messageId":100,"duplicate":false,"senderId":"$10","senderPaneId":"%4","senderKind":"pane","recipientId":"$20","targetPaneId":"%8","recipientKind":"pane","beadId":"work-7","expectsReply":true,"createdAtMs":1784070000000}
+```
+
+Receipt and fulfilment are independent. Acking never changes `replyStatus`:
+
+```sh
+xtmux message-ack msg-100 --by '$20' --json
+xtmux message-reply --in-reply-to msg-100 --text 'completed' --json
+```
+
+```json
+{"messageKey":"msg-100","status":"acked","acked":true,"ackedAtMs":1784070000100,"ackedBy":"$20"}
+```
+
+```json
+{"messageKey":"reply-msg-100","messageId":101,"duplicate":false,"replyToMessageKey":"msg-100","fulfilledMessageKey":"msg-100","fulfilled":true,"senderId":"$20","senderPaneId":"%8","recipientId":"$10","targetPaneId":"%4","createdAtMs":1784070000200}
+```
+
+`message-reply` derives reversed endpoints from the original row and requires the
+live original recipient pane. `message-send --reply-to msg-100` exposes the same
+correlation through the generic sender. The original owner may instead run
+`message-cancel --message-key msg-100 --json`; cancellation and fulfilment are
+terminal and race atomically.
+
+`safe-send-pointer --reply-to msg-100 ... --json` returns a successful injection
+plus fulfilment. Injection failure leaves the obligation pending:
+
+```json
+{"injection":{"target":"%4","paneId":"%4","state":"done","doubleEnter":false,"sent":true},"fulfilment":{"messageKey":"reply-msg-100","messageId":101,"duplicate":false,"replyToMessageKey":"msg-100","fulfilledMessageKey":"msg-100","fulfilled":true,"senderId":"$20","senderPaneId":"%8","recipientId":"$10","targetPaneId":"%4","createdAtMs":1784070000200}}
+```
+
+`message-list --expects-reply --json` and `message-status <messageKey> --json`
+project `replyStatus` (`pending`, `fulfilled`, `cancelled`, or `null`) and the
+linked reply. `--unacked` filters receipt state only. `obligations list --json`
+is owned by the live sender session and pane and returns pending outgoing reply
+expectations; it is not a recipient inbox alias.
+
+## Durable waits and wakes
+
+`wait-agent` and `monitor-agent` persist requester and target session/pane IDs in
+`outbound_waits`. A wake can be delivered and consumed only by its requester.
+`--wait-for-transition` requires a fresh working cycle; Claude's Stop gate also
+requires the covering monitor to have started no earlier than the obligation.
+
+```sh
+xtmux wait-agent '%8' --wait-for-transition --consume \
+  --timeout 30m --interval 30s --json
+```
+
+```json
+{"waitId":"wait-100","target":"%8","requesterSessionId":"$10","requesterPaneId":"%4","targetSessionId":"$20","targetPaneId":"%8","state":"terminal","monitorId":"monitor-100","terminalStatus":"done","wakeDelivered":true,"wakeConsumed":true,"replayed":false,"startedAtMs":1784070000000,"completedAtMs":1784070002000,"timeoutMs":1800000,"intervalMs":30000}
+```
+
+Terminal unconsumed wakes survive process restart. `monitor-list --json`
+reconciles terminal rows; `wait-agent <target> --consume --timeout 0 --interval 0
+--json` claims the wake once. A direct monitor without a linked wait is legal for
+compatibility but is `orphan:true` and cannot wake a requester.
+
+## Coordination errors and failure behavior
+
+All coordination errors follow the stderr object convention and leave partial
+message/wait mutations rolled back. Public codes include:
+
+- validation/identity: `XTMUX_INVALID_ARGUMENT`, `XTMUX_NOT_IN_TMUX`,
+  `XTMUX_PANE_UNRESOLVED`, `XTMUX_WRONG_RECIPIENT`, `XTMUX_WRONG_PANE`,
+  `XTMUX_ENDPOINT_OVERRIDE`, `XTMUX_ACK_WRONG_RECIPIENT`,
+  `XTMUX_WAIT_NOT_OWNER`, `XTMUX_WAIT_TARGET_MISMATCH`;
+- correlation/conflict: `XTMUX_INVALID_CORRELATION`,
+  `XTMUX_ALREADY_FULFILLED`, `XTMUX_REPLY_TERMINAL`,
+  `XTMUX_MESSAGE_KEY_CONFLICT`, `XTMUX_DB_BUSY`;
+- absence/timing/mode: `XTMUX_MESSAGE_NOT_FOUND`, `XTMUX_WAIT_NOT_FOUND`,
+  `XTMUX_TARGET_NOT_FOUND`, `XTMUX_WAIT_TIMEOUT`,
+  `XTMUX_JSON_REQUIRES_V2`, `XTMUX_TARGET_WORKING`,
+  `XTMUX_POINTER_REJECTED`, `XTMUX_DELIVERY_FAILED`.
+
+Pi accepts only complete single coordination JSON envelopes. Incompatible or
+malformed xtmux-shaped output degrades visibly instead of being treated as a
+send/reply. The outgoing-obligation query is SQL-limited to 200 rows by default,
+and the inbox passes `--limit 500`. `monitor-list --json` has no CLI limit: it
+reads full monitor history, after which Pi fails closed if the parsed array
+exceeds 500 rows. A successful cycle performs at most 20 SQLite mutations,
+displays at most 20 reply keys and 22 widget rows, and bounds prompt/widget text.
+Unsafe message keys, counterpart IDs, or bead IDs are hidden and require manual
+inbox inspection; inbound summaries are never promoted to instructions.
+
+## Upgrade boundary
+
+Steady-state Claude and Pi coordination reads only SQLite. Legacy
+`xtmux-reply-obligations`, `xtmux-outbound-expectations`, and
+`xtmux-auto-monitor` runtime directories are not consulted and have no TTL or
+operator-cleanup role. Upgrade the package, reload Pi, and start fresh Claude
+sessions so the new hooks/extensions are loaded. Existing durable message and
+wait rows remain queryable; inspect them with `obligations list`, `message-list
+--expects-reply`, and `monitor-list`. `obs-migrate` remains the legacy
+JSONL/monitor-TSV importer and does not make coordination marker files
+operational again.
 
 ## Picker dispatcher matrix
 

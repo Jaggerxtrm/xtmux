@@ -13,7 +13,7 @@ The installer prints five plain progress lines and does not open Chrome or any b
 - commands in `~/.local/bin`
 - one grouped Pi package in `~/.pi/agent/packages/xtmux`, registered in `~/.pi/agent/settings.json`
 - Claude hooks in `~/.claude/hooks/xtmux`, registered in `~/.claude/settings.json`
-- agent-state hooks in `~/.codex/hooks/xtmux` when an existing `~/.codex` installation is detected; xtmux never installs Codex CLI
+- agent-state hooks in `~/.codex/hooks/xtmux` only when an existing `~/.codex` installation is detected; xtmux never installs Codex CLI
 
 Restart Pi or run `/reload` after installation. Start new Claude Code and existing Codex CLI sessions to load hook changes; running sessions keep their startup hook configuration.
 
@@ -37,7 +37,34 @@ Optional compact picker and attention-jump bindings are in [`docs/keys.md`](keys
 npm update --global @jaggerxtrm/xtmux
 ```
 
-Updates replace only entries tagged with `_source: "xtmux"`. Re-running installation is idempotent.
+Updates replace only entries tagged with `_source: "xtmux"`. Re-running installation is idempotent. Run `/reload` in Pi or start a fresh Pi session, and start fresh Claude Code sessions; running processes retain their loaded extension/hook code.
+
+### Coordination migration
+
+SQLite at `${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/observability.db` is the
+source of truth for messages, reply links, requester-owned waits, monitor wakes,
+and wake consumption. Schema migrations 0010 and 0011 apply automatically when
+the runtime opens the database. Verify after upgrade:
+
+```sh
+xtmux-obs health
+xtmux obligations list --pane "$TMUX_PANE" --json
+xtmux message-list --for "$(tmux display-message -p '#{session_id}')" \
+  --pane "$TMUX_PANE" --expects-reply --json
+xtmux monitor-list --json
+```
+
+Old `xtmux-reply-obligations`, `xtmux-outbound-expectations`, and
+`xtmux-auto-monitor` runtime directories are neither imported nor read by the
+new hooks/extensions. They were projections of durable message/monitor state,
+not authority. Do not restore marker readers or use marker age/absence to infer
+completion; re-arm a fresh wait when `obligations list` shows a pending send with
+no covering monitor. `obs-migrate` remains limited to legacy JSONL and monitor
+TSV import.
+
+No `XDG_RUNTIME_DIR` is required for coordination. The installer does not delete
+arbitrary runtime directories; stale marker files may be removed by normal OS
+runtime cleanup after all old agent processes have exited.
 
 During upgrade, the installer runs the bounded `obs-migrate --apply` reconciliation once against the configured `XDG_RUNTIME_DIR`. Only current-user, non-group/world-writable legacy directories and files are eligible. Recognized reply, outbound-wake, and Claude monitor markers are validated against SQLite, recorded without message bodies, then removed; foreign or symlink entries are moved to `${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/legacy-marker-quarantine` instead of being followed or deleted. Unsafe directories are left untouched and reported. Re-running after reconciliation scans no accepted markers.
 

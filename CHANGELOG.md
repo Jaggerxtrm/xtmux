@@ -32,6 +32,9 @@ All notable changes to this project are documented here.
 - Read-only NDJSON bridge over ssh (j46.9 + protocol tests j46.16) (#38) ([fad430f](https://github.com/Jaggerxtrm/xtmux/commit/fad430f565a078feb64945587c0bad8d04f41e9f))
 
 ### Coordination and hooks
+- Make SQLite the sole source of truth for reply obligations and requester-owned monitor wakes; Claude and Pi no longer read or write runtime marker files
+- Require a fresh, requester/pane-owned wait for each Claude reply expectation and consume terminal wakes exactly once across restart
+- Add explicit correlated replies and `safe-send-pointer --reply-to`, while keeping `message-ack` receipt-only
 - Auto-monitor-on-send — Claude Code hook + pi extension ([2a642ac](https://github.com/Jaggerxtrm/xtmux/commit/2a642ac7bc33e03b1f34a2c9f8e4e3b044961ffb))
 - Pi-auto-monitor.ts uses correct isBashToolResult + event shape ([f900c28](https://github.com/Jaggerxtrm/xtmux/commit/f900c285cb91dcfba9f1a20e7fd341e71b13c753))
 - Wake-path completion — wait-for-transition + Claude Stop drain ([c70b725](https://github.com/Jaggerxtrm/xtmux/commit/c70b725a58fdea8531327e485b5ac9a4af8182b6))
@@ -60,6 +63,8 @@ All notable changes to this project are documented here.
 - Stop mining a bead id out of a temp-dir path (tmp.9) (#36) ([9a5a7c4](https://github.com/Jaggerxtrm/xtmux/commit/9a5a7c4dd65e3e1785e5bb043a7bcd2456d0aa6d))
 
 ### Messages and delivery
+- Persist one-reply correlation, owner cancellation, reply status/projection, and terminal retention in migrations 0010/0011
+- Persist requester session/pane, monitor linkage, wake delivery, wake consumption, replay, and orphan reporting in `outbound_waits`
 - Phase 3 messages/receipts/deliveries/events domain (xtmux-3xs.3, WIP) ([1753539](https://github.com/Jaggerxtrm/xtmux/commit/1753539403f4123f19ddcd71879fa1fc1d8d6dd0))
 - Add status and unread query primitives ([53b0c2b](https://github.com/Jaggerxtrm/xtmux/commit/53b0c2b885717e54878e961589a02d091d0754ca))
 - Unread-count --pane %N for pane-scoped counts (xtmux-3xs.28) ([ff2c489](https://github.com/Jaggerxtrm/xtmux/commit/ff2c48994773b76d924988eae04213bc36c2d487))
@@ -68,6 +73,7 @@ All notable changes to this project are documented here.
 - SQLite reply-obligation model (migration 0010, cycle guard, opt-in correlated projection) — xtmux-3ua.2 (#24) ([a45aa05](https://github.com/Jaggerxtrm/xtmux/commit/a45aa052ed476ca685018ab8936498d7e92117c2))
 
 ### Migration
+- Upgrade note: reload Pi or start fresh Pi/Claude sessions after installation; legacy coordination marker directories are ignored, while existing SQLite messages and waits remain authoritative
 - Phase 9 legacy JSONL importer + shadow-mode substrate (xtmux-3xs.9) ([3f90149](https://github.com/Jaggerxtrm/xtmux/commit/3f901493c44f0a2440afdebc5db27e4dd227229f))
 - Reconstruct monitors rows from legacy .tsv (xtmux-3xs.13) ([93576ae](https://github.com/Jaggerxtrm/xtmux/commit/93576ae1336e4bc16075f54d4e3f0a4d0fe9b89c))
 
@@ -111,6 +117,7 @@ This reverts commit 6c542c1a42d0ee0be959fd84bca4546d6c6de868. ([c35590c](https:/
 - Bash prefilter cuts auto-monitor no-match cost 40ms→10ms ([268c801](https://github.com/Jaggerxtrm/xtmux/commit/268c8016be0405bf6bbf910c5a66a625b9737da8))
 
 ### Pi extensions
+- Re-query SQLite for inbox obligations and monitor wakes: obligations default to 200 rows, inbox reads request 500, unbounded monitor history fails closed above 500 after parsing, and successful cycles cap mutations/reply keys at 20
 - Add inbox and deferred reply reminders ([6f224ed](https://github.com/Jaggerxtrm/xtmux/commit/6f224ede119554f6964ddefdfa03200a71606c77))
 - Scope inbox counts to current pane ([c215728](https://github.com/Jaggerxtrm/xtmux/commit/c21572833fd35ff7344ef38617f66ca3c7ff8cb7))
 - Detect reply obligations while idle ([b4f93da](https://github.com/Jaggerxtrm/xtmux/commit/b4f93da169c63fa96fa0fb76264e917acdc7e630))
