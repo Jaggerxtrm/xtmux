@@ -1676,6 +1676,15 @@ else
     && ok "handoff: a missing prompt file is rejected pre-delivery, writing nothing" \
     || nok "handoff: a missing prompt file is rejected pre-delivery (rc=$bad_rc rows $before_rows -> $(hd_q "SELECT count(*) FROM handoffs"))"
 
+  # A target that cannot receive the pointer must be rejected before durable
+  # registration; otherwise the failed preflight leaves a handoff with no attempt.
+  before_rows="$(hd_q "SELECT count(*) FROM handoffs")"
+  target_out="$(hd handoff --target %missing --bead xtmux-j46.8 --prompt-file "$hd_prompt" --handoff-key k-target-missing --yes --json 2>/dev/null)"; target_rc=$?
+  { [ "$target_rc" -ne 0 ] && [ -z "$target_out" ] \
+      && [ "$(hd_q "SELECT count(*) FROM handoffs")" = "$before_rows" ]; } \
+    && ok "handoff: an undeliverable target is rejected before durable registration" \
+    || nok "handoff: an undeliverable target leaves no orphan record (rc=$target_rc rows $before_rows -> $(hd_q "SELECT count(*) FROM handoffs"))"
+
   # Idempotency. A retry with the same key must not fork the delegation into two
   # handoffs or arm a second monitor — but each injection IS a separate attempt,
   # and the attempt log is append-only precisely so a redelivery is visible.
