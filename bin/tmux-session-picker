@@ -3057,6 +3057,13 @@ handoff_v2() {
     command_error "$json" XTMUX_PROMPT_FILE_REJECTED "handoff: prompt file must live where a pointer may reference it (see safe-send-pointer rules): $prompt_file" handoff 2
     return $?
   }
+  # Preflight target resolution and state before registering the durable handoff.
+  # The actual send records a delivery_failed attempt if the target changes after
+  # this check; failures before an attempt must not leave a created row behind.
+  safe_send_pointer --dry-run "$target" "$pointer" >/dev/null 2>&1 || {
+    command_error "$json" XTMUX_HANDOFF_DELIVERY_FAILED "handoff: pointer is not deliverable target=$target pane=$pane" handoff 1
+    return $?
+  }
   [ -n "$handoff_key" ] || handoff_key="ho-$(date +%s)-$$-${RANDOM}"
   safe_key="$(printf '%s' "$handoff_key" | tr -cs 'A-Za-z0-9._-' '-')"
   [ -n "$safe_key" ] || safe_key="ho-$(date +%s)-$$"
