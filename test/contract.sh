@@ -27,12 +27,19 @@ REGEN=0
 
 # normalize <text> — replace the volatile WORK temp path with a stable token
 # so goldens are reproducible across runs (temp dir name changes each run).
+# git-pane-status shortens paths once an isolated TMPDIR adds a component, so
+# normalize both the full path and that rendered suffix.
 norm() {
-  local t="$1"
-  printf '%s' "$t" | sed "s#${WORK}#/XTMUX_WORK#g"
+  local t="$1" work_name="${WORK##*/}" root_name="${WORK_ROOT##*/}"
+  t="${t//${WORK}/\/XTMUX_WORK}"
+  t="${t//…\/$root_name\/$work_name/\/XTMUX_WORK}"
+  printf '%s' "$t"
 }
 
-WORK="$(mktemp -d)"
+WORK_ROOT="${XTMUX_TEST_WORKSPACE_ROOT:-${TMPDIR:-/tmp}}"
+mkdir -p "$WORK_ROOT"
+WORK_ROOT="$(cd "$WORK_ROOT" && pwd)"
+WORK="$(mktemp -d "$WORK_ROOT/xtmux-contract.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$GOLDEN"
 harness_init "$WORK/results.tsv"
@@ -2025,8 +2032,14 @@ else
   pa="$(tmux list-panes -t "$sa" -F '#{pane_id}' 2>/dev/null | head -1)"
   pb="$(tmux list-panes -t "$sb" -F '#{pane_id}' 2>/dev/null | head -1)"
 
+  # Use the repository status fixture even when the caller supplies an
+  # isolated HOME without an installed ~/.tmux/scripts/git-pane-status.sh.
+  filter_home="$WORK/filter-home"
+  mkdir -p "$filter_home/.tmux/scripts"
+  ln -sf "$STATUS" "$filter_home/.tmux/scripts/git-pane-status.sh"
+  filter_picker() { HOME="$filter_home" "$PICKER" "$@"; }
   # helper: does `list <spec>` contain session <name>?
-  list_has() { "$PICKER" list "$1" 2>/dev/null | awk -F'\t' -v s="$2" '$1=="session"&&$3==s{f=1} END{exit !f}'; }
+  list_has() { filter_picker list "$1" 2>/dev/null | awk -F'\t' -v s="$2" '$1=="session"&&$3==s{f=1} END{exit !f}'; }
   # unique grep token written into A's pane only
   grep_tok="XTMUXFILTTOKENzz9"
   tmux send-keys -t "$pa" "printf '%s' '$grep_tok'" Enter 2>/dev/null
@@ -2061,13 +2074,13 @@ else
 
   # state-file flow: filter-clear / list-active / prompt-label (non-interactive)
   filter_state_file; _ffile="$REPLY"
-  "$PICKER" filter-clear >/dev/null 2>&1
-  assert_eq "filter: clear -> prompt all>" "all> " "$("$PICKER" prompt-label 2>/dev/null)"
+  filter_picker filter-clear >/dev/null 2>&1
+  assert_eq "filter: clear -> prompt all>" "all> " "$(filter_picker prompt-label 2>/dev/null)"
   printf 'repo:filtA' > "$_ffile"
-  _la="$("$PICKER" list-active 2>/dev/null | awk -F'\t' -v s="$sa" '$1=="session"&&$3==s{print;exit}')"
+  _la="$(filter_picker list-active 2>/dev/null | awk -F'\t' -v s="$sa" '$1=="session"&&$3==s{print;exit}')"
   [ -n "$_la" ] && ok "filter: list-active applies file spec" || nok "filter: list-active applies file spec"
-  assert_eq "filter: prompt reflects spec" "repo:filtA> " "$("$PICKER" prompt-label 2>/dev/null)"
-  "$PICKER" filter-clear >/dev/null 2>&1
+  assert_eq "filter: prompt reflects spec" "repo:filtA> " "$(filter_picker prompt-label 2>/dev/null)"
+  filter_picker filter-clear >/dev/null 2>&1
 
   tmux kill-session -t "$sa" 2>/dev/null || true
   tmux kill-session -t "$sb" 2>/dev/null || true
