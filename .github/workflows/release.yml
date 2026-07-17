@@ -22,6 +22,9 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y tmux jq fzf
       - run: npm ci
       - run: npm run typecheck
+      # contract.sh (via npm test) reads bin/xtmux-obs, a compiled artifact
+      # excluded from git and the tarball; build it before the test gate.
+      - run: npm run build
       - run: npm test
       - run: npm pack --dry-run
       - run: npm publish --access public --provenance
