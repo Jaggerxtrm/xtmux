@@ -3011,21 +3011,36 @@ EOF
   if [ "$json" = 1 ]; then
     if [ -n "$from_file" ]; then
       cat -- "$from_file"
-    else
-      "$self" monitor-list --json
+      return $?
     fi
-    return $?
+    # `exec` so stdout/stderr/exit propagate unaltered — this is a pure
+    # passthrough over monitor-list --json.
+    exec "$self" monitor-list --json
   fi
   if ! command -v jq >/dev/null 2>&1; then
     printf 'monitors: jq not found; falling back to `monitor-list`. install jq for the pretty view.\n' >&2
     "$self" monitor-list
     return $?
   fi
-  local raw
+  local raw raw_err raw_rc
   if [ -n "$from_file" ]; then
-    raw="$(cat -- "$from_file" 2>/dev/null || true)"
+    if ! raw="$(cat -- "$from_file" 2>/dev/null)"; then
+      printf 'monitors: --from-json cannot read %s\n' "$from_file" >&2
+      return 2
+    fi
   else
-    raw="$("$self" monitor-list --json 2>/dev/null || true)"
+    # Capture stderr and exit status separately so a backend failure surfaces
+    # instead of masquerading as "no monitors" (Codex P2).
+    raw_err="$(mktemp)"
+    raw="$("$self" monitor-list --json 2>"$raw_err")" || raw_rc=$?
+    raw_rc=${raw_rc:-0}
+    if [ "$raw_rc" != 0 ]; then
+      printf 'monitors: monitor-list failed (exit %s):\n' "$raw_rc" >&2
+      cat "$raw_err" >&2
+      rm -f "$raw_err"
+      return "$raw_rc"
+    fi
+    rm -f "$raw_err"
   fi
   case "$raw" in ''|'[]') printf 'no monitors registered.\n'; return 0 ;; esac
   if [ "$show_all" = 0 ]; then

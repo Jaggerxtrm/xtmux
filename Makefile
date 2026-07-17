@@ -27,8 +27,11 @@ changelog:
 release:
 	@[ -n "$(VERSION)" ] || { echo 'usage: make release VERSION=v<MAJOR>.<MINOR>.<PATCH>'; exit 2; }
 	@git diff-index --quiet HEAD -- || { echo 'release: tree is dirty, commit or stash first'; exit 2; }
+	# Bump package.json/package-lock.json to the same semver; --allow-same-version
+	# is a no-op the first time we cut a tag that matches the current version.
+	npm version --no-git-tag-version --allow-same-version $(VERSION:v%=%)
 	$(MAKE) changelog VERSION=$(VERSION)
-	git add CHANGELOG.md
-	git commit -m "docs(changelog): cut $(VERSION)"
+	git add CHANGELOG.md package.json package-lock.json
+	git commit -m "chore(release): cut $(VERSION)"
 	git tag -a $(VERSION) -m "$(VERSION)"
 	git push origin HEAD $(VERSION)

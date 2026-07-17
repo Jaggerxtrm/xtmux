@@ -2650,6 +2650,11 @@ JSON
   XTMUX_OBS_V2=1 "$PICKER" monitors --json --from-json "$mon_fixture" 2>/dev/null | jq -e '.[0].monitorId == "m-active"' >/dev/null \
     && ok "monitors: --json passes the raw array through" \
     || nok "monitors: --json passes the raw array through"
+  # Backend failure must surface, not silently print "no monitors" (Codex P2).
+  "$PICKER" monitors --from-json "$WORK/does-not-exist.json" >/dev/null 2>&1
+  [ $? -ne 0 ] \
+    && ok "monitors: unreadable input surfaces a nonzero exit" \
+    || nok "monitors: unreadable input surfaces a nonzero exit"
 fi
 
 harness_summary
