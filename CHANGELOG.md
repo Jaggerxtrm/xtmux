@@ -31,7 +31,6 @@ All notable changes to this project are documented here.
 - Readiness-aware, idempotent, durable delegation (xtmux-j46.8) (#34) ([4003abe](https://github.com/Jaggerxtrm/xtmux/commit/4003abed8276b9dac16af91de23f5fa27cdf8b76))
 - Read-only NDJSON bridge over ssh (j46.9 + protocol tests j46.16) (#38) ([fad430f](https://github.com/Jaggerxtrm/xtmux/commit/fad430f565a078feb64945587c0bad8d04f41e9f))
 - Structured activity spans + stabilize the bridge topology test (xtmux-j46.11) (#40) ([a02b66b](https://github.com/Jaggerxtrm/xtmux/commit/a02b66bb55b03688e81d6e403e9cc1461d8335cf))
-- Xtmux monitors — human-scannable view of the monitor registry (xtmux-r6g.1) ([f89f30c](https://github.com/Jaggerxtrm/xtmux/commit/f89f30c21e3296604db22a0b9a86dc9d138209f0))
 
 ### Coordination and hooks
 - Auto-monitor-on-send — Claude Code hook + pi extension ([2a642ac](https://github.com/Jaggerxtrm/xtmux/commit/2a642ac7bc33e03b1f34a2c9f8e4e3b044961ffb))
@@ -116,6 +115,85 @@ This reverts commit 6c542c1a42d0ee0be959fd84bca4546d6c6de868. ([c35590c](https:/
 - Debounce agent-state writes; drop message_update handler (xtmux-2iv) ([e0493d6](https://github.com/Jaggerxtrm/xtmux/commit/e0493d6950c09f86b89a04dacf02d82879ee4823))
 - Xtmux-3xs.4/.7/.8 close via cherry-pick from xt/ojsx ([55b652f](https://github.com/Jaggerxtrm/xtmux/commit/55b652f859193cefde42b8fff49dd725ee48f766))
 - Bash prefilter cuts auto-monitor no-match cost 40ms→10ms ([268c801](https://github.com/Jaggerxtrm/xtmux/commit/268c8016be0405bf6bbf910c5a66a625b9737da8))
+- Help audit + v0.1.0 CHANGELOG/release automation + xtmux monitors human-view (xtmux-r6g.1) (#50)
+
+* docs(readme): add missing commands to CLI reference (xtmux-r6g.1)
+
+Post-3ua audit: help_text already covers every dispatch command, but README
+still listed only the pre-j46 orchestrator surface. Add context --current,
+topology --json, pane capture, log follow / --after-id, bridge --stdio,
+message-cancel / message-status / unread-count, and obligations list to the
+Orchestrator/multiplexing block so grep-first users find them there too.
+
+* feat(monitors): xtmux monitors — human-scannable view of the monitor registry (xtmux-r6g.1)
+
+monitor-list already ships an authoritative JSON projection; operators just
+needed a way to glance and see who is waiting on whom, how long, and how close
+to timeout each row is without piping through jq by hand.
+
+Adds `xtmux monitors [--all] [--json]`:
+- default hides terminal rows; --all shows the full registry
+- --json is a straight pass-through of monitor-list --json
+- formats one aligned row per monitor: STATE, AGE, TIMEOUT (elapsed/budget),
+  TARGET (session-name + pane), REQUESTER (session-name + pane), ID
+- session-name resolution reads tmux list-sessions once, not once per row
+- graceful degradation: no jq -> falls back to raw monitor-list; empty
+  registry or no active monitors -> friendly one-liner instead of a bare header
+
+Test hook `--from-json <path>` short-circuits the runtime call so the pure
+formatter is unit-tested against a synthetic fixture (task said tests only for
+the formatter, not the plumbing).
+
+* chore(release): CHANGELOG cut for v0.1.0 + tag-triggered GH release (xtmux-r6g.1)
+
+First tagged release; every merged PR from #2 to #49 is currently under
+[Unreleased] and belongs to v0.1.0. Regenerated CHANGELOG.md via
+git-cliff --tag v0.1.0 so the block renders as `[0.1.0] - 2026-07-17`, covering
+the runtime-contracts / host_id / bridge / json-api epic (xtmux-j46) and the
+SQLite reply-obligation + wake SSOT epic (xtmux-3ua). Version bump: MINOR
+(both epics land features).
+
+Release automation:
+- `make changelog [VERSION=v0.1.0]` regenerates CHANGELOG.md (Unreleased if no
+  VERSION; tagged block if set). Reuses the existing xtmux-changelog wrapper.
+- `make release VERSION=v0.1.0` regenerates under VERSION, commits, tags, and
+  pushes tag+HEAD. Refuses to run on a dirty tree.
+- `.github/workflows/release.yml` (was `Release npm package`) now also
+  extracts the tag's CHANGELOG section and calls `gh release create` so the
+  GitHub release body matches what git-cliff produced. `fetch-depth: 0` added
+  because git-cliff needs full history to render prior sections.
+- `docs/RELEASE-CHECKLIST.md` documents the flow at the top.
+
+* docs(json-api): classify picker:monitors in the classification matrix
+
+Bun test tests/contracts/json-command-matrix.test.ts asserts every picker
+dispatcher command has a `picker:<name>` row in docs/json-command-api.md. The
+new `monitors` alias needed the same. Same class as monitor-list (agent-json;
+JSON is a pass-through of monitor-list --json).
+
+* fix(release,monitors): sync package.json in make release; surface monitor-list failures (Codex P1/P2)
+
+**P1 — make release now bumps package.json**
+The previous target only regenerated CHANGELOG and pushed the tag; package.json
+stayed pinned at the old version, so the next tag-triggered `npm publish` would
+try to republish a version that already exists and fail after the tag was
+already public. Bump via `npm version --no-git-tag-version --allow-same-version
+${VERSION#v}` before the commit so package.json + package-lock.json and the git
+tag stay in lockstep. Commit is now `chore(release): cut vX.Y.Z` (was
+`docs(changelog)`) — it moves more than the changelog now.
+
+**P2 — xtmux monitors propagates monitor-list failures**
+Previously `raw="$($self monitor-list --json 2>/dev/null || true)"` swallowed
+both stderr and exit status; an unreachable backend rendered as
+`no monitors registered.` and exit 0, telling the operator the registry is
+empty precisely when it could not be read. Capture stderr, keep the exit code,
+and if the command failed, print `monitors: monitor-list failed (exit N):`
+followed by the captured stderr on our own stderr and propagate the exit code.
+The `--json` path uses `exec` so stdout/stderr/exit propagate unaltered
+end-to-end. `--from-json` on an unreadable path now exits 2 instead of pretending
+the registry is empty.
+
+New contract assertion: `monitors: unreadable input surfaces a nonzero exit`. ([4abb71f](https://github.com/Jaggerxtrm/xtmux/commit/4abb71f1f9107d7a7d36e04b06d60b17b1264ebc))
 
 ### Pi extensions
 - Add inbox and deferred reply reminders ([6f224ed](https://github.com/Jaggerxtrm/xtmux/commit/6f224ede119554f6964ddefdfa03200a71606c77))
@@ -165,5 +243,4 @@ This reverts commit 6c542c1a42d0ee0be959fd84bca4546d6c6de868. ([c35590c](https:/
 - Move coordination state to SQLite (#45) ([5bfdae4](https://github.com/Jaggerxtrm/xtmux/commit/5bfdae4b57c229fa4e730f4daf719389e8aa4b3f))
 - Document SQLite reply and wake lifecycle (#46) ([c4777db](https://github.com/Jaggerxtrm/xtmux/commit/c4777dbe4ff5c67de8ceb635849b67fe38c24f6d))
 - Make contract fixtures TMPDIR-safe (#48) ([255a8ce](https://github.com/Jaggerxtrm/xtmux/commit/255a8ce83ebf80834f7268b4c33c73d99d233eb7))
-- Add missing commands to CLI reference (xtmux-r6g.1) ([b694937](https://github.com/Jaggerxtrm/xtmux/commit/b694937200e045a64f73000f91d241f38300623f))
 <!-- generated by xtmux-changelog; edit commit messages or cliff.toml, not generated rows -->
