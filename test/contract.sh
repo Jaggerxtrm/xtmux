@@ -2603,5 +2603,59 @@ grep -q 'mux-help' "$WORK/help.out" \
   && ok "help: cross-references mux-help" \
   || nok "help: cross-references mux-help"
 
+echo
+echo "== monitors human-view formatter contract =="
+# The formatter reads monitor-list --json and prints one aligned row per row.
+# --from-json is a test hook that skips the runtime call; we feed synthetic
+# fixtures so the assertions cover the pure format layer, not the store.
+if ! command -v jq >/dev/null 2>&1; then
+  printf '  \033[33mskip\033[0m monitors formatter (jq missing)\n'
+else
+  mon_fixture="$WORK/monitors-fixture.json"
+  cat > "$mon_fixture" <<'JSON'
+[
+  {"monitorId":"m-active","target":"$1000","paneId":"%50","requesterSessionId":"$2000","requesterPaneId":"%60","state":"running","startedAtMs":0,"updatedAtMs":0,"timeoutMs":600000,"intervalMs":30000,"terminalStatus":null,"wakeDelivered":false,"wakeConsumed":false,"orphan":false,"sessionId":"$1000"},
+  {"monitorId":"m-terminal","target":"$3000","paneId":"%70","requesterSessionId":null,"requesterPaneId":null,"state":"done","startedAtMs":0,"updatedAtMs":0,"timeoutMs":600000,"intervalMs":30000,"terminalStatus":"done","wakeDelivered":true,"wakeConsumed":true,"orphan":false,"sessionId":"$3000"}
+]
+JSON
+  mon_default="$("$PICKER" monitors --from-json "$mon_fixture" 2>&1)"
+  printf '%s\n' "$mon_default" | head -n1 | grep -qE '^STATE +AGE +TIMEOUT +TARGET +REQUESTER +ID$' \
+    && ok "monitors: header row" \
+    || nok "monitors: header row"
+  printf '%s\n' "$mon_default" | grep -q 'm-active' \
+    && ok "monitors: default hides terminal, shows active" \
+    || nok "monitors: default hides terminal, shows active"
+  printf '%s\n' "$mon_default" | grep -q 'm-terminal' \
+    && nok "monitors: default hides terminal, shows active" \
+    || ok "monitors: default hides terminal rows"
+  mon_all="$("$PICKER" monitors --all --from-json "$mon_fixture" 2>&1)"
+  printf '%s\n' "$mon_all" | grep -q 'm-terminal' \
+    && ok "monitors: --all reveals terminal rows" \
+    || nok "monitors: --all reveals terminal rows"
+  printf '%s\n' "$mon_all" | grep -qE '\$1000 \(%50\)' \
+    && ok "monitors: target column shows session+pane" \
+    || nok "monitors: target column shows session+pane"
+  printf '%s\n' "$mon_all" | grep -F '$2000 (%60)' >/dev/null \
+    && ok "monitors: requester column populated" \
+    || nok "monitors: requester column populated"
+  # empty array → friendly message, non-fatal
+  empty_fixture="$WORK/monitors-empty.json"
+  printf '[]' > "$empty_fixture"
+  mon_empty="$("$PICKER" monitors --from-json "$empty_fixture" 2>&1)"
+  printf '%s\n' "$mon_empty" | grep -q 'no monitors registered' \
+    && ok "monitors: empty list prints friendly message" \
+    || nok "monitors: empty list prints friendly message"
+  # --json passthrough echoes the same array. The preflight gate requires V2
+  # for any observability --json; this suite runs V1 by default, so opt in.
+  XTMUX_OBS_V2=1 "$PICKER" monitors --json --from-json "$mon_fixture" 2>/dev/null | jq -e '.[0].monitorId == "m-active"' >/dev/null \
+    && ok "monitors: --json passes the raw array through" \
+    || nok "monitors: --json passes the raw array through"
+  # Backend failure must surface, not silently print "no monitors" (Codex P2).
+  "$PICKER" monitors --from-json "$WORK/does-not-exist.json" >/dev/null 2>&1
+  [ $? -ne 0 ] \
+    && ok "monitors: unreadable input surfaces a nonzero exit" \
+    || nok "monitors: unreadable input surfaces a nonzero exit"
+fi
+
 harness_summary
 exit $?
