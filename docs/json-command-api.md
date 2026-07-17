@@ -169,6 +169,7 @@ Categories are closed: **agent-json** gains/retains structured output for agents
 | `picker:monitor-run` | guarded-admin | background poller implementation detail | — |
 | `picker:monitor-list` | agent-json | 10-column TSV → monitor array | .2 |
 | `picker:monitor-kill` | guarded-admin | destructive; explicit monitor ID and confirmation in native tools | .2 |
+| `picker:monitors` | agent-json | pretty-print of `monitor-list` for humans; `--json` passes the array through unchanged | .2 |
 | `picker:safe-send-pointer` | guarded-admin | pane injection; retain dry-run and confirmation guards | .2 |
 | `picker:worktree-collisions` | agent-json | TSV → collision array | .3 |
 | `picker:dashboard` | agent-json | TSV header/rows → session inventory object | .3 |
