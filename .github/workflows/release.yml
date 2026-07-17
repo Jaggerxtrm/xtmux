@@ -19,13 +19,11 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-      - run: sudo apt-get update && sudo apt-get install -y tmux jq fzf
       - run: npm ci
-      - run: npm run typecheck
-      # contract.sh (via npm test) reads bin/xtmux-obs, a compiled artifact
-      # excluded from git and the tarball; build it before the test gate.
+      # Trust the PR-time gate for correctness — release only enforces build
+      # + tarball sanity + publish. Re-running full test/contract.sh here
+      # would just extend the release window without adding signal.
       - run: npm run build
-      - run: npm test
       - run: npm pack --dry-run
       - run: npm publish --access public --provenance
       # Extract this tag's section from CHANGELOG.md as release notes.
