@@ -1,3 +1,22 @@
+# Release cadence
+
+Cutting a release from a clean main:
+
+```sh
+make release VERSION=v0.1.0       # cli.cliff regen + commit + tag + push
+```
+
+`make release` runs `git-cliff` under the tag, rewrites `CHANGELOG.md` so the
+pending block moves under `## [X.Y.Z] - <date>`, commits it as
+`docs(changelog): cut vX.Y.Z`, tags the commit, and pushes tag + HEAD. The
+tag push triggers `.github/workflows/release.yml`, which runs the test gate,
+`npm publish --provenance`, and `gh release create` with that tag's CHANGELOG
+section as the body.
+
+Version bumps: minor for user-facing features, patch for fix/cleanup batches.
+No major bumps by default. To roll the pending block without cutting a tag,
+`make changelog` regenerates against `[Unreleased]`.
+
 # Release epic 5j3 checklist
 
 | proposal | implementation or decision |
