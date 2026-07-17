@@ -332,16 +332,30 @@ tmux-session-picker handoff --yes --target %42 --bead xtmux-mux.9 --note 'NO pus
 # worktree collision report
 tmux-session-picker worktree-collisions
 
+# runtime identity, session/window/pane inventory, bounded pane content
+tmux-session-picker context --current --json          # who am I? (xtrm.runtime-origin.v1)
+tmux-session-picker topology --json                   # complete host/session/window/pane snapshot
+tmux-session-picker pane capture --pane %42 --lines 200 --json
+
+# read-only NDJSON bridge over ssh — inspect a remote xtmux host with your own auth
+ssh peer-host xtmux bridge --stdio                    # remote server, exchanges JSON-RPC on stdio
+
 # event log
 tmux-session-picker log emit custom.event pane=%42 bead=xtmux-team.1 text=hello
 tmux-session-picker log tail 50
 tmux-session-picker log query --type message.sent --bead xtmux-team.4 --since 1h
+tmux-session-picker log query --after-id 1234 --limit 100 --json    # cursor-paged
+tmux-session-picker log follow --after-id 1234 --json               # NDJSON stream
 
 # SQLite-backed message channel: ack receipt, then reply explicitly
 tmux-session-picker message-send --to worker --bead xtmux-team.4 --text 'blocked on data' --json
 tmux-session-picker message-list --for worker --pane %42 --expects-reply --json
 tmux-session-picker message-ack <messageKey> --by worker --json
 tmux-session-picker message-reply --in-reply-to <messageKey> --text 'resolved' --json
+tmux-session-picker message-cancel --message-key <messageKey> --json
+tmux-session-picker message-status <messageKey> --json
+tmux-session-picker unread-count --for worker --pane %42 --json
+tmux-session-picker obligations list --pane %42 --json     # active reply obligations owned by this pane
 
 # opt-in command telemetry; does not shadow git/bd/gh unless you alias it yourself
 tmux-session-picker telemetry git -- commit -m 'message'
