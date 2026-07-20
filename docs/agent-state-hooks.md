@@ -94,7 +94,7 @@ monitor and requester-wake rows are durable in
 unconsumed wakes survive restart; `wait-agent --consume` claims one only for the
 session and pane that registered it.
 
-Pi `extensions/pi-agent-state.ts` also publishes `agent.turn.done` on `agent_end`, including a compact last assistant message when the pi `turn_end`/`agent_end` event payload exposes it. If `@agent_parent_session` is set, it emits a short SQLite-backed message to the parent.
+Pi `extensions/pi-agent-state.ts` also publishes `agent.turn.done` on `agent_end`, including a compact last assistant message when the pi `turn_end`/`agent_end` event payload exposes it. Root panes have no parent; when `@agent_parent_session` names a distinct parent, the extension emits one reply-free SQLite FYI and never creates an obligation or monitor.
 
 state transitions and orchestration actions write typed rows and bounded
 forensic envelopes to the SQLite event journal. Use:

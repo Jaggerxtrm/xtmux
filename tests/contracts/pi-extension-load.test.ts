@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { expect, test } from "bun:test";
+import xtmuxAgentState from "../../extensions/pi-agent-state.ts";
 import xtmuxAutoMonitor from "../../extensions/pi-auto-monitor.ts";
 
 const root = join(import.meta.dir, "../..");
@@ -77,4 +78,43 @@ test("pi-auto-monitor initializes inbox exactly once", () => {
   expect(events.filter((event) => event === "session_start")).toHaveLength(1);
   expect(events.filter((event) => event === "session_shutdown")).toHaveLength(1);
   expect(events.filter((event) => event === "tool_result")).toHaveLength(2);
+});
+
+test("turn-done FYIs skip root/self parents and use canonical false for a distinct parent", async () => {
+  const previousTmux = process.env.TMUX;
+  process.env.TMUX = "/mock/tmux.sock,1,0";
+
+  async function messageArgs(parent: string): Promise<string[] | undefined> {
+    const handlers = new Map<string, Function>();
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const values = new Map([
+      ["display-message -p #{pane_id}", "%me"],
+      ["display-message -p #{session_id}", "$me"],
+      ["display-message -p #S", "root"],
+      ["show-options -p -qv @agent_bead", "xtmux-5xm"],
+      ["show-options -p -qv @agent_parent_session", parent],
+    ]);
+    xtmuxAgentState({
+      on(event: string, handler: Function) { handlers.set(event, handler); },
+      async exec(command: string, args: string[]) {
+        calls.push({ command, args });
+        return { stdout: command === "tmux" ? values.get(args.join(" ")) ?? "" : "" };
+      },
+    } as any);
+    await handlers.get("agent_end")?.({ messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+    return calls.find((call) => call.args[0] === "message-send")?.args;
+  }
+
+  try {
+    expect(await messageArgs("")).toBeUndefined();
+    expect(await messageArgs("$me")).toBeUndefined();
+    expect(await messageArgs("%me")).toBeUndefined();
+    expect(await messageArgs("$parent")).toEqual([
+      "message-send", "--from", "$me", "--to", "$parent", "--bead", "xtmux-5xm",
+      "--expects-reply=false", "--text", "turn done: done",
+    ]);
+  } finally {
+    if (previousTmux === undefined) delete process.env.TMUX;
+    else process.env.TMUX = previousTmux;
+  }
 });
