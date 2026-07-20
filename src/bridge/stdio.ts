@@ -1,9 +1,12 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { Db } from "../db/connection.ts";
 import { checkHealth } from "../db/health.ts";
 import { hostId as readHostId } from "../domains/identity/host-id.ts";
-import { capturePane, MAX_LINES } from "../domains/identity/pane-capture.ts";
+import { capturePane, MAX_LINES, type PaneCaptureResult } from "../domains/identity/pane-capture.ts";
 import { journalPage, MAX_PAGE } from "../domains/events/page.ts";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * The read-only remote bridge (docs/xtmux-gaps.md §7).
@@ -68,30 +71,52 @@ type Reply =
   | { id: string | number | null; result: Record<string, unknown> }
   | { id: string | number | null; error: BridgeError };
 
+export type TopologyResult = { ok: true; value: unknown } | { ok: false; error: BridgeError };
+
 export interface BridgeDeps {
   db: () => Db;
   dbPath: string;
   /** Topology lives in the picker (bash) and is the one contract this process
    *  cannot produce itself. Relay it verbatim rather than re-deriving it here:
-   *  a second implementation of the same schema is a second thing to drift. */
-  topology: () => { ok: true; value: unknown } | { ok: false; error: BridgeError };
+   *  a second implementation of the same schema is a second thing to drift.
+   *  Async and abortable so a slow picker cannot block the event loop (§P2-07). */
+  topology: (signal: AbortSignal) => Promise<TopologyResult>;
+  /** Pane capture spawns `tmux capture-pane`; async + abortable for the same
+   *  reason. Injected (rather than imported directly) so the async bridge
+   *  behaviour can be tested without a live tmux server. */
+  capture: (paneId: string, lines: number, signal: AbortSignal) => Promise<PaneCaptureResult>;
   now: () => number;
+  /** Per-operation subprocess timeout in ms. Defaults to SUBPROC_TIMEOUT_MS when
+   *  unset; overridable per connection (and for tests that must not wait 10s). */
+  subprocTimeoutMs?: number;
 }
 
-export function defaultTopology(): { ok: true; value: unknown } | { ok: false; error: BridgeError } {
+export async function defaultTopology(signal: AbortSignal): Promise<TopologyResult> {
   const picker = process.env["XTMUX_PICKER"];
   if (!picker) {
     return { ok: false, error: { code: "XTMUX_BRIDGE_UNAVAILABLE", message: "topology.snapshot requires XTMUX_PICKER to point at tmux-session-picker" } };
   }
-  const run = spawnSync(picker, ["topology", "--json"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
-  if (run.status !== 0) {
-    return { ok: false, error: { code: "XTMUX_BRIDGE_UNAVAILABLE", message: "topology.snapshot failed", detail: { exit_code: run.status } } };
+  let stdout: string;
+  try {
+    const run = await execFileAsync(picker, ["topology", "--json"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, signal });
+    stdout = run.stdout;
+  } catch (err) {
+    // A fired signal (cancel/timeout/disconnect) is re-thrown so the framing layer
+    // owns the terminal reason; a real picker failure becomes an UNAVAILABLE reply.
+    if (signal.aborted) throw err;
+    const exit = typeof (err as { code?: unknown }).code === "number" ? (err as { code: number }).code : null;
+    return { ok: false, error: { code: "XTMUX_BRIDGE_UNAVAILABLE", message: "topology.snapshot failed", detail: { exit_code: exit } } };
   }
   try {
-    return { ok: true, value: JSON.parse(run.stdout) as unknown };
+    return { ok: true, value: JSON.parse(stdout) as unknown };
   } catch {
     return { ok: false, error: { code: "XTMUX_BRIDGE_UNAVAILABLE", message: "topology.snapshot returned unparseable output" } };
   }
+}
+
+/** Default pane-capture dep: the real async `tmux capture-pane` reader. */
+export function defaultCapture(paneId: string, lines: number, signal: AbortSignal): Promise<PaneCaptureResult> {
+  return capturePane(paneId, lines, Date.now, signal);
 }
 
 function asRecord(v: unknown): Record<string, unknown> {
@@ -163,19 +188,10 @@ export function handleRequest(deps: BridgeDeps, raw: unknown): Reply {
       }
     }
 
-    case "topology.snapshot": {
-      const topo = deps.topology();
-      return topo.ok ? { id, result: { host_id: readHostId(), topology: topo.value } } : { id, error: topo.error };
-    }
-
-    case "pane.capture": {
-      const paneId = str(params["pane_id"]);
-      if (!paneId) return { id, error: { code: "XTMUX_BRIDGE_INVALID_REQUEST", message: "pane.capture needs params.pane_id" } };
-      const result = capturePane(paneId, num(params["lines"], 200));
-      return result.ok
-        ? { id, result: { host_id: readHostId(), capture: result.capture } }
-        : { id, error: result.error };
-    }
+    // topology.snapshot and pane.capture spawn subprocesses and are handled on the
+    // ASYNC path in serve.ts (bounded concurrency, per-op timeout, cancellation),
+    // so they never reach this synchronous dispatcher. They stay on the allowlist
+    // above; the serve loop intercepts them before handleRequest is called.
 
     case "journal.query": {
       const db = deps.db();
