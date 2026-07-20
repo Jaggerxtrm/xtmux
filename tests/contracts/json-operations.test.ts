@@ -65,9 +65,22 @@ describe("operational JSON", () => {
     const ctx = setup();
     try {
       expect(cli(["migrate"], ctx.env).exitCode).toBe(0);
+      // P1-07: `version` is now build identity (mirrors `xt version --json`). The
+      // journal schema version is retained ADDITIVELY — human output keeps a
+      // `schema:` line and the JSON keeps a `schemaVersion` field.
       const version = cli(["version"], ctx.env);
-      expect(version.stdout).toMatch(/^\d+\n$/);
-      expect(JSON.parse(cli(["version", "--json"], ctx.env).stdout)).toEqual({ schemaVersion: Number(version.stdout) });
+      expect(version.stdout).toContain("@jaggerxtrm/xtmux");
+      const schemaMatch = version.stdout.match(/schema:\s*(\d+)/);
+      expect(schemaMatch).not.toBeNull();
+      const schemaVersion = Number(schemaMatch![1]);
+
+      const info = JSON.parse(cli(["version", "--json"], ctx.env).stdout);
+      // toMatchObject, not toEqual: the object is additive over the old {schemaVersion}.
+      expect(info).toMatchObject({ package: "@jaggerxtrm/xtmux", source: "local", schemaVersion });
+      expect(typeof info.version).toBe("string");
+      expect(info.version.length).toBeGreaterThan(0);
+      expect(typeof info.runtime.node).toBe("string");
+      expect(info.schemaVersion).toBeGreaterThanOrEqual(1);
 
       const missingPane = cli(["obligations", "list", "--json"], ctx.env);
       expect(missingPane.exitCode).toBe(2);

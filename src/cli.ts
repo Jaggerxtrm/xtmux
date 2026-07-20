@@ -21,7 +21,8 @@ import { captureRuntimeContext } from "./domains/identity/runtime-context.ts";
 import { capturePane } from "./domains/identity/pane-capture.ts";
 import { createHandoffWithMonitor, markSent, HandoffKeyConflictError } from "./domains/handoffs/lifecycle.ts";
 import { serveBridge } from "./bridge/serve.ts";
-import { defaultTopology } from "./bridge/stdio.ts";
+import { defaultTopology, defaultCapture } from "./bridge/stdio.ts";
+import { collectVersionInfo, formatVersionHuman } from "./version.ts";
 
 function usage(): string {
   return `usage: xtmux-obs <command>
@@ -105,10 +106,19 @@ async function main(argv: string[]): Promise<number> {
         }
       }
       case "version": {
+        // Build identity (audit §P1-07), mirroring `xt version --json`. schemaVersion
+        // is retained ADDITIVELY: `version --json` was `{schemaVersion}` and had
+        // consumers (smoke-json-api.sh, json-operations contract), so the field
+        // stays present inside the richer object rather than being replaced.
+        const info = collectVersionInfo();
         const db = openDb(cfg);
         try {
           const report = checkHealth(db, cfg.dbPath);
-          process.stdout.write(argv.slice(3).includes("--json") ? JSON.stringify({ schemaVersion: report.schemaVersion }) + "\n" : String(report.schemaVersion) + "\n");
+          if (argv.slice(3).includes("--json")) {
+            process.stdout.write(JSON.stringify({ ...info, schemaVersion: report.schemaVersion }) + "\n");
+          } else {
+            process.stdout.write(formatVersionHuman(info, report.schemaVersion) + "\n");
+          }
           return 0;
         } finally {
           db.close();
@@ -143,7 +153,7 @@ async function main(argv: string[]): Promise<number> {
         const linesFlag = rest.indexOf("--lines");
         const paneId = paneFlag >= 0 ? rest[paneFlag + 1] ?? "" : process.env.TMUX ? process.env.TMUX_PANE ?? "" : "";
         const lines = linesFlag >= 0 ? Number(rest[linesFlag + 1]) : 200;
-        const result = capturePane(paneId, lines);
+        const result = await capturePane(paneId, lines);
         if (!result.ok) {
           process.stderr.write(JSON.stringify(result.error) + "\n");
           return 1;
@@ -171,6 +181,7 @@ async function main(argv: string[]): Promise<number> {
             db: () => openReadOnlyDb(cfg),
             dbPath: cfg.dbPath,
             topology: defaultTopology,
+            capture: defaultCapture,
             now: () => Date.now(),
           },
           process.stdin,

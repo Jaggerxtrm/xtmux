@@ -5,6 +5,7 @@ import {
   handleRequest,
   MAX_FRAME_BYTES,
   type BridgeDeps,
+  type BridgeError,
 } from "./stdio.ts";
 
 /**
@@ -21,24 +22,43 @@ const FOLLOW_INTERVAL_MS = 500;
 // each opening the DB every tick — CPU, fd, and timer pressure from valid frames.
 export const MAX_FOLLOWS = 4;
 
-// Per-connection request-rate cap (defense-in-depth for the remote surface). Each
-// request is handled synchronously in the stdin listener, and topology.snapshot /
-// pane.capture spawnSync a subprocess that blocks the event loop for its duration
-// — so a flood of valid requests starves every active follow. This bounds the
-// blocking budget without touching legitimate use: a viewer polling topology and
-// opening a handful of panes stays far under it. It bounds, it does not eliminate:
-// the complete fix is async subprocess execution, a runtime-wide change out of
-// scope here (tracked separately). bridge.cancel is exempt — it REDUCES load, and
-// rate-limiting the one control that stops work would be perverse.
+// Per-connection request-rate cap (defense-in-depth for the remote surface). A
+// cheap turn-away for a flood of valid requests, applied before any work. It is
+// complementary to — not a substitute for — the subprocess concurrency cap below:
+// this bounds request *arrival rate*, that bounds concurrent *blocking work*.
+// bridge.cancel is exempt — it REDUCES load, and rate-limiting the one control
+// that stops work would be perverse.
 export const RATE_WINDOW_MS = 1000;
 export const MAX_REQUESTS_PER_WINDOW = 20;
+
+// Subprocess methods (topology.snapshot, pane.capture) run ASYNC (§P2-07): they no
+// longer block the event loop, so a slow picker or capture cannot starve active
+// journal follows or delay a bridge.cancel. What still needs bounding is how many
+// run at once (fd/CPU/child-process pressure) and how long any one may run.
+export const MAX_INFLIGHT_SUBPROCS = 4;
+export const SUBPROC_TIMEOUT_MS = 10_000;
 
 interface Follow {
   cancelled: boolean;
 }
 
+// Why an in-flight subprocess op was aborted. Distinguishes the terminal frame the
+// requester receives (cancelled vs timed-out) and lets a peer-disconnect abort stay
+// silent. Carried on the AbortController's `reason`.
+const ABORT_CANCEL = Symbol("bridge.cancel");
+const ABORT_TIMEOUT = Symbol("bridge.timeout");
+const ABORT_CLOSE = Symbol("bridge.close");
+
+interface Inflight {
+  abort: (reason: symbol) => void;
+}
+
 export async function serveBridge(deps: BridgeDeps, input: Readable, output: Writable): Promise<number> {
   const follows = new Map<string | number, Follow>();
+  // In-flight async subprocess ops, keyed by request id. Shares the id namespace
+  // with `follows` so one id can never own two concurrent operations — the guard
+  // that keeps the one-response-per-request-id invariant intact.
+  const inflight = new Map<string | number, Inflight>();
   let buffer = "";
 
   // Honor stdout backpressure. If the peer stops reading, out.write() returns
@@ -58,7 +78,22 @@ export async function serveBridge(deps: BridgeDeps, input: Readable, output: Wri
   // that frame and must be thrown away, or we would parse its tail as if it were
   // a fresh request — which is how an attacker smuggles one.
   let resyncing = false;
+  // `closed`: the output is gone (peer disconnect / stream error) — stop writing.
+  // `inputEnded`: stdin hit EOF — no MORE requests, but in-flight subprocess ops
+  // may still owe a reply the peer is waiting to read, so we do not tear them down.
   let closed = false;
+  let inputEnded = false;
+  let resolveBridge: (code: number) => void = () => {};
+  // Exit once stdin is done AND every in-flight subprocess op has flushed its one
+  // reply. Follows are infinite and are cancelled on end; finite subprocess ops are
+  // allowed to finish (bounded by their per-op timeout) so a `printf req | xtmux
+  // bridge --stdio` one-shot still receives its topology/capture response.
+  const maybeFinish = (): void => {
+    if (inputEnded && inflight.size === 0) {
+      closed = true;
+      resolveBridge(0);
+    }
+  };
 
   const startFollow = (id: string | number, afterId: number): void => {
     const follow: Follow = { cancelled: false };
@@ -100,6 +135,62 @@ export async function serveBridge(deps: BridgeDeps, input: Readable, output: Wri
         if (!closed) writeFrame({ id, error: { code: "XTMUX_BRIDGE_STREAM_ERROR", message: "follow stream ended on an internal error", detail: { cause: err instanceof Error ? err.message : String(err) } } });
       } finally {
         follows.delete(id);
+      }
+    })();
+  };
+
+  // Run one async subprocess-backed method (topology.snapshot, pane.capture) off
+  // the event loop. Owns the four invariants §P2-07 asks for: bounded concurrency
+  // (reject past MAX_INFLIGHT_SUBPROCS), a per-operation timeout (abort at
+  // SUBPROC_TIMEOUT_MS), cancellation (bridge.cancel aborts the signal), and
+  // exactly one frame per request id (the `settled` latch + registry delete).
+  type OpResult = { ok: true; result: Record<string, unknown> } | { ok: false; error: BridgeError };
+  const startSubproc = (id: string | number, op: (signal: AbortSignal) => Promise<OpResult>): void => {
+    // One operation per id at a time (subproc OR follow). A second request reusing
+    // a live id is refused rather than silently producing a second response.
+    if (inflight.has(id) || follows.has(id)) {
+      writeFrame({ id, error: { code: "XTMUX_BRIDGE_INVALID_REQUEST", message: "a request is already in flight for this id" } });
+      return;
+    }
+    if (inflight.size >= MAX_INFLIGHT_SUBPROCS) {
+      writeFrame({ id, error: { code: "XTMUX_BRIDGE_RESOURCE_LIMIT", message: `at most ${MAX_INFLIGHT_SUBPROCS} concurrent subprocess operations per connection`, detail: { max_inflight_subprocs: MAX_INFLIGHT_SUBPROCS } } });
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutMs = deps.subprocTimeoutMs ?? SUBPROC_TIMEOUT_MS;
+    const timer = setTimeout(() => controller.abort(ABORT_TIMEOUT), timeoutMs);
+    let settled = false;
+    const settle = (frame: unknown): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      inflight.delete(id);
+      // A hard peer-disconnect (closed) produces no frame: the socket is gone.
+      // Every other terminal path — including a graceful stdin EOF — writes exactly
+      // once, guarded by the latch above.
+      if (!closed) writeFrame(frame);
+      // If stdin already ended, this may have been the last reply owed.
+      maybeFinish();
+    };
+
+    inflight.set(id, { abort: (reason) => controller.abort(reason) });
+
+    void (async () => {
+      try {
+        const out = await op(controller.signal);
+        settle(out.ok ? { id, result: out.result } : { id, error: out.error });
+      } catch (err) {
+        const reason = controller.signal.aborted ? controller.signal.reason : undefined;
+        if (reason === ABORT_CANCEL) {
+          settle({ id, error: { code: "XTMUX_BRIDGE_CANCELLED", message: "request cancelled by bridge.cancel", detail: {} } });
+        } else if (reason === ABORT_TIMEOUT) {
+          settle({ id, error: { code: "XTMUX_BRIDGE_TIMEOUT", message: `operation exceeded ${timeoutMs}ms`, detail: { timeout_ms: timeoutMs } } });
+        } else if (reason === ABORT_CLOSE) {
+          settle(null); // no frame written (closed), just clears the registry
+        } else {
+          settle({ id, error: { code: "XTMUX_BRIDGE_INTERNAL", message: "operation failed", detail: { cause: err instanceof Error ? err.message : String(err) } } });
+        }
       }
     })();
   };
@@ -174,12 +265,43 @@ export async function serveBridge(deps: BridgeDeps, input: Readable, output: Wri
       return;
     }
 
+    // Async subprocess methods: dispatched here, never through the synchronous
+    // handleRequest, so the event loop stays free while tmux/the picker runs.
+    if (req["method"] === "topology.snapshot" && id !== null) {
+      startSubproc(id, async (signal) => {
+        const topo = await deps.topology(signal);
+        return topo.ok ? { ok: true, result: { host_id: readHostId(), topology: topo.value } } : { ok: false, error: topo.error };
+      });
+      return;
+    }
+
+    if (req["method"] === "pane.capture" && id !== null) {
+      const params = req["params"] && typeof req["params"] === "object" ? (req["params"] as Record<string, unknown>) : {};
+      const rawPane = params["pane_id"];
+      const paneId = typeof rawPane === "string" && rawPane !== "" ? rawPane : undefined;
+      if (!paneId) {
+        writeFrame({ id, error: { code: "XTMUX_BRIDGE_INVALID_REQUEST", message: "pane.capture needs params.pane_id" } });
+        return;
+      }
+      const rawLines = params["lines"];
+      const lines = typeof rawLines === "number" ? rawLines : typeof rawLines === "string" ? Number(rawLines) : 200;
+      startSubproc(id, async (signal) => {
+        const result = await deps.capture(paneId, Number.isFinite(lines) ? lines : 200, signal);
+        return result.ok ? { ok: true, result: { host_id: readHostId(), capture: result.capture } } : { ok: false, error: result.error };
+      });
+      return;
+    }
+
     if (req["method"] === "bridge.cancel") {
       const params = req["params"] && typeof req["params"] === "object" ? (req["params"] as Record<string, unknown>) : {};
       const target = params["follow_id"];
       if (typeof target === "string" || typeof target === "number") {
         const follow = follows.get(target);
         if (follow) follow.cancelled = true;
+        // Also cancel an in-flight subprocess op with this id: the aborted op emits
+        // its own single CANCELLED frame; this request emits its own ack below.
+        const op = inflight.get(target);
+        if (op) op.abort(ABORT_CANCEL);
       }
     }
 
@@ -191,6 +313,7 @@ export async function serveBridge(deps: BridgeDeps, input: Readable, output: Wri
   // code-unit check would admit ~3x the documented byte budget before tripping.
   const bytes = (s: string): number => Buffer.byteLength(s, "utf8");
   return await new Promise<number>((resolve) => {
+    resolveBridge = resolve;
     input.setEncoding("utf8");
     input.on("data", (chunk: string) => {
       // Bound the UNPARSED buffer, not just a complete frame: a peer that never
@@ -223,16 +346,24 @@ export async function serveBridge(deps: BridgeDeps, input: Readable, output: Wri
         writeFrame({ id: null, error: { code: "XTMUX_BRIDGE_FRAME_TOO_LARGE", message: `request frame exceeds ${MAX_FRAME_BYTES} bytes`, detail: { max_frame_bytes: MAX_FRAME_BYTES } } });
       }
     });
-    // EOF is a graceful close, not a fault: the peer hung up (ssh exited, the
-    // viewer closed the tab). Stop the follows and exit 0.
-    input.on("end", () => {
+    // Stdin EOF is graceful: no more requests are coming, but the peer may still be
+    // reading replies (the canonical `printf req | xtmux bridge --stdio` closes
+    // stdin before it reads). Cancel the infinite follows, let finite subprocess ops
+    // flush their one reply, then exit once none remain in flight.
+    const onInputDone = (): void => {
+      inputEnded = true;
+      for (const f of follows.values()) f.cancelled = true;
+      maybeFinish();
+    };
+    input.on("end", onInputDone);
+    input.on("error", onInputDone);
+    // The output going away IS a hard fault: there is nobody to reply to. Abort
+    // in-flight ops (no frames), stop follows, and exit — do not sit spinning on a
+    // subprocess whose result can never be delivered.
+    output.on("error", () => {
       closed = true;
       for (const f of follows.values()) f.cancelled = true;
-      resolve(0);
-    });
-    input.on("error", () => {
-      closed = true;
-      for (const f of follows.values()) f.cancelled = true;
+      for (const op of inflight.values()) op.abort(ABORT_CLOSE);
       resolve(0);
     });
   });

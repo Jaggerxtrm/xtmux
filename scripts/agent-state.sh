@@ -21,6 +21,7 @@ usage() {
   printf '\noptional metadata env (pane-scoped):\n' >&2
   printf '  XTMUX_AGENT_BEAD           -> @agent_bead\n' >&2
   printf '  XTMUX_AGENT_TASK           -> @agent_task\n' >&2
+  printf '  XTMUX_AGENT_ROLE           -> @agent_role\n' >&2
   printf '  XTMUX_AGENT_PROMPT_FILE    -> @agent_prompt_file\n' >&2
   printf '  XTMUX_AGENT_PARENT_SESSION -> @agent_parent_session\n' >&2
   printf '\n@agent_last_transition is written on every state transition.\n' >&2
@@ -70,7 +71,7 @@ event_log_file() {
 }
 
 log_agent_state_event() {
-  local file dir ts epoch session bead task prompt parent event host instance
+  local file dir ts epoch session bead task role prompt parent event host instance
   event_log_file; file="$REPLY"; dir="${file%/*}"
   mkdir -p "$dir" 2>/dev/null || true
   ts="$(date -Is 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z')"
@@ -78,13 +79,14 @@ log_agent_state_event() {
   session="$(tmux display-message -p -t "$target" '#S' 2>/dev/null || true)"
   bead="$(tmux show-options -p -t "$target" -qv @agent_bead 2>/dev/null || true)"
   task="$(tmux show-options -p -t "$target" -qv @agent_task 2>/dev/null || true)"
+  role="$(tmux show-options -p -t "$target" -qv @agent_role 2>/dev/null || true)"
   prompt="$(tmux show-options -p -t "$target" -qv @agent_prompt_file 2>/dev/null || true)"
   parent="$(tmux show-options -p -t "$target" -qv @agent_parent_session 2>/dev/null || true)"
   instance="$(tmux show-options -p -t "$target" -qv @agent_instance_id 2>/dev/null || true)"
   host_id; host="$REPLY"
   event="${CLAUDE_HOOK_EVENT:-${PI_HOOK_EVENT:-}}"
-  printf '{"ts":"%s","ts_epoch":%s,"type":"agent.state","pane":"%s","session":"%s","state":"%s","event":"%s","bead":"%s","task":"%s","prompt_file":"%s","parent":"%s","host_id":"%s","agent_instance_id":"%s"}\n' \
-    "$(json_escape "$ts")" "$epoch" "$(json_escape "$target")" "$(json_escape "$session")" "$(json_escape "$state")" "$(json_escape "$event")" "$(json_escape "$bead")" "$(json_escape "$task")" "$(json_escape "$prompt")" "$(json_escape "$parent")" "$(json_escape "$host")" "$(json_escape "$instance")" >> "$file" 2>/dev/null || true
+  printf '{"ts":"%s","ts_epoch":%s,"type":"agent.state","pane":"%s","session":"%s","state":"%s","event":"%s","bead":"%s","task":"%s","role":"%s","prompt_file":"%s","parent":"%s","host_id":"%s","agent_instance_id":"%s"}\n' \
+    "$(json_escape "$ts")" "$epoch" "$(json_escape "$target")" "$(json_escape "$session")" "$(json_escape "$state")" "$(json_escape "$event")" "$(json_escape "$bead")" "$(json_escape "$task")" "$(json_escape "$role")" "$(json_escape "$prompt")" "$(json_escape "$parent")" "$(json_escape "$host")" "$(json_escape "$instance")" >> "$file" 2>/dev/null || true
 }
 
 sanitize_meta_value() {
@@ -112,6 +114,7 @@ set_meta_from_env() {
   # accidentally wipe metadata during normal running/done transitions.
   [ "${XTMUX_AGENT_BEAD+x}" = x ] && set_pane_option @agent_bead "$(sanitize_meta_value "$XTMUX_AGENT_BEAD")"
   [ "${XTMUX_AGENT_TASK+x}" = x ] && set_pane_option @agent_task "$(sanitize_meta_value "$XTMUX_AGENT_TASK")"
+  [ "${XTMUX_AGENT_ROLE+x}" = x ] && set_pane_option @agent_role "$(sanitize_meta_value "$XTMUX_AGENT_ROLE")"
   [ "${XTMUX_AGENT_PROMPT_FILE+x}" = x ] && set_pane_option @agent_prompt_file "$(sanitize_meta_value "$XTMUX_AGENT_PROMPT_FILE")"
   [ "${XTMUX_AGENT_PARENT_SESSION+x}" = x ] && set_pane_option @agent_parent_session "$(sanitize_meta_value "$XTMUX_AGENT_PARENT_SESSION")"
   return 0
@@ -120,6 +123,7 @@ set_meta_from_env() {
 clear_optional_meta() {
   set_pane_option @agent_bead ""
   set_pane_option @agent_task ""
+  set_pane_option @agent_role ""
   set_pane_option @agent_prompt_file ""
   set_pane_option @agent_parent_session ""
 }
@@ -176,6 +180,7 @@ emit_v2() {
     host_id="$host" \
     bead="$(tmux show-options -p -t "$target" -qv @agent_bead 2>/dev/null || true)" \
     task="$(tmux show-options -p -t "$target" -qv @agent_task 2>/dev/null || true)" \
+    role="$(tmux show-options -p -t "$target" -qv @agent_role 2>/dev/null || true)" \
     prompt_file="$(tmux show-options -p -t "$target" -qv @agent_prompt_file 2>/dev/null || true)" \
     parent="$(tmux show-options -p -t "$target" -qv @agent_parent_session 2>/dev/null || true)" \
     >/dev/null 2>&1 || true

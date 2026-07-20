@@ -579,12 +579,13 @@ else
     TMUX_PANE="$target" \
       XTMUX_AGENT_BEAD=xtmux-mux.1 \
       XTMUX_AGENT_TASK='standardize metadata' \
+      XTMUX_AGENT_ROLE='chain-coordinator' \
       XTMUX_AGENT_PROMPT_FILE=/tmp/xtmux-mux.1.txt \
       XTMUX_AGENT_PARENT_SESSION=orch \
       "$AGENT_STATE" running >/dev/null 2>&1
-    got_meta="$(tmux display-message -p -t "$target" $'#{@agent_state}\t#{@agent_bead}\t#{@agent_task}\t#{@agent_prompt_file}\t#{@agent_parent_session}\t#{@agent_last_transition}' 2>/dev/null || true)"
-    IFS=$'\t' read -r got_state got_bead got_task got_prompt got_parent got_last <<< "$got_meta"
-    [ "$got_state" = running ] && [ "$got_bead" = xtmux-mux.1 ] && [ "$got_task" = 'standardize metadata' ] && [ "$got_prompt" = /tmp/xtmux-mux.1.txt ] && [ "$got_parent" = orch ] && [ -n "$got_last" ] && ok "agent-state: writes orchestration metadata" || nok "agent-state: writes orchestration metadata"
+    got_meta="$(tmux display-message -p -t "$target" $'#{@agent_state}\t#{@agent_bead}\t#{@agent_task}\t#{@agent_role}\t#{@agent_prompt_file}\t#{@agent_parent_session}\t#{@agent_last_transition}' 2>/dev/null || true)"
+    IFS=$'\t' read -r got_state got_bead got_task got_role got_prompt got_parent got_last <<< "$got_meta"
+    [ "$got_state" = running ] && [ "$got_bead" = xtmux-mux.1 ] && [ "$got_task" = 'standardize metadata' ] && [ "$got_role" = 'chain-coordinator' ] && [ "$got_prompt" = /tmp/xtmux-mux.1.txt ] && [ "$got_parent" = orch ] && [ -n "$got_last" ] && ok "agent-state: writes orchestration metadata (incl @agent_role)" || nok "agent-state: writes orchestration metadata (incl @agent_role)"
     meta_row="$($PICKER list all expanded 2>/dev/null | awk -F'\t' -v p="$target" '$1=="pane"&&$4==p{print $5; exit}')"
     meta_row_plain="$(idle_plain "$meta_row")"
     case "$meta_row_plain" in *"bead:xtmux-mux.1"*"task:standardize metadata"*"from:orch"*) ok "picker: pane row consumes optional agent metadata" ;; *) nok "picker: pane row consumes optional agent metadata" ;; esac
@@ -593,9 +594,9 @@ else
     preview_meta="$($PICKER preview pane "$target_sid" "$target_name" "$target" 2>/dev/null)"
     case "$preview_meta" in *"agent-meta bead=xtmux-mux.1"*"bead-context xtmux-mux.1"*) ok "picker: pane preview shows bead context" ;; *) nok "picker: pane preview shows bead context" ;; esac
     TMUX_PANE="$target" "$AGENT_STATE" off >/dev/null 2>&1 || true
-    got_clear="$(tmux display-message -p -t "$target" $'#{@agent_state}\t#{@agent_bead}\t#{@agent_task}\t#{@agent_prompt_file}\t#{@agent_parent_session}' 2>/dev/null || true)"
-    IFS=$'\t' read -r got_state got_bead got_task got_prompt got_parent <<< "$got_clear"
-    [ "$got_state" = off ] && [ -z "$got_bead$got_task$got_prompt$got_parent" ] && ok "agent-state: off clears optional metadata" || nok "agent-state: off clears optional metadata"
+    got_clear="$(tmux display-message -p -t "$target" $'#{@agent_state}\t#{@agent_bead}\t#{@agent_task}\t#{@agent_role}\t#{@agent_prompt_file}\t#{@agent_parent_session}' 2>/dev/null || true)"
+    IFS=$'\t' read -r got_state got_bead got_task got_role got_prompt got_parent <<< "$got_clear"
+    [ "$got_state" = off ] && [ -z "$got_bead$got_task$got_role$got_prompt$got_parent" ] && ok "agent-state: off clears optional metadata" || nok "agent-state: off clears optional metadata"
   else
     printf '  \033[33mskip\033[0m agent-state pane write (no panes)\n'
   fi

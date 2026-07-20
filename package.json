@@ -59,7 +59,7 @@
   ],
   "scripts": {
     "cli": "bun run src/cli.ts",
-    "build": "bun build --compile --minify --sourcemap src/cli.ts --outfile bin/xtmux-obs",
+    "build": "node scripts/build.mjs",
     "changelog": "node scripts/changelog.mjs",
     "install:global": "node scripts/install.mjs",
     "uninstall:global": "node scripts/install.mjs --uninstall",

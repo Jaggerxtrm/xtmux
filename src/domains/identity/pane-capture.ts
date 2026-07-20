@@ -1,4 +1,7 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Bounded, read-only terminal preview for a Console viewer (docs/xtmux-gaps.md
@@ -37,11 +40,19 @@ export type PaneCaptureResult =
  */
 export const MAX_LINES = 2000;
 
-export function capturePane(
+/**
+ * Async so a slow or hung `tmux capture-pane` cannot block the bridge event loop
+ * and starve concurrent journal follows (audit §P2-07). The optional AbortSignal
+ * lets a caller cancel the subprocess (bridge.cancel, per-op timeout, peer
+ * disconnect); when it fires mid-capture the underlying error is re-thrown so the
+ * caller can label it, rather than being flattened into XTMUX_PANE_UNRESOLVED.
+ */
+export async function capturePane(
   paneId: string,
   requestedLines: number,
   now: () => number = Date.now,
-): PaneCaptureResult {
+  signal?: AbortSignal,
+): Promise<PaneCaptureResult> {
   if (!paneId.startsWith("%")) {
     return {
       ok: false,
@@ -67,11 +78,21 @@ export function capturePane(
   // -p: to stdout. -e: keep ANSI escapes — the viewer renders them; xtmux never
   // parses this content, never logs it, and never puts it in the journal.
   // -S -N: start N lines back from the bottom of the history.
-  const r = spawnSync("tmux", ["capture-pane", "-p", "-e", "-t", paneId, "-S", `-${lines}`], {
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  if (r.status !== 0) {
+  // maxBuffer is the output byte cap: a runaway capture rejects rather than
+  // growing our RSS unbounded.
+  let stdout: string;
+  try {
+    const r = await execFileAsync("tmux", ["capture-pane", "-p", "-e", "-t", paneId, "-S", `-${lines}`], {
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+      signal,
+    });
+    stdout = r.stdout;
+  } catch (err) {
+    // A fired signal (cancel/timeout/disconnect) is not a pane resolution failure:
+    // re-throw so the bridge layer can answer with the right terminal reason and
+    // preserve the one-response-per-request-id invariant.
+    if (signal?.aborted) throw err;
     return {
       ok: false,
       error: {
@@ -87,7 +108,7 @@ export function capturePane(
   // pane happens to be tall. Asking for 5 lines of a 24-row pane returns 29.
   // The contract is "the last N lines", so bound it here: drop the trailing
   // blank rows the screen contributed, then keep the last N.
-  const all = (r.stdout ?? "").replace(/\n$/, "").split("\n");
+  const all = (stdout ?? "").replace(/\n$/, "").split("\n");
   while (all.length > 0 && all[all.length - 1] === "") all.pop();
   const kept = all.slice(-lines);
   return {
