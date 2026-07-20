@@ -1133,7 +1133,12 @@ message_send() {
       --text=*) text="${arg#--text=}" ;;
       --id) [ "$#" -gt 0 ] || return 2; id="$1"; shift ;;
       --id=*) id="${arg#--id=}" ;;
-      --expects-reply) expects_reply=true ;;
+      --expects-reply)
+        case "${1:-}" in
+          true|false|1|0) expects_reply="$1"; shift ;;
+          *) expects_reply=true ;;
+        esac
+        ;;
       --expects-reply=*) expects_reply="${arg#--expects-reply=}" ;;
       --json) json=1 ;;
       *) text+="${text:+ }$arg" ;;

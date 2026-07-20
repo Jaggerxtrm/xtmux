@@ -239,6 +239,25 @@ describe("coordination CLI acceptance", () => {
     }
   });
 
+  test("wait and monitor reject self-target cycles without durable rows", () => {
+    const ctx = setup();
+    try {
+      for (const result of [
+        raw(["wait-agent", "%worker", "--json"], ctx.env),
+        picker(["monitor-agent", "%worker", "--json"], ctx.env),
+      ]) {
+        expect(result.status).toBe(2);
+        expect(JSON.parse(result.stderr)).toMatchObject({ code: "XTMUX_SELF_TARGET" });
+      }
+      const db = new Database(ctx.dbPath, { readonly: true });
+      expect(db.query("SELECT COUNT(*) AS count FROM monitors").get()).toEqual({ count: 0 });
+      expect(db.query("SELECT COUNT(*) AS count FROM outbound_waits").get()).toEqual({ count: 0 });
+      db.close();
+    } finally {
+      ctx.cleanup();
+    }
+  });
+
   test("safe-send fulfils only after successful injection", () => {
     const success = setup();
     try {

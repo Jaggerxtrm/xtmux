@@ -74,6 +74,28 @@ describe("message status and unread-count queries", () => {
     }
   });
 
+  test("picker consumes a separated false value for expects-reply", () => {
+    const dir = mkdtempSync(join(tmpdir(), "xtmux-picker-boolean-"));
+    const dbPath = join(dir, "observability.db");
+    const db = openDb({ dbPath, mode: "on", busyTimeoutMs: 3000 });
+    migrate(db);
+    db.close();
+    try {
+      const result = spawnSync(PICKER, [
+        "message-send", "--to", "parent", "--from", "child", "--bead", "work-1",
+        "--expects-reply", "false", "--text", "turn done", "--id", "picker-fyi", "--json",
+      ], {
+        cwd: ROOT,
+        env: { ...process.env, TMUX: undefined, TMUX_PANE: undefined, XTMUX_OBS_DB_PATH: dbPath, XTMUX_OBS_V2: "1" },
+        encoding: "utf8",
+      });
+      expect(result.status).toBe(0);
+      expect(JSON.parse(String(result.stdout))).toMatchObject({ messageKey: "picker-fyi", expectsReply: false });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("picker exposes V2 JSON queries and rejects them in V1 mode", () => {
     const dir = mkdtempSync(join(tmpdir(), "xtmux-picker-query-"));
     const dbPath = join(dir, "observability.db");

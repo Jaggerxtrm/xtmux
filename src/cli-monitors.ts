@@ -126,11 +126,18 @@ function operationError(error: unknown, command: string): number {
   return jsonError(mapped, message, detail, mapped === "XTMUX_WAIT_NOT_FOUND" ? 5 : mapped === "XTMUX_WAIT_NOT_OWNER" ? 4 : mapped === "XTMUX_TARGET_NOT_FOUND" ? 1 : 2);
 }
 
+function rejectSelfTarget(requester: Identity, target: Target): void {
+  if (requester.sessionId === target.sessionId && requester.paneId === target.paneId) {
+    throw Object.assign(new Error("monitor target resolves to the requester"), { code: "XTMUX_SELF_TARGET" });
+  }
+}
+
 function createMonitorAndWait(db: Db, targetName: string, timeoutMs: number, intervalMs: number, nowMs: number): {
   monitorId: string; waitId: string; requester: Identity; target: Target; state: string;
 } {
   const requester = requesterIdentity();
   const target = resolveTarget(targetName);
+  rejectSelfTarget(requester, target);
   const suffix = `${nowMs}-${Math.floor(Math.random() * 1_000_000)}`;
   const monitorId = `monitor-${suffix}`;
   const waitId = `wait-${suffix}`;
@@ -186,6 +193,7 @@ export function cliWaitAgent(db: Db, argv: string[], nowMs: number): number {
   try {
     const requester = requesterIdentity();
     const target = resolveTarget(targetName);
+    rejectSelfTarget(requester, target);
     const transitionRequired = flags.get("wait-for-transition") === true;
     const existing = listAllWaits(db).find((row) => row.requesterSessionId === requester.sessionId && row.requesterPaneId === requester.paneId
       && row.targetSessionId === target.sessionId && row.targetPaneId === target.paneId

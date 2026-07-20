@@ -158,14 +158,14 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
       // Best-effort only.
     }
 
-    if (parent && text) {
+    if (parent && parent !== sessionId && parent !== pane && text) {
       try {
         await pi.exec(PICKER, [
           "message-send",
           "--from", sessionId || pane,
           "--to", parent,
           "--bead", bead,
-          "--expects-reply", "false",
+          "--expects-reply=false",
           "--text", `turn done: ${text}`,
         ], { timeout: 1500 });
       } catch {

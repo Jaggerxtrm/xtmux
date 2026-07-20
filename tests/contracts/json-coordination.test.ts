@@ -32,7 +32,8 @@ esac
     ...process.env,
     PATH: `${bin}:${process.env.PATH ?? ""}`,
     TMUX: "/mock/tmux.sock,1,0",
-    TMUX_PANE: "%mock",
+    TMUX_PANE: "%requester",
+    XTMUX_SESSION_ID: "$requester",
     XTMUX_OBS_V2: "1",
     XTMUX_OBS_V2_REPO: ROOT,
     XTMUX_OBS_DB_PATH: join(dir, "observability.db"),
@@ -120,7 +121,7 @@ describe("coordination JSON", () => {
       expect(JSON.parse(result.stdout)).toMatchObject({
         target: "%mock",
         targetPaneId: "%mock",
-        requesterPaneId: "%mock",
+        requesterPaneId: "%requester",
         state: "terminal",
         terminalStatus: "done",
         wakeDelivered: true,
