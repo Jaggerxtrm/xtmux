@@ -87,6 +87,8 @@ describe("hostile invocation environments", () => {
       const result = run(PICKER, ["monitor-agent", "contract", "--timeout", "1s", "--interval", "1s"], {
         ...ctx.env,
         TMUX: "/mock/tmux.sock,99999,0",
+        TMUX_PANE: "%requester",
+        XTMUX_SESSION_ID: "$requester",
       });
       expect(result.exitCode).toBe(0);
       await Bun.sleep(50);

@@ -569,6 +569,10 @@ if ! tmux info >/dev/null 2>&1; then
 else
   target="$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null | head -1)"
   if [ -n "$target" ]; then
+    if [ -z "${TMUX:-}" ]; then
+      TMUX="$(tmux display-message -p -t "$target" '#{socket_path},0,0')"
+      export TMUX
+    fi
     TMUX_PANE="$target" "$AGENT_STATE" needs-input >/dev/null 2>&1
     got="$(tmux display-message -p -t "$target" '#{@agent_state}' 2>/dev/null || true)"
     if [ "$got" = "needs-input" ]; then ok "agent-state: writes pane option"; else nok "agent-state: writes pane option (got '$got')"; fi
