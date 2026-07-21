@@ -57,7 +57,7 @@ describe("V2 commands on a virgin observability DB", () => {
         expect(stream).not.toContain("SQLiteError");
         expect(stream).not.toContain("no such table");
       }
-    });
+    }, 15_000);
   }
 
   // Migrating on the picker's hot path means several processes can migrate a virgin

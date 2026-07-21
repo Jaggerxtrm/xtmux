@@ -504,13 +504,20 @@ derive_bead_id() {
   local session_name="${1:-}" pane_path="${2:-}" root="${3:-}" rel candidate
   extract_bead_id "$session_name"; candidate="$REPLY"
   refine_derived_bead_id "$candidate"; [ -n "$REPLY" ] && return 0
-  extract_bead_id "$pane_path"; candidate="$REPLY"
-  refine_derived_bead_id "$candidate"; [ -n "$REPLY" ] && return 0
-  if [ -n "$root" ] && [ -n "$pane_path" ] && [ "$pane_path" != "$root" ]; then
-    rel="${pane_path#"$root"/}"
-    extract_bead_id "$rel"; candidate="$REPLY"
-    refine_derived_bead_id "$candidate"; [ -n "$REPLY" ] && return 0
+
+  rel=''
+  if [ -n "$root" ]; then
+    case "$pane_path" in "$root"/*) rel="${pane_path#"$root"/}" ;; esac
   fi
+  if [ -z "$rel" ]; then
+    case "$pane_path" in
+      */.xtrm/worktrees/*) rel="${pane_path#*/.xtrm/worktrees/}" ;;
+      */.worktrees/*) rel="${pane_path#*/.worktrees/}" ;;
+      *) rel="${pane_path##*/}" ;;
+    esac
+  fi
+  extract_bead_id "$rel"; candidate="$REPLY"
+  refine_derived_bead_id "$candidate"; [ -n "$REPLY" ] && return 0
   REPLY=''
 }
 
