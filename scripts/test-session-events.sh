@@ -146,6 +146,8 @@ normalize_beads() {
           candidates: ($agent_panes | map(.paneId))
         },
         event: ($event | {
+          schema_version: "xtrm.beads.lifecycle-event.v1",
+          source: "beads.events",
           id,
           issue_id,
           event_type,
@@ -154,6 +156,7 @@ normalize_beads() {
           new_value: (.new_value | value),
           comment,
           created_at,
+          occurred_at_ms: event_ms($event),
           timestamp_source: (if .id[14:15] == "7" then "uuidv7" else "created_at" end)
         })
       }

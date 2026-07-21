@@ -24,7 +24,12 @@ normalized="$(jq -c '.[]' <<<"$fixtures" | normalize_beads /tmp/repo repo)"
 jq -e -s '
   map(.type) == ["bd.created", "bd.claimed", "bd.updated", "bd.closed", "bd.reopened", "bd.status_changed"]
   and all(.[]; .source == "beads" and .session.id == "$1" and .pane.id == "%1" and .pane.agent == "pi")
-  and all(.[]; .event.timestamp_source == "uuidv7" and .event.actor == "tester")
+  and all(.[];
+    .event.schema_version == "xtrm.beads.lifecycle-event.v1"
+    and .event.source == "beads.events"
+    and .event.occurred_at_ms == .ts
+    and .event.timestamp_source == "uuidv7"
+    and .event.actor == "tester")
   and (.[1].event.old_value.status == "open" and .[1].event.new_value.status == "in_progress")
 ' <<<"$normalized" >/dev/null
 
