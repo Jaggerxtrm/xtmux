@@ -6,7 +6,7 @@ This document defines the shipped machine boundary. Human output remains the def
 
 - **Shape:** stdout is exactly one JSON object or array followed by `\n`. No universal `{ok,data}` envelope and no NDJSON in JSON mode.
 - **Names:** public fields are camelCase. Existing names from `message-list --json`, `message-status`, `unread-count`, `health`, and `obligations list` remain unchanged.
-- **Nullability:** stable result keys are present. Unknown or unavailable identity and timestamps are `null`, never `""`, `"-"`, or an inferred bystander value.
+- **Nullability:** stable result keys are present. Unknown or unavailable identity and timestamps are `null`, never `""`, `"-"`, or an inferred bystander value. Optional fields that are absent for a given row are OMITTED entirely (never serialized as `""`); consumers must treat missing keys as null.
 - **Time:** absolute times are integer Unix milliseconds named `*AtMs`; durations are integer milliseconds named `*Ms`. Human age labels never appear in JSON.
 - **Identity:** authoritative tmux identities are `sessionId` (`$N`) and `paneId` (`%N`). `sessionName` is display metadata. With no valid `$TMUX` context, current identity is `null`; mutations require an explicit target. `TMUX_PANE` alone is not authority.
 - **Ordering:** message arrays are newest-first by `createdAtMs`, then `messageKey`; event arrays are oldest-first by `createdAtMs`, then event key; monitors are `startedAtMs`, then `monitorId`; collisions are by `path`; audit findings are severity, kind, session name, then pane ID. Dashboard/session ordering preserves its documented attention ranking and uses IDs as final tie-breakers.
@@ -30,6 +30,7 @@ field name here or there and the contract test fails.
 | Result | Stable fields |
 |---|---|
 | Message | `messageKey`, `senderId`, `senderPaneId`, `senderKind`, `recipientId`, `targetPaneId`, `recipientKind`, `beadId`, `summary`, `createdAtMs`, `expectsReply`, `acked`, `ackedAtMs`, `ackedBy` |
+| Message get | the Message fields above plus `replyStatus`, `fulfilledAtMs`, `fulfilledByMessageKey`, `correlatedReply`; lookup accepts `messageKey` or numeric `messageId` and is read-only |
 | Message mutation | send: `messageKey`, `messageId`, `duplicate`, `senderId`, `senderPaneId`, `senderKind`, `recipientId`, `recipientKind`, `targetPaneId`, `beadId`, `expectsReply`, `createdAtMs`; ack: `messageKey`, `acked`, `ackedAtMs`, `ackedBy`, `status`; reply: `messageKey`, `messageId`, `duplicate`, `replyToMessageKey`, `fulfilledMessageKey`, `fulfilled`, `senderId`, `senderPaneId`, `recipientId`, `targetPaneId`, `createdAtMs`; cancel: `messageKey`, `cancelled`, `cancelledAtMs` |
 | Message reply projection | `replyStatus`, `fulfilledAtMs`, `fulfilledByMessageKey`, `correlatedReply`; `correlatedReply` contains `messageKey`, `senderId`, `senderPaneId`, `recipientId`, `targetPaneId`, `summary`, `createdAtMs` |
 | Monitor | `monitorId`, `waitId` when linked, `target`, `requesterSessionId`, `requesterPaneId`, `sessionId`, `paneId`, `state`, `startedAtMs`, `updatedAtMs`, `timeoutMs`, `intervalMs`, `terminalStatus`, `terminalAtMs`, `wakeDelivered`, `wakeConsumed`, `orphan` |
@@ -176,7 +177,9 @@ Categories are closed: **agent-json** gains/retains structured output for agents
 | `picker:topology` | agent-json | one bounded `tmux list-panes -a -F` pass → versioned nested topology snapshot; no pane content | j46.3 |
 | `picker:audit` | agent-json | TSV findings → audit finding array | .3 |
 | `picker:context` | agent-json | `context --current --json` → `xtrm.runtime-origin.v1` for the invoking pane; read-only; exempt from the V2-mode gate (reads tmux + host-id file, not the store) | j46.2 |
+| `picker:message-get` | agent-json | `message-get <messageKey|messageId> [--json]` → one message row; never acknowledges or changes reply state | wx2 |
 | `picker:pane` | agent-json | `pane capture --pane %N [--lines N] --json` → `xtrm.xtmux.pane-capture.v1`; read-only; exempt from the V2-mode gate (reads live tmux, not the store) | j46.4 |
+| `picker:agent-last` | agent-json | `agent-last <pane-id\|session-id> [--json]` → most recent `agent_turns` row for the target; plain prints `lastMessageText` (falls back to compact `summary`); exit 5 `XTMUX_NOT_FOUND` if none | avz |
 | `picker:bridge` | agent-json | `bridge --stdio` → execs the runtime's NDJSON bridge and hands it the pipe. Never captured: the stream is unbounded and a command substitution would swallow the signals meant to end it. Passes `XTMUX_PICKER` so the runtime can call back for `topology.snapshot` | j46.9 |
 | `picker:handoff` | guarded-admin | creates prompt file and may inject pointer; explicit confirmation | .2 |
 | `picker:mux-help` | interactive-only | human cheatsheet | — |
@@ -191,7 +194,7 @@ Categories are closed: **agent-json** gains/retains structured output for agents
 | `picker:message-send` | agent-json | TSV mutation result → message mutation object | .2 |
 | `picker:message-reply` | agent-json | correlated reply mutation object; fulfils only the named message | 3ua.4 |
 | `picker:message-cancel` | agent-json | sender-owned obligation cancellation object | 3ua.4 |
-| `picker:message-list` | agent-json | existing `--json` array retained and completed additively | .2 |
+| `picker:message-list` | agent-json | existing `--json` array retained; `--message-key` narrows to zero or one row | .2 |
 | `picker:message-status` | agent-json | existing `MessageStatus` object retained | .2 |
 | `picker:unread-count` | agent-json | existing `UnreadStats` object retained | .2 |
 | `picker:obligations` | agent-json | forwards `list` to the SQLite backend; live requester ownership remains mandatory | 3ua.5.1 |
@@ -234,7 +237,8 @@ Compiled plumbing remains documented even when it is not exposed as a picker or 
 | `obs:message-send` | agent-json | mutation object in JSON mode | .2 |
 | `obs:message-reply` | agent-json | correlated reply mutation object | 3ua.4 |
 | `obs:message-cancel` | agent-json | sender-owned obligation cancellation object | 3ua.4 |
-| `obs:message-list` | agent-json | existing JSON array retained | .2 |
+| `obs:message-list` | agent-json | existing JSON array retained; `--message-key` narrows to zero or one row | .2 |
+| `obs:message-get` | agent-json | one read-only Message row by key or numeric id | wx2 |
 | `obs:message-ack` | agent-json | ack object in JSON mode | .2 |
 | `obs:message-status` | agent-json | existing object retained | .2 |
 | `obs:unread-count` | agent-json | existing object retained | .2 |
@@ -249,6 +253,7 @@ Compiled plumbing remains documented even when it is not exposed as a picker or 
 | `obs:handoff` | agent-json | `handoff create` writes the durable handoff record and (optionally) registers its monitor in ONE SQLite transaction — a failed insert leaves neither, which two separate picker→runtime invocations could never guarantee. `handoff attempt` appends one delivery_attempts row per pointer injection. Idempotent on `handoff_key`: a retry reuses the record and the monitor, and only the attempt row is added | j46.8 |
 | `obs:log-follow` | agent-json | polling stream over `journalPage()` — one item per line, same envelope as the page. Advances its cursor only AFTER a row is written, so a crash mid-line replays a row (absorbed by `event_key`) rather than skipping it | j46.6 |
 | `obs:pane` | agent-json | `pane capture` → `xtrm.xtmux.pane-capture.v1`; bounded at `max_lines`, over-large requests clamped not rejected; opens no DB; content never journalled | j46.4 |
+| `obs:agent-last` | agent-json | most recent `agent_turns` row for a pane/session; `last_message_text` is the uncompacted full answer (≤256KB, `XTMUX_LAST_MESSAGE_MAX`), `summary` the compact preview. Written by the pi extension and the Claude `Stop` hook via a one-shot `last_message_file` temp file consumed on read | avz |
 | `obs:bridge` | agent-json | `bridge --stdio` → `xtrm.xtmux.bridge.v1` NDJSON over the ssh pipe. The only REMOTELY reachable surface, so: methods are dispatched from an allowlist (default deny — a mutation name is refused with `XTMUX_BRIDGE_READ_ONLY`, an unrecognised one with `XTMUX_BRIDGE_UNKNOWN_METHOD`, and neither routes anywhere); frames are capped at `max_frame_bytes` and every caller-sizeable result reuses the local clamp; malformed input answers with an error and keeps serving. No listen/bind mode exists — OpenSSH owns transport | j46.9 |
 | `obs:monitor` | agent-json | mixed dispatcher; only list is a normal query | .2 |
 | `obs:monitor:register` | guarded-admin | poller-internal mutation | .2 |
