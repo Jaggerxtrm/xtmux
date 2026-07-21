@@ -140,6 +140,7 @@ else
 fi
 derive_bead_id "agent" "$WORK/.xtrm/worktrees/xtmux-mux.6-demo" "$WORK"; assert_eq "bead derive: from path convention" "xtmux-mux.6" "$REPLY"
 derive_bead_id "feature-123" "$WORK/feature-123" ""; assert_eq "bead derive: avoids loose numeric slug" "" "$REPLY"
+derive_bead_id "feature-123" "/tmp/xtmux-contract.6abc/feature-123" ""; assert_eq "bead derive: ignores bead-looking temp parent" "" "$REPLY"
 # Asserted on extract_bead_id DIRECTLY, not through derive_bead_id: derive's later
 # fallback branch re-scans the path relative to the root and quietly recovers the
 # right answer when `bd` is installed to validate candidates — which masks this bug

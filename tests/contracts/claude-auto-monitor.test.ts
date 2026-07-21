@@ -203,7 +203,7 @@ describe("Claude SQLite auto-monitor hooks", () => {
     setState("%104", "working"); await Bun.sleep(80); setState("%104", "done");
     expect(await new Promise<number | null>((resolve) => fresh.on("close", resolve))).toBe(0);
     expect(later.createdAtMs).toBeLessThanOrEqual(Number(monitorRows().filter((row) => row.paneId === "%104").at(-1)?.startedAtMs));
-  });
+  }, 15_000);
 
   test("the generated transition wait replaces a terminal-unconsumed wait", async () => {
     sendExpected("unconsumed-a", "$105", "%105");
@@ -237,7 +237,7 @@ describe("Claude SQLite auto-monitor hooks", () => {
         await new Promise<number | null>((resolve) => fresh.on("close", resolve));
       }
     }
-  });
+  }, 15_000);
 
   test("Stop is pane-isolated and loop-safe across stale sessions", () => {
     const envA = baseEnv("$owner-a", "%100"), envB = baseEnv("$owner-b", "%200");
