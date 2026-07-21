@@ -179,8 +179,13 @@ function owned(wrapper) {
   if (wrapper && Object.hasOwn(wrapper, "_source") && wrapper._source !== source) return false;
   if (wrapper?._source === source) return true;
   const commands = Array.isArray(wrapper?.hooks) ? wrapper.hooks.map((hook) => hook?.command).filter(Boolean) : [];
+  // Untagged entries need ownership proven some other way, because copies written
+  // before provenance tagging carry no _source and would otherwise survive every
+  // remove-then-write cycle and accumulate (xtmux-2zh: 3x per hook). The managed
+  // hooks directory is that proof — only this installer writes there — and it is
+  // matched home-relative so an install done under a different HOME still adopts.
   return commands.length > 0 && commands.every((command) =>
-    command.includes("/.tmux/scripts/agent-state.sh") || command.includes("/.xtrm/hooks/auto-monitor-") || command.includes("claude-agent-turn-capture.mjs")
+    command.includes("/.claude/hooks/xtmux/") || command.includes("/.tmux/scripts/agent-state.sh") || command.includes("/.xtrm/hooks/auto-monitor-") || command.includes("claude-agent-turn-capture.mjs")
   );
 }
 
