@@ -1,4 +1,8 @@
 import type { AgentEndEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { writeFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 
 type AgentState = "running" | "needs-input" | "done" | "idle" | "off";
 
@@ -140,7 +144,22 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
     const sessionName = await tmuxValue(["display-message", "-p", "#S"]);
     const bead = await tmuxValue(["show-options", "-p", "-qv", "@agent_bead"]);
     const parent = await tmuxValue(["show-options", "-p", "-qv", "@agent_parent_session"]);
-    const text = compactText(lastAssistantTextFromMessages(event.messages) || lastTurnMessage);
+    // xtmux-avz: spill the UNCOMPACTED message to a temp file so the picker can
+    // store the full text. A single argv field is capped at ~128KB by the kernel
+    // (MAX_ARG_STRLEN), well under a real turn, so the path is the transport.
+    // obs reads + unlinks; this finally unlinks the no-op case. The byte cap lives
+    // on the obs reader side as the single chokepoint.
+    const fullText = lastAssistantTextFromMessages(event.messages) || lastTurnMessage;
+    const text = compactText(fullText);
+    let lastMessageFile = "";
+    if (fullText) {
+      try {
+        lastMessageFile = join(tmpdir(), `xtmux-last-msg-${process.pid}-${randomBytes(6).toString("hex")}.txt`);
+        writeFileSync(lastMessageFile, fullText, "utf8");
+      } catch {
+        lastMessageFile = "";
+      }
+    }
 
     try {
       await pi.exec(PICKER, [
@@ -153,9 +172,14 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
         `bead=${bead}`,
         `parent=${parent}`,
         `last_message=${text}`,
+        ...(lastMessageFile ? [`last_message_file=${lastMessageFile}`] : []),
       ], { timeout: 1500 });
     } catch {
       // Best-effort only.
+    } finally {
+      // obs consumes + unlinks on success; this covers the no-op / failure path
+      // so a temp file never outlives the emit attempt.
+      if (lastMessageFile) { try { unlinkSync(lastMessageFile); } catch { /* already consumed */ } }
     }
 
     if (parent && parent !== sessionId && parent !== pane && text) {

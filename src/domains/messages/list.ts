@@ -3,6 +3,7 @@ import type { CorrelatedReply, MessageWithReceipt, MessageWithReplyState } from 
 
 export interface ListInput {
   recipientId: string;
+  messageKey?: string | undefined;
   targetPaneId?: string | undefined;
   senderId?: string | undefined;
   sinceMs?: number | undefined;
@@ -15,7 +16,7 @@ interface ListProjectionOptions {
   includeReplyState?: boolean | undefined;
 }
 
-interface MessageListRow extends Omit<MessageWithReplyState, "replyStatus" | "fulfilledAtMs" | "correlatedReply"> {}
+export interface MessageListRow extends Omit<MessageWithReplyState, "replyStatus" | "fulfilledAtMs" | "correlatedReply"> {}
 
 function replyStatus(row: MessageListRow): MessageWithReplyState["reply_status"] {
   if (row.cancelled_at_ms !== null) return "cancelled";
@@ -54,7 +55,7 @@ function baseProjection(row: MessageListRow): MessageWithReceipt {
   };
 }
 
-function replyProjection(row: MessageListRow): MessageWithReplyState {
+export function replyProjection(row: MessageListRow): MessageWithReplyState {
   const status = replyStatus(row);
   return {
     ...baseProjection(row),
@@ -88,6 +89,10 @@ export function listMessages(
 ): MessageWithReceipt[] | MessageWithReplyState[] {
   const clauses: string[] = ["m.recipient_id = ?"];
   const params: (string | number)[] = [input.recipientId];
+  if (input.messageKey !== undefined) {
+    clauses.push("m.message_key = ?");
+    params.push(input.messageKey);
+  }
   if (input.targetPaneId !== undefined) {
     clauses.push("(m.target_pane_id = ? OR m.target_pane_id IS NULL)");
     params.push(input.targetPaneId);

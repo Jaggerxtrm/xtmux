@@ -5,6 +5,7 @@
  * preserves the newline-delimited JSON shape.
  */
 import type { Db } from "./db/connection.ts";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { emitEvent, query as journalQuery, tail as journalTail } from "./domains/events/query.ts";
 import { journalPage } from "./domains/events/page.ts";
 import type { JournalRow } from "./domains/events/query.ts";
@@ -87,6 +88,31 @@ function safeParseObject(s: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+// xtmux-avz: the full assistant message is too large for an argv field
+// (Linux MAX_ARG_STRLEN is 128KB, well under a real turn), so the pi extension
+// and the Claude Stop hook spill it to a temp file and pass the path here as
+// `last_message_file=`. Read it, cap at a defensible ceiling (well above the
+// 600-char compact summary), and unlink the one-shot transport file. Any I/O or
+// decode error is swallowed — a turn still lands with its compact `summary`.
+const MAX_LAST_MESSAGE_TEXT = Number(process.env.XTMUX_LAST_MESSAGE_MAX ?? "262144"); // 256KB
+
+export function readLastMessageFile(path: string | undefined): string | undefined {
+  if (!path) return undefined;
+  let raw = "";
+  try {
+    if (!existsSync(path)) return undefined;
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  } finally {
+    try { unlinkSync(path); } catch { /* best-effort cleanup */ }
+  }
+  if (Buffer.byteLength(raw, "utf8") > MAX_LAST_MESSAGE_TEXT) {
+    raw = Buffer.from(raw, "utf8").subarray(0, MAX_LAST_MESSAGE_TEXT).toString("utf8");
+  }
+  return raw;
 }
 
 export function cliLogEmit(db: Db, argv: string[]): number {
@@ -203,6 +229,7 @@ export function cliLogEmit(db: Db, argv: string[]): number {
         beadId: fields["bead"] ?? fields["bead_id"],
         parentSessionId: fields["parent"] ?? fields["parent_session"],
         summary: fields["last_message"] ?? fields["summary"],
+        lastMessageText: readLastMessageFile(fields["last_message_file"]),
       });
       return 0;
     default:

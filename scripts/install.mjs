@@ -88,7 +88,7 @@ const PI_PACKAGE_MANIFEST = {
 const managedSources = {
   claudeHooks: {
     "agent-state.sh": join(root, "scripts", "agent-state.sh"),
-    ...Object.fromEntries(["auto-monitor-on-send.mjs", "auto-monitor-on-send.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs"]
+    ...Object.fromEntries(["auto-monitor-on-send.mjs", "auto-monitor-on-send.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs", "claude-agent-turn-capture.mjs"]
       .map((name) => [name, join(root, "hooks", "claude", name)])),
   },
   codexHooks: { "agent-state.sh": join(root, "scripts", "agent-state.sh") },
@@ -180,7 +180,7 @@ function owned(wrapper) {
   if (wrapper?._source === source) return true;
   const commands = Array.isArray(wrapper?.hooks) ? wrapper.hooks.map((hook) => hook?.command).filter(Boolean) : [];
   return commands.length > 0 && commands.every((command) =>
-    command.includes("/.tmux/scripts/agent-state.sh") || command.includes("/.xtrm/hooks/auto-monitor-")
+    command.includes("/.tmux/scripts/agent-state.sh") || command.includes("/.xtrm/hooks/auto-monitor-") || command.includes("claude-agent-turn-capture.mjs")
   );
 }
 
@@ -202,7 +202,7 @@ function canonicalHooks() {
       wrapper("Bash", `bash "${hook("auto-monitor-on-send.sh")}"`),
       wrapper("Monitor|Bash", `bash "${hook("auto-monitor-consumed.sh")}"`),
     ],
-    Stop: [state("Stop", "done"), wrapper(undefined, `node "${hook("auto-monitor-drain-stop.mjs")}"`)],
+    Stop: [state("Stop", "done"), wrapper(undefined, `node "${hook("auto-monitor-drain-stop.mjs")}"`), wrapper(undefined, `node "${hook("claude-agent-turn-capture.mjs")}"`)],
     SubagentStop: [state("SubagentStop", "done")],
     SessionEnd: [state("SessionEnd", "off")],
   };
@@ -312,7 +312,7 @@ function install() {
   removeManagedDirectory(claudeHooks, "claudeHooks", state);
   mkdirSync(claudeHooks, { recursive: true });
   copyFileSync(join(root, "scripts", "agent-state.sh"), join(claudeHooks, "agent-state.sh"));
-  for (const name of ["auto-monitor-on-send.mjs", "auto-monitor-on-send.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs"]) {
+  for (const name of ["auto-monitor-on-send.mjs", "auto-monitor-on-send.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs", "claude-agent-turn-capture.mjs"]) {
     copyFileSync(join(root, "hooks", "claude", name), join(claudeHooks, name));
   }
   if (existsSync(codexRoot)) {

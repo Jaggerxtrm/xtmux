@@ -452,6 +452,23 @@ rot="$WORK/rot.jsonl"
 XTMUX_EVENT_LOG_FILE="$rot" XTMUX_EVENT_LOG_MAX_BYTES=50 message_send --from a --to b --text 'seed' >/dev/null
 XTMUX_EVENT_LOG_FILE="$rot" XTMUX_EVENT_LOG_MAX_BYTES=50 message_send --from a --to b --text 'triggers rotate' >/dev/null
 [ -f "$rot.1" ] && ok "message channel: log rotation on size threshold" || nok "message channel: log rotation on size threshold"
+# xtmux-wx2: one-message read path resolves by key and numeric id, preserves the
+# message-list JSON projection, filters list results, and never acknowledges.
+wx2_state="$WORK/wx2-state"; mkdir -p "$wx2_state"
+wx2_sid="$(tmux display-message -p '#{session_id}')"; wx2_key="wx2-contract-$$"
+wx2_send="$(XDG_STATE_HOME="$wx2_state" XTMUX_OBS_V2=1 "$ROOT/bin/xtmux-obs" message-send --to "$wx2_sid" --from "$wx2_sid" --message-key "$wx2_key" --text 'wx2 body' --expects-reply=false --json 2>/dev/null)"
+wx2_id="$(printf '%s' "$wx2_send" | python3 -c 'import json,sys; print(json.load(sys.stdin)["messageId"])')"
+wx2_get="$(XDG_STATE_HOME="$wx2_state" XTMUX_OBS_V2=1 "$PICKER" message-get "$wx2_key" --json 2>/dev/null)"
+wx2_by_id="$(XDG_STATE_HOME="$wx2_state" XTMUX_OBS_V2=1 "$PICKER" message-get "$wx2_id" --json 2>/dev/null)"
+wx2_filtered="$(XDG_STATE_HOME="$wx2_state" XTMUX_OBS_V2=1 "$PICKER" message-list --for "$wx2_sid" --message-key "$wx2_key" --json 2>/dev/null)"
+if WX2_KEY="$wx2_key" printf '%s\n' "$wx2_get" "$wx2_by_id" | WX2_KEY="$wx2_key" python3 -c 'import json,os,sys; rows=[json.loads(x) for x in sys.stdin if x.strip()]; assert len(rows)==2 and all(r["messageKey"]==os.environ["WX2_KEY"] and r["summary"]=="wx2 body" and r["acked"] is False for r in rows)' 2>/dev/null \
+  && [ "$(printf '%s' "$wx2_filtered" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')" = 1 ]; then
+  ok "message-get: key/id lookup and message-list key filter"
+else
+  nok "message-get: key/id lookup and message-list key filter"
+fi
+wx2_missing_rc=0; XDG_STATE_HOME="$wx2_state" XTMUX_OBS_V2=1 "$PICKER" message-get wx2-missing --json >/dev/null 2>&1 || wx2_missing_rc=$?
+[ "$wx2_missing_rc" = 5 ] && ok "message-get: missing key returns XTMUX_NOT_FOUND" || nok "message-get: missing key returns XTMUX_NOT_FOUND (rc=$wx2_missing_rc)"
 grep -F '"turn_end"' extensions/pi-agent-state.ts >/dev/null && grep -F 'agent.turn.done' extensions/pi-agent-state.ts >/dev/null && grep -F 'last_message=' extensions/pi-agent-state.ts >/dev/null && ok "pi extension: publishes turn done" || nok "pi extension: publishes turn done"
 grep -F 'obligations' hooks/claude/auto-monitor-drain-stop.mjs >/dev/null \
   && grep -F 'monitor-list' hooks/claude/auto-monitor-drain-stop.mjs >/dev/null \
@@ -1308,6 +1325,81 @@ print('ok' if ok else 'no:'+json.dumps(by))
     || nok "activity: span round-trip ($as_check)"
 fi
 rm -rf "$as_state"
+
+echo
+echo "== full last-message capture: agent-last + last_message_text (xtmux-avz) =="
+
+# agent.turn.done now carries the UNCOMPACTED full text alongside the compact
+# summary. A single argv field cannot hold a real turn (Linux caps one argv
+# string at ~128KB), so the writer spills to a temp file and passes the path as
+# last_message_file=; the obs reader consumes + unlinks it and stores the text
+# in agent_turns.last_message_text, byte-capped well above the 600-char summary.
+al_state="$(mktemp -d)"
+al_obs() { env XDG_STATE_HOME="$al_state" XTMUX_OBS_V2=1 "$PICKER" "$@" 2>/dev/null; }
+al_obs_text() { env XDG_STATE_HOME="$al_state" XTMUX_OBS_V2=1 "$PICKER" "$@"; }
+if ! command -v python3 >/dev/null 2>&1; then
+  printf '  \033[33mskip\033[0m agent-last (python3 missing)\n'
+else
+  al_obs migrate >/dev/null 2>&1 || true
+  # 1. full text round-trips verbatim, temp file is consumed
+  al_tmp="$(mktemp)"; printf 'Line one.\nLine two with more detail.\nLine three.' > "$al_tmp"
+  al_obs log emit agent.turn.done "pane=%7001" "session=\$91" "bead=xtmux-avz" \
+    "last_message=compact one liner" "last_message_file=$al_tmp"
+  al_consumed="no"; [ -f "$al_tmp" ] || al_consumed="yes"
+  al_plain="$(al_obs_text agent-last %7001)"
+  al_json="$(al_obs agent-last %7001 --json)"
+  al_check1="$(printf '%s' "$al_json" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+ok=(d['paneId']=='%7001' and d['beadId']=='xtmux-avz'
+    and d['summary']=='compact one liner'
+    and d['lastMessageText']=='Line one.\nLine two with more detail.\nLine three.'
+    and d.get('runtime') is None)
+print('ok' if ok else 'no:'+json.dumps(d))
+" 2>/dev/null)"
+  [ "$al_check1" = ok ] && [ "$al_consumed" = yes ] && [ "$al_plain" = "Line one.
+Line two with more detail.
+Line three." ] \
+    && ok "agent-last: full uncompacted text round-trips verbatim and the temp file is consumed" \
+    || nok "agent-last: round-trip ($al_check1 consumed=$al_consumed)"
+
+  # 2. lookup by session id returns the same turn
+  al_check2="$(al_obs agent-last '$91' --json | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print('ok' if d['turnId']==1 else 'no:'+str(d.get('turnId')))
+" 2>/dev/null)"
+  [ "$al_check2" = ok ] \
+    && ok "agent-last: lookup by session id returns the most recent turn" \
+    || nok "agent-last: session lookup ($al_check2)"
+
+  # 3. a turn with only a summary (no temp file) falls back to the compact text
+  al_obs log emit agent.turn.done "pane=%7002" "session=\$92" "last_message=summary only"
+  al_fb="$(al_obs_text agent-last %7002)"
+  [ "$al_fb" = "summary only" ] \
+    && ok "agent-last: plain output falls back to the compact summary when full text is absent" \
+    || nok "agent-last: summary fallback (got: $al_fb)"
+
+  # 4. a payload over the cap clamps without throwing, no temp file leaks
+  al_big="$(mktemp)"; head -c 300000 /dev/zero | tr '\0' 'A' > "$al_big"
+  al_obs log emit agent.turn.done "pane=%7003" "session=\$93" "last_message_file=$al_big" >/dev/null 2>&1
+  al_big_consumed="no"; [ -f "$al_big" ] || al_big_consumed="yes"
+  al_len="$(al_obs agent-last %7003 --json | python3 -c "
+import sys,json
+print(len(json.load(sys.stdin)['lastMessageText']))
+" 2>/dev/null)"
+  [ "$al_big_consumed" = yes ] && [ "$al_len" = "262144" ] \
+    && ok "agent-last: a 300KB payload clamps to the 256KB cap with no throw and no temp leak" \
+    || nok "agent-last: byte cap (consumed=$al_big_consumed len=$al_len)"
+
+  # 5. an unknown target is a structured NOT_FOUND refusal
+  al_obs agent-last %0000 >/dev/null 2>&1 || true
+  al_miss_rc="0"; al_obs_text agent-last %0000 >/dev/null 2>&1 || al_miss_rc=$?
+  [ "$al_miss_rc" = "5" ] \
+    && ok "agent-last: an unknown target exits 5" \
+    || nok "agent-last: unknown target rc (got $al_miss_rc)"
+fi
+rm -rf "$al_state"
 
 echo
 echo "== journal follow: log follow --after-id (xtmux-j46.6) =="
@@ -2420,6 +2512,16 @@ if HOME="$fresh" bash "$ROOT/install.sh" >"$WORK/install.out" 2>&1; then
       nok "install: links $_e"
     fi
   done
+  if [ -f "$fresh/.claude/hooks/xtmux/claude-agent-turn-capture.mjs" ]; then
+    ok "install: places the Claude turn-capture hook with xtmux hooks"
+  else
+    nok "install: places the Claude turn-capture hook with xtmux hooks"
+  fi
+  if grep -Fq 'claude-agent-turn-capture.mjs' "$fresh/.claude/settings.json"; then
+    ok "install: registers the Claude turn-capture Stop hook"
+  else
+    nok "install: registers the Claude turn-capture Stop hook"
+  fi
   # no stub anywhere on this path: this only passes if install.sh actually placed
   # the compiled backend where ${self%/bin/*} looks for it.
   _fresh_json="$(HOME="$fresh" XDG_STATE_HOME="$fresh/.local/state" XTMUX_OBS_V2=1 \

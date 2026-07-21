@@ -96,6 +96,22 @@ session and pane that registered it.
 
 Pi `extensions/pi-agent-state.ts` also publishes `agent.turn.done` on `agent_end`, including a compact last assistant message when the pi `turn_end`/`agent_end` event payload exposes it. Root panes have no parent; when `@agent_parent_session` names a distinct parent, the extension emits one reply-free SQLite FYI and never creates an obligation or monitor.
 
+### full last-assistant-message capture (xtmux-avz)
+
+`agent.turn.done` carries two payloads: the compact `summary` (≤600 chars, one line, used for picker badges and previews — unchanged) and the **uncompacted full text**, stored in the `agent_turns.last_message_text` column. The full text is spilled to a temp file by the writer (the pi extension on `agent_end`, and the Claude Code `Stop` hook at `hooks/claude/claude-agent-turn-capture.mjs`) and passed as `last_message_file=<path>`; the obs reader consumes and unlinks it. A single argv field cannot hold a real turn (Linux caps one argv string at ~128 KB), so the path is the transport. The stored text is byte-capped at 256 KB (`XTMUX_LAST_MESSAGE_MAX`), well above the compact summary, and the cap is enforced once on the reader side as the single chokepoint. Both runtimes are symmetric.
+
+Retrieve a pane's most recent conclusion with one command:
+
+```sh
+xtmux agent-last %42                 # plain: the full message, clean pipe
+xtmux agent-last '$1495' --json      # full row: turnId, runtime, summary,
+                                     #          lastMessageText, completedAtMs
+```
+
+A pane id (`%N`) matches `pane_id`; a session id (`$N`) matches `session_id`. Plain output prints `lastMessageText`, falling back to the compact `summary` when the full text is null (old rows, capture miss), then to nothing. `--json` prints the whole row. Exit 5 with a structured `XTMUX_NOT_FOUND` error if no turn is recorded for the target. This removes the need to `capture-pane` a sibling to answer “what did this agent conclude?”.
+
+The Claude `Stop` hook is registered by `scripts/install.mjs` alongside the other xtmux Claude hooks; it is fail-open (a missing `TMUX`/`TMUX_PANE`, an unreadable or malformed transcript, or any emit failure is a silent no-op — a Claude turn still lands a row via `agent-state.sh`, this hook only enriches it with the full text).
+
 state transitions and orchestration actions write typed rows and bounded
 forensic envelopes to the SQLite event journal. Use:
 

@@ -5,10 +5,11 @@ import { migrate } from "./db/schema.ts";
 import { checkHealth } from "./db/health.ts";
 import { DbError } from "./db/errors.ts";
 import { MessageError } from "./domains/messages/errors.ts";
-import { cliMessageAck, cliMessageCancel, cliMessageList, cliMessageReply, cliMessageSend, cliMessageStatus, cliUnreadCount } from "./cli-messages.ts";
+import { cliMessageAck, cliMessageCancel, cliMessageGet, cliMessageList, cliMessageReply, cliMessageSend, cliMessageStatus, cliUnreadCount } from "./cli-messages.ts";
 import { cliObligationsList } from "./cli-obligations.ts";
 import { cliMonitorAgent, cliMonitorList, cliWaitAgent } from "./cli-monitors.ts";
 import { cliLogEmit, cliLogTail, cliLogQuery, cliLogFollow } from "./cli-log.ts";
+import { findLastTurn } from "./domains/agents/turn.ts";
 import { recordDelivery } from "./domains/deliveries/attempt.ts";
 import type { DeliveryKind } from "./domains/deliveries/attempt.ts";
 import { runMigration } from "./migration/runner.ts";
@@ -32,7 +33,8 @@ commands:
   version [--json]           print schema version
 
   message-send --to <sid> --from <sid> [--to-pane %N] [--from-pane %N] --text T [--bead ID] [--expects-reply true|false] [--message-key K] [--reply-to K] [--json]
-  message-list --for <sid> [--pane %N] [--from <sid>] [--since <ms>] [--unacked] [--expects-reply] [--json] [--limit N]
+  message-list --for <sid> [--pane %N] [--from <sid>] [--message-key <key>] [--since <ms>] [--unacked] [--expects-reply] [--json] [--limit N]
+  message-get <messageKey|messageId> [--json]
   message-reply --in-reply-to <messageKey> --text T [--message-key K] [--json]
   message-cancel --message-key <messageKey> [--json]
   message-ack <message_id> --by <sid> [--json]  (ack means receipt, not reply)
@@ -45,6 +47,9 @@ commands:
   log-tail [N] [--json]             print NDJSON or one JSON event array
   log-query [filters] [--json]      query NDJSON or one JSON event array
   log-follow --after-id <n>         stream committed journal items (NDJSON)
+
+  agent-last <pane-id|session-id> [--json]   full text of the target's most
+                                           recent agent turn (xtmux-avz)
 
   monitor register|adopt|heartbeat|terminate|list|kill   monitor registry; list/kill accept --json (3xs.4)
   telemetry start|finish                                 correlated command runs (3xs.7)
@@ -289,6 +294,7 @@ async function main(argv: string[]): Promise<number> {
       }
       case "message-send":
       case "message-list":
+      case "message-get":
       case "message-reply":
       case "message-cancel":
       case "message-ack":
@@ -302,7 +308,8 @@ async function main(argv: string[]): Promise<number> {
       case "log-query":
       case "log-follow":
       case "delivery-record":
-      case "handoff": {
+      case "handoff":
+      case "agent-last": {
         const db = openDb(cfg);
         try {
           migrate(db);
@@ -313,6 +320,7 @@ async function main(argv: string[]): Promise<number> {
           switch (cmd) {
             case "message-send":     return cliMessageSend(db, rest);
             case "message-list":     return cliMessageList(db, rest);
+            case "message-get":      return cliMessageGet(db, rest);
             case "message-reply":    return cliMessageReply(db, rest);
             case "message-cancel":   return cliMessageCancel(db, rest);
             case "message-ack":      return cliMessageAck(db, rest);
@@ -324,6 +332,7 @@ async function main(argv: string[]): Promise<number> {
             case "log-follow":       return await cliLogFollow(db, rest);
             case "delivery-record":  return cliDeliveryRecord(db, rest);
             case "handoff":          return cliHandoff(db, rest);
+            case "agent-last":       return cliAgentLast(db, rest);
           }
         } finally {
           db.close();
@@ -439,6 +448,61 @@ function cliHandoff(db: import("./db/connection.ts").Db, argv: string[]): number
   return 0;
 }
 
+/**
+ * xtmux-avz: `agent-last <pane-id|session-id> [--json]` — returns the full text
+ * of the target's most recent agent turn. Default (plain) output prints just the
+ * uncompacted message text (falling back to the compact summary when the full
+ * text is null), so it pipes cleanly into other tools. --json prints the whole
+ * row including runtime, bead, turn index, and completion time.
+ */
+function cliAgentLast(db: import("./db/connection.ts").Db, argv: string[]): number {
+  const flags = new Map<string, string | boolean>();
+  const positional: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a === "--json") { flags.set("json", true); continue; }
+    if (a.startsWith("--")) {
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("--")) { flags.set(a.slice(2), next); i++; }
+      else flags.set(a.slice(2), true);
+    } else {
+      positional.push(a);
+    }
+  }
+  const target = positional[0] ?? (typeof flags.get("target") === "string" ? flags.get("target") as string : "");
+  if (!target) {
+    process.stderr.write("agent-last: <pane-id|session-id> required\n");
+    return 2;
+  }
+  const row = findLastTurn(db, target);
+  if (!row) {
+    const err = { code: "XTMUX_NOT_FOUND", message: `no agent turn recorded for ${target}`, detail: { target } };
+    process.stderr.write(JSON.stringify(err) + "\n");
+    return 5;
+  }
+  if (flags.get("json") === true) {
+    process.stdout.write(JSON.stringify({
+      turnId: row.turnId,
+      paneId: row.paneId,
+      sessionId: row.sessionId,
+      instanceId: row.instanceId,
+      beadId: row.beadId,
+      turnIndex: row.turnIndex,
+      runtime: row.runtime,
+      summary: row.summary,
+      lastMessageText: row.lastMessageText,
+      completedAtMs: row.completedAtMs,
+      completedAt: new Date(row.completedAtMs).toISOString(),
+    }) + "\n");
+    return 0;
+  }
+  // Plain output: the full message if present, else the compact summary, else
+  // nothing — a clean pipe surface for sibling agents / orchestrators.
+  const text = row.lastMessageText ?? row.summary ?? "";
+  process.stdout.write(text + (text && !text.endsWith("\n") ? "\n" : ""));
+  return 0;
+}
+
 function cliDeliveryRecord(db: import("./db/connection.ts").Db, argv: string[]): number {
   const flags = new Map<string, string>();
   for (let i = 0; i < argv.length; i++) {
@@ -475,4 +539,8 @@ function cliDeliveryRecord(db: import("./db/connection.ts").Db, argv: string[]):
   return 0;
 }
 
-process.exit(await main(process.argv));
+const exitCode = await main(process.argv);
+// Let stdout drain before the process exits. `process.exit(code)` truncates
+// large piped responses (agent-last can legitimately return 256KB) at the
+// stream buffer boundary; exitCode preserves the status without aborting I/O.
+process.exitCode = exitCode;

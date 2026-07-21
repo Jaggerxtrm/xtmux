@@ -826,7 +826,7 @@ json_requested() {
 json_command_state() {
   local command="$1" subcommand="${2:-}"
   case "$command:$subcommand" in
-    message-list:*|message-status:*|unread-count:*|obligations:list|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|monitors:*|safe-send-pointer:*|handoff:*|message-send:*|message-reply:*|message-cancel:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|log:follow|context:--current|pane:capture|bridge:--stdio) REPLY='ready' ;;
+    message-list:*|message-status:*|message-get:*|unread-count:*|obligations:list|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|monitors:*|safe-send-pointer:*|handoff:*|message-send:*|message-reply:*|message-cancel:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|log:follow|context:--current|pane:capture|bridge:--stdio|agent-last:*) REPLY='ready' ;;
     *) REPLY='unsupported' ;;
   esac
 }
@@ -1347,6 +1347,32 @@ message_status() {
   exec "${OBS_ARGV[@]}" "${args[@]}"
 }
 
+message_get() {
+  local target="${1:-}" json=0
+  [ -n "$target" ] || { printf 'usage: message-get <message_key|message_id> [--json]\n' >&2; return 2; }
+  shift || true
+  [ "${1:-}" = '--json' ] && json=1
+  obs_v2_mode
+  [ "$REPLY" = on ] || { printf 'message-get: requires XTMUX_OBS_V2=1\n' >&2; return 2; }
+  obs_runtime_argv
+  local args=(message-get "$target")
+  [ "$json" = 1 ] && args+=(--json)
+  exec "${OBS_ARGV[@]}" "${args[@]}"
+}
+
+agent_last() {
+  local target="${1:-}" json=0
+  [ -n "$target" ] || { printf 'usage: agent-last <pane-id|session-id> [--json]\n' >&2; return 2; }
+  shift || true
+  [ "${1:-}" = '--json' ] && json=1
+  obs_v2_mode
+  [ "$REPLY" = on ] || { printf 'agent-last: requires XTMUX_OBS_V2=1\n' >&2; return 2; }
+  obs_runtime_argv
+  local args=(agent-last "$target")
+  [ "$json" = 1 ] && args+=(--json)
+  exec "${OBS_ARGV[@]}" "${args[@]}"
+}
+
 unread_count() {
   local recipient="" pane="" arg
   while [ "$#" -gt 0 ]; do
@@ -1376,9 +1402,9 @@ message_json_field() {
 
 # _message_list_v1_body — V1 JSONL scan producing message-list stdout.
 # Shared between the mode=off direct path and the mode=shadow capture-then-diff
-# path (xtmux-3xs.12). Args: <for> <since_secs> <limit> <unacked_bool>.
+# path (xtmux-3xs.12). Args: <for> <since_secs> <limit> <unacked_bool> <message_key>.
 _message_list_v1_body() {
-  local to="$1" since="$2" limit="$3" unacked="$4"
+  local to="$1" since="$2" limit="$3" unacked="$4" message_key="${5:-}"
   local file files=() now since_epoch ack_tmp line ts_epoch id from target bead text ts to_sid=''
   event_log_file; file="$REPLY"
   if [ -n "$to" ]; then
@@ -1410,6 +1436,7 @@ _message_list_v1_body() {
     if [ -n "$to" ] && [ "$target" != "$to" ] && { [ -z "$to_sid" ] || [ "$target" != "$to_sid" ]; }; then
       continue
     fi
+    [ -z "$message_key" ] || [ "$id" = "$message_key" ] || continue
     if [ "$unacked" = 1 ] && grep -Fx -- "$id" "$ack_tmp" >/dev/null 2>&1; then continue; fi
     if [ "$unacked" = 1 ]; then
       format_age_short "${ts_epoch:-0}"
@@ -1421,7 +1448,7 @@ _message_list_v1_body() {
 }
 
 message_list() {
-  local to='' pane='' from='' since='' limit=100 unacked=0 expects_reply=0 json=0 arg
+  local to='' pane='' from='' since='' message_key='' limit=100 unacked=0 expects_reply=0 json=0 arg
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
@@ -1429,6 +1456,8 @@ message_list() {
       --for=*|--to=*) to="${arg#*=}" ;;
       --from) [ "$#" -gt 0 ] || return 2; from="$1"; shift ;;
       --from=*) from="${arg#--from=}" ;;
+      --message-key) [ "$#" -gt 0 ] || return 2; message_key="$1"; shift ;;
+      --message-key=*) message_key="${arg#--message-key=}" ;;
       --since) [ "$#" -gt 0 ] || return 2; parse_wait_duration "$1" || return 2; since="$REPLY"; shift ;;
       --since=*) parse_wait_duration "${arg#--since=}" || return 2; since="$REPLY" ;;
       --limit) [ "$#" -gt 0 ] || return 2; limit="$1"; shift ;;
@@ -1457,12 +1486,13 @@ message_list() {
     [ "$json" = 1 ]          && cli_args+=(--json)
     [ -n "$pane" ]           && cli_args+=(--pane "$pane")
     [ -n "$from" ]           && cli_args+=(--from "$from")
+    [ -n "$message_key" ]    && cli_args+=(--message-key "$message_key")
     [ -n "$since" ]          && cli_args+=(--since "$since")
     exec "${OBS_ARGV[@]}" "${cli_args[@]}"
   fi
   if [ "$mode" = 'shadow' ]; then
     local v1_out v2_out=''
-    v1_out="$(_message_list_v1_body "$to" "$since" "$limit" "$unacked")"
+    v1_out="$(_message_list_v1_body "$to" "$since" "$limit" "$unacked" "$message_key")"
     if obs_available; then
       local to_sid_v2=''
       if [ -n "$to" ] && resolve_to_session_id "$to"; then to_sid_v2="$REPLY"; else to_sid_v2="$to"; fi
@@ -1472,6 +1502,7 @@ message_list() {
         [ "$unacked" = 1 ] && v2_args+=(--unacked)
         [ "$expects_reply" = 1 ] && v2_args+=(--expects-reply)
         [ -n "$from" ] && v2_args+=(--from "$from")
+        [ -n "$message_key" ] && v2_args+=(--message-key "$message_key")
         [ -n "$since" ] && v2_args+=(--since "$since")
         v2_out="$("${OBS_ARGV[@]}" "${v2_args[@]}" 2>/dev/null || true)"
       fi
@@ -1480,7 +1511,7 @@ message_list() {
     [ -n "$v1_out" ] && printf '%s\n' "$v1_out"
     return 0
   fi
-  _message_list_v1_body "$to" "$since" "$limit" "$unacked"
+  _message_list_v1_body "$to" "$since" "$limit" "$unacked" "$message_key"
 }
 
 join_args_for_log() {
@@ -1936,9 +1967,10 @@ Durable task content belongs in beads (`bd`), not here.
                  [--to-pane <%id>] [--from-pane <%id>] [--message-key <key>]
                  [--expects-reply[=true|false]] [--reply-to <messageKey>] [json]
                  --bead implies --expects-reply=true; opt out explicitly.
-  message-list   --for <target> [--pane <%id>] [--from <id>] [--unacked]
-                 [--expects-reply] [--limit <n>] [--since <dur>] [json]
+  message-list   --for <target> [--pane <%id>] [--from <id>] [--message-key <key>]
+                 [--unacked] [--expects-reply] [--limit <n>] [--since <dur>] [json]
                  --expects-reply adds correlated reply fields; --for REQUIRED.
+  message-get   <messageKey|messageId> [json]   read one message; never acks it
   message-reply  --in-reply-to <messageKey> --text <text> [--message-key <key>] [json]
   message-cancel --message-key <messageKey> [json]
   message-ack    <message-id> [--by <target>] [json] (receipt, not reply)
@@ -1946,7 +1978,6 @@ Durable task content belongs in beads (`bd`), not here.
   unread-count   --for <recipient> [--pane <%id>] [json]
                  --for is REQUIRED. --pane narrows to one pane's inbox.
   obligations list [--pane <%id>] [json]   active reply obligations owned by this live pane.
-
   json output:
     message        messageKey, senderId, senderPaneId, senderKind, recipientId,
                    targetPaneId, recipientKind, beadId, summary, createdAtMs,
@@ -2018,20 +2049,21 @@ DELEGATION — hand work to another pane without fragmenting its prompt.
     handoff        target, paneId, beadId, promptFile, handoffKey, monitorId, sent,
                    durable, createdAtMs
 
-IDENTITY — who is this pane, for cross-tool job attribution.
+IDENTITY & LAST TURN — who a pane is, and what it last said.
   context --current [--json]   the runtime origin of the INVOKING pane, as
                                xtrm.runtime-origin.v1. Read-only. Outside tmux,
                                or when the pane cannot be verified against the
                                live server, exits non-zero with a structured
                                error and prints nothing — never a guessed binding.
+  agent-last <pane-id|session-id> [--json]   full text of the target's most recent agent turn (pi+claude); plain falls back to summary; exit 5 XTMUX_NOT_FOUND.
 
   json output:
     context        schema_version, kind, host_id, tmux_session_id/window_id/
                    pane_id (stable $N/@N/%N ids, never names or indexes),
                    agent_instance_id?, bead_id?, parent_session_id?,
                    captured_at_ms, capture_source, verified
-                   absent optional fields are OMITTED, never "" (see
-                   docs/json-command-api.md)
+    agent-last     turnId, paneId, sessionId, instanceId, beadId, turnIndex, runtime,
+                   summary, lastMessageText, completedAtMs, completedAt (OMITTED when absent)
 
 SESSIONS & DASHBOARD — inventory for orchestrators.
   dashboard [sessions-only|expanded] [json]   agent-readable inventory
@@ -4151,6 +4183,16 @@ case "${1:-}" in
   message-status)
     shift
     message_status "$@"
+    exit $?
+    ;;
+  message-get)
+    shift
+    message_get "$@"
+    exit $?
+    ;;
+  agent-last)
+    shift
+    agent_last "$@"
     exit $?
     ;;
   unread-count)

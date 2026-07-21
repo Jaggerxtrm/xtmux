@@ -332,10 +332,12 @@ tmux-session-picker handoff --yes --target %42 --bead xtmux-mux.9 --note 'NO pus
 # worktree collision report
 tmux-session-picker worktree-collisions
 
-# runtime identity, session/window/pane inventory, bounded pane content
+# runtime identity, session/window/pane inventory, and agent output
 tmux-session-picker context --current --json          # who am I? (xtrm.runtime-origin.v1)
 tmux-session-picker topology --json                   # complete host/session/window/pane snapshot
-tmux-session-picker pane capture --pane %42 --lines 200 --json
+tmux-session-picker pane capture --pane %42 --lines 200 --json   # live terminal tail
+tmux-session-picker agent-last %42                    # completed full agent turn
+tmux-session-picker agent-last '$1495' --json          # turn + runtime/bead metadata
 
 # read-only NDJSON bridge over ssh — inspect a remote xtmux host with your own auth
 ssh peer-host xtmux bridge --stdio                    # remote server, exchanges JSON-RPC on stdio
@@ -350,6 +352,8 @@ tmux-session-picker log follow --after-id 1234 --json               # NDJSON str
 # SQLite-backed message channel: ack receipt, then reply explicitly
 tmux-session-picker message-send --to worker --bead xtmux-team.4 --text 'blocked on data' --json
 tmux-session-picker message-list --for worker --pane %42 --expects-reply --json
+tmux-session-picker message-list --for worker --message-key <messageKey> --json
+tmux-session-picker message-get <messageKey|messageId> --json   # read-only body
 tmux-session-picker message-ack <messageKey> --by worker --json
 tmux-session-picker message-reply --in-reply-to <messageKey> --text 'resolved' --json
 tmux-session-picker message-cancel --message-key <messageKey> --json
@@ -459,7 +463,8 @@ tmux-session-picker log tail [n]
 tmux-session-picker log query [--type t] [--pane %42] [--session s] [--bead id] [--since 1h] [--limit n]
 
 tmux-session-picker message-send --to <session|pane> [--from sender] [--bead id] --text 'short update'
-tmux-session-picker message-list --for <session|pane> [--pane %N] [--unacked] [--expects-reply] [--since 1h]
+tmux-session-picker message-list --for <session|pane> [--pane %N] [--message-key <key>] [--unacked] [--expects-reply] [--since 1h]
+tmux-session-picker message-get <messageKey|messageId> [--json]  # read one body, no ack
 tmux-session-picker message-ack <messageKey> [--by session]
 tmux-session-picker message-reply --in-reply-to <messageKey> --text 'result'
 tmux-session-picker message-cancel --message-key <messageKey>

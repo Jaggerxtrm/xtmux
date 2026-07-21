@@ -10,6 +10,7 @@ import type { Db } from "./db/connection.ts";
 import { ackMessage } from "./domains/messages/ack.ts";
 import { insertEnvelope } from "./db/journal.ts";
 import { listMessages } from "./domains/messages/list.ts";
+import { getMessage } from "./domains/messages/get.ts";
 import { replyMessage } from "./domains/messages/reply.ts";
 import { sendMessage } from "./domains/messages/send.ts";
 import { computeUnread } from "./domains/messages/reconcile-unread.ts";
@@ -258,30 +259,11 @@ export function cliMessageList(db: Db, argv: string[]): number {
     unackedOnly: flags.get("unacked") === true,
     expectsReplyOnly: flags.get("expects-reply") === true,
     limit: flags.has("limit") ? Number(flags.get("limit")) : undefined,
+    messageKey: flags.get("message-key") as string | undefined,
   }, { includeReplyState: true });
   if (flags.get("json") === true) {
-    process.stdout.write(JSON.stringify(rows.map((r) => ({
-      messageKey: r.message_key,
-      senderId: r.sender_id,
-      senderPaneId: r.sender_pane_id,
-      senderKind: identityKind(r.sender_id, r.sender_pane_id),
-      recipientId: r.recipient_id,
-      targetPaneId: r.target_pane_id,
-      recipientKind: identityKind(r.recipient_id, r.target_pane_id),
-      beadId: r.bead_id,
-      summary: r.summary,
-      createdAtMs: r.created_at_ms,
-      expectsReply: r.expects_reply === 1,
-      acked: r.acked_at_ms !== null,
-      ackedAtMs: r.acked_at_ms,
-      ackedBy: r.acked_by,
-      ...(flags.get("expects-reply") === true ? {
-        replyStatus: r.replyStatus,
-        fulfilledAtMs: r.fulfilledAtMs,
-        fulfilledByMessageKey: r.fulfilled_by_message_key,
-        correlatedReply: r.correlatedReply,
-      } : {}),
-    }))) + "\n");
+    const includeReplyState = flags.get("expects-reply") === true;
+    process.stdout.write(JSON.stringify(rows.map((r) => messageJsonRow(r, includeReplyState))) + "\n");
     return 0;
   }
   // V1 prints oldest-first when it drains rotated files; --limit implies newest.
@@ -298,6 +280,58 @@ export function cliMessageList(db: Db, argv: string[]): number {
       (r.summary ?? "").replace(/\n/g, " "),
     ];
     process.stdout.write(parts.join("\t") + "\n");
+  }
+  return 0;
+}
+
+function messageJsonRow(r: import("./domains/messages/types.ts").MessageWithReplyState, includeReplyState: boolean): Record<string, unknown> {
+  return {
+    messageKey: r.message_key,
+    senderId: r.sender_id,
+    senderPaneId: r.sender_pane_id,
+    senderKind: identityKind(r.sender_id, r.sender_pane_id),
+    recipientId: r.recipient_id,
+    targetPaneId: r.target_pane_id,
+    recipientKind: identityKind(r.recipient_id, r.target_pane_id),
+    beadId: r.bead_id,
+    summary: r.summary,
+    createdAtMs: r.created_at_ms,
+    expectsReply: r.expects_reply === 1,
+    acked: r.acked_at_ms !== null,
+    ackedAtMs: r.acked_at_ms,
+    ackedBy: r.acked_by,
+    ...(includeReplyState ? {
+      replyStatus: r.replyStatus,
+      fulfilledAtMs: r.fulfilledAtMs,
+      fulfilledByMessageKey: r.fulfilled_by_message_key,
+      correlatedReply: r.correlatedReply,
+    } : {}),
+  };
+}
+
+/**
+ * Read exactly one message by key or SQLite message id. This never creates a
+ * receipt and never changes ack/reply state.
+ */
+export function cliMessageGet(db: Db, argv: string[]): number {
+  const { positional, flags } = parseArgs(argv);
+  const keyOrId = positional[0] ?? "";
+  const json = flags.get("json") === true;
+  if (!keyOrId) return fail(json, "XTMUX_INVALID_ARGUMENT", "message-get: <message_key|message_id> required", 2, {}, true);
+  const row = getMessage(db, keyOrId);
+  if (!row) return fail(true, "XTMUX_NOT_FOUND", "message-get: message was not found", 5, { keyOrId }, true);
+  if (json) {
+    process.stdout.write(JSON.stringify(messageJsonRow(row, true)) + "\n");
+  } else {
+    process.stdout.write([
+      "message",
+      row.message_key,
+      fmtTsIso(row.created_at_ms),
+      row.sender_id,
+      row.recipient_id,
+      row.bead_id ?? "",
+      (row.summary ?? "").replace(/\n/g, " "),
+    ].join("\t") + "\n");
   }
   return 0;
 }
