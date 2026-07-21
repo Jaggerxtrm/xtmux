@@ -455,7 +455,7 @@ XTMUX_EVENT_LOG_FILE="$rot" XTMUX_EVENT_LOG_MAX_BYTES=50 message_send --from a -
 # xtmux-wx2: one-message read path resolves by key and numeric id, preserves the
 # message-list JSON projection, filters list results, and never acknowledges.
 wx2_state="$WORK/wx2-state"; mkdir -p "$wx2_state"
-wx2_sid="$(tmux display-message -p '#{session_id}')"; wx2_key="wx2-contract-$$"
+wx2_sid="wx2-contract-session-$$"; wx2_key="wx2-contract-$$"
 wx2_send="$(XDG_STATE_HOME="$wx2_state" XTMUX_OBS_V2=1 "$ROOT/bin/xtmux-obs" message-send --to "$wx2_sid" --from "$wx2_sid" --message-key "$wx2_key" --text 'wx2 body' --expects-reply=false --json 2>/dev/null)"
 wx2_id="$(printf '%s' "$wx2_send" | python3 -c 'import json,sys; print(json.load(sys.stdin)["messageId"])')"
 wx2_get="$(XDG_STATE_HOME="$wx2_state" XTMUX_OBS_V2=1 "$PICKER" message-get "$wx2_key" --json 2>/dev/null)"
