@@ -64,7 +64,8 @@ test("clean install, idempotent update, xtrm coexistence, and uninstall", () => 
 
   const settings = json(claude);
   assert.equal(settings.theme, "dark");
-  assert.equal(settings.hooks.Stop.filter((entry) => entry._source === "xtmux").length, 2);
+  // agent-state, auto-monitor drain, and the Claude turn-capture Stop hook.
+  assert.equal(settings.hooks.Stop.filter((entry) => entry._source === "xtmux").length, 3);
   assert.equal(settings.hooks.Stop.filter((entry) => entry._source === "xtrm-global").length, 1);
   assert.equal(settings.hooks.Stop.filter((entry) => entry.hooks?.[0]?.command === "user-stop").length, 1);
   const commands = Object.values(settings.hooks).flat().flatMap((entry) => entry.hooks?.map((hook) => hook.command) || []);
@@ -72,7 +73,7 @@ test("clean install, idempotent update, xtrm coexistence, and uninstall", () => 
   assert.ok(commands.some((command) => command.includes('bash "') && command.includes("auto-monitor-consumed.sh")));
   assert.equal(commands.some((command) => command.includes('node "') && command.includes("auto-monitor-on-send.mjs")), false);
   assert.deepEqual(readdirSync(join(home, ".claude", "hooks", "xtmux")).sort(), [
-    "agent-state.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs", "auto-monitor-on-send.mjs", "auto-monitor-on-send.sh",
+    "agent-state.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs", "auto-monitor-on-send.mjs", "auto-monitor-on-send.sh", "claude-agent-turn-capture.mjs",
   ]);
   assert.equal(
     readFileSync(join(home, ".claude", "hooks", "xtmux", "agent-state.sh"), "utf8"),

@@ -10,10 +10,9 @@
 // context, or emit failure is a silent no-op. A Claude turn still lands a row
 // via agent-state.sh; this hook only enriches it with full text.
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 
 const PICKER = process.env.XTMUX_PICKER || `${process.env.HOME}/.local/bin/xtmux`;
@@ -56,11 +55,10 @@ function lastAssistantText(transcriptPath) {
   if (!transcriptPath || !existsSync(transcriptPath)) return "";
   let raw;
   try {
-    const stat = statSync(transcriptPath);
     // Read only the tail — the full transcript can be large and only the most
     // recent assistant turn matters. 1MB tail covers thousands of lines.
-    const tailStart = Math.max(0, stat.size - 1024 * 1024);
     const buf = readFileSync(transcriptPath);
+    const tailStart = Math.max(0, buf.length - 1024 * 1024);
     raw = buf.subarray(tailStart).toString("utf8");
   } catch { return ""; }
   const lines = raw.split("\n");
@@ -93,10 +91,12 @@ function main() {
   const bead = tmuxValue(["show-options", "-p", "-qv", "@agent_bead"], pane);
   const parent = tmuxValue(["show-options", "-p", "-qv", "@agent_parent_session"], pane);
 
+  let tmpDir = "";
   let tmpFile = "";
   try {
-    tmpFile = join(tmpdir(), `xtmux-claude-turn-${process.pid}-${randomBytes(6).toString("hex")}.txt`);
-    writeFileSync(tmpFile, fullText, "utf8");
+    tmpDir = mkdtempSync(join(tmpdir(), "xtmux-claude-turn-"));
+    tmpFile = join(tmpDir, "message.txt");
+    writeFileSync(tmpFile, fullText, { encoding: "utf8", mode: 0o600 });
     const args = [
       "log", "emit", "agent.turn.done",
       `pane=${pane}`,
@@ -112,6 +112,7 @@ function main() {
     // Fail-open: a capture miss never interrupts a Claude turn.
   } finally {
     if (tmpFile) { try { unlinkSync(tmpFile); } catch { /* consumed by obs */ } }
+    if (tmpDir) { try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* already removed */ } }
   }
 }
 

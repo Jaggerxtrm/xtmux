@@ -1,8 +1,7 @@
 import type { AgentEndEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { writeFileSync, unlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
 
 type AgentState = "running" | "needs-input" | "done" | "idle" | "off";
 
@@ -151,12 +150,15 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
     // on the obs reader side as the single chokepoint.
     const fullText = lastAssistantTextFromMessages(event.messages) || lastTurnMessage;
     const text = compactText(fullText);
+    let lastMessageDir = "";
     let lastMessageFile = "";
     if (fullText) {
       try {
-        lastMessageFile = join(tmpdir(), `xtmux-last-msg-${process.pid}-${randomBytes(6).toString("hex")}.txt`);
-        writeFileSync(lastMessageFile, fullText, "utf8");
+        lastMessageDir = mkdtempSync(join(tmpdir(), "xtmux-last-msg-"));
+        lastMessageFile = join(lastMessageDir, "message.txt");
+        writeFileSync(lastMessageFile, fullText, { encoding: "utf8", mode: 0o600 });
       } catch {
+        lastMessageDir = "";
         lastMessageFile = "";
       }
     }
@@ -180,6 +182,7 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
       // obs consumes + unlinks on success; this covers the no-op / failure path
       // so a temp file never outlives the emit attempt.
       if (lastMessageFile) { try { unlinkSync(lastMessageFile); } catch { /* already consumed */ } }
+      if (lastMessageDir) { try { rmSync(lastMessageDir, { recursive: true, force: true }); } catch { /* already removed */ } }
     }
 
     if (parent && parent !== sessionId && parent !== pane && text) {
