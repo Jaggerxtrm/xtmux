@@ -105,6 +105,25 @@ describe("Claude settings merge", () => {
     expect(commands(settings(dir))).toEqual(["user-stop"]);
   });
 
+  // The ownership sweep is scoped to the managed hooks directory. A user who
+  // drops their OWN script in there and registers it untagged must survive:
+  // remove() runs mergeClaude(true) before it ever examines the directory, so a
+  // bare directory match would strip the registration on uninstall — leaving an
+  // orphaned script and no hook. Proximity to our files is not ownership.
+  test("preserves a user script registered from inside the managed hooks dir", () => {
+    const dir = home({});
+    expect(run(dir).status).toBe(0);
+    const mine = join(dir, ".claude/hooks/xtmux/my-own-hook.sh");
+    writeFileSync(mine, "#!/usr/bin/env bash\nexit 0\n");
+    const current = JSON.parse(readFileSync(join(dir, ".claude/settings.json"), "utf8"));
+    current.hooks.Stop.push({ hooks: [{ type: "command", command: `bash "${mine}"` }] });
+    writeFileSync(join(dir, ".claude/settings.json"), JSON.stringify(current, null, 2));
+
+    expect(run(dir, "--uninstall").status).toBe(0);
+    expect(commands(settings(dir))).toEqual([`bash "${mine}"`]);
+    expect(existsSync(mine)).toBe(true);
+  });
+
   test("uninstall removes only xtmux-owned entries", () => {
     const dir = home(foreign);
     expect(run(dir).status).toBe(0);

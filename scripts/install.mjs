@@ -175,17 +175,24 @@ function hash(wrapper) {
   return createHash("sha256").update(JSON.stringify({ matcher: wrapper.matcher ?? null, hooks: wrapper.hooks })).digest("hex");
 }
 
+// Untagged entries need ownership proven some other way, because copies written
+// before provenance tagging carry no _source and would otherwise survive every
+// remove-then-write cycle and accumulate (xtmux-2zh: 3x per hook). The proof is
+// the managed hooks directory PLUS a filename this installer actually writes
+// there — the directory alone would also adopt a user's own script dropped
+// alongside ours, and mergeClaude(true) runs before the directory is examined,
+// so uninstall would strip its registration. Derived from managedSources so a
+// new managed hook cannot drift out of the ownership sweep. Matched
+// home-relative: an install done under a different HOME is still adopted.
+const managedHookCommand = (command) =>
+  Object.keys(managedSources.claudeHooks).some((name) => command.includes(`/.claude/hooks/xtmux/${name}`));
+
 function owned(wrapper) {
   if (wrapper && Object.hasOwn(wrapper, "_source") && wrapper._source !== source) return false;
   if (wrapper?._source === source) return true;
   const commands = Array.isArray(wrapper?.hooks) ? wrapper.hooks.map((hook) => hook?.command).filter(Boolean) : [];
-  // Untagged entries need ownership proven some other way, because copies written
-  // before provenance tagging carry no _source and would otherwise survive every
-  // remove-then-write cycle and accumulate (xtmux-2zh: 3x per hook). The managed
-  // hooks directory is that proof — only this installer writes there — and it is
-  // matched home-relative so an install done under a different HOME still adopts.
   return commands.length > 0 && commands.every((command) =>
-    command.includes("/.claude/hooks/xtmux/") || command.includes("/.tmux/scripts/agent-state.sh") || command.includes("/.xtrm/hooks/auto-monitor-") || command.includes("claude-agent-turn-capture.mjs")
+    managedHookCommand(command) || command.includes("/.tmux/scripts/agent-state.sh") || command.includes("/.xtrm/hooks/auto-monitor-") || command.includes("claude-agent-turn-capture.mjs")
   );
 }
 
