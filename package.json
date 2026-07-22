@@ -1,6 +1,6 @@
 {
   "name": "@jaggerxtrm/xtmux",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "tmux-native coordination, messaging, hooks, and Pi extensions for coding agents",
   "type": "module",
   "license": "MIT",
