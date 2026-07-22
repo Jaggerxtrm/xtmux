@@ -658,7 +658,10 @@ topology_boolean() {
 
 topology_agent_json() {
   local first=1 key value index
-  local -a keys=(instance_id state bead_id task prompt_file parent_session_id last_transition)
+  # role/worktree/branch/parent_pane_id are named for xtrm.topology.projection.v1
+  # (@xtrm/contracts), which is what Core's aggregation viewer joins this snapshot
+  # into. Appended, never reordered: the earlier keys are a published contract.
+  local -a keys=(instance_id state bead_id task prompt_file parent_session_id last_transition role worktree branch parent_pane_id)
   local -a values=("$@")
   for index in "${!keys[@]}"; do
     value="${values[$index]:-}"
@@ -1804,7 +1807,7 @@ dashboard() {
 
 topology_json() {
   local json=0 arg rows row sid sname created activity attached wid windex wname wactive
-  local pane_id pindex pactive width height left top pid command path instance state bead task prompt parent transition
+  local pane_id pindex pactive width height left top pid command path instance state bead task prompt parent transition role worktree branch parent_pane
   local key session_first window_first pane_first agent
   for arg in "$@"; do
     case "$arg" in
@@ -1825,12 +1828,12 @@ topology_json() {
   # One list-panes pass supplies every session, window and pane field. Do not
   # add display-message/show-options calls here: Console needs one coherent
   # snapshot, not independently sampled hierarchy levels.
-  rows="$(tmux list-panes -a -F $'#{session_id}\t#{session_name}\t#{session_created}\t#{session_activity}\t#{session_attached}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{?@agent_instance_id,#{@agent_instance_id},-}\t#{?@agent_state,#{@agent_state},-}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_prompt_file,#{@agent_prompt_file},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}' 2>/dev/null || true)"
+  rows="$(tmux list-panes -a -F $'#{session_id}\t#{session_name}\t#{session_created}\t#{session_activity}\t#{session_attached}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{?@agent_instance_id,#{@agent_instance_id},-}\t#{?@agent_state,#{@agent_state},-}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_prompt_file,#{@agent_prompt_file},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}\t#{?@agent_role,#{@agent_role},-}\t#{?@agent_worktree,#{@agent_worktree},-}\t#{?@agent_branch,#{@agent_branch},-}\t#{?@agent_parent_pane,#{@agent_parent_pane},-}' 2>/dev/null || true)"
 
   local -a sessions=() pane_rows=()
   declare -A session_seen=() session_name=() session_created=() session_activity=() session_attached=()
   declare -A session_windows=() window_seen=() window_index=() window_name=() window_active=()
-  while IFS=$'\t' read -r sid sname created activity attached wid windex wname wactive pane_id pindex pactive width height left top pid command path instance state bead task prompt parent transition; do
+  while IFS=$'\t' read -r sid sname created activity attached wid windex wname wactive pane_id pindex pactive width height left top pid command path instance state bead task prompt parent transition role worktree branch parent_pane; do
     [ -n "$sid" ] || continue
     sname="$(tsv_clean "$sname")"
     created="$(tsv_clean "$created")"; activity="$(tsv_clean "$activity")"; attached="$(tsv_clean "$attached")"
@@ -1841,6 +1844,8 @@ topology_json() {
     instance="$(tsv_clean "$instance")"; state="$(tsv_clean "$state")"; bead="$(tsv_clean "$bead")"
     task="$(tsv_clean "$task")"; prompt="$(tsv_clean "$prompt")"; parent="$(tsv_clean "$parent")"
     transition="$(tsv_clean "$transition")"
+    role="$(tsv_clean "$role")"; worktree="$(tsv_clean "$worktree")"
+    branch="$(tsv_clean "$branch")"; parent_pane="$(tsv_clean "$parent_pane")"
     if [ -z "${session_seen[$sid]:-}" ]; then
       session_seen["$sid"]=1; sessions+=("$sid")
       session_name["$sid"]="$sname"; session_created["$sid"]="$created"
@@ -1851,7 +1856,7 @@ topology_json() {
       window_seen["$key"]=1; session_windows["$sid"]+="${session_windows[$sid]:+ }$wid"
       window_index["$key"]="$windex"; window_name["$key"]="$wname"; window_active["$key"]="$wactive"
     fi
-    pane_rows+=("$sid"$'\t'"$wid"$'\t'"$pane_id"$'\t'"$pindex"$'\t'"$pactive"$'\t'"$width"$'\t'"$height"$'\t'"$left"$'\t'"$top"$'\t'"$pid"$'\t'"$command"$'\t'"$path"$'\t'"$instance"$'\t'"$state"$'\t'"$bead"$'\t'"$task"$'\t'"$prompt"$'\t'"$parent"$'\t'"$transition")
+    pane_rows+=("$sid"$'\t'"$wid"$'\t'"$pane_id"$'\t'"$pindex"$'\t'"$pactive"$'\t'"$width"$'\t'"$height"$'\t'"$left"$'\t'"$top"$'\t'"$pid"$'\t'"$command"$'\t'"$path"$'\t'"$instance"$'\t'"$state"$'\t'"$bead"$'\t'"$task"$'\t'"$prompt"$'\t'"$parent"$'\t'"$transition"$'\t'"$role"$'\t'"$worktree"$'\t'"$branch"$'\t'"$parent_pane")
   done <<< "$rows"
 
   printf '{"schema_version":"xtrm.xtmux.topology.v1","generated_at_ms":%s,"host":{"host_id":"%s"},"sessions":[' \
@@ -1872,14 +1877,14 @@ topology_json() {
         "$(json_escape "$wid")" "$(topology_number "${window_index[$key]}")" "$(json_escape "${window_name[$key]}")" "$(topology_boolean "${window_active[$key]}")"
       pane_first=1
       for row in "${pane_rows[@]}"; do
-        IFS=$'\t' read -r row_sid row_wid pane_id pindex pactive width height left top pid command path instance state bead task prompt parent transition <<< "$row"
+        IFS=$'\t' read -r row_sid row_wid pane_id pindex pactive width height left top pid command path instance state bead task prompt parent transition role worktree branch parent_pane <<< "$row"
         [ "$row_sid" = "$sid" ] && [ "$row_wid" = "$wid" ] || continue
         [ "$pane_first" = 1 ] || printf ','; pane_first=0
         printf '{"pane_id":"%s","pane_index":%s,"active":%s,"width":%s,"height":%s,"left":%s,"top":%s,"pid":%s,"current_command":"%s","current_path":"%s"' \
           "$(json_escape "$pane_id")" "$(topology_number "$pindex")" "$(topology_boolean "$pactive")" \
           "$(topology_number "$width")" "$(topology_number "$height")" "$(topology_number "$left")" "$(topology_number "$top")" \
           "$(topology_number "$pid")" "$(json_escape "$command")" "$(json_escape "$path")"
-        agent="$(topology_agent_json "$instance" "$state" "$bead" "$task" "$prompt" "$parent" "$transition")"
+        agent="$(topology_agent_json "$instance" "$state" "$bead" "$task" "$prompt" "$parent" "$transition" "$role" "$worktree" "$branch" "$parent_pane")"
         [ -n "$agent" ] && printf ',"agent":{%s}' "$agent"
         printf '}'
       done
@@ -2084,7 +2089,7 @@ SESSIONS & DASHBOARD — inventory for orchestrators.
                    pane: pane_id, pane_index, active, width, height, left, top,
                    pid, current_command, current_path, agent?
                    agent: instance_id, state, bead_id, task, prompt_file,
-                   parent_session_id, last_transition
+                   parent_session_id, last_transition, role, worktree, branch, parent_pane_id
                    topology uses stable $/@/% ids, omits absent agent metadata,
                    and never includes pane content.
 

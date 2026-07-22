@@ -2261,6 +2261,13 @@ else
   tmux set-option -p -t "$topo_parent_pane" @agent_parent_session "$topo_sid" 2>/dev/null || true
   tmux set-option -p -t "$topo_parent_pane" @agent_instance_id topology-instance 2>/dev/null || true
   tmux set-option -p -t "$topo_parent_pane" @agent_state running 2>/dev/null || true
+  # xtrm.topology.projection.v1 lineage. Set on the SAME pane as the older
+  # options so one assertion proves the new fields ride alongside them rather
+  # than replacing them, and left unset on topo_b so absence stays absence.
+  tmux set-option -p -t "$topo_parent_pane" @agent_role chain-coordinator 2>/dev/null || true
+  tmux set-option -p -t "$topo_parent_pane" @agent_worktree /srv/wt/topology 2>/dev/null || true
+  tmux set-option -p -t "$topo_parent_pane" @agent_branch xt/topology 2>/dev/null || true
+  tmux set-option -p -t "$topo_parent_pane" @agent_parent_pane "$topo_b_pane" 2>/dev/null || true
   topo_json="$(XDG_STATE_HOME="$WORK/topology-state" XTMUX_OBS_V2=0 "$PICKER" topology --json 2>/dev/null)"
   # topo_a is 2 windows holding 2 + 1 panes. The per-window pane COUNTS and the
   # global uniqueness of every pane_id are what pin the shape: a graph that hung
@@ -2277,6 +2284,11 @@ else
      ([.sessions[] | select(.name == $a) | .windows[].panes[]] | length == 3) and
      ([.sessions[] | select(.name == $a) | .windows[].panes[] | select(.pane_id == $p and .agent.parent_session_id == $sid)] | length == 1)' >/dev/null \
     && ok "topology: stable IDs and parent session metadata" || nok "topology: stable IDs and parent session metadata"
+  printf '%s\n' "$topo_json" | jq -e --arg p "$topo_parent_pane" --arg b "$topo_b_pane" --arg sid "$topo_sid" \
+    '[.sessions[].windows[].panes[] | select(.pane_id == $p) | .agent
+      | select(.role == "chain-coordinator" and .worktree == "/srv/wt/topology" and .branch == "xt/topology"
+               and .parent_pane_id == $b and .parent_session_id == $sid and .state == "running")] | length == 1' >/dev/null \
+    && ok "topology: publishes role/worktree/branch/parent_pane_id (projection.v1)" || nok "topology: publishes role/worktree/branch/parent_pane_id (projection.v1)"
   # ANSI-C quoting makes tabs real; tmux leaves \t literal inside single-quoted formats.
   # -s widens list-panes from the session's CURRENT window to every pane it owns —
   # without it the second window's pane is never compared against anything.
