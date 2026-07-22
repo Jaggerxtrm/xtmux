@@ -39,7 +39,14 @@ serialized="$({ render <<<"$long_line" & render <<<"$long_line" & wait; })"
 jq -e -s 'length == 2' <<<"$serialized" >/dev/null
 
 json_output=0
+use_color=false
 human="$(render <<<"$(head -n 1 <<<"$normalized")")"
-[[ "$human" == *'[repo/pi-events $1] [pi %1] bd.created bead=repo-1 actor=tester'* ]]
+# Archon-shaped block: `LEVEL [ts]: type` header + indented `key: "value"` fields.
+[[ "$human" == *']: bd.created'* ]]
+[[ "$human" == *'session: "repo/pi-events"'* ]]
+[[ "$human" == *'pane: "%1"'* ]]
+[[ "$human" == *'agent: "pi"'* ]]
+[[ "$human" == *'bead: "repo-1"'* ]]
+[[ "$human" == *'actor: "tester"'* ]]
 
 printf 'session event tests passed\n'

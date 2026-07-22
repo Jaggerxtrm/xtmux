@@ -2,15 +2,31 @@
 set -euo pipefail
 
 usage() {
-  printf 'usage: %s [--json]\n' "${0##*/}"
+  printf 'usage: %s [--json] [--color|--no-color]\n' "${0##*/}"
 }
 
 json_output=0
-case "${1:-}" in
-  --json) json_output=1; shift ;;
-  -h|--help) usage; exit 0 ;;
-esac
-[ "$#" -eq 0 ] || { usage >&2; exit 2; }
+force_color=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) json_output=1 ;;
+    --color) force_color=1 ;;
+    --no-color) force_color=0 ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+# Colors: on when stdout is a terminal and NO_COLOR (no-color.org) is unset;
+# --color/--no-color force it. Machine output (--json) never gets colors.
+if [ -n "$force_color" ]; then
+  [ "$force_color" -eq 1 ] && use_color=true || use_color=false
+elif [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  use_color=true
+else
+  use_color=false
+fi
 
 for command in xtmux sp bd git jq flock; do
   command -v "$command" >/dev/null || { printf 'missing command: %s\n' "$command" >&2; exit 127; }
@@ -36,44 +52,96 @@ emit_lines() {
   done
 }
 
+# Multi-line blocks: the human render emits one JSON-encoded string per line
+# (newlines escaped), so one input line == one whole event block. Decode and
+# print it under a SINGLE flock so concurrent followers never interleave
+# mid-event. (--json uses emit_lines: its records are already one per line.)
+emit_blocks() {
+  local line
+  while IFS= read -r line; do
+    { flock 9; jq -r '.' <<<"$line"; } 9>"$output_lock"
+  done
+}
+
 render() {
   if [ "$json_output" -eq 1 ]; then
     emit_lines
     return
   fi
 
-  jq --unbuffered -r '
-    def detail:
-      if .source == "specialists" then
-        " job=\(.event.job_id // .event.forensic_event.correlation.job_id // "-") role=\(.event.specialist // .event.forensic_event.resource.participant_role // "-")"
-      elif .source == "beads" then
-        " bead=\(.event.issue_id) actor=\(.event.actor // "-")" +
-        (if .type == "bd.updated" and (.event.new_value | type) == "object" then
-          " fields=\(.event.new_value | keys | join(","))"
-        elif (.event.old_value | type) == "object" or (.event.new_value | type) == "object" then
-          " status=\(.event.old_value.status // "-")->\(.event.new_value.status // "-")"
-        else "" end)
-      elif .type == "messages.sent" then
-        " from=\(.event.payload.sender_id // "-") to=\(.event.payload.recipient_id // "-") message=\(.event.payload.message_id // "-")"
-      elif .type == "messages.ack" then
-        " by=\(.event.payload.acked_by // "-") message=\(.event.payload.message_id // "-")"
-      elif ((.type // "") | startswith("agents.state.")) then
-        " task=\(.event.payload.task // "-")"
-      elif .type == "agents.instance.open" then
-        " role=\(.event.payload.role // "-") runtime=\(.event.payload.runtime // "-") task=\(.event.payload.task // "-")"
-      elif (((.type // "") | startswith("handoffs.")) or ((.type // "") | startswith("deliveries."))) then
-        " bead=\(.event.bead_id // "-") ref=\(.event.correlation_id // "-")"
-      else ""
-      end;
+  # Archon-shaped multi-line blocks:
+  #   LEVEL [YYYY-MM-DD HH:MM:SS.mmm +ZZZZ]: <type>  (duration)
+  #       key:  "value"
+  #       ...
+  # Local time, milliseconds, and the UTC offset are computed in jq (no GNU date
+  # dependency). Each block is emitted as ONE JSON-encoded line and decoded under
+  # a per-block flock in emit_blocks, so concurrent followers never interleave.
+  jq --unbuffered --argjson color "$use_color" '
+    def pad2: tostring | if length < 2 then "0" + . else . end;
+    def pad3: tostring | if length < 3 then ("0" * (3 - length)) + . else . end;
+    def C($code): if $color then "\u001b[\($code)m" else "" end;
+    def R: if $color then "\u001b[0m" else "" end;
+    def level_code: ((.event.payload.level // "info") | if . == "error" then "1;31" elif . == "warn" then "1;33" else "1;32" end);
+    def stamp:
+      (. / 1000 | floor) as $sec
+      | ((. % 1000 | floor) as $r | if $r < 0 then $r + 1000 else $r end) as $ms
+      | ($sec | localtime) as $l
+      | ((($l | mktime) - $sec) / 60 | round) as $offmin
+      | ($offmin | fabs | floor) as $aoff
+      | "\($l[0])-\($l[1] + 1 | pad2)-\($l[2] | pad2) \($l[3] | pad2):\($l[4] | pad2):\($l[5] | pad2).\($ms | pad3) \(if $offmin >= 0 then "+" else "-" end)\(($aoff / 60 | floor) | pad2)\(($aoff % 60) | pad2)";
+    def qv: if type == "string" then "\"\(.)\"" else tostring end;
+    def level: ((.event.payload.level // "info") | ascii_upcase);
+    def dur_suffix:
+      (.event.payload.duration_ms) as $d
+      | if ($d | type) == "number" then
+          (if $d >= 1000 then "  \(C("33"))(\($d / 1000 * 10 | round / 10)s)\(R)" else "  \(C("33"))(\($d | round)ms)\(R)" end)
+        else "" end;
     def actor:
       .pane.agent // (if (.session.agents | length) > 0 then (.session.agents | join(",")) else "-" end);
     def session_id:
       .session.id // (if (.session.candidates | length) > 0 then (.session.candidates | join(",")) else "-" end);
     def pane_id:
       .pane.id // (if (.pane.candidates | length) > 0 then (.pane.candidates | join(",")) else "-" end);
+    def detail_obj:
+      if .source == "specialists" then
+        { job: (.event.job_id // .event.forensic_event.correlation.job_id // "-"),
+          role: (.event.specialist // .event.forensic_event.resource.participant_role // "-") }
+      elif .source == "beads" then
+        ( { bead: .event.issue_id, actor: (.event.actor // "-") }
+          + (if .type == "bd.updated" and (.event.new_value | type) == "object" then { fields: (.event.new_value | keys | join(",")) }
+             elif (.event.old_value | type) == "object" or (.event.new_value | type) == "object" then { status: "\(.event.old_value.status // "-")->\(.event.new_value.status // "-")" }
+             else {} end) )
+      elif .type == "messages.sent" then
+        { from: (.event.payload.sender_id // "-"), to: (.event.payload.recipient_id // "-"), message: (.event.payload.message_id // "-") }
+      elif .type == "messages.ack" then
+        { by: (.event.payload.acked_by // "-"), message: (.event.payload.message_id // "-") }
+      elif ((.type // "") | startswith("agents.state.")) then
+        { task: (.event.payload.task // "-") }
+      elif .type == "agents.instance.open" then
+        { role: (.event.payload.role // "-"), runtime: (.event.payload.runtime // "-"), task: (.event.payload.task // "-") }
+      elif (((.type // "") | startswith("handoffs.")) or ((.type // "") | startswith("deliveries."))) then
+        { bead: (.event.bead_id // "-"), ref: (.event.correlation_id // "-") }
+      elif .event.payload.module == "telemetry" then
+        ( { tool: (.event.payload.tool // "-") }
+          + (if .event.payload.outcome != null then { outcome: .event.payload.outcome } else {} end)
+          + (if .event.payload.exit != null then { exit: .event.payload.exit } else {} end)
+          + (if (.event.payload.duration_ms | type) == "number" then { durationMs: .event.payload.duration_ms } else {} end)
+          + (if .event.correlation_id != null then { run: .event.correlation_id } else {} end) )
+      else {} end;
+    def fields:
+      { module: (.event.payload.module // .source),
+        source: .source,
+        session: "\(.session.repo // "-")/\(.session.name // "?")",
+        sessionId: session_id,
+        pane: pane_id,
+        agent: actor } + detail_obj;
 
-    "[\(.ts / 1000 | strftime("%H:%M:%SZ"))] [\(.source)] [\(.session.repo // "-")/\(.session.name // "?") \(session_id)] [\(actor) \(pane_id)] \(.type)\(detail)"
-  ' | emit_lines
+    . as $e
+    | ($e | fields) as $f
+    | ( [ "\(C($e | level_code))\($e | level)\(R) \(C("90"))[\($e.ts | stamp)]\(R): \(C("1;36"))\($e.type)\(R)\($e | dur_suffix)" ]
+        + ( $f | [ to_entries[] | "    \(C("36"))\(.key):\(R) \(.value | qv)" ] )
+      ) | join("\n")
+  ' | emit_blocks
 }
 
 follow_beads() {
@@ -187,7 +255,10 @@ xtmux log follow --after-id "$cursor" --json |
       elif ((($session.sessionName // "") | startswith("pi-")) or (($session.sessionName // "") | contains("-pi-"))) then "pi"
       else null end;
 
-    select((.event_type // "") | test("^(agents\\.instance\\.open|agents\\.state\\..+|handoffs\\..+|deliveries\\..+|messages\\.(sent|ack))$"))
+    select(
+      ((.event_type // "") | test("^(agents\\.instance\\.open|agents\\.state\\..+|handoffs\\..+|deliveries\\..+|messages\\.(sent|ack))$"))
+      or (.payload.module == "telemetry")
+    )
     | .session_id as $sid
     | .pane_id as $pid
     | session($sid) as $session

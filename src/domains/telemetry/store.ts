@@ -64,7 +64,7 @@ export function start(db: Db, c: StartInput): string {
     paneId: c.paneId,
     instanceId: c.instanceId,
     beadId: c.beadId,
-    payload: { tool, event: journalType, argv, cwd: c.cwd ?? "", repo: c.repo ?? "" },
+    payload: { module: "telemetry", level: "info", tool, event: journalType, argv, cwd: c.cwd ?? "", repo: c.repo ?? "" },
     createdAtMs: c.nowMs,
   });
   return c.id;
@@ -136,6 +136,8 @@ export function finish(db: Db, f: FinishInput): void {
     instanceId: row.instance_id ?? undefined,
     beadId: row.bead_id ?? undefined,
     payload: {
+      module: "telemetry",
+      level: status === "success" ? "info" : "error",
       tool: row.tool,
       outcome: status === "success" ? "ok" : "error",
       exit: String(f.exitCode),
@@ -199,7 +201,7 @@ export function reconcileIncomplete(db: Db, deps: ReconcileDeps, nowMs: number):
       sessionId: r.session_id ?? undefined,
       paneId: r.pane_id ?? undefined,
       beadId: r.bead_id ?? undefined,
-      payload: { outcome: "error", duration_ms: nowMs - r.started_at_ms },
+      payload: { module: "telemetry", level: "error", outcome: "error", duration_ms: nowMs - r.started_at_ms },
       createdAtMs: nowMs,
     });
     interrupted.push(r.id);

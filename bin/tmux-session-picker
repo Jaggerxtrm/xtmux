@@ -2111,7 +2111,7 @@ REMOTE — read-only observation of another host, over your own ssh.
                    fallthrough to the local CLI. Frames are size-capped; malformed
                    input is answered and the stream keeps serving.
 
-OBSERVABILITY — the local event log and command telemetry.
+OBSERVABILITY — the local event log and command telemetry (see also the standalone `xtmux-events` live tail).
   log emit  <type> [key=value ...]
   log tail  [n]
   log query [--type <t>] [--session <s>] [--pane <%id>] [--bead <id>]
