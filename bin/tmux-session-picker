@@ -2111,7 +2111,7 @@ REMOTE — read-only observation of another host, over your own ssh.
                    fallthrough to the local CLI. Frames are size-capped; malformed
                    input is answered and the stream keeps serving.
 
-OBSERVABILITY — the local event log and command telemetry.
+OBSERVABILITY — the local event log and command telemetry (see also the standalone `xtmux-events` live tail).
   log emit  <type> [key=value ...]
   log tail  [n]
   log query [--type <t>] [--session <s>] [--pane <%id>] [--bead <id>]
@@ -2120,10 +2120,6 @@ OBSERVABILITY — the local event log and command telemetry.
             NDJSON stream of committed journal items — same envelope as the
             log query page items, not a second schema. SIGINT/SIGTERM exit 0.
   telemetry <git|bd|gh> -- <args ...>          run a command and record it
-
-  xtmux-events [--json] [--color|--no-color]   (standalone command) live tail of
-            every open session's events — xtmux journal + specialists jobs +
-            beads lifecycle — as Archon-shaped blocks; --json for NDJSON.
 
   json output:
     log query      createdAtMs, type, domain, eventKey, sessionId, paneId,
