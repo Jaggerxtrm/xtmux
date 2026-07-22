@@ -26,6 +26,11 @@ jobs:
       - run: npm run build
       - run: npm pack --dry-run
       - run: npm publish --access public --provenance
+        env:
+          # NODE_AUTH_TOKEN is what actions/setup-node's registry-url
+          # writes into .npmrc for auth. Without this mapping, npm
+          # publish fails with 401 even when the secret exists.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       # Extract this tag's section from CHANGELOG.md as release notes.
       # The awk starts at `## [X.Y.Z]` and stops at the next `## [` header.
       - name: Extract release notes
