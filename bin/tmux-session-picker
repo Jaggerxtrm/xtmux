@@ -2121,6 +2121,10 @@ OBSERVABILITY — the local event log and command telemetry.
             log query page items, not a second schema. SIGINT/SIGTERM exit 0.
   telemetry <git|bd|gh> -- <args ...>          run a command and record it
 
+  xtmux-events [--json] [--color|--no-color]   (standalone command) live tail of
+            every open session's events — xtmux journal + specialists jobs +
+            beads lifecycle — as Archon-shaped blocks; --json for NDJSON.
+
   json output:
     log query      createdAtMs, type, domain, eventKey, sessionId, paneId,
                    beadId, correlationId, plus type-specific detail keys

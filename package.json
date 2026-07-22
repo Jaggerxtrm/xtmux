@@ -24,6 +24,7 @@
     "tmux-session-picker": "./bin/tmux-session-picker",
     "xtmux-obs": "./scripts/xtmux-obs.mjs",
     "xtmux-monitor": "./scripts/xtmux-monitor.sh",
+    "xtmux-events": "./scripts/test-session-events.sh",
     "xtmux-install": "./scripts/install.mjs",
     "xtmux-changelog": "./scripts/changelog.mjs"
   },
@@ -51,6 +52,7 @@
     "scripts/install.mjs",
     "scripts/xtmux-obs.mjs",
     "scripts/xtmux-monitor.sh",
+    "scripts/test-session-events.sh",
     "src/",
     "hooks/claude/",
     "CHANGELOG.md",

@@ -7,7 +7,7 @@
 import type { Db } from "./db/connection.ts";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { emitEvent, query as journalQuery, tail as journalTail } from "./domains/events/query.ts";
-import { journalPage } from "./domains/events/page.ts";
+import { journalPage, type JournalPageItemV1 } from "./domains/events/page.ts";
 import type { JournalRow } from "./domains/events/query.ts";
 import { closeInstance, openInstance } from "./domains/agents/instance.ts";
 import { insertEnvelope } from "./db/journal.ts";
@@ -88,6 +88,130 @@ function safeParseObject(s: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+// --- Human-readable render (opt-in via `--format human`) ---------------------
+// The NDJSON/TSV output above is a V1 byte contract and stays the default. This
+// is an additive view for humans, shaped like a structured event log:
+//
+//   LEVEL [YYYY-MM-DD HH:MM:SS.mmm +ZZZZ]: <type>  (duration)
+//       module:  "telemetry"
+//       runId:   "cr1753138844160-12345"
+//       ...
+//
+// Convention keys (slice B) read from the payload:
+//   module       component tag; falls back to the envelope `domain` for rows
+//   level        "info" | "warn" | "error" (default info)
+//   duration_ms  span length, also rendered inline on the header line
+// The envelope's correlation_id surfaces as `runId`. Writers that want a rich
+// human view emit these keys; everything degrades gracefully when absent.
+
+const HUMAN_PROMOTED = new Set(["module", "level", "duration_ms", "durationMs"]);
+
+function humanDuration(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
+}
+
+function localStamp(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number, w = 2): string => String(n).padStart(w, "0");
+  const off = -d.getTimezoneOffset();
+  const sign = off >= 0 ? "+" : "-";
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)} ` +
+    `${sign}${p(Math.floor(Math.abs(off) / 60))}${p(Math.abs(off) % 60)}`;
+}
+
+function asMs(v: unknown): number | undefined {
+  const n = typeof v === "number" ? v : v === undefined ? NaN : Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+export interface HumanParts {
+  type: string;
+  tsMs: number;
+  module?: string | undefined;
+  level?: string | undefined;
+  durationMs?: number | undefined;
+  runId?: string | undefined;
+  session?: string | undefined;
+  pane?: string | undefined;
+  instance?: string | undefined;
+  bead?: string | undefined;
+  rest: Record<string, unknown>;
+}
+
+export function renderHuman(h: HumanParts): string {
+  const level = (h.level ?? "info").toUpperCase().padEnd(5);
+  const dur = h.durationMs !== undefined ? `  (${humanDuration(h.durationMs)})` : "";
+  const lines = [`${level} [${localStamp(h.tsMs)}]: ${h.type}${dur}`];
+  const fields: Record<string, unknown> = {};
+  if (h.module)   fields["module"]   = h.module;
+  if (h.runId)    fields["runId"]    = h.runId;
+  if (h.session)  fields["session"]  = h.session;
+  if (h.pane)     fields["pane"]     = h.pane;
+  if (h.instance) fields["instance"] = h.instance;
+  if (h.bead)     fields["bead"]     = h.bead;
+  for (const [k, v] of Object.entries(h.rest)) fields[k] = v;
+  const keys = Object.keys(fields);
+  if (keys.length) {
+    const width = Math.max(...keys.map((k) => k.length));
+    for (const k of keys) {
+      const v = fields[k];
+      lines.push(`    ${k.padEnd(width)}  ${v === undefined ? "undefined" : JSON.stringify(v)}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function splitPayload(payload: Record<string, unknown>): { parts: Omit<HumanParts, "type" | "tsMs"> } {
+  const rest: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(payload)) if (!HUMAN_PROMOTED.has(k)) rest[k] = v;
+  return {
+    parts: {
+      module: payload["module"] as string | undefined,
+      level: payload["level"] as string | undefined,
+      durationMs: asMs(payload["duration_ms"] ?? payload["durationMs"]),
+      rest,
+    },
+  };
+}
+
+function humanFromRow(r: JournalRow): string {
+  const { parts } = splitPayload(safeParseObject(r.payload_json));
+  return renderHuman({
+    type: r.type,
+    tsMs: r.created_at_ms,
+    module: parts.module ?? r.domain,
+    level: parts.level,
+    durationMs: parts.durationMs,
+    runId: r.correlation_id ?? undefined,
+    session: r.session_id ?? undefined,
+    pane: r.pane_id ?? undefined,
+    instance: r.instance_id ?? undefined,
+    bead: r.bead_id ?? undefined,
+    rest: parts.rest,
+  });
+}
+
+function humanFromItem(item: JournalPageItemV1): string {
+  const payload = (typeof item.payload === "object" && item.payload !== null
+    ? item.payload
+    : {}) as Record<string, unknown>;
+  const { parts } = splitPayload(payload);
+  return renderHuman({
+    type: item.event_type,
+    tsMs: item.occurred_at_ms,
+    module: parts.module, // page items carry no `domain`; rely on the payload key
+    level: parts.level,
+    durationMs: parts.durationMs,
+    runId: item.correlation_id,
+    session: item.session_id,
+    pane: item.pane_id,
+    instance: item.agent_instance_id,
+    bead: item.bead_id,
+    rest: parts.rest,
+  });
 }
 
 // xtmux-avz: the full assistant message is too large for an argv field
@@ -264,6 +388,7 @@ export async function cliLogFollow(db: Db, argv: string[]): Promise<number> {
   }
   const intervalMs = Math.max(50, Math.min(Number(flags.get("interval") ?? 250) || 250, 10_000));
   const once = flags.get("once") === true;
+  const human = flags.get("format") === "human";
 
   let cursor = afterRaw;
   let running = true;
@@ -282,7 +407,7 @@ export async function cliLogFollow(db: Db, argv: string[]): Promise<number> {
         return 2;
       }
       for (const item of result.page.items) {
-        process.stdout.write(JSON.stringify(item) + "\n");
+        process.stdout.write(human ? humanFromItem(item) + "\n" : JSON.stringify(item) + "\n");
         // Advance only AFTER the row is written: if we die between these two
         // statements the consumer replays one row it has already seen, which its
         // event_key dedupe absorbs. Advancing first would silently drop it.
@@ -304,6 +429,7 @@ export function cliLogTail(db: Db, argv: string[]): number {
   const n = Number(positional[0] ?? 50);
   const rows = [...journalTail(db, isNaN(n) ? 50 : n)].reverse();
   if (flags.get("json") === true) process.stdout.write(JSON.stringify(rows.map(jsonRow)) + "\n");
+  else if (flags.get("format") === "human") for (const row of rows) process.stdout.write(humanFromRow(row) + "\n");
   else for (const row of rows) process.stdout.write(fmtRow(row) + "\n");
   return 0;
 }
@@ -341,6 +467,8 @@ export function cliLogQuery(db: Db, argv: string[]): number {
     }
     if (flags.get("json") === true) {
       process.stdout.write(JSON.stringify(result.page) + "\n");
+    } else if (flags.get("format") === "human") {
+      for (const item of result.page.items) process.stdout.write(humanFromItem(item) + "\n");
     } else {
       for (const item of result.page.items) {
         process.stdout.write(`${item.journal_id}\t${item.event_type}\t${item.recorded_at_ms}\n`);
@@ -359,6 +487,7 @@ export function cliLogQuery(db: Db, argv: string[]): number {
   });
   const ordered = [...rows].reverse();
   if (flags.get("json") === true) process.stdout.write(JSON.stringify(ordered.map(jsonRow)) + "\n");
+  else if (flags.get("format") === "human") for (const row of ordered) process.stdout.write(humanFromRow(row) + "\n");
   else for (const row of ordered) process.stdout.write(fmtRow(row) + "\n");
   return 0;
 }

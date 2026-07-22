@@ -106,6 +106,8 @@ export function completeTurn(
       beadId: input.beadId,
       correlationId: instanceId ?? input.paneId,
       payload: {
+        module: "agents",
+        level: "info",
         turn_id: turnId,
         parent_message_id: parentMessageId,
         summary: input.summary,

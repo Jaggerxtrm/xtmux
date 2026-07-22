@@ -32,6 +32,7 @@ const bins = {
   "tmux-session-picker": join(root, "bin", "tmux-session-picker"),
   "xtmux-obs": join(root, "scripts", "xtmux-obs.mjs"),
   "xtmux-monitor": join(root, "scripts", "xtmux-monitor.sh"),
+  "xtmux-events": join(root, "scripts", "test-session-events.sh"),
   "xtmux-changelog": join(root, "scripts", "changelog.mjs"),
 };
 const compatibilityLinks = {
