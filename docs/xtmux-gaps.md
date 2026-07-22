@@ -165,7 +165,11 @@ Extending `dashboard expanded --json` is acceptable only if it can provide the s
                 "task": "review runtime bridge",
                 "prompt_file": "/tmp/review-runtime.md",
                 "parent_session_id": "$1",
-                "last_transition": "2026-07-14T02:39:50+02:00"
+                "last_transition": "2026-07-14T02:39:50+02:00",
+                "role": "chain-coordinator",
+                "worktree": "/srv/specialists/.xtrm/worktrees/review-bridge",
+                "branch": "xt/review-bridge",
+                "parent_pane_id": "%3"
               }
             }
           ]
@@ -183,6 +187,7 @@ Extending `dashboard expanded --json` is acceptable only if it can provide the s
 - Include `window_id`, `window_index`, `pane_index`, `active`, geometry and current path/command.
 - Include `@agent_parent_session`; it is currently missing from the pane-level JSON needed by the graph.
 - Include `@agent_instance_id`, `@agent_state`, `@agent_bead`, `@agent_task`, `@agent_prompt_file` and `@agent_last_transition` when available.
+- Include `@agent_role`, `@agent_worktree`, `@agent_branch` and `@agent_parent_pane` as `role`, `worktree`, `branch` and `parent_pane_id`. The names come from `xtrm.topology.projection.v1` (`@xtrm/contracts`), the aggregated projection Core joins this snapshot into; without them the aggregator has to re-read the same pane options from local tmux, which only works on the host it runs on.
 - Include `host_id` in every snapshot and make the tmux server identity explicit or derivable.
 - Missing optional metadata must serialize as absent or `null`, never as a fabricated value.
 - JSON output must remain presentation-free and backward compatible within `v1`.
