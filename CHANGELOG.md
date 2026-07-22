@@ -2,6 +2,33 @@
 
 All notable changes to this project are documented here.
 
+## [0.2.0] - 2026-07-22
+
+This release builds out the observability and coordination runtime. A new `xtmux-events` command renders the event journal as Archon-shaped, colorized human blocks (alongside a `--format human` view across `log` tail/query/follow); canonical Beads lifecycle events now stream into the journal; agent turns are captured and retrievable; and `topology` publishes role, worktree, branch, and parent_pane_id. It also lays the identity / coordinator-role / async-bridge audit groundwork, fixes installer idempotency and npm-publish bin linking, and stops a self-parent turn-done feedback loop.
+
+### Added
+- Build identity, coordinator role, async bridge (wave-1α) (#55) ([2b9de91](https://github.com/Jaggerxtrm/xtmux/commit/2b9de91c2d06b66af87cc5e93f6ee8a39c2acb73))
+- Stream canonical Beads lifecycle events (#56) ([3153184](https://github.com/Jaggerxtrm/xtmux/commit/3153184ef36851ba2022d69cf36e98bbf8662d62))
+- Capture agent turns and retrieve messages (#57) ([4881aaa](https://github.com/Jaggerxtrm/xtmux/commit/4881aaa44c159bb847841c8d554e9df9d59bd5da))
+- Publish role/worktree/branch/parent_pane_id (xtmux-vau) (#61) ([125f1e4](https://github.com/Jaggerxtrm/xtmux/commit/125f1e4ebfff3d393ca3bf220c644ee772cd6653))
+
+### Fixed
+- Adopt untagged xtmux hook entries so install stays idempotent (xtmux-2zh) (#58) ([781f58d](https://github.com/Jaggerxtrm/xtmux/commit/781f58db99d0789bb45255ba214b6ca974724081))
+- Drop ./ prefix from bin paths so npm publish keeps the commands (#62) ([37d67ad](https://github.com/Jaggerxtrm/xtmux/commit/37d67adff90caae45e3611a3ec5e1e9219c0d1ba))
+
+### Observability runtime
+- Archon-shaped human event rendering + xtmux-events command (#60) ([7a2c1ad](https://github.com/Jaggerxtrm/xtmux/commit/7a2c1addcf54aec4ee173b85772e77a72e5ec110))
+
+### Other changes
+- Fix self-parent turn-done feedback loop (#54)
+
+* fix(coordination): stop self-parent feedback loops
+
+* test(ci): use distinct monitor fixtures ([5172b87](https://github.com/Jaggerxtrm/xtmux/commit/5172b87aab05dab72414262e3ca04d93dff8ea75))
+
+### Project maintenance
+- Apply 0.11.0 managed assets ([69cb581](https://github.com/Jaggerxtrm/xtmux/commit/69cb5810ed5dc20c88e8768761a1efa741ca7e74))
+
 ## [0.1.0] - 2026-07-17
 
 ### Added
