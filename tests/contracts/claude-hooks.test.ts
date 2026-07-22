@@ -74,6 +74,56 @@ describe("Claude settings merge", () => {
     expect(installed.filter((command) => command.includes("auto-monitor-drain-stop.mjs"))).toHaveLength(1);
   });
 
+  // xtmux-2zh: the operator's settings held 3 copies of every hook — one tagged
+  // {_source:'xtmux'} plus two untagged clones that predate provenance tagging.
+  // Install must converge on one registration per hook, and uninstall must take
+  // the untagged clones with it.
+  test("collapses untagged duplicates of managed hooks", () => {
+    const clone = (dir: string, event: string, command: string) => ({
+      ...(event === "PostToolUse" ? { matcher: "Bash" } : {}),
+      hooks: [{ type: "command", command: command.replace("<HOME>", dir) }],
+    });
+    const dir = mkdtempSync(join(tmpdir(), "xtmux-claude-hooks-"));
+    homes.push(dir);
+    mkdirSync(join(dir, ".claude"), { recursive: true });
+    const dup = (event: string, command: string) => [clone(dir, event, command), clone(dir, event, command)];
+    writeFileSync(join(dir, ".claude/settings.json"), JSON.stringify({
+      hooks: {
+        Stop: [
+          ...dup("Stop", 'CLAUDE_HOOK_EVENT=Stop bash "<HOME>/.claude/hooks/xtmux/agent-state.sh" done'),
+          { hooks: [{ type: "command", command: "user-stop" }] },
+        ],
+        PostToolUse: dup("PostToolUse", 'bash "<HOME>/.claude/hooks/xtmux/auto-monitor-on-send.sh"'),
+      },
+    }));
+    expect(run(dir).status).toBe(0);
+    const installed = commands(settings(dir));
+    expect(installed.filter((c) => c.startsWith("CLAUDE_HOOK_EVENT=Stop "))).toHaveLength(1);
+    expect(installed.filter((c) => c.includes("auto-monitor-on-send.sh"))).toHaveLength(1);
+    expect(installed).toContain("user-stop");
+    expect(run(dir, "--uninstall").status).toBe(0);
+    expect(commands(settings(dir))).toEqual(["user-stop"]);
+  });
+
+  // The ownership sweep is scoped to the managed hooks directory. A user who
+  // drops their OWN script in there and registers it untagged must survive:
+  // remove() runs mergeClaude(true) before it ever examines the directory, so a
+  // bare directory match would strip the registration on uninstall — leaving an
+  // orphaned script and no hook. Proximity to our files is not ownership.
+  test("preserves a user script registered from inside the managed hooks dir", () => {
+    const dir = home({});
+    expect(run(dir).status).toBe(0);
+    const mine = join(dir, ".claude/hooks/xtmux/my-own-hook.sh");
+    writeFileSync(mine, "#!/usr/bin/env bash\nexit 0\n");
+    const current = JSON.parse(readFileSync(join(dir, ".claude/settings.json"), "utf8"));
+    current.hooks.Stop.push({ hooks: [{ type: "command", command: `bash "${mine}"` }] });
+    writeFileSync(join(dir, ".claude/settings.json"), JSON.stringify(current, null, 2));
+
+    expect(run(dir, "--uninstall").status).toBe(0);
+    expect(commands(settings(dir))).toEqual([`bash "${mine}"`]);
+    expect(existsSync(mine)).toBe(true);
+  });
+
   test("uninstall removes only xtmux-owned entries", () => {
     const dir = home(foreign);
     expect(run(dir).status).toBe(0);
