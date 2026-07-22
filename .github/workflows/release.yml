@@ -30,26 +30,8 @@ jobs:
       # is signed automatically. Configured at:
       # npmjs.com → @jaggerxtrm/xtmux → Settings → Publishing → GitHub Actions.
       - run: npm publish --access public --provenance
-      # Extract this tag's section from CHANGELOG.md as release notes.
-      # The awk starts at `## [X.Y.Z]` and stops at the next `## [` header.
-      - name: Extract release notes
-        id: notes
-        run: |
-          tag="${GITHUB_REF_NAME}"
-          version="${tag#v}"
-          {
-            echo 'body<<EOF'
-            awk -v v="$version" '
-              $0 ~ "^## \\[" v "\\]" { taking=1; print; next }
-              taking && $0 ~ "^## \\[" { exit }
-              taking { print }
-            ' CHANGELOG.md
-            echo EOF
-          } >> "$GITHUB_OUTPUT"
-      - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "${GITHUB_REF_NAME}" \
-            --notes "${{ steps.notes.outputs.body }}"
+      # GH Release creation is owned by the release driver (xtrm-release
+      # workflow → release_execute.py runs `gh release create` before pushing
+      # the tag that triggers this workflow). Duplicating it here would
+      # 422 every time. If cutting a tag manually without the driver, create
+      # the GH Release by hand with `gh release create vX.Y.Z --notes ...`.
