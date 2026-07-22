@@ -18,19 +18,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
-      - run: npm ci
       # Trust the PR-time gate for correctness — release only enforces build
       # + tarball sanity + publish. Re-running full test/contract.sh here
       # would just extend the release window without adding signal.
+      - run: npm ci
       - run: npm run build
       - run: npm pack --dry-run
+      # npm Trusted Publishing (OIDC): id-token: write above lets npm publish
+      # authenticate directly via the GitHub Actions OIDC token — no
+      # NPM_TOKEN secret, no NODE_AUTH_TOKEN env, no registry-url. Provenance
+      # is signed automatically. Configured at:
+      # npmjs.com → @jaggerxtrm/xtmux → Settings → Publishing → GitHub Actions.
       - run: npm publish --access public --provenance
-        env:
-          # NODE_AUTH_TOKEN is what actions/setup-node's registry-url
-          # writes into .npmrc for auth. Without this mapping, npm
-          # publish fails with 401 even when the secret exists.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       # Extract this tag's section from CHANGELOG.md as release notes.
       # The awk starts at `## [X.Y.Z]` and stops at the next `## [` header.
       - name: Extract release notes
