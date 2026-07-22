@@ -20,13 +20,13 @@
     "changelog"
   ],
   "bin": {
-    "xtmux": "./bin/tmux-session-picker",
-    "tmux-session-picker": "./bin/tmux-session-picker",
-    "xtmux-obs": "./scripts/xtmux-obs.mjs",
-    "xtmux-monitor": "./scripts/xtmux-monitor.sh",
-    "xtmux-events": "./scripts/test-session-events.sh",
-    "xtmux-install": "./scripts/install.mjs",
-    "xtmux-changelog": "./scripts/changelog.mjs"
+    "xtmux": "bin/tmux-session-picker",
+    "tmux-session-picker": "bin/tmux-session-picker",
+    "xtmux-obs": "scripts/xtmux-obs.mjs",
+    "xtmux-monitor": "scripts/xtmux-monitor.sh",
+    "xtmux-events": "scripts/test-session-events.sh",
+    "xtmux-install": "scripts/install.mjs",
+    "xtmux-changelog": "scripts/changelog.mjs"
   },
   "exports": {
     "./changelog-config": "./changelog/cliff.toml",
