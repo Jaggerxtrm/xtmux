@@ -126,6 +126,15 @@ clear_optional_meta() {
   set_pane_option @agent_role ""
   set_pane_option @agent_prompt_file ""
   set_pane_option @agent_parent_session ""
+  # Written by the xt launcher rather than by this script, but cleared here for
+  # the same reason @agent_parent_session is: `off` ends the agent's occupation,
+  # and topology --json now publishes these as agent.worktree/branch/parent_pane_id.
+  # Left set, a reused pane would project the previous agent's lineage as if it
+  # were live. The pane's own cwd is unaffected — topology reports that as
+  # current_path, independently of any agent binding.
+  set_pane_option @agent_worktree ""
+  set_pane_option @agent_branch ""
+  set_pane_option @agent_parent_pane ""
 }
 
 prev_state="$(tmux show-options -p -t "$target" -qv @agent_state 2>/dev/null || true)"
