@@ -9,6 +9,7 @@ All notable changes to this project are documented here.
 
 ### Fixed
 - Stop duplicating gh release create (xtrm-reyem.6 follow-up) (#68) ([fee5db3](https://github.com/Jaggerxtrm/xtmux/commit/fee5db305a299e96d24a10561b2291d0fb786c4b))
+- Skip merge commits so CI == local (xtrm-reyem.13) ([2552a0a](https://github.com/Jaggerxtrm/xtmux/commit/2552a0ab34baec11017989b35985dd172c21001f))
 
 ### Project maintenance
 - Add changelog:check + rename raw wrapper (xtrm-reyem.12) (#70) ([44ffb26](https://github.com/Jaggerxtrm/xtmux/commit/44ffb266ec08edc67420d0aa80929fbd28f38041))
