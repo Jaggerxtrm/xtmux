@@ -22,6 +22,9 @@ conventional_commits = true
 filter_unconventional = false
 split_commits = false
 commit_parsers = [
+  # Meta-refresh commits stay out of the changelog they just regenerated,
+  # otherwise every regen triggers another regen (chase-tail).
+  { message = "^chore\\(changelog\\)", skip = true },
   { message = "^feat\\(obs\\)", group = "Observability runtime" },
   { message = "^(feat|fix)\\(coordination\\)", group = "Coordination and hooks" },
   { message = "^(feat|fix)\\(messages\\)", group = "Messages and delivery" },

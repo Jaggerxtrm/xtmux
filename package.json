@@ -62,7 +62,9 @@
   "scripts": {
     "cli": "bun run src/cli.ts",
     "build": "node scripts/build.mjs",
-    "changelog": "node scripts/changelog.mjs",
+    "changelog": "node scripts/changelog-update.mjs",
+    "changelog:check": "node scripts/changelog-update.mjs --check",
+    "changelog:raw": "node scripts/changelog.mjs",
     "install:global": "node scripts/install.mjs",
     "uninstall:global": "node scripts/install.mjs --uninstall",
     "postinstall": "node scripts/install.mjs --from-npm",
