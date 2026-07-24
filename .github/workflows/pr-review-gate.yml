@@ -1,0 +1,134 @@
+name: pr-review-gate
+
+# Limitation: GitHub Actions rejects `pull_request_review_thread` even though
+# the docs list it, so resolving a thread emits no event this workflow listens
+# on. Refresh options after resolving a bot thread:
+#   - re-request the failed check-suite from the PR checks tab (one click)
+#   - `gh workflow run pr-review-gate.yml -F pr=<n>` (workflow_dispatch)
+#   - push any commit (or an empty one) to the PR branch
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  pull_request_review:
+    types: [submitted, dismissed]
+  issue_comment:
+    types: [created, edited, deleted]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number to re-check
+        required: true
+        type: string
+
+jobs:
+  gate:
+    name: pr-review-gate
+    if: github.event.pull_request || github.event.issue.pull_request || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Check unresolved LLM-bot threads and bot verdict
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          BOT_RE: ${{ vars.PR_REVIEW_GATE_BOT_RE || 'codex|coderabbit|claude' }}
+        with:
+          script: |
+            const pr = context.payload.pull_request?.number
+                    ?? context.payload.issue?.number
+                    ?? Number(context.payload.inputs?.pr);
+            if (!pr) { core.info('no PR context; skipping'); return; }
+            const { owner, repo } = context.repo;
+            // Strip Python/Perl-style inline flag if present; JS regex doesn't support it.
+            const rawPattern = process.env.BOT_RE.replace(/^\(\?[imsux]+\)/, '');
+            const botRe = new RegExp(rawPattern, 'i');
+
+            // Bot detection: MUST be a Bot account (GraphQL __typename) AND
+            // login matches the pattern. Prevents human logins containing
+            // "codex"/"claude" from tripping the gate.
+            const isBot = (author) =>
+              !!author && author.__typename === 'Bot' &&
+              botRe.test(author.login ?? '');
+
+            // Paginate reviewThreads — a PR with >100 threads could hide an
+            // unresolved bot thread behind the first page. Same for reviews.
+            const threads = [];
+            let reviewsPage = [];
+            let cursor = null;
+            let reviewCursor = null;
+            try {
+              for (let page = 0; page < 20; page++) {  // hard cap: 20 pages = 2000 threads
+                const data = await github.graphql(`
+                  query($o:String!,$r:String!,$n:Int!,$tc:String,$rc:String){
+                    repository(owner:$o,name:$r){
+                      pullRequest(number:$n){
+                        reviewThreads(first:100, after:$tc){
+                          pageInfo{ hasNextPage endCursor }
+                          nodes{
+                            isResolved
+                            isOutdated
+                            comments(first:1){nodes{author{login __typename}}}
+                          }
+                        }
+                        reviews(first:100, after:$rc){
+                          pageInfo{ hasNextPage endCursor }
+                          nodes{ state submittedAt author{login __typename} }
+                        }
+                      }
+                    }
+                  }`, { o: owner, r: repo, n: pr, tc: cursor, rc: reviewCursor });
+                const rt = data.repository.pullRequest.reviewThreads;
+                const rv = data.repository.pullRequest.reviews;
+                threads.push(...rt.nodes);
+                if (page === 0) reviewsPage = rv.nodes.slice();
+                else reviewsPage.push(...rv.nodes);
+                const nextT = rt.pageInfo.hasNextPage ? rt.pageInfo.endCursor : null;
+                const nextR = rv.pageInfo.hasNextPage ? rv.pageInfo.endCursor : null;
+                if (!nextT && !nextR) break;
+                cursor = nextT ?? cursor;
+                reviewCursor = nextR ?? reviewCursor;
+                if (page === 19 && (nextT || nextR)) {
+                  core.setFailed('BLOCKED — PR has >2000 threads/reviews; gate cannot verify all pages (fail closed)');
+                  return;
+                }
+              }
+            } catch (e) {
+              core.setFailed(`GraphQL failed (fail closed): ${e.message}`);
+              return;
+            }
+
+            const unresolvedBot = threads.filter(t =>
+              !t.isResolved && !t.isOutdated &&
+              t.comments.nodes.some(c => isBot(c.author))
+            );
+
+            const latest = {};
+            for (const r of reviewsPage) {
+              if (!isBot(r.author)) continue;
+              if (!r.submittedAt) continue; // Codex-shaped: null timestamp; threads-only path
+              const login = r.author.login;
+              const prev = latest[login];
+              if (!prev || new Date(prev.submittedAt) < new Date(r.submittedAt)) {
+                latest[login] = r;
+              }
+            }
+            const blockingBots = Object.entries(latest)
+              .filter(([, r]) => r.state === 'CHANGES_REQUESTED')
+              .map(([login]) => login);
+
+            const problems = [];
+            if (unresolvedBot.length) {
+              const authors = [...new Set(unresolvedBot.flatMap(t =>
+                t.comments.nodes.map(c => c.author?.login).filter(Boolean)))];
+              problems.push(`${unresolvedBot.length} unresolved bot review thread(s) from: ${authors.join(', ')}`);
+            }
+            if (blockingBots.length) {
+              problems.push(`CHANGES_REQUESTED from: ${blockingBots.join(', ')}`);
+            }
+
+            if (problems.length) {
+              core.setFailed('BLOCKED — ' + problems.join(' | '));
+            } else {
+              core.info('OK — no unresolved bot threads, no bot CHANGES_REQUESTED');
+            }
