@@ -3,6 +3,7 @@ set -euo pipefail
 
 usage() {
   printf 'usage: %s [--json] [--color|--no-color]\n' "${0##*/}"
+  printf 'follows Beads lifecycle, xtmux coordination/audit/monitor events, and all Specialists job.* events\n'
 }
 
 json_output=0
@@ -115,6 +116,12 @@ render() {
         { from: (.event.payload.sender_id // "-"), to: (.event.payload.recipient_id // "-"), message: (.event.payload.message_id // "-") }
       elif .type == "messages.ack" then
         { by: (.event.payload.acked_by // "-"), message: (.event.payload.message_id // "-") }
+      elif .type == "messages.reply.linked" then
+        { message: (.event.payload.message_id // "-"), replyTo: (.event.payload.reply_to_message_id // "-"), outcome: (.event.payload.outcome // "-") }
+      elif .type == "messages.reply.rejected" or .type == "messages.send.rejected" then
+        { error: (.event.payload.error_code // "-"), replyTo: (.event.payload.reply_to_message_id // "-"), outcome: (.event.payload.outcome // "-") }
+      elif .type == "messages.cancelled" then
+        {}
       elif ((.type // "") | startswith("agents.state.")) then
         { task: (.event.payload.task // "-") }
       elif .type == "agents.instance.open" then
@@ -150,11 +157,12 @@ follow_beads() {
     if rows="$(bd -C "$root" sql --json "
       SELECT id, issue_id, event_type, actor, old_value, new_value, comment, created_at
       FROM events
-      WHERE created_at > '$cursor_time' OR (created_at = '$cursor_time' AND id > '$cursor_id')
-      ORDER BY created_at, id
+      WHERE replace(replace(created_at, 'T', ' '), 'Z', '') > '$cursor_time'
+         OR (replace(replace(created_at, 'T', ' '), 'Z', '') = '$cursor_time' AND id > '$cursor_id')
+      ORDER BY replace(replace(created_at, 'T', ' '), 'Z', ''), id
       LIMIT 100
     " 2>/dev/null)"; then
-      last="$(jq -r '(last? // empty) | [(.created_at | sub("T"; " ") | rtrimstr("Z")), .id] | @tsv' <<<"$rows")"
+      last="$(jq -r '(last? // empty) | [(.created_at | gsub("T"; " ") | rtrimstr("Z")), .id] | @tsv' <<<"$rows")"
       if [ -n "$last" ]; then
         IFS=$'\t' read -r cursor_time cursor_id <<<"$last"
         jq --unbuffered -c '.[] | select(.event_type | IN("created", "claimed", "updated", "closed", "reopened", "status_changed"))' <<<"$rows"
@@ -235,11 +243,13 @@ if [ "${SESSION_EVENTS_LIB_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
 
+# Capture source cursors before dashboard setup so events emitted during setup are included.
+started_at="$(date -Is)"
+beads_started_at="$(date -u '+%Y-%m-%d %H:%M:%S')"
+cursor="$(xtmux log query --after-id 0 --limit 1 --json | jq -er '.latest_available_id // 0')"
 # ponytail: snapshot once; restart the helper to include sessions opened later.
 xtmux dashboard expanded --json >"$metadata_file"
 session_count="$(jq -r '.sessions | length' "$metadata_file")"
-started_at="$(date -Is)"
-cursor="$(xtmux log query --after-id 0 --limit 1 --json | jq -er '.latest_available_id // 0')"
 
 printf 'following %s open xtmux sessions from journal cursor %s\n' "$session_count" "$cursor" >&2
 
@@ -256,7 +266,7 @@ xtmux log follow --after-id "$cursor" --json |
       else null end;
 
     select(
-      ((.event_type // "") | test("^(agents\\.instance\\.open|agents\\.state\\..+|handoffs\\..+|deliveries\\..+|messages\\.(sent|ack))$"))
+      ((.event_type // "") | test("^(agents\\.instance\\.open|agents\\.state\\..+|agents?\\.turn\\.done|agent\\.ready|handoffs\\..+|deliveries\\..+|messages\\.(sent|ack|cancelled|reply\\.linked|reply\\.rejected|send\\.rejected)|monitor\\.(started|state)|wait\\.wake\\.orphan|audit\\..+|bd\\.commented)$"))
       or (.payload.module == "telemetry")
     )
     | .session_id as $sid
@@ -289,7 +299,7 @@ sp log --since "$started_at" --follow --json |
       elif ((($session.sessionName // "") | startswith("pi-")) or (($session.sessionName // "") | contains("-pi-"))) then "pi"
       else null end;
 
-    select(.forensic_event.event_name == "job.started")
+    select((.forensic_event.event_name // "") | startswith("job."))
     | .forensic_event as $forensic
     | ($forensic.links.spawned_by.tmux_pane_id // $forensic.links.root_runtime_origin.tmux_pane_id) as $pid
     | ($forensic.links.spawned_by.tmux_session_id // pane($pid).sessionId) as $sid
@@ -299,7 +309,7 @@ sp log --since "$started_at" --follow --json |
     | {
         ts: $forensic.t_unix_ms,
         source: "specialists",
-        type: "job.started",
+        type: $forensic.event_name,
         host_id: ($forensic.links.spawned_by.host_id // $forensic.links.root_runtime_origin.host_id),
         session: {id: $sid, name: $session.sessionName, repo: $session.repo, path: $session.path, agents: agents($sid)},
         pane: {id: $pid, agent: agent($pane; $session), command: ($pane.command // null), path: ($pane.path // null)},
@@ -311,7 +321,6 @@ pids+=("$!")
 
 declare -A watched_roots=()
 beads_roots=()
-beads_started_at="$(date '+%Y-%m-%d %H:%M:%S')"
 while IFS= read -r path; do
   common_dir="$(git -C "$path" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
   [ -n "$common_dir" ] || continue
