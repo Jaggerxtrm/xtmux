@@ -105,6 +105,7 @@ export function captureRuntimeContext(
       schema_version: "xtrm.runtime-origin.v1",
       kind: "xtmux.agent_instance",
       host_id: hostId(env),
+      tmux_server_id: tmuxEnv.split(",", 1)[0],
       tmux_session_id: sessionId,
       tmux_window_id: windowId,
       tmux_pane_id: paneId,

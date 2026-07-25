@@ -894,6 +894,7 @@ else
     *) nok "context: emits xtrm.runtime-origin.v1 envelope (got '$ctx_json')" ;;
   esac
 
+  ctx_server="$(jget "$ctx_json" tmux_server_id)"
   ctx_sid="$(jget "$ctx_json" tmux_session_id)"
   ctx_wid="$(jget "$ctx_json" tmux_window_id)"
   ctx_pid_="$(jget "$ctx_json" tmux_pane_id)"
@@ -904,6 +905,9 @@ else
   { [ "$ctx_sid" = "$want_sid" ] && [ "$ctx_wid" = "$want_wid" ] && [ "$ctx_pid_" = "$ctx_pane" ]; } \
     && ok "context: ids match the invoking pane and are \$/@/% stable ids" \
     || nok "context: ids match the invoking pane (got $ctx_sid/$ctx_wid/$ctx_pid_ want $want_sid/$want_wid/$ctx_pane)"
+  [ "$ctx_server" = "${ctx_tmuxenv%%,*}" ] \
+    && ok "context: tmux_server_id matches the invoking socket" \
+    || nok "context: tmux_server_id matches the invoking socket (got $ctx_server)"
 
   ctx_inst="$(jget "$ctx_json" agent_instance_id)"
   ctx_bead="$(jget "$ctx_json" bead_id)"
@@ -1028,8 +1032,8 @@ except Exception: print(0)" "$ctx_db" 2>/dev/null; }
   rm -rf "$race_state"
 
   case "$ctx_json" in
-    *XDG_STATE_HOME*|*"$ctx_sock"*|*PATH*) nok "context: leaks no environment" ;;
-    *) ok "context: leaks no environment" ;;
+    *XDG_STATE_HOME*|*PATH*) nok "context: leaks no unrelated environment" ;;
+    *) ok "context: leaks no unrelated environment" ;;
   esac
 
   # A published npm install ships NEITHER the compiled bin/xtmux-obs (not in

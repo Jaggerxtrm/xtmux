@@ -6,11 +6,10 @@
 // `log emit agent.turn.done` so the obs binary stores the uncompacted text in
 // agent_turns.last_message_text (symmetric with the pi extension).
 //
-// Fail-open by contract: any unreadable/malformed transcript, missing tmux
-// context, or emit failure is a silent no-op. A Claude turn still lands a row
-// via agent-state.sh; this hook only enriches it with full text.
+// Fail-open by contract: unreadable/malformed transcripts emit a metadata-only
+// completed-turn row; missing tmux context or emit failures remain silent.
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readSync, writeFileSync, unlinkSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -52,15 +51,20 @@ function textOfMessage(message) {
 // transcript lines are one JSON object each; the assistant turn we want is the
 // last top-level entry whose message.role === 'assistant' with non-empty text.
 function lastAssistantText(transcriptPath) {
-  if (!transcriptPath || !existsSync(transcriptPath)) return "";
+  if (!transcriptPath) return "";
   let raw;
+  let fd;
   try {
     // Read only the tail — the full transcript can be large and only the most
     // recent assistant turn matters. 1MB tail covers thousands of lines.
-    const buf = readFileSync(transcriptPath);
-    const tailStart = Math.max(0, buf.length - 1024 * 1024);
-    raw = buf.subarray(tailStart).toString("utf8");
+    fd = openSync(transcriptPath, "r");
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, 1024 * 1024);
+    const buf = Buffer.allocUnsafe(length);
+    const bytesRead = readSync(fd, buf, 0, length, size - length);
+    raw = buf.subarray(0, bytesRead).toString("utf8");
   } catch { return ""; }
+  finally { if (fd !== undefined) { try { closeSync(fd); } catch { /* fail-open */ } } }
   const lines = raw.split("\n");
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const line = lines[i];
@@ -83,7 +87,6 @@ function main() {
   if (!process.env.TMUX || !process.env.TMUX_PANE) return;
   const transcriptPath = input.transcript_path ?? input.transcriptPath;
   const fullText = lastAssistantText(transcriptPath);
-  if (!fullText) return;
 
   const pane = process.env.TMUX_PANE;
   const sessionId = tmuxValue(["display-message", "-p", "#{session_id}"], pane);
@@ -94,9 +97,11 @@ function main() {
   let tmpDir = "";
   let tmpFile = "";
   try {
-    tmpDir = mkdtempSync(join(tmpdir(), "xtmux-claude-turn-"));
-    tmpFile = join(tmpDir, "message.txt");
-    writeFileSync(tmpFile, fullText, { encoding: "utf8", mode: 0o600 });
+    if (fullText) {
+      tmpDir = mkdtempSync(join(tmpdir(), "xtmux-claude-turn-"));
+      tmpFile = join(tmpDir, "message.txt");
+      writeFileSync(tmpFile, fullText, { encoding: "utf8", mode: 0o600 });
+    }
     const args = [
       "log", "emit", "agent.turn.done",
       `pane=${pane}`,
