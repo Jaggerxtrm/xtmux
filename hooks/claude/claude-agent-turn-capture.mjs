@@ -9,7 +9,8 @@
 // Fail-open by contract: unreadable/malformed transcripts emit a metadata-only
 // completed-turn row; missing tmux context or emit failures remain silent.
 
-import { closeSync, fstatSync, openSync, readFileSync, readSync, writeFileSync, unlinkSync, mkdtempSync, rmSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readSync, writeFileSync, unlinkSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -93,6 +94,11 @@ function main() {
   const sessionName = tmuxValue(["display-message", "-p", "#S"], pane);
   const bead = tmuxValue(["show-options", "-p", "-qv", "@agent_bead"], pane);
   const parent = tmuxValue(["show-options", "-p", "-qv", "@agent_parent_session"], pane);
+  let transcriptSize = 0;
+  try { transcriptSize = statSync(transcriptPath).size; } catch { /* already read; size only improves dedup identity */ }
+  const turnKey = createHash("sha256")
+    .update(`${sessionId}\0${transcriptPath}\0${transcriptSize}\0${fullText}`)
+    .digest("hex").slice(0, 24);
 
   let tmpDir = "";
   let tmpFile = "";
@@ -118,6 +124,18 @@ function main() {
   } finally {
     if (tmpFile) { try { unlinkSync(tmpFile); } catch { /* consumed by obs */ } }
     if (tmpDir) { try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* already removed */ } }
+  }
+
+  if (parent && parent !== sessionId && parent !== pane && fullText) {
+    try {
+      spawnSync(PICKER, [
+        "message-send", "--from", sessionId || pane, "--to", parent, "--bead", bead,
+        "--expects-reply=false", "--text", `turn done: ${compactSummary(fullText)}`,
+        "--id", `claude-turn-${turnKey}`,
+      ], { encoding: "utf8", timeout: 2000 });
+    } catch {
+      // Best-effort only.
+    }
   }
 }
 

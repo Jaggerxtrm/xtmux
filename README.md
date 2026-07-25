@@ -110,9 +110,11 @@ xtmux message-list --for "$(tmux display-message -p '#{session_id}')" \
 ```
 
 A bead implies `expectsReply:true`; use `--expects-reply=false` for FYI-only
-messages. `message-ack` records receipt only. The original recipient fulfils an
-obligation with `message-reply --in-reply-to <messageKey> --text ...`, or with
-`safe-send-pointer --reply-to <messageKey>` after successful pane injection.
+messages. `message-ack` records receipt only. Option A reads SQLite rows and
+acks only after the Pi continuation is queued; a crash before ack replays the
+message. The original recipient fulfils an obligation with `message-reply
+--in-reply-to <messageKey> --text ...`, or with `safe-send-pointer --reply-to
+<messageKey>` after successful pane injection.
 
 SQLite is the source of truth at
 `${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/observability.db`. Set
@@ -142,8 +144,9 @@ npm install --global @jaggerxtrm/xtmux
 ```
 
 This installs the command suite, grouped Pi extensions under `~/.pi`, and owned
-Claude hooks under `~/.claude`. Existing unrelated settings and xtrm-managed
-hooks are preserved. The installer is idempotent and never opens a browser.
+Claude hooks under `~/.claude`, including Stop-time parent FYIs and bounded inbox
+reminders. Existing unrelated settings and xtrm-managed hooks are preserved. The
+installer is idempotent and never opens a browser.
 
 For upgrade, uninstall, conflict behavior, optional aicommit2 setup, and the
 reusable changelog command, see [`docs/INSTALL.md`](docs/INSTALL.md).
@@ -421,10 +424,10 @@ metadata so reused panes do not display stale bead/task pointers.
 
 Claude Code can emit `running`, `needs-input`, `done`, and `off` via hooks. Pi is
 supported through `extensions/pi-agent-state.ts` for `running`, `done`, `idle`,
-and `off`; pi currently has no documented `needs-input` extension event. The pi
-extension also listens for `turn_end`/`agent_end`: it logs `agent.turn.done` with
-a compact `last_message`, and if `@agent_parent_session` is set it sends a short
-`message.sent` update to the parent.
+and `off`; pi currently has no documented `needs-input` extension event. Both
+runtimes log `agent.turn.done` with a compact `last_message` and send a reply-free
+`turn done:` FYI when `@agent_parent_session` is set. Claude's Stop hook also
+prints bounded pending inbox keys without reflecting message summaries.
 
 ## Preview enrichment
 

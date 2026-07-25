@@ -32,6 +32,8 @@ function block(reason) {
 }
 
 const CANONICAL_TMUX_HANDLE = /^[$%][0-9]+$/;
+const SAFE_MESSAGE_KEY = /^[A-Za-z0-9_$%:.-]{1,96}$/;
+const MAX_INBOX_KEYS = 20;
 
 function monitorTarget(obligation) {
   const target = obligation?.targetPaneId || obligation?.recipientId;
@@ -43,10 +45,29 @@ function commandFor(target) {
   return `Monitor(command: "xtmux wait-agent ${target} --wait-for-transition --consume --timeout 30m --interval 30s", description: "reply from ${target}", timeout_ms: 1800000)`;
 }
 
+function remindInbox() {
+  const pane = process.env.TMUX_PANE || "";
+  if (!CANONICAL_TMUX_HANDLE.test(pane)) return;
+  const session = String(spawnSync("tmux", ["display-message", "-p", "-t", pane, "#{session_id}"], {
+    encoding: "utf8", timeout: 1000,
+  }).stdout || "").trim();
+  if (!CANONICAL_TMUX_HANDLE.test(session)) return;
+  const rows = pickerJson([
+    "message-list", "--for", session, "--pane", pane, "--expects-reply", "--json", "--limit", String(MAX_INBOX_KEYS + 1),
+  ], "message-list");
+  if (!Array.isArray(rows)) return;
+  const keys = rows.filter((row) => row?.expectsReply === true && row?.replyStatus === "pending"
+    && typeof row.messageKey === "string" && SAFE_MESSAGE_KEY.test(row.messageKey))
+    .map((row) => row.messageKey);
+  if (keys.length) process.stderr.write(`[xtmux-inbox] reply required: ${keys.slice(0, MAX_INBOX_KEYS).join(", ")}${keys.length > MAX_INBOX_KEYS ? ", …" : ""}\n`);
+}
+
 function main() {
   if (process.env.XTMUX_AUTO_MONITOR_DRAIN_DISABLE === "1") return;
   const input = readInput();
   if (!input || input.stop_hook_active) return;
+
+  try { remindInbox(); } catch { /* Reminder is fail-open; the obligation gate below remains authoritative. */ }
 
   try {
     const obligations = pickerJson(["obligations", "list", "--json"], "obligations list");

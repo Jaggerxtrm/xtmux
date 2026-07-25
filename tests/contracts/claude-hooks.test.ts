@@ -72,6 +72,7 @@ describe("Claude settings merge", () => {
     expect(installed.some((command) => command.includes("~/.tmux/scripts/agent-state.sh"))).toBe(false);
     expect(installed.some((command) => command.includes("$CLAUDE_PROJECT_DIR"))).toBe(false);
     expect(installed.filter((command) => command.includes("auto-monitor-drain-stop.mjs"))).toHaveLength(1);
+    expect(settings(dir).hooks.Stop.some((entry: any) => entry.hooks?.some((hook: any) => hook.command.includes("auto-monitor-drain-stop.mjs")))).toBe(true);
   });
 
   // xtmux-2zh: the operator's settings held 3 copies of every hook — one tagged

@@ -1,7 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { coordinationResult } from "./coordination-json.ts";
 
-const PICKER = process.env.XTMUX_PICKER || `${process.env.HOME}/.local/bin/xtmux`;
 const WIDGET = "xtmux-inbox";
 
 interface MessageRow {
@@ -16,16 +15,25 @@ interface MessageRow {
   replyStatus: "pending" | "fulfilled" | "cancelled" | null;
 }
 
-interface ObligationRow {
+export interface SenderObligation {
   messageKey: string;
   senderId: string;
   senderPaneId: string | null;
   recipientId: string;
   targetPaneId: string | null;
+  createdAtMs: number;
+}
+
+interface ObligationRow extends SenderObligation {
   summary: string;
   replyStatus: "pending";
   beadId?: string | null;
 }
+
+export type SenderMonitorReconciler = (
+  obligations: readonly SenderObligation[],
+  maxOperations: number,
+) => Promise<number>;
 
 type PendingReply =
   | { blocked: true }
@@ -76,7 +84,7 @@ function setWidget(ctx: ExtensionContext, lines: string[] | undefined): void {
   ctx.ui.setWidget?.(WIDGET, lines, { placement: "belowEditor" });
 }
 
-export default function xtmuxInboxReply(pi: ExtensionAPI): void {
+export default function xtmuxInboxReply(pi: ExtensionAPI, reconcileSenderMonitors?: SenderMonitorReconciler): void {
   let ownPaneId = "";
   let ownSessionId = "";
   let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -85,12 +93,15 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
   let stopped = false;
   let replies: PendingReply[] = [];
   let awaiting: PendingReply[] = [];
+  let senderObligations: SenderObligation[] = [];
+  let unackedReplyKeys = new Set<string>();
   let unread = 0;
   let degradation = "";
   let cycleBudget: OperationBudget = { remaining: MAX_CYCLE_OPERATIONS };
 
   async function execJson(args: string[], command: string): Promise<unknown> {
-    const result = await pi.exec(PICKER, args, { timeout: 2000 });
+    const picker = process.env.XTMUX_PICKER || `${process.env.HOME}/.local/bin/xtmux`;
+    const result = await pi.exec(picker, args, { timeout: 2000 });
     if (result.code !== 0) throw new Error(`${command} failed (exit ${result.code})`);
     try {
       return JSON.parse(result.stdout);
@@ -128,10 +139,12 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     if (length + line.length <= MAX_WIDGET_CHARS) lines.push(line);
   }
 
-  async function loadState(budget: OperationBudget): Promise<void> {
+  async function loadState(): Promise<void> {
     if (!ownSessionId || !ownPaneId) {
       replies = [];
       awaiting = [];
+      senderObligations = [];
+      unackedReplyKeys = new Set();
       unread = 0;
       return;
     }
@@ -139,6 +152,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     const obligationValue = await execJson(["obligations", "list", "--pane", ownPaneId, "--json"], "obligations list");
     if (!Array.isArray(obligationValue) || obligationValue.length > MAX_DB_ROWS) throw new Error("obligations list returned incompatible JSON");
     const outgoing: PendingReply[] = [];
+    const monitorable: SenderObligation[] = [];
     for (const row of obligationValue) {
       if (!row || typeof row !== "object") throw new Error("obligations list returned incompatible JSON");
       const value = row as ObligationRow;
@@ -147,6 +161,20 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
       }
       const beadId = typeof value.beadId === "string" ? value.beadId : "";
       outgoing.push(SAFE_TOKEN.test(value.senderId) ? pendingReply(value.messageKey, value.recipientId, beadId) : { blocked: true });
+      if ((value.senderPaneId === null || typeof value.senderPaneId === "string")
+        && (value.targetPaneId === null || typeof value.targetPaneId === "string")
+        && typeof value.createdAtMs === "number" && Number.isFinite(value.createdAtMs)
+        && [value.messageKey, value.senderId, value.recipientId, value.senderPaneId, value.targetPaneId]
+          .every((item) => item === null || SAFE_TOKEN.test(item))) {
+        monitorable.push({
+          messageKey: value.messageKey,
+          senderId: value.senderId,
+          senderPaneId: value.senderPaneId,
+          recipientId: value.recipientId,
+          targetPaneId: value.targetPaneId,
+          createdAtMs: value.createdAtMs,
+        });
+      }
     }
 
     const inboxValue = await execJson([
@@ -154,6 +182,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     ], "message-list");
     if (!Array.isArray(inboxValue) || inboxValue.length > MAX_DB_ROWS) throw new Error("message-list returned incompatible JSON");
     const incoming: PendingReply[] = [];
+    const unacked = new Set<string>();
     for (const row of inboxValue) {
       if (!row || typeof row !== "object") throw new Error("message-list returned incompatible JSON");
       const value = row as MessageRow;
@@ -163,10 +192,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
       }
       if (!value.expectsReply || value.replyStatus !== "pending" || value.recipientId !== ownSessionId) continue;
       incoming.push(pendingReply(value.messageKey, value.senderId, value.beadId));
-      if (!value.acked && budget.remaining > 0) {
-        budget.remaining--;
-        await execJson(["message-ack", value.messageKey, "--by", ownSessionId, "--json"], "message-ack");
-      }
+      if (!value.acked) unacked.add(value.messageKey);
     }
 
     const unreadValue = await execJson(["unread-count", "--for", ownSessionId, "--pane", ownPaneId], "unread-count");
@@ -175,6 +201,8 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     if (!Number.isFinite(count) || count < 0) throw new Error("unread-count returned incompatible JSON");
     replies = incoming;
     awaiting = outgoing;
+    senderObligations = monitorable;
+    unackedReplyKeys = unacked;
     unread = count;
   }
 
@@ -200,11 +228,11 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     setWidget(ctx, lines.length ? lines : undefined);
   }
 
-  async function refresh(ctx: ExtensionContext, budget: OperationBudget = cycleBudget): Promise<boolean> {
+  async function refresh(ctx: ExtensionContext): Promise<boolean> {
     if (refreshPromise) return refreshPromise;
     refreshPromise = (async () => {
       try {
-        await loadState(budget);
+        await loadState();
         degradation = "";
         return true;
       } catch {
@@ -265,14 +293,25 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
     return parts.join(" ").slice(0, MAX_PROMPT_CHARS);
   }
 
+  async function ackQueuedReplies(budget: OperationBudget): Promise<void> {
+    for (const item of replies) {
+      if (item.blocked || !unackedReplyKeys.has(item.messageKey) || budget.remaining <= 0) continue;
+      budget.remaining--;
+      await execJson(["message-ack", item.messageKey, "--by", ownSessionId, "--json"], "message-ack");
+      unackedReplyKeys.delete(item.messageKey);
+    }
+  }
+
   function scheduleContinuation(ctx: ExtensionContext, hasWake: boolean): void {
     if (continuationQueued || stopped || ctx.hasPendingMessages() || (!hasWake && replies.length === 0)) return;
     continuationQueued = true;
+    const budget = cycleBudget;
     queueMicrotask(async () => {
       try {
-        if (!await refresh(ctx, { remaining: 0 })) return;
+        if (!await refresh(ctx)) return;
         if (stopped || ctx.hasPendingMessages() || (!hasWake && replies.length === 0)) return;
         pi.sendUserMessage(continuationText(hasWake), { deliverAs: "followUp" });
+        await ackQueuedReplies(budget);
       } catch {
         degradation = "coordination continuation error; inspect manually";
         render(ctx);
@@ -283,8 +322,25 @@ export default function xtmuxInboxReply(pi: ExtensionAPI): void {
   }
 
   async function runCycle(ctx: ExtensionContext): Promise<void> {
-    await refresh(ctx);
+    if (!await refresh(ctx)) return;
+    if (reconcileSenderMonitors && cycleBudget.remaining > 0) {
+      try {
+        const used = await reconcileSenderMonitors(senderObligations, cycleBudget.remaining);
+        if (!Number.isInteger(used) || used < 0 || used > cycleBudget.remaining) throw new Error("invalid monitor reconciliation count");
+        cycleBudget.remaining -= used;
+      } catch {
+        degradation = "coordination monitor error; inspect manually";
+        render(ctx);
+      }
+    }
     if (ctx.hasPendingMessages()) return;
+    if (replies.length > 0) {
+      const wakeBudget = { remaining: Math.min(1, cycleBudget.remaining) };
+      const completed = await consumeWakes(ctx, wakeBudget);
+      cycleBudget.remaining -= completed;
+      scheduleContinuation(ctx, completed > 0);
+      return;
+    }
     const completed = await consumeWakes(ctx, cycleBudget);
     scheduleContinuation(ctx, completed > 0);
   }
