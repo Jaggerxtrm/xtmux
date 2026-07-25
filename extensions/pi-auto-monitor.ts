@@ -63,10 +63,12 @@ async function reconcileSenderMonitors(
   const output = requireSuccess(await pi.exec(PICKER, ["monitor-list", "--json"], { timeout: 2000 }), "monitor-list");
   const value: unknown = JSON.parse(output);
   if (!Array.isArray(value) || value.length > MAX_MONITOR_ROWS) throw new Error("monitor-list returned incompatible JSON");
+  const armedTargets = new Set<string>();
   let used = 0;
   for (const obligation of obligations) {
     if (used >= maxOperations || obligation.senderPaneId !== process.env.TMUX_PANE) continue;
     const target = obligation.targetPaneId || obligation.recipientId;
+    if (armedTargets.has(target)) continue;
     if (SKIP_TARGETS.has(target) || SKIP_TARGETS.has(obligation.recipientId)) continue;
     const covered = value.some((row) => {
       if (!row || typeof row !== "object") return false;
@@ -80,6 +82,7 @@ async function reconcileSenderMonitors(
     });
     if (covered || !await targetExists(pi, target)) continue;
     await fireMonitor(pi, target, process.env.TMUX_PANE);
+    armedTargets.add(target);
     used++;
   }
   return used;

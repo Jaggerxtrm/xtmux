@@ -96,15 +96,20 @@ esac
     expect(readFileSync(join(root, "calls"), "utf8").match(/^monitor-agent /gm)).toHaveLength(1);
 
     writeFileSync(join(root, "obligations"), JSON.stringify([{
-      messageKey: "missed", senderId: "$me", senderPaneId: "%me", recipientId: "peer:2.1", targetPaneId: null,
+      messageKey: "missed-1", senderId: "$me", senderPaneId: "%me", recipientId: "peer:2.1", targetPaneId: null,
       summary: "private", replyStatus: "pending", createdAtMs: 100,
+    }, {
+      messageKey: "missed-2", senderId: "$me", senderPaneId: "%me", recipientId: "peer:2.1", targetPaneId: null,
+      summary: "private", replyStatus: "pending", createdAtMs: 110,
     }]));
     for (const handler of handlers.get("session_start") ?? []) await handler({}, {
       hasPendingMessages: () => false,
       ui: { setWidget() {} },
     });
     await Bun.sleep(30);
-    expect(readFileSync(join(root, "calls"), "utf8")).toContain("monitor-agent peer:2.1 --json --wait-for-transition");
+    const reconciledCalls = readFileSync(join(root, "calls"), "utf8");
+    expect(reconciledCalls).toContain("monitor-agent peer:2.1 --json --wait-for-transition");
+    expect(reconciledCalls.match(/^monitor-agent peer:2\.1 /gm)).toHaveLength(1);
     for (const handler of handlers.get("session_shutdown") ?? []) await handler({}, { ui: { setWidget() {} } });
 
     expect(existsSync(join(root, "runtime", "xtmux-outbound-expectations"))).toBe(false);

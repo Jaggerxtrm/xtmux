@@ -131,7 +131,7 @@ function main() {
       spawnSync(PICKER, [
         "message-send", "--from", sessionId || pane, "--to", parent, "--bead", bead,
         "--expects-reply=false", "--text", `turn done: ${compactSummary(fullText)}`,
-        "--message-key", `claude-turn-${turnKey}`,
+        "--id", `claude-turn-${turnKey}`,
       ], { encoding: "utf8", timeout: 2000 });
     } catch {
       // Best-effort only.

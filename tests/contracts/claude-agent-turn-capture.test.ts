@@ -26,7 +26,7 @@ esac
 [ "$1" = message-send ] || exit 0
 printf '%s\\n' "$*" >> '${join(root, "attempts")}'
 key="" previous=""
-for arg in "$@"; do [ "$previous" = --message-key ] && key="$arg"; previous="$arg"; done
+for arg in "$@"; do [ "$previous" = --id ] && key="$arg"; previous="$arg"; done
 touch '${join(root, "keys")}'
 grep -Fqx "$key" '${join(root, "keys")}' && exit 0
 printf '%s\\n' "$key" >> '${join(root, "keys")}'
@@ -53,7 +53,7 @@ printf '%s\\n' "$*" >> '${join(root, "messages")}'
     expect(messages).toHaveLength(1);
     expect(messages[0]).toContain("message-send --from $child --to $parent --bead xtmux-msg --expects-reply=false");
     expect(messages[0]).toContain("--text turn done: done");
-    expect(messages[0]).toMatch(/--message-key claude-turn-[a-f0-9]+/);
+    expect(messages[0]).toMatch(/--id claude-turn-[a-f0-9]+/);
 
     expect(run({ MOCK_PARENT: "" }).status).toBe(0);
     expect(readFileSync(join(root, "messages"), "utf8").trim().split("\n")).toHaveLength(1);
