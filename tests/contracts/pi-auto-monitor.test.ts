@@ -10,12 +10,29 @@ test("auto-monitor uses pane-owned SQLite waits and creates no marker directory"
   for (const dir of [bin, join(root, "home"), join(root, "config"), join(root, "cache"), join(root, "state"), join(root, "runtime"), join(root, "tmp")]) {
     mkdirSync(dir, { recursive: true });
   }
-  writeFileSync(join(bin, "tmux"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${join(root, "tmux-calls")}'\nexit 0\n`);
+  writeFileSync(join(bin, "tmux"), `#!/bin/sh
+printf '%s\\n' "$*" >> '${join(root, "tmux-calls")}'
+case "$*" in
+  *'#{pane_id}') printf '%%me\\n' ;;
+  *'#{session_id}') printf '$me\\n' ;;
+esac
+exit 0
+`);
   writeFileSync(join(bin, "picker"), `#!/bin/sh
 printf '%s\\n' "$*" >> '${join(root, "calls")}'
 case "$1" in
-  monitor-list) printf '[{"monitorId":"foreign","waitId":"foreign-wait","target":"peer:1.1","requesterPaneId":"%%other","terminalStatus":null}]\\n' ;;
-  monitor-agent) printf '{"monitorId":"monitor-38","waitId":"wait-38","target":"peer:1.1","requesterPaneId":"%%me","terminalStatus":null}\\n' ;;
+  obligations) [ -f '${join(root, "obligations")}' ] && cat '${join(root, "obligations")}' || printf '[]\\n' ;;
+  message-list) printf '[]\\n' ;;
+  unread-count) printf '{"unreadCount":0}\\n' ;;
+  monitor-list)
+    printf '[{"monitorId":"foreign","waitId":"foreign-wait","target":"peer:1.1","requesterPaneId":"%%other","terminalStatus":null}'
+    for target in 'peer:1.1' 'peer:2.1'; do
+      [ -f '${root}/monitor-'"$target" ] && printf ',{"monitorId":"monitor-%s","waitId":"wait-%s","target":"%s","sessionId":"%s","paneId":null,"requesterSessionId":"$me","requesterPaneId":"%%me","startedAtMs":200,"terminalStatus":null,"wakeConsumed":false}' "$target" "$target" "$target" "$target"
+    done
+    printf ']\\n' ;;
+  monitor-agent)
+    touch '${root}/monitor-'"$2"
+    printf '{"monitorId":"monitor-%s","waitId":"wait-%s","target":"%s","requesterPaneId":"%%me","terminalStatus":null}\\n' "$2" "$2" "$2" ;;
 esac
 `);
   chmodSync(join(bin, "tmux"), 0o755);
@@ -35,6 +52,8 @@ esac
     XTMUX_TMUX: join(bin, "tmux"),
     XTMUX_AUTO_MONITOR_SKIP_TARGETS: "",
     XTMUX_AUTO_MONITOR_DISABLE: "0",
+    XTMUX_INBOX_POLL_INTERVAL_S: "0.01",
+    PATH: `${bin}:${old.PATH || ""}`,
   });
   try {
     const handlers = new Map<string, Function[]>();
@@ -53,7 +72,7 @@ esac
     const result = await autoHandler?.({
       type: "tool_result", toolName: "bash", isError: false,
       content: [{ type: "text", text: JSON.stringify({
-        messageKey: "m1", duplicate: false, senderId: "$me", recipientId: "peer:1.1",
+        messageKey: "m1", duplicate: false, senderId: "$me", recipientId: "peer:1.1", expectsReply: true,
       }) }],
     });
 
@@ -62,6 +81,32 @@ esac
     expect(calls).toContain("monitor-list --json");
     expect(calls).toContain("monitor-agent peer:1.1 --json --wait-for-transition");
     expect(result.content.at(-1).text).toContain("[auto-monitor] armed on peer:1.1");
+
+    for (const value of [{
+      messageKey: "fyi", duplicate: false, senderId: "$me", recipientId: "peer:1.1", expectsReply: false,
+    }, {
+      messageKey: "reply", duplicate: false, replyToMessageKey: "m1", fulfilled: true,
+      senderId: "$me", recipientId: "peer:1.1",
+    }]) {
+      expect(await autoHandler?.({
+        type: "tool_result", toolName: "bash", isError: false,
+        content: [{ type: "text", text: JSON.stringify(value) }],
+      })).toBeUndefined();
+    }
+    expect(readFileSync(join(root, "calls"), "utf8").match(/^monitor-agent /gm)).toHaveLength(1);
+
+    writeFileSync(join(root, "obligations"), JSON.stringify([{
+      messageKey: "missed", senderId: "$me", senderPaneId: "%me", recipientId: "peer:2.1", targetPaneId: null,
+      summary: "private", replyStatus: "pending", createdAtMs: 100,
+    }]));
+    for (const handler of handlers.get("session_start") ?? []) await handler({}, {
+      hasPendingMessages: () => false,
+      ui: { setWidget() {} },
+    });
+    await Bun.sleep(30);
+    expect(readFileSync(join(root, "calls"), "utf8")).toContain("monitor-agent peer:2.1 --json --wait-for-transition");
+    for (const handler of handlers.get("session_shutdown") ?? []) await handler({}, { ui: { setWidget() {} } });
+
     expect(existsSync(join(root, "runtime", "xtmux-outbound-expectations"))).toBe(false);
     expect(existsSync(join(root, "runtime", "xtmux-reply-obligations"))).toBe(false);
 

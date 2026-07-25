@@ -22,8 +22,8 @@ test("ignores unrelated JSON, NDJSON, and multi-command JSON", () => {
 
 test("recognizes exactly one coordination envelope before non-JSON middleware text", () => {
   expect(coordinationResult(JSON.stringify({
-    messageKey: "m1", duplicate: false, senderId: "$sender", recipientId: "$recipient",
-  }) + "\nwrapper output")).toEqual({ kind: "message-send", messageKey: "m1", target: "$recipient" });
+    messageKey: "m1", duplicate: false, senderId: "$sender", recipientId: "$recipient", expectsReply: true,
+  }) + "\nwrapper output")).toEqual({ kind: "message-send", messageKey: "m1", target: "$recipient", expectsReply: true });
   expect(coordinationResult(JSON.stringify({
     messageKey: "reply-1", duplicate: false, replyToMessageKey: "m1", fulfilled: true,
     senderId: "$recipient", recipientId: "$sender",
@@ -35,17 +35,20 @@ test("recognizes exactly one coordination envelope before non-JSON middleware te
     injection: { target: "%recipient", sent: true, doubleEnter: true },
     fulfilment: { messageKey: "reply-m1", replyToMessageKey: "m1", fulfilled: true },
   }))).toEqual({ kind: "safe-send-pointer", target: "%recipient", replyToMessageKey: "m1" });
-  const send = JSON.stringify({ messageKey: "m2", duplicate: false, senderId: "$sender", recipientId: "$recipient" });
-  expect(coordinationResult(`${send}\n[done]`)).toEqual({ kind: "message-send", messageKey: "m2", target: "$recipient" });
+  const send = JSON.stringify({ messageKey: "m2", duplicate: false, senderId: "$sender", recipientId: "$recipient", expectsReply: true });
+  expect(coordinationResult(`${send}\n[done]`)).toEqual({ kind: "message-send", messageKey: "m2", target: "$recipient", expectsReply: true });
   expect(coordinationResult(`${send}\n[auto-monitor] armed on $recipient`)).toEqual({
-    kind: "message-send", messageKey: "m2", target: "$recipient",
+    kind: "message-send", messageKey: "m2", target: "$recipient", expectsReply: true,
   });
   expect(coordinationResult(`${send}\n[done] status {not-json}`)).toEqual({
-    kind: "message-send", messageKey: "m2", target: "$recipient",
+    kind: "message-send", messageKey: "m2", target: "$recipient", expectsReply: true,
   });
   expect(coordinationResult(`${send}\n[progress] 12 items; reported "hidden" value`)).toEqual({
-    kind: "message-send", messageKey: "m2", target: "$recipient",
+    kind: "message-send", messageKey: "m2", target: "$recipient", expectsReply: true,
   });
+  expect(coordinationResult(JSON.stringify({
+    messageKey: "fyi", duplicate: false, senderId: "$sender", recipientId: "$recipient", expectsReply: false,
+  }))).toEqual({ kind: "message-send", messageKey: "fyi", target: "$recipient", expectsReply: false });
 });
 
 test("ignores lone and partial command sentinels", () => {
@@ -84,7 +87,10 @@ test("retains actionable errors only for xtmux-shaped malformed output", () => {
 
 test("retains actionable errors for incompatible coordination contracts", () => {
   expect(() => coordinationResult(JSON.stringify({
-    messageKey: "m1", duplicate: "false", senderId: "$sender", recipientId: "$recipient",
+    messageKey: "m1", duplicate: "false", senderId: "$sender", recipientId: "$recipient", expectsReply: true,
+  }))).toThrow("Incompatible xtmux message-send JSON result");
+  expect(() => coordinationResult(JSON.stringify({
+    messageKey: "m1", duplicate: false, senderId: "$sender", recipientId: "$recipient", expectsReply: "false",
   }))).toThrow("Incompatible xtmux message-send JSON result");
   expect(() => coordinationResult(JSON.stringify({
     messageKey: "m1", status: "acked", acked: "true",

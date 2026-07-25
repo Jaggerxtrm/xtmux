@@ -110,7 +110,7 @@ xtmux agent-last '$1495' --json      # full row: turnId, runtime, summary,
 
 A pane id (`%N`) matches `pane_id`; a session id (`$N`) matches `session_id`. Plain output prints `lastMessageText`, falling back to the compact `summary` when the full text is null (old rows, capture miss), then to nothing. `--json` prints the whole row. Exit 5 with a structured `XTMUX_NOT_FOUND` error if no turn is recorded for the target. This removes the need to `capture-pane` a sibling to answer “what did this agent conclude?”.
 
-The Claude `Stop` hook is registered by `scripts/install.mjs` alongside the other xtmux Claude hooks; it is fail-open (a missing `TMUX`/`TMUX_PANE`, an unreadable or malformed transcript, or any emit failure is a silent no-op — a Claude turn still lands a row via `agent-state.sh`, this hook only enriches it with the full text).
+The Claude `Stop` hook is registered by `scripts/install.mjs` alongside the other xtmux Claude hooks; it is fail-open (a missing `TMUX`/`TMUX_PANE`, an unreadable or malformed transcript, or any emit failure is a silent no-op — a Claude turn still lands a row via `agent-state.sh`, this hook only enriches it with the full text). It also sends one idempotent, reply-free `turn done:` FYI to a distinct `@agent_parent_session`.
 
 state transitions and orchestration actions write typed rows and bounded
 forensic envelopes to the SQLite event journal. Use:
@@ -147,16 +147,23 @@ hook claims a delivered wake once. Hook database failure blocks with an
 `obligations list --json` diagnostic; `stop_hook_active` prevents a recursive
 Stop loop.
 
-Pi re-queries `obligations list`, pane-scoped `message-list`, `unread-count`, and
-`monitor-list`. Outgoing obligations use the SQL default limit of 200 and the
-inbox passes `--limit 500`. `monitor-list --json` currently reads full history;
-if its parsed array exceeds 500 rows, Pi fails closed with coordination wake
-degradation rather than consuming a partial batch. A successful cycle
-acknowledges at most 20 receipts/wakes, displays at most 20 reply keys in a
-bounded widget/prompt, and queues only one continuation while idle. Mutation-
-budget work resumes on later cycles or restart. Unsafe IDs are hidden,
-malformed/incompatible coordination JSON degrades visibly, and message summaries
-are never inserted as instructions.
+Pi uses Option A: it re-queries `obligations list`, pane-scoped `message-list`,
+`unread-count`, and `monitor-list`, queues one idle continuation, then acks only
+the shown messages. A crash before ack therefore replays instead of losing the
+message. The same poll reconciles sender-owned obligations and arms missing fresh
+monitors; `expectsReply=false` sends and correlated replies never arm one.
+Outgoing obligations use the SQL default limit of 200 and the inbox passes
+`--limit 500`. `monitor-list --json` currently reads full history; if its parsed
+array exceeds 500 rows, Pi fails closed with coordination wake degradation rather
+than consuming a partial batch. A successful cycle performs at most 20 ack,
+monitor-arm, or wake-consume mutations and displays at most 20 reply keys in a
+bounded widget/prompt. Mutation-budget work resumes on later cycles or restart.
+Unsafe IDs are hidden, malformed/incompatible coordination JSON degrades visibly,
+and message summaries are never inserted as instructions.
+
+Claude's Stop hook prints at most 20 validated pending inbox message keys to
+stderr and never reflects summaries. This reminder is fail-open and does not add
+a daemon or real-time wake path.
 
 Neither loop reads, writes, expires, or asks the operator to delete
 `xtmux-reply-obligations`, `xtmux-outbound-expectations`, or

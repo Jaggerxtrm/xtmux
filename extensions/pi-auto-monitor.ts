@@ -1,12 +1,13 @@
 import type { ExtensionAPI, ExecResult } from "@earendil-works/pi-coding-agent";
 import { coordinationResult } from "./coordination-json.ts";
-import xtmuxInboxReply from "./pi-inbox-reply.ts";
+import xtmuxInboxReply, { type SenderObligation } from "./pi-inbox-reply.ts";
 
 const PICKER = process.env.XTMUX_PICKER || `${process.env.HOME}/.local/bin/xtmux`;
 const TIMEOUT = process.env.XTMUX_AUTO_MONITOR_TIMEOUT || "8h";
 const INTERVAL = process.env.XTMUX_AUTO_MONITOR_INTERVAL || "60s";
 const TMUX = process.env.XTMUX_TMUX || "tmux";
 const SKIP_TARGETS = new Set((process.env.XTMUX_AUTO_MONITOR_SKIP_TARGETS || "").split(":").filter(Boolean));
+const MAX_MONITOR_ROWS = 500;
 
 function requireSuccess(result: ExecResult, command: string): string {
   if (result.code !== 0) throw new Error(`${command} failed (exit ${result.code})`);
@@ -53,15 +54,46 @@ async function fireMonitor(pi: ExtensionAPI, target: string, requesterPaneId: st
   return (result as { monitorId: string }).monitorId;
 }
 
+async function reconcileSenderMonitors(
+  pi: ExtensionAPI,
+  obligations: readonly SenderObligation[],
+  maxOperations: number,
+): Promise<number> {
+  if (!process.env.TMUX_PANE || maxOperations <= 0) return 0;
+  const output = requireSuccess(await pi.exec(PICKER, ["monitor-list", "--json"], { timeout: 2000 }), "monitor-list");
+  const value: unknown = JSON.parse(output);
+  if (!Array.isArray(value) || value.length > MAX_MONITOR_ROWS) throw new Error("monitor-list returned incompatible JSON");
+  let used = 0;
+  for (const obligation of obligations) {
+    if (used >= maxOperations || obligation.senderPaneId !== process.env.TMUX_PANE) continue;
+    const target = obligation.targetPaneId || obligation.recipientId;
+    if (SKIP_TARGETS.has(target) || SKIP_TARGETS.has(obligation.recipientId)) continue;
+    const covered = value.some((row) => {
+      if (!row || typeof row !== "object") return false;
+      const monitor = row as Record<string, unknown>;
+      return monitor.requesterSessionId === obligation.senderId
+        && monitor.requesterPaneId === obligation.senderPaneId
+        && monitor.sessionId === obligation.recipientId
+        && (obligation.targetPaneId === null || monitor.paneId === obligation.targetPaneId)
+        && typeof monitor.startedAtMs === "number" && monitor.startedAtMs >= obligation.createdAtMs
+        && (monitor.terminalStatus === null || monitor.wakeConsumed === true);
+    });
+    if (covered || !await targetExists(pi, target)) continue;
+    await fireMonitor(pi, target, process.env.TMUX_PANE);
+    used++;
+  }
+  return used;
+}
+
 export default function xtmuxAutoMonitor(pi: ExtensionAPI): void {
-  xtmuxInboxReply(pi);
+  xtmuxInboxReply(pi, (obligations, maxOperations) => reconcileSenderMonitors(pi, obligations, maxOperations));
   if (process.env.XTMUX_AUTO_MONITOR_DISABLE === "1") return;
 
   pi.on("tool_result", async (event) => {
     if (event.toolName !== "bash" || event.isError) return undefined;
     try {
       const action = coordinationResult(event.content);
-      if (!action || action.kind === "message-ack") return undefined;
+      if (!action || action.kind !== "message-send" || !action.expectsReply) return undefined;
       const target = action.target;
       if (!process.env.TMUX || !process.env.TMUX_PANE || SKIP_TARGETS.has(target)) return undefined;
       if (!await targetExists(pi, target)) return undefined;

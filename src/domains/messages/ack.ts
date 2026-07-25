@@ -1,3 +1,4 @@
+// ponytail: Option A keeps a small continuation→ack crash window; replay is safer than pre-ack message loss.
 import type { Db } from "../../db/connection.ts";
 import { insertEnvelope } from "../../db/journal.ts";
 import type { MessageRow } from "./types.ts";

@@ -1,5 +1,5 @@
 export type CoordinationResult =
-  | { kind: "message-send"; messageKey: string; target: string }
+  | { kind: "message-send"; messageKey: string; target: string; expectsReply: boolean }
   | { kind: "message-reply"; messageKey: string; replyToMessageKey: string; target: string }
   | { kind: "message-ack"; messageKey: string }
   | { kind: "safe-send-pointer"; target: string; replyToMessageKey?: string };
@@ -118,10 +118,11 @@ export function coordinationResult(content: unknown): CoordinationResult | null 
     return { kind: "message-reply", messageKey: value.messageKey, replyToMessageKey: value.replyToMessageKey, target: value.recipientId };
   }
   if (hasAll(value, ["messageKey", "duplicate", "senderId", "recipientId"])) {
-    if (typeof value.messageKey !== "string" || typeof value.duplicate !== "boolean" || typeof value.senderId !== "string" || typeof value.recipientId !== "string") {
+    if (typeof value.messageKey !== "string" || typeof value.duplicate !== "boolean" || typeof value.senderId !== "string"
+      || typeof value.recipientId !== "string" || typeof value.expectsReply !== "boolean") {
       throw new Error("Incompatible xtmux message-send JSON result");
     }
-    return { kind: "message-send", messageKey: value.messageKey, target: value.recipientId };
+    return { kind: "message-send", messageKey: value.messageKey, target: value.recipientId, expectsReply: value.expectsReply };
   }
   if (hasAll(value, ["messageKey", "status", "acked"])
     && (value.status === "acked" || value.status === "already-acked")) {

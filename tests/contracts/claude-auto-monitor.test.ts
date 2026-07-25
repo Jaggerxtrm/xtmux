@@ -275,6 +275,24 @@ describe("Claude SQLite auto-monitor hooks", () => {
     expect(JSON.stringify(payload).length).toBeLessThan(1200);
   });
 
+  test("Stop prints bounded validated inbox keys without reflecting summaries", () => {
+    const recipient = baseEnv("$103", "%103");
+    const sender = baseEnv("$999", "%999");
+    const sent = cli([
+      "message-send", "--to", "$103", "--to-pane", "%103", "--from", "$999", "--from-pane", "%999",
+      "--bead", "xtmux-msg", "--text", "UNTRUSTED SUMMARY", "--message-key", "inbox-reminder", "--json",
+    ], sender);
+    expect(sent.status).toBe(0);
+
+    const reminder = stop(false, recipient);
+    expect(reminder.stderr).toContain("inbox-reminder");
+    expect(reminder.stderr).not.toContain("UNTRUSTED SUMMARY");
+    expect(reminder.stdout).toBe("");
+
+    expect(cli(["message-cancel", "--message-key", "inbox-reminder", "--json"], sender).status).toBe(0);
+    expect(stop(false, recipient).stderr).toBe("");
+  });
+
   test("CLI absence and corrupt DB produce bounded actionable diagnostics without a Stop loop", () => {
     const missingEnv = { ...baseEnv(), XTMUX_PICKER: join(TEST_ROOT, "missing-xtmux") };
     const missing = stop(false, missingEnv);

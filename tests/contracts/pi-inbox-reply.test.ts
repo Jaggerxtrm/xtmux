@@ -23,6 +23,7 @@ function harness(store: Store) {
   const pickerCalls: string[][] = [];
   const sentUserMessages: string[] = [];
   let failPane = false;
+  let failSendUserMessage = false;
   let pendingMessages = false;
   const ok = (stdout: string) => ({ stdout, stderr: "", code: 0, killed: false });
   const ctx = {
@@ -72,6 +73,7 @@ function harness(store: Store) {
       throw new Error(`unexpected exec: ${command} ${args.join(" ")}`);
     },
     sendUserMessage(content: string) {
+      if (failSendUserMessage) throw new Error("queue failed");
       sentUserMessages.push(content);
       pendingMessages = true;
     },
@@ -83,6 +85,7 @@ function harness(store: Store) {
     pickerCalls,
     sentUserMessages,
     setPaneFailure(value: boolean) { failPane = value; },
+    setSendFailure(value: boolean) { failSendUserMessage = value; },
     setPendingMessages(value: boolean) { pendingMessages = value; },
     async emit(name: string, event: any = {}) {
       let result: unknown;
@@ -134,6 +137,7 @@ describe("Pi SQLite reply obligations", () => {
     }];
     const h = harness(state);
     await h.emit("session_start");
+    await Bun.sleep(0);
 
     expect(h.pickerCalls).toContainEqual(["obligations", "list", "--pane", "%me", "--json"]);
     expect(h.pickerCalls).toContainEqual(["message-list", "--for", "$me", "--pane", "%me", "--expects-reply", "--json", "--limit", "500"]);
@@ -149,6 +153,30 @@ describe("Pi SQLite reply obligations", () => {
     await h.emit("session_shutdown");
   });
 
+  test("acks only after continuation queue succeeds, so restart replays a queue failure", async () => {
+    isolate();
+    const state = store();
+    state.inbound = [{
+      messageKey: "replay-me", senderId: "$sender", recipientId: "$me", targetPaneId: "%me", beadId: "work",
+      summary: "private", expectsReply: true, acked: false, replyStatus: "pending",
+    }];
+    const failed = harness(state);
+    failed.setSendFailure(true);
+    await failed.emit("session_start");
+    await Bun.sleep(0);
+    expect(failed.pickerCalls.filter((args) => args[0] === "message-ack")).toHaveLength(0);
+    expect(state.inbound[0]!.acked).toBe(false);
+    await failed.emit("session_shutdown");
+
+    const restarted = harness(state);
+    await restarted.emit("session_start");
+    await Bun.sleep(0);
+    expect(restarted.sentUserMessages).toHaveLength(1);
+    expect(restarted.pickerCalls.filter((args) => args[0] === "message-ack")).toHaveLength(1);
+    expect(state.inbound[0]!.acked).toBe(true);
+    await restarted.emit("session_shutdown");
+  });
+
   test("uncorrelated send and late or duplicate ack cannot clear or recreate DB state", async () => {
     isolate();
     const state = store();
@@ -159,7 +187,7 @@ describe("Pi SQLite reply obligations", () => {
     const h = harness(state);
     await h.emit("session_start");
     await h.emit("tool_result", { toolName: "bash", isError: false, content: jsonResult({
-      messageKey: "other", duplicate: false, senderId: "$me", recipientId: "$sender",
+      messageKey: "other", duplicate: false, senderId: "$me", recipientId: "$sender", expectsReply: true,
     }) });
     expect(h.widgets.get("xtmux-inbox")).toContain("Reply required: $sender (work)");
 
@@ -189,7 +217,7 @@ describe("Pi SQLite reply obligations", () => {
     expect(h.widgets.get("xtmux-inbox")).toEqual(["Awaiting reply: $peer (work)"]);
 
     await h.emit("tool_result", { toolName: "bash", isError: false, content: jsonResult({
-      messageKey: "unrelated", duplicate: false, senderId: "$me", recipientId: "$peer",
+      messageKey: "unrelated", duplicate: false, senderId: "$me", recipientId: "$peer", expectsReply: true,
     }) });
     expect(h.widgets.get("xtmux-inbox")).toEqual(["Awaiting reply: $peer (work)"]);
 
@@ -339,7 +367,7 @@ describe("Pi SQLite reply obligations", () => {
     await first.emit("agent_start");
     for (let index = 0; index < 3; index++) {
       await first.emit("tool_result", { toolName: "bash", isError: false, content: jsonResult({
-        messageKey: `tool-${index}`, duplicate: false, senderId: "$me", recipientId: "$peer",
+        messageKey: `tool-${index}`, duplicate: false, senderId: "$me", recipientId: "$peer", expectsReply: true,
       }) });
     }
     await first.emit("agent_end");

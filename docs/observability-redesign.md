@@ -41,7 +41,7 @@ Sources: `channels.md` §5.1–5.5, §5.7, §10.5, §11; `channels-upgrade.md` �
 |---|---|---|---|
 | A1 | **One SQLite writer per DB connection, WAL mode.** | Serializes concurrent mutations with bounded lock waits. | Picker/runtime commands open `observability.db`; immediate transactions and `busy_timeout=3000` protect multi-row state changes. |
 | A2 | **Delivery cursor = table-wide `AUTOINCREMENT id`; per-channel `seq` is display ordinal only.** `ORDER BY id`, never `seq`. | Correctness never depends on ordinal collisions. | `messages.id` is the cursor; sender-supplied `message_key` is dedup handle; no separate `seq`. |
-| A3 | **`readSince` pure; `markSeen` effectful. Cursor advances only through the highest *successfully processed* id.** | Crash between "enqueue action" and ack is replay-safe. | `message-list` is a pure read; `message-ack` mutates only receipts; ack idempotent (PRD §6). |
+| A3 | **`readSince` pure; `markSeen` effectful. Cursor advances only through the highest *successfully processed* id.** | Crash between "enqueue action" and ack is replay-safe. | Option A: `message-list` is a pure SQLite row read; Pi calls idempotent `message-ack` only after queueing its continuation (PRD §6). |
 | A4 | **Reducer / after-hook split per tick.** Pass 1 derives state without I/O; pass 2 runs side effects deduped by `(channel_id, msg_id)` idempotency keys. | Prevents double-wake on replay. | Turn-completion + parent-message + tmux-projection split into (a) atomic durable insert, (b) best-effort projection write. |
 | A5 | **Message body never grants authority.** `participant_id` / `job_id` come from the runtime, not the body. | Bodies are untrusted. | `--from` on `message-send` must be resolved against tmux `#{session_id}` / `#{pane_id}`, not trusted verbatim. |
 | A6 | **Audience is the addressing model.** `action_targets[]`, `visibility`, `scope_refs[]`, `urgency`; legacy `target_key` = bridge alias for `action_targets[0]`. | Single-target wake without privileged coupling. | xtmux stays single-target for now: `recipient_id` = `action_targets[0]`. Multi-target is a future migration, not a current schema shape. |
@@ -954,17 +954,20 @@ a completed wake idempotently. Invalid target metadata blocks for manual
 inspection; database failure emits a bounded diagnostic and the Stop loop guard
 allows the next Stop while the operator repairs the backend.
 
-Pi derives actions only from complete single JSON command envelopes. The
-outgoing-obligation SQL query defaults to 200 rows and the inbox explicitly
-passes `--limit 500`. `monitor-list --json` has no CLI limit: it selects full
-monitor history, and Pi fails closed after parsing when that array exceeds 500
-rows. A successful cycle performs at most 20 ack or wake-consume mutations,
-exposes at most 20 validated reply keys, caps the widget at 22 rows / 2000
-characters and prompt additions at 1600 characters, and queues one idle
-continuation. Budget-deferred work stays in SQLite for later cycles or restart;
-over-limit monitor history instead surfaces coordination wake degradation for
-manual inspection. Unsafe identifiers are hidden and message summaries are
-never promoted into instructions.
+Pi derives actions only from complete single JSON command envelopes and retains
+`expectsReply`; FYIs and correlated replies never arm monitors. The existing
+inbox poll reconciles sender-owned obligations and arms any missing fresh wait,
+so malformed command output cannot suppress monitoring. The outgoing-obligation
+SQL query defaults to 200 rows and the inbox explicitly passes `--limit 500`.
+`monitor-list --json` has no CLI limit: it selects full monitor history, and Pi
+fails closed after parsing when that array exceeds 500 rows. A successful cycle
+performs at most 20 ack, monitor-arm, or wake-consume mutations, exposes at most
+20 validated reply keys, caps the widget at 22 rows / 2000 characters and prompt
+additions at 1600 characters, and queues one idle continuation before Option A
+performs its bounded ack batch. Budget-deferred work stays in SQLite for later cycles or
+restart; over-limit monitor history instead surfaces coordination wake
+degradation for manual inspection. Unsafe identifiers are hidden and message
+summaries are never promoted into instructions.
 
 ### 14.4 Journal evidence
 
