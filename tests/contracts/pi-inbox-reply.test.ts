@@ -361,7 +361,8 @@ describe("Pi SQLite reply obligations", () => {
     await Bun.sleep(0);
     const firstWork = mutationCalls(first.pickerCalls);
     expect(firstWork).toHaveLength(20);
-    expect(firstWork.every((args) => args[0] === "message-ack")).toBe(true);
+    expect(firstWork.filter((args) => args[0] === "message-ack")).toHaveLength(19);
+    expect(firstWork.filter((args) => args[0] === "wait-agent")).toHaveLength(1);
     expect(new Set(firstWork.map((args) => args[1])).size).toBe(20);
 
     await first.emit("agent_start");
@@ -383,6 +384,8 @@ describe("Pi SQLite reply obligations", () => {
     await Bun.sleep(0);
     const nextCycleWork = mutationCalls(first.pickerCalls);
     expect(nextCycleWork).toHaveLength(40);
+    expect(nextCycleWork.filter((args) => args[0] === "message-ack")).toHaveLength(38);
+    expect(nextCycleWork.filter((args) => args[0] === "wait-agent")).toHaveLength(2);
     expect(new Set(nextCycleWork.map((args) => args[1])).size).toBe(40);
     await first.emit("session_shutdown");
 
@@ -391,9 +394,33 @@ describe("Pi SQLite reply obligations", () => {
     await Bun.sleep(0);
     const restartWork = mutationCalls(restarted.pickerCalls);
     expect(restartWork).toHaveLength(20);
-    expect(restartWork.every((args) => Number(args[1]!.slice(3)) >= 40)).toBe(true);
+    const restartAcks = restartWork.filter((args) => args[0] === "message-ack");
+    expect(restartAcks).toHaveLength(19);
+    expect(restartAcks.every((args) => Number(args[1]!.slice(3)) >= 38)).toBe(true);
+    expect(restartWork.filter((args) => args[0] === "wait-agent")).toHaveLength(1);
     expect(restarted.widgets.get("xtmux-inbox")!.join("\n").length).toBeLessThanOrEqual(2000);
     await restarted.emit("session_shutdown");
+  });
+
+  test("consumes a terminal wake while a reply obligation remains", async () => {
+    isolate();
+    const state = store();
+    state.inbound = [{
+      messageKey: "reply-needed", senderId: "$sender", recipientId: "$me", targetPaneId: "%me", beadId: "work",
+      summary: "private", expectsReply: true, acked: true, replyStatus: "pending",
+    }];
+    state.monitors = [{
+      monitorId: "monitor-1", waitId: "wait-1", target: "peer:1.1", requesterSessionId: "$me", requesterPaneId: "%me",
+      terminalStatus: "done", wakeDelivered: true, wakeConsumed: false,
+    }];
+    const h = harness(state);
+    await h.emit("session_start");
+    await Bun.sleep(0);
+    expect(state.monitors[0]!.wakeConsumed).toBe(true);
+    expect(h.sentUserMessages).toHaveLength(1);
+    expect(h.sentUserMessages[0]).toContain("reply-needed");
+    expect(h.sentUserMessages[0]).toContain("A monitored work cycle completed");
+    await h.emit("session_shutdown");
   });
 
   test("terminal requester wake is consumed once and remains consumed after restart", async () => {

@@ -335,7 +335,10 @@ export default function xtmuxInboxReply(pi: ExtensionAPI, reconcileSenderMonitor
     }
     if (ctx.hasPendingMessages()) return;
     if (replies.length > 0) {
-      scheduleContinuation(ctx, false);
+      const wakeBudget = { remaining: Math.min(1, cycleBudget.remaining) };
+      const completed = await consumeWakes(ctx, wakeBudget);
+      cycleBudget.remaining -= completed;
+      scheduleContinuation(ctx, completed > 0);
       return;
     }
     const completed = await consumeWakes(ctx, cycleBudget);
