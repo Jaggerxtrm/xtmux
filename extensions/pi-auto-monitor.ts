@@ -89,8 +89,9 @@ async function reconcileSenderMonitors(
 }
 
 export default function xtmuxAutoMonitor(pi: ExtensionAPI): void {
-  xtmuxInboxReply(pi, (obligations, maxOperations) => reconcileSenderMonitors(pi, obligations, maxOperations));
-  if (process.env.XTMUX_AUTO_MONITOR_DISABLE === "1") return;
+  const disabled = process.env.XTMUX_AUTO_MONITOR_DISABLE === "1";
+  xtmuxInboxReply(pi, disabled ? undefined : (obligations, maxOperations) => reconcileSenderMonitors(pi, obligations, maxOperations));
+  if (disabled) return;
 
   pi.on("tool_result", async (event) => {
     if (event.toolName !== "bash" || event.isError) return undefined;

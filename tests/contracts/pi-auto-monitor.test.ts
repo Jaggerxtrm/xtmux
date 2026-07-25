@@ -112,6 +112,26 @@ esac
     expect(reconciledCalls.match(/^monitor-agent peer:2\.1 /gm)).toHaveLength(1);
     for (const handler of handlers.get("session_shutdown") ?? []) await handler({}, { ui: { setWidget() {} } });
 
+    process.env.XTMUX_AUTO_MONITOR_DISABLE = "1";
+    writeFileSync(join(root, "obligations"), JSON.stringify([{
+      messageKey: "disabled", senderId: "$me", senderPaneId: "%me", recipientId: "peer:3.1", targetPaneId: null,
+      summary: "private", replyStatus: "pending", createdAtMs: 120,
+    }]));
+    const disabledHandlers = new Map<string, Function[]>();
+    module.default({
+      ...pi,
+      on(name: string, handler: Function) { disabledHandlers.set(name, [...(disabledHandlers.get(name) ?? []), handler]); },
+    } as any);
+    expect(disabledHandlers.get("tool_result")).toHaveLength(1);
+    for (const handler of disabledHandlers.get("session_start") ?? []) await handler({}, {
+      hasPendingMessages: () => false,
+      ui: { setWidget() {} },
+    });
+    await Bun.sleep(30);
+    expect(readFileSync(join(root, "calls"), "utf8")).not.toContain("monitor-agent peer:3.1");
+    for (const handler of disabledHandlers.get("session_shutdown") ?? []) await handler({}, { ui: { setWidget() {} } });
+    process.env.XTMUX_AUTO_MONITOR_DISABLE = "0";
+
     expect(existsSync(join(root, "runtime", "xtmux-outbound-expectations"))).toBe(false);
     expect(existsSync(join(root, "runtime", "xtmux-reply-obligations"))).toBe(false);
 
