@@ -2079,13 +2079,13 @@ MONITORS — never prompt a pane that is working; wait for it instead.
                   targetSessionId, targetPaneId, state, monitorId,
                   terminalStatus, wakeDelivered, wakeConsumed, replayed,
                   startedAtMs, completedAtMs, timeoutMs, intervalMs
-    monitor-agent monitorId, waitId, target, requesterSessionId,
-                  requesterPaneId, sessionId, paneId, state, startedAtMs,
-                  timeoutMs, intervalMs, terminalStatus, wakeDelivered
-    monitor-list  monitorId, waitId, target, requesterSessionId,
-                  requesterPaneId, sessionId, paneId, state, startedAtMs,
-                  updatedAtMs, timeoutMs, intervalMs, terminalStatus,
-                  terminalAtMs, wakeDelivered, wakeConsumed, orphan
+    monitor-agent monitorId, waitId, target, requesterSessionId, requesterPaneId,
+                  sessionId, paneId, state, paneState, startedAtMs, timeoutMs,
+                  intervalMs, terminalStatus, wakeDelivered
+    monitor-list  monitorId, waitId, target, requesterSessionId, requesterPaneId,
+                  sessionId, paneId, state (terminal-overlaid), paneState,
+                  startedAtMs, updatedAtMs, timeoutMs, intervalMs,
+                  terminalStatus, terminalAtMs, wakeDelivered, wakeConsumed, orphan
     monitor-kill  monitorId, status
 
 DELEGATION — hand work to another pane without fragmenting its prompt.
