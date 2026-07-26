@@ -206,7 +206,11 @@ const hook = (name) => join(claudeHooks, name);
 function canonicalHooks() {
   const state = (event, next) => wrapper("", `CLAUDE_HOOK_EVENT=${event} bash "${hook("agent-state.sh")}" ${next}`, 2000);
   return {
-    SessionStart: [state("SessionStart", "idle")],
+    // --new-instance on SessionStart ONLY (docs/xtmux-gaps.md 12.1): a Claude
+    // pane with no fresh @agent_instance_id never emits agent.ready, so nothing
+    // keyed on agent identity — `xt claude --role/--bead` auto-assign included —
+    // can ever see it. Rotating it on ordinary idle transitions is forbidden.
+    SessionStart: [state("SessionStart", "idle --new-instance")],
     UserPromptSubmit: [state("UserPromptSubmit", "running")],
     PreToolUse: [state("PreToolUse", "running")],
     Notification: [state("Notification", "needs-input")],
