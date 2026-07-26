@@ -1442,12 +1442,15 @@ unread_count() {
       *) printf 'unread-count: unknown arg: %s\n' "$arg" >&2; return 2 ;;
     esac
   done
-  [ -n "$recipient" ] || { printf 'usage: unread-count --for <recipient>\n' >&2; return 2; }
+  # xtrm-wiy5n.4.24: --for is optional. The underlying CLI resolves the missing
+  # value through liveTmuxRequester when running under tmux, so a Claude hook
+  # can call `unread-count --pane $TMUX_PANE` without a prior session-id lookup.
   obs_v2_mode
   [ "$REPLY" = on ] || { printf 'unread-count: requires XTMUX_OBS_V2=1\n' >&2; return 2; }
-  if resolve_to_session_id "$recipient"; then recipient="$REPLY"; fi
+  if [ -n "$recipient" ] && resolve_to_session_id "$recipient"; then recipient="$REPLY"; fi
   obs_runtime_argv
-  local args=(unread-count --for "$recipient")
+  local args=(unread-count)
+  [ -n "$recipient" ] && args+=(--for "$recipient")
   [ -n "$pane" ] && args+=(--pane "$pane")
   exec "${OBS_ARGV[@]}" "${args[@]}"
 }
@@ -1532,12 +1535,26 @@ message_list() {
     printf 'message-list: --pane/--expects-reply/--json require V2\n' >&2
     return 2
   fi
+  # xtrm-wiy5n.4.24 (Codex #87): the no---for form is V2-only. The legacy
+  # v1/shadow scanners (_message_list_v1_body) receive `to` verbatim and, when
+  # it is empty, skip the recipient predicate — returning messages for every
+  # recipient in the events log. That is an information-disclosure shape,
+  # not a cosmetic gap, so refuse it here loudly instead of silently
+  # widening the query. V2 mode still resolves the implicit recipient through
+  # liveTmuxRequester in the underlying CLI (see cliMessageList).
+  if [ "$mode" != 'on' ] && [ -z "$to" ]; then
+    printf 'message-list: --for is required in XTMUX_OBS_V2=%s mode (implicit live-tmux fallback is V2-only)\n' "$mode" >&2
+    return 2
+  fi
   if [ "$mode" = 'on' ]; then
+    # xtrm-wiy5n.4.24: --for is optional; the CLI resolves it through
+    # liveTmuxRequester when running under tmux (Claude hook use case).
+    # V1/shadow paths still need a name/id up front — they scan events.jsonl.
     local to_sid_v2=''
     if [ -n "$to" ] && resolve_to_session_id "$to"; then to_sid_v2="$REPLY"; else to_sid_v2="$to"; fi
-    [ -n "$to_sid_v2" ] || { printf 'usage: message-list --for <session|pane> [--unacked] [--limit N] [--since D]\n' >&2; return 2; }
     obs_runtime_argv
-    local cli_args=(message-list --for "$to_sid_v2" --limit "$limit")
+    local cli_args=(message-list --limit "$limit")
+    [ -n "$to_sid_v2" ]      && cli_args+=(--for "$to_sid_v2")
     [ "$unacked" = 1 ]       && cli_args+=(--unacked)
     [ "$expects_reply" = 1 ] && cli_args+=(--expects-reply)
     [ "$json" = 1 ]          && cli_args+=(--json)
@@ -2026,16 +2043,16 @@ Durable task content belongs in beads (`bd`), not here.
                  [--to-pane <%id>] [--from-pane <%id>] [--message-key <key>]
                  [--expects-reply[=true|false]] [--reply-to <messageKey>] [json]
                  --bead implies --expects-reply=true; opt out explicitly.
-  message-list   --for <target> [--pane <%id>] [--from <id>] [--message-key <key>]
+  message-list   [--for <target>] [--pane <%id>] [--from <id>] [--message-key <key>]
                  [--unacked] [--expects-reply] [--limit <n>] [--since <dur>] [json]
-                 --expects-reply adds correlated reply fields; --for REQUIRED.
+                 --expects-reply adds correlated reply fields; --for is REQUIRED
+                 outside tmux, else defaults to the live session.
   message-get   <messageKey|messageId> [json]   read one message; never acks it
   message-reply  --in-reply-to <messageKey> --text <text> [--message-key <key>] [json]
   message-cancel --message-key <messageKey> [json]
   message-ack    <message-id> [--by <target>] [json] (receipt, not reply)
   message-status <message-key> [--json] (add --json for correlated reply state)
-  unread-count   --for <recipient> [--pane <%id>] [json]
-                 --for is REQUIRED. --pane narrows to one pane's inbox.
+  unread-count   [--for <recipient>] [--pane <%id>] [json]  --for defaults to live tmux.
   obligations list [--pane <%id>] [json]   active reply obligations owned by this live pane.
   json output:
     message        messageKey, senderId, senderPaneId, senderKind, recipientId,
