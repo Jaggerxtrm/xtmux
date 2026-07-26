@@ -36,15 +36,21 @@ done
 metadata_file="$(mktemp)"
 output_lock="$(mktemp)"
 pids=()
+# xtrm-wiy5n.4.40: SIGHUP must reach the same teardown path as INT/TERM. When a
+# terminal closes or a tmux pane detaches, the shell is signaled with SIGHUP,
+# not SIGTERM — the previous trap list left every `xtmux log-follow` /
+# `sp log --follow` / `follow_beads` pipeline running with no reaper. Combined
+# with the `xtmux log-follow` self-reap on the child side (PPID check), no
+# combination of "shell dies without running its trap" leaks a follower.
 cleanup() {
   status=$?
-  trap - EXIT INT TERM
+  trap - EXIT INT TERM HUP
   [ "${#pids[@]}" -eq 0 ] || kill "${pids[@]}" 2>/dev/null || true
   wait "${pids[@]}" 2>/dev/null || true
   rm -f "$metadata_file" "$output_lock"
   exit "$status"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT INT TERM HUP
 
 emit_lines() {
   local line
