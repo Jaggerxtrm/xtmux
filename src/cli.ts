@@ -33,13 +33,13 @@ commands:
   version [--json]           print schema version
 
   message-send --to <sid> --from <sid> [--to-pane %N] [--from-pane %N] --text T [--bead ID] [--expects-reply true|false] [--message-key K] [--reply-to K] [--json]
-  message-list --for <sid> [--pane %N] [--from <sid>] [--message-key <key>] [--since <ms>] [--unacked] [--expects-reply] [--json] [--limit N]
+  message-list [--for <sid>] [--pane %N] [--from <sid>] [--message-key <key>] [--since <ms>] [--unacked] [--expects-reply] [--json] [--limit N] (--for defaults to live tmux)
   message-get <messageKey|messageId> [--json]
   message-reply --in-reply-to <messageKey> --text T [--message-key K] [--json]
   message-cancel --message-key <messageKey> [--json]
   message-ack <message_id> --by <sid> [--json]  (ack means receipt, not reply)
   message-status <message_key> [--json]        print receipt and optional reply state
-  unread-count --for <sid> [--pane %N] print JSON unread summary; --pane scopes to that pane (xtmux-3xs.28)
+  unread-count [--for <sid>] [--pane %N] print JSON unread summary; --for defaults to live tmux; --pane scopes to that pane (xtmux-3xs.28)
   obligations list [--pane %N] [--json] print active reply obligations; live pane required
   wait-agent <pane> [--wait-for-transition] --timeout <dur> --interval <dur> [--consume] [--json]
   monitor-agent <pane> [--wait-for-transition] --timeout <dur> --interval <dur> [--json]

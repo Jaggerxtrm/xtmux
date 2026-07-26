@@ -246,10 +246,24 @@ export function cliMessageSend(db: Db, argv: string[]): number {
  */
 export function cliMessageList(db: Db, argv: string[]): number {
   const { flags } = parseArgs(argv);
-  const forTarget = String(flags.get("for") ?? "");
+  // xtrm-wiy5n.4.24: allow --for to be omitted when running under tmux; a
+  // Claude Stop / PostToolUse hook only carries TMUX_PANE and had to look up
+  // its own session id to call this. Pi and every existing caller that
+  // already passes --for is unchanged; --for="" or --for absent now resolves
+  // through liveTmuxRequester (same helper message-reply / ack / cancel use)
+  // so the pane-scoped inbox query the Claude reminder hook needs is one
+  // call, not two. --pane still filters explicitly and stays required for
+  // pane-scoped queries; nothing here auto-scopes the query without it.
+  let forTarget = String(flags.get("for") ?? "");
   if (!forTarget) {
-    process.stderr.write("message-list: --for is required\n");
-    return 2;
+    const requester = liveTmuxRequester();
+    if (!requester.ok) {
+      process.stderr.write(JSON.stringify({
+        code: requester.code, message: `message-list: --for is required (${requester.message})`, detail: requester.detail,
+      }) + "\n");
+      return 2;
+    }
+    forTarget = requester.sessionId;
   }
   const rows = listMessages(db, {
     recipientId: forTarget,
@@ -359,10 +373,19 @@ export function cliMessageStatus(db: Db, argv: string[]): number {
 
 export function cliUnreadCount(db: Db, argv: string[]): number {
   const { flags } = parseArgs(argv);
-  const recipientId = String(flags.get("for") ?? "");
+  // xtrm-wiy5n.4.24: --for is optional under tmux; a Claude hook only carries
+  // TMUX_PANE and had to look up its own session id first. See cliMessageList
+  // for the full rationale — same helper (liveTmuxRequester) so parity holds.
+  let recipientId = String(flags.get("for") ?? "");
   if (!recipientId) {
-    process.stderr.write("unread-count: --for <recipient> required\n");
-    return 2;
+    const requester = liveTmuxRequester();
+    if (!requester.ok) {
+      process.stderr.write(JSON.stringify({
+        code: requester.code, message: `unread-count: --for <recipient> required (${requester.message})`, detail: requester.detail,
+      }) + "\n");
+      return 2;
+    }
+    recipientId = requester.sessionId;
   }
   // Optional --pane %N: pane-scoped count (xtmux-3xs.28). Filters to messages
   // explicitly targeted at that pane or unpaned; excludes cohabiting-pane traffic.
