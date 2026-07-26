@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { openDb } from "../../src/db/connection.ts";
 import { migrate } from "../../src/db/schema.ts";
+import { monitorProjection } from "../../src/cli-monitors.ts";
 
 const ROOT = join(import.meta.dir, "../..");
 const CLI = join(ROOT, "src/cli.ts");
@@ -134,21 +135,44 @@ describe("monitor-list terminal-status overlay (xtrm-wiy5n.4.16)", () => {
   // Invariant 5: an active monitor (terminal_status IS NULL) MUST still show
   // its raw pane state. Otherwise a naive "row.terminal_status" replacement
   // would blank out the state column for live monitors.
-  test("an active monitor still shows its pane state", () => {
-    const ctx = scratch();
-    try {
-      const db = openDb({ dbPath: ctx.dbPath, mode: "on", busyTimeoutMs: 3000 });
-      migrate(db);
-      db.close();
-      insertMonitor(ctx.dbPath, { id: "m-live", state: "running", terminalStatus: null });
-      insertMonitor(ctx.dbPath, { id: "m-idle-live", state: "idle", terminalStatus: null });
-
-      const rows: Array<Record<string, unknown>> = JSON.parse(monitorList(ctx.env, ["--json"]).stdout);
-      const byId = Object.fromEntries(rows.map((row) => [row.monitorId, row]));
-      expect(byId["m-live"]).toMatchObject({ state: "running", terminalStatus: null });
-      expect(byId["m-idle-live"]).toMatchObject({ state: "idle", terminalStatus: null });
-    } finally {
-      ctx.cleanup();
+  //
+  // Direct call to `monitorProjection` here: the CLI form runs `reconcileAll`
+  // first, which polls real tmux for pane liveness. In a CI runner without a
+  // tmux server (or with a synthetic pane id like `%tgt`), `paneAlive` is
+  // false, reconcile flips the row to `target_gone` before the projection
+  // sees it, and no CLI-level fixture can express the "genuinely active"
+  // case. Unit-testing the projection function isolates the layer under test.
+  test("monitorProjection leaves state as the pane state when terminal_status is null", () => {
+    for (const [paneState, expected] of [["running", "running"], ["idle", "idle"], ["needs-input", "needs-input"], ["done", "done"]]) {
+      const projected = monitorProjection(
+        { id: "m-active", target: "%tgt", session_id: "$tgt", pane_id: "%tgt",
+          state: paneState, started_at_ms: 1, updated_at_ms: 1,
+          timeout_ms: 60000, interval_ms: 1000,
+          terminal_status: null, terminal_at_ms: null,
+        },
+        undefined,
+        false,
+      );
+      expect(projected).toMatchObject({ state: expected, paneState, terminalStatus: null });
     }
-  }, 30_000);
+  });
+
+  // Invariant 5 (mirror): the same layer overlays terminal_status for every
+  // TerminalStatus value the state machine can produce (src/domains/monitors/
+  // terminal.ts TERMINAL_STATUSES). A future terminal_status added there but
+  // missing from the projection's overlay would go unnoticed without this.
+  test("monitorProjection overlays every terminal_status the state machine can produce", () => {
+    for (const status of ["done", "timeout", "killed", "target_gone", "process_gone", "error"] as const) {
+      const projected = monitorProjection(
+        { id: `m-${status}`, target: "%tgt", session_id: "$tgt", pane_id: "%tgt",
+          state: "running", started_at_ms: 1, updated_at_ms: 1,
+          timeout_ms: 60000, interval_ms: 1000,
+          terminal_status: status, terminal_at_ms: 2,
+        },
+        undefined,
+        false,
+      );
+      expect(projected).toMatchObject({ state: status, paneState: "running", terminalStatus: status });
+    }
+  });
 });

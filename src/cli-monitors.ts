@@ -91,7 +91,7 @@ function waitProjection(wait: OutboundWait, target: string, replayed = false): R
   };
 }
 
-function monitorProjection(row: Record<string, unknown>, wait: OutboundWait | undefined, orphan: boolean): Record<string, unknown> {
+export function monitorProjection(row: Record<string, unknown>, wait: OutboundWait | undefined, orphan: boolean): Record<string, unknown> {
   return {
     monitorId: row.id,
     ...(wait ? { waitId: wait.waitId } : {}),
