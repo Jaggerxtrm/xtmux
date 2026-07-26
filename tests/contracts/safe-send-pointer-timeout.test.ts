@@ -226,6 +226,100 @@ describe("safe-send-pointer wall-clock timeout on obs subprocess (xtrm-wiy5n.4.1
     }
   });
 
+  // Codex PR #84 finding P1: default `timeout` sends only SIGTERM. A subprocess
+  // that traps or ignores SIGTERM (the task's evidence caught exactly that:
+  // "survived SIGTERM, needed SIGKILL") stays blocked past `cap`. `-k` gives
+  // timeout permission to escalate to SIGKILL after $XTMUX_OBS_CALL_KILL_AFTER_SEC.
+  test("kill-after escalates to SIGKILL when the obs subprocess ignores SIGTERM", () => {
+    const ctx = setup();
+    try {
+      // Replace the delay shim with a trap-SIGTERM shim so nothing but SIGKILL
+      // can unblock the wrapper.
+      const bin = join(ctx.root, "bin");
+      writeFileSync(join(bin, "xtmux-obs"), `#!/usr/bin/env bash
+trap '' TERM
+sleep 30
+`);
+      chmodSync(join(bin, "xtmux-obs"), 0o755);
+
+      const started = Date.now();
+      const result = runPicker(ctx.picker,
+        ["safe-send-pointer", "--yes", "--force-freeform", "%worker", "/help"],
+        { ...ctx.env, XTMUX_OBS_CALL_TIMEOUT_SEC: "1", XTMUX_OBS_CALL_KILL_AFTER_SEC: "1" },
+        15_000,
+      );
+      const elapsedMs = Date.now() - started;
+      // Without -k the process would hold on for the full 30s sleep. Cap 1s +
+      // kill-after 1s + a generous startup ceiling well under the shim's sleep.
+      expect(elapsedMs).toBeLessThan(6_000);
+      expect(result.stderr).toContain("wall-clock cap");
+      expect(result.stdout).toContain("sent target=%worker");
+    } finally {
+      ctx.cleanup();
+    }
+  }, 30_000);
+
+  // Codex PR #84 finding P3: XDG_STATE_HOME-customized deployments must see the
+  // right coordination DB path in the diagnostic; otherwise the "which process
+  // to kill" hint points at a file that doesn't exist.
+  test("timeout diagnostic honors XDG_STATE_HOME when XTMUX_OBS_DB_PATH is unset", () => {
+    const ctx = setup();
+    try {
+      const xdgState = join(ctx.root, "custom-xdg-state");
+      mkdirSync(join(xdgState, "xtmux"), { recursive: true });
+      const seededDb = join(xdgState, "xtmux", "observability.db");
+      const db = openDb({ dbPath: seededDb, mode: "on", busyTimeoutMs: 3000 });
+      migrate(db);
+      db.close();
+
+      const { XTMUX_OBS_DB_PATH: _drop, ...envWithoutDbPath } = ctx.env;
+      void _drop;
+      const result = runPicker(ctx.picker,
+        ["safe-send-pointer", "--yes", "--force-freeform", "%worker", "/help"],
+        {
+          ...envWithoutDbPath,
+          XDG_STATE_HOME: xdgState,
+          SHIM_DELAY_SEC: "8",
+          XTMUX_OBS_CALL_TIMEOUT_SEC: "1",
+        },
+        15_000,
+      );
+      expect(result.stderr).toContain("wall-clock cap");
+      expect(result.stderr).toContain(seededDb);
+      // The default fallback path MUST NOT leak into the diagnostic when
+      // XDG_STATE_HOME is customized.
+      expect(result.stderr).not.toContain("/.local/state/xtmux/observability.db");
+    } finally {
+      ctx.cleanup();
+    }
+  }, 30_000);
+
+  // Codex PR #84 finding P2: on systems without GNU coreutils (macOS default)
+  // `timeout` is absent. Bare `${OBS_ARGV[@]}` under `command -v timeout` gating
+  // keeps best-effort delivery-record and --reply-to fulfilment working instead
+  // of hard-failing every V2 call with rc=127. Warning surfaces the degradation.
+  // The wrapper carries a test-only `_XTMUX_OBS_CALL_TIMEOUT_UNAVAILABLE=1`
+  // escape hatch so a Linux CI runner (where `timeout` is always present) can
+  // exercise the fallback branch without breaking every other command that
+  // needs coreutils.
+  test("wrapper falls through to a raw call and warns when `timeout` is not available", () => {
+    const ctx = setup();
+    try {
+      const result = runPicker(ctx.picker,
+        ["safe-send-pointer", "--yes", "--force-freeform", "%worker", "/help"],
+        { ...ctx.env, _XTMUX_OBS_CALL_TIMEOUT_UNAVAILABLE: "1" },
+      );
+      // The send still committed and delivery still ran — no rc=127 leak, no
+      // silent drop.
+      expect(result.stdout).toContain("sent target=%worker");
+      // The degradation is surfaced. Operators must know the wall-clock cap is
+      // off; a silent bare-call would reintroduce the original bug on macOS.
+      expect(result.stderr).toContain("`timeout` not on PATH");
+    } finally {
+      ctx.cleanup();
+    }
+  }, 30_000);
+
   test("a fast obs subprocess is not perturbed by the wrapper (no diagnostic, no slowdown)", () => {
     const ctx = setup();
     try {
@@ -244,5 +338,5 @@ describe("safe-send-pointer wall-clock timeout on obs subprocess (xtrm-wiy5n.4.1
     } finally {
       ctx.cleanup();
     }
-  });
+  }, 30_000);
 });

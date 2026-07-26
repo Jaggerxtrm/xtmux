@@ -807,17 +807,45 @@ obs_runtime_argv() {
 # reported holder pids so operators can find the process to kill instead of
 # guessing. It returns 124 on timeout so the caller can propagate (--reply-to
 # fulfilment) or swallow (best-effort delivery-record / handoff attempt).
+#
+# Notes on the timeout invocation (reported by Codex on PR #84):
+# - `-k` sends SIGKILL $XTMUX_OBS_CALL_KILL_AFTER_SEC (default 2) after SIGTERM
+#   so a subprocess that traps or ignores SIGTERM (the actual case the task's
+#   evidence caught: "survived SIGTERM, needed SIGKILL") is still bounded.
+# - `command -v timeout` gates the wrap: on systems without GNU coreutils
+#   (macOS default), fall through to a raw call so best-effort delivery-record
+#   and --reply-to fulfilment don't return 127. A one-shot warning to stderr
+#   surfaces the degradation instead of silently dropping the protection.
+# - The DB fallback path mirrors the runtime's own resolution:
+#   ${XTMUX_OBS_DB_PATH:-${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/observability.db}
+#   so a customized XDG_STATE_HOME still names the right DB in the diagnostic.
+_XTMUX_OBS_TIMEOUT_WARNED=0
 safe_pointer_obs_call() {
-  local db="${XTMUX_OBS_DB_PATH:-$HOME/.local/state/xtmux/observability.db}"
+  local state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+  local db="${XTMUX_OBS_DB_PATH:-$state_home/xtmux/observability.db}"
   local subcmd="${1:-<none>}"
   local cap="${XTMUX_OBS_CALL_TIMEOUT_SEC:-5}"
+  local kill_after="${XTMUX_OBS_CALL_KILL_AFTER_SEC:-2}"
   local rc holders
-  timeout "$cap" "${OBS_ARGV[@]}" "$@"
-  rc=$?
+  # _XTMUX_OBS_CALL_TIMEOUT_UNAVAILABLE=1 is a test-only escape hatch that
+  # simulates the macOS-without-coreutils path from a Linux CI runner. Not for
+  # operator use — production degradation must come from a real `timeout`
+  # absence so operators see the fallback warning.
+  if [ "${_XTMUX_OBS_CALL_TIMEOUT_UNAVAILABLE:-}" != 1 ] && command -v timeout >/dev/null 2>&1; then
+    timeout -k "$kill_after" "$cap" "${OBS_ARGV[@]}" "$@"
+    rc=$?
+  else
+    if [ "$_XTMUX_OBS_TIMEOUT_WARNED" != 1 ]; then
+      printf 'safe-send-pointer: warning: `timeout` not on PATH; obs subprocess is unbounded — install GNU coreutils (macOS: `brew install coreutils` for gtimeout, then symlink) to restore the wall-clock cap.\n' >&2
+      _XTMUX_OBS_TIMEOUT_WARNED=1
+    fi
+    "${OBS_ARGV[@]}" "$@"
+    rc=$?
+  fi
   if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
     holders="$(fuser "$db" 2>/dev/null | tr -s ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)"
-    printf 'safe-send-pointer: obs subprocess "%s" hit %ss wall-clock cap (XTMUX_OBS_CALL_TIMEOUT_SEC); likely lock contention on coordination DB %s; holders (pids from fuser): %s\n' \
-      "$subcmd" "$cap" "$db" "${holders:-<none>}" >&2
+    printf 'safe-send-pointer: obs subprocess "%s" hit %ss wall-clock cap (XTMUX_OBS_CALL_TIMEOUT_SEC, kill-after %ss); likely lock contention on coordination DB %s; holders (pids from fuser): %s\n' \
+      "$subcmd" "$cap" "$kill_after" "$db" "${holders:-<none>}" >&2
   fi
   return "$rc"
 }
