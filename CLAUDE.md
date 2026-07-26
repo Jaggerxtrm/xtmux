@@ -113,7 +113,7 @@ bd close <id>         # Complete work
 
 ### Rules
 
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
+- `bd` is authoritative for ALL task tracking, and markdown TODO lists are never a substitute. A runtime's own ephemeral task tools may mirror the active bead — see Task Tracking (two-tier) above — but never replace `bd`.
 - Run `bd prime` for detailed command reference and session close protocol
 - Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
 

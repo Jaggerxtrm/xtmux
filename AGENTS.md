@@ -9,7 +9,7 @@ Clearly distinguish verified facts, observations, assumptions, inferences, recom
 
 ## Task Tracking (two-tier)
 
-Up to two task systems coexist in this repo. Where the runtime exposes both, use both; do not substitute one for the other. On a runtime with no task tools, beads alone is correct and complete — do not call tools this file names.
+Up to two task systems coexist in this repo. Where the runtime exposes both, use both; do not substitute one for the other. On a runtime with no task tools, beads alone is correct and complete — do not invent or call a native task API the runtime does not expose.
 
 - **Beads (`bd`)** — top-level durable tracking, on every runtime. Authoritative for ownership, dependencies, cross-session memory, and closure. Read the rest of this file and run `bd prime` for beads context before starting work. File, claim, and close work here.
 - **The runtime's own task system, when the runtime has one** — this-session execution tracking. Use it to mirror the active bead and break it into smaller intermediate steps. Ephemeral; does not replace beads. Names differ per runtime; read the runtime's own tool list rather than assuming a name.
@@ -156,7 +156,7 @@ bd close <id>         # Complete work
 
 ### Rules
 
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
+- `bd` is authoritative for ALL task tracking, and markdown TODO lists are never a substitute. A runtime's own ephemeral task tools may mirror the active bead — see Task Tracking (two-tier) above — but never replace `bd`.
 - Run `bd prime` for detailed command reference and session close protocol
 - Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
 
