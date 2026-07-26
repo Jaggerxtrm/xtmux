@@ -13,6 +13,8 @@
 *.db
 .beads-credential-key
 .beads/proxieddb/
+# Passive export of the Dolt audit log — rewritten on every bd action (xtrm-136tf)
+.beads/interactions.jsonl
 
 # Local Serena project metadata
 .serena/
@@ -34,3 +36,12 @@ dist/
 .pi/skills/
 .xtrm/cache/
 .xtrm/statusline-claim
+
+# specialists runtime state (per-machine, do not track) — xtrm-136tf.
+# Enumerated, not a blanket `.specialists/`: repo-local specialist config
+# (default/, mandatory-rules/, user.json) must stay trackable.
+.specialists/db/
+.specialists/jobs/
+.specialists/ready/
+.specialists/trace.jsonl
+.specialists/executor-result.md
