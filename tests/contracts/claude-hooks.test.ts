@@ -62,24 +62,28 @@ describe("Claude settings merge", () => {
     expect(readFileSync(join(dir, ".claude/settings.json"), "utf8")).toBe(once);
   });
 
-  test("adopts legacy agent-state and project auto-monitor entries", () => {
+  // xtrm-wiy5n.4.27: ownership is proven only by _source: "xtmux". Untagged
+  // entries — even ones invoking our script paths — are not ours to remove; the
+  // installer cannot prove it wrote them. Live untagged duplicates stop growing
+  // because every tagged write self-removes on rerun.
+  test("leaves untagged legacy entries alone and still adds canonical hooks", () => {
     const dir = home({ hooks: { Stop: [
       { hooks: [{ type: "command", command: "CLAUDE_HOOK_EVENT=Stop ~/.tmux/scripts/agent-state.sh done" }] },
       { hooks: [{ type: "command", command: 'node "$CLAUDE_PROJECT_DIR/.xtrm/hooks/auto-monitor-drain-stop.mjs"' }] },
     ] } });
     expect(run(dir).status).toBe(0);
     const installed = commands(settings(dir));
-    expect(installed.some((command) => command.includes("~/.tmux/scripts/agent-state.sh"))).toBe(false);
-    expect(installed.some((command) => command.includes("$CLAUDE_PROJECT_DIR"))).toBe(false);
-    expect(installed.filter((command) => command.includes("auto-monitor-drain-stop.mjs"))).toHaveLength(1);
-    expect(settings(dir).hooks.Stop.some((entry: any) => entry.hooks?.some((hook: any) => hook.command.includes("auto-monitor-drain-stop.mjs")))).toBe(true);
+    expect(installed.some((command) => command.includes("~/.tmux/scripts/agent-state.sh"))).toBe(true);
+    expect(installed.some((command) => command.includes("$CLAUDE_PROJECT_DIR"))).toBe(true);
+    const canonicalDrain = settings(dir).hooks.Stop.filter((entry: any) =>
+      entry._source === "xtmux" && entry.hooks?.some((hook: any) => hook.command.includes("auto-monitor-drain-stop.mjs")));
+    expect(canonicalDrain).toHaveLength(1);
   });
 
-  // xtmux-2zh: the operator's settings held 3 copies of every hook — one tagged
-  // {_source:'xtmux'} plus two untagged clones that predate provenance tagging.
-  // Install must converge on one registration per hook, and uninstall must take
-  // the untagged clones with it.
-  test("collapses untagged duplicates of managed hooks", () => {
+  // xtrm-wiy5n.4.27: the pre-existing untagged clones on the operator machine
+  // (three copies of every hook) are LEFT in place, and the installer's own
+  // tagged writes must be exactly one per hook and byte-idempotent on rerun.
+  test("leaves untagged clones alone and its own tagged writes are byte-idempotent", () => {
     const clone = (dir: string, event: string, command: string) => ({
       ...(event === "PostToolUse" ? { matcher: "Bash" } : {}),
       hooks: [{ type: "command", command: command.replace("<HOME>", dir) }],
@@ -88,6 +92,8 @@ describe("Claude settings merge", () => {
     homes.push(dir);
     mkdirSync(join(dir, ".claude"), { recursive: true });
     const dup = (event: string, command: string) => [clone(dir, event, command), clone(dir, event, command)];
+    const stopCmd = 'CLAUDE_HOOK_EVENT=Stop bash "<HOME>/.claude/hooks/xtmux/agent-state.sh" done'.replace("<HOME>", dir);
+    const sendCmd = 'bash "<HOME>/.claude/hooks/xtmux/auto-monitor-on-send.sh"'.replace("<HOME>", dir);
     writeFileSync(join(dir, ".claude/settings.json"), JSON.stringify({
       hooks: {
         Stop: [
@@ -97,13 +103,26 @@ describe("Claude settings merge", () => {
         PostToolUse: dup("PostToolUse", 'bash "<HOME>/.claude/hooks/xtmux/auto-monitor-on-send.sh"'),
       },
     }));
+
     expect(run(dir).status).toBe(0);
-    const installed = commands(settings(dir));
-    expect(installed.filter((c) => c.startsWith("CLAUDE_HOOK_EVENT=Stop "))).toHaveLength(1);
-    expect(installed.filter((c) => c.includes("auto-monitor-on-send.sh"))).toHaveLength(1);
-    expect(installed).toContain("user-stop");
+    const after = settings(dir);
+    expect(after.hooks.Stop.filter((entry: any) => !entry._source && entry.hooks?.[0]?.command === stopCmd)).toHaveLength(2);
+    expect(after.hooks.PostToolUse.filter((entry: any) => !entry._source && entry.hooks?.[0]?.command === sendCmd)).toHaveLength(2);
+    const taggedStop = after.hooks.Stop.filter((entry: any) => entry._source === "xtmux" && entry.hooks?.[0]?.command.startsWith("CLAUDE_HOOK_EVENT=Stop "));
+    expect(taggedStop).toHaveLength(1);
+    const taggedSend = after.hooks.PostToolUse.filter((entry: any) => entry._source === "xtmux" && entry.hooks?.[0]?.command.includes("auto-monitor-on-send.sh"));
+    expect(taggedSend).toHaveLength(1);
+    expect(commands(after)).toContain("user-stop");
+
+    const once = readFileSync(join(dir, ".claude/settings.json"), "utf8");
+    expect(run(dir).status).toBe(0);
+    expect(readFileSync(join(dir, ".claude/settings.json"), "utf8")).toBe(once);
+
     expect(run(dir, "--uninstall").status).toBe(0);
-    expect(commands(settings(dir))).toEqual(["user-stop"]);
+    const afterUninstall = settings(dir);
+    expect(afterUninstall.hooks.Stop.filter((entry: any) => entry._source === "xtmux")).toHaveLength(0);
+    expect(afterUninstall.hooks.Stop.filter((entry: any) => !entry._source && entry.hooks?.[0]?.command === stopCmd)).toHaveLength(2);
+    expect(commands(afterUninstall)).toContain("user-stop");
   });
 
   // The ownership sweep is scoped to the managed hooks directory. A user who
