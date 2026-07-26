@@ -204,13 +204,19 @@ function wrapper(matcher, command, timeout = 5000) {
 
 const hook = (name) => join(claudeHooks, name);
 function canonicalHooks() {
-  const state = (event, next) => wrapper("", `CLAUDE_HOOK_EVENT=${event} bash "${hook("agent-state.sh")}" ${next}`, 2000);
+  const state = (event, next, matcher = "") => wrapper(matcher, `CLAUDE_HOOK_EVENT=${event} bash "${hook("agent-state.sh")}" ${next}`, 2000);
   return {
     // --new-instance on SessionStart ONLY (docs/xtmux-gaps.md 12.1): a Claude
     // pane with no fresh @agent_instance_id never emits agent.ready, so nothing
     // keyed on agent identity — `xt claude --role/--bead` auto-assign included —
     // can ever see it. Rotating it on ordinary idle transitions is forbidden.
-    SessionStart: [state("SessionStart", "idle --new-instance")],
+    //
+    // The matcher is what keeps that promise: SessionStart also fires on
+    // `compact`, which continues one occupation rather than starting one. An
+    // empty matcher would take it, mint a second id without ending the first,
+    // and split the pane's history and Specialists jobs across a phantom
+    // instance. `startup|resume|clear` is the same set the Codex wiring uses.
+    SessionStart: [state("SessionStart", "idle --new-instance", "startup|resume|clear")],
     UserPromptSubmit: [state("UserPromptSubmit", "running")],
     PreToolUse: [state("PreToolUse", "running")],
     Notification: [state("Notification", "needs-input")],

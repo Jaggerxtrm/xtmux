@@ -111,7 +111,11 @@ test("Claude SessionStart mints a new agent instance, and no other event does", 
   const hooks = json(join(home, ".claude", "settings.json")).hooks;
   const commandsFor = (event) => (hooks[event] || []).flatMap((entry) => entry.hooks?.map((hook) => hook.command) || []);
 
-  assert.equal(commandsFor("SessionStart").filter((command) => /agent-state\.sh" idle --new-instance$/.test(command)).length, 1);
+  const minting = (hooks.SessionStart || []).filter((entry) => entry.hooks?.some((hook) => /agent-state\.sh" idle --new-instance$/.test(hook.command)));
+  assert.equal(minting.length, 1);
+  // SessionStart also fires on `compact`, which continues an occupation instead
+  // of starting one; a matcher that took it would mint a phantom second instance.
+  assert.equal(minting[0].matcher, "startup|resume|clear");
   for (const event of Object.keys(hooks).filter((event) => event !== "SessionStart")) {
     assert.deepEqual(commandsFor(event).filter((command) => command.includes("--new-instance")), [], `${event} must not mint a new instance id`);
   }
