@@ -6,6 +6,7 @@
  */
 import type { Db } from "./db/connection.ts";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { emitEvent, query as journalQuery, tail as journalTail } from "./domains/events/query.ts";
 import { journalPage, type JournalPageItemV1 } from "./domains/events/page.ts";
 import type { JournalRow } from "./domains/events/query.ts";
@@ -375,6 +376,30 @@ export function cliLogEmit(db: Db, argv: string[]): number {
  * it: on reconnect the consumer resumes from the last journal_id it MATERIALIZED,
  * so a crash mid-line replays that row rather than skipping it.
  */
+// Live parent PID. Bun caches `process.ppid` at process startup, so a
+// reparented follower keeps reporting its original creator (verified against
+// /proc/self/status showing PPid: 1 while process.ppid still returned the
+// original value). Read the current parent from the kernel each poll tick:
+// Linux via /proc/self/status (portable across distros, one small file read
+// under microseconds), macOS / other platforms via `ps -o ppid=`. Return 0 on
+// error to preserve the "unknown ppid == treat as reparented" semantic in
+// parentGone.
+function readLivePpid(): number {
+  try {
+    const status = readFileSync("/proc/self/status", "utf8");
+    const match = /^PPid:\s*(\d+)/m.exec(status);
+    if (match) return Number(match[1]);
+  } catch { /* not Linux, fall through to ps */ }
+  try {
+    const result = spawnSync("ps", ["-o", "ppid=", "-p", String(process.pid)], { encoding: "utf8" });
+    if (result.status === 0) {
+      const parsed = Number(String(result.stdout ?? "").trim());
+      if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+    }
+  } catch { /* no ps either */ }
+  return 0;
+}
+
 export async function cliLogFollow(db: Db, argv: string[]): Promise<number> {
   const { flags } = parseArgs(argv);
   const afterRaw = flags.has("after-id") ? Number(flags.get("after-id")) : NaN;
@@ -398,9 +423,29 @@ export async function cliLogFollow(db: Db, argv: string[]): Promise<number> {
   const stop = (): void => { running = false; };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
+  process.on("SIGHUP", stop);
+
+  // xtrm-wiy5n.4.40: self-reap if the parent shell dies without teardown.
+  // Evidence caught an `xtmux log-follow` alive 1h38m after its parent shell
+  // was killed with SIGKILL — no trap ran on the shell, so the child's own
+  // PPID poll is the only defense that catches every "parent dies without
+  // running its cleanup" case. Env escape hatch skips the check for tests
+  // that intentionally reparent under `nohup` / `setsid`.
+  const initialPpid = readLivePpid();
+  const skipPpidCheck = process.env["XTMUX_LOG_FOLLOW_SKIP_PPID_CHECK"] === "1";
+  const parentGone = (): boolean => {
+    if (skipPpidCheck) return false;
+    const now = readLivePpid();
+    // ppid 1 (init) or 0 (unknown / already reaped): we were reparented.
+    // A ppid that differs from the initial value but is neither 0 nor 1 means
+    // the shell was replaced under us (rare — most reparenting goes straight
+    // to init), still safer to exit than to keep polling a DB no one reads.
+    return now <= 1 || now !== initialPpid;
+  };
 
   try {
     while (running) {
+      if (parentGone()) return 0;
       const result = journalPage(db, { afterId: cursor, limit: 500 });
       if (!result.ok) {
         process.stderr.write(JSON.stringify(result.error) + "\n");
@@ -421,6 +466,7 @@ export async function cliLogFollow(db: Db, argv: string[]): Promise<number> {
   } finally {
     process.off("SIGINT", stop);
     process.off("SIGTERM", stop);
+    process.off("SIGHUP", stop);
   }
 }
 
