@@ -5,7 +5,7 @@
 // XTMUX_OBS_CALL_TIMEOUT_SEC and, on timeout, emits a diagnostic that names
 // the coordination DB path and the fuser-reported holder pids.
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -13,16 +13,25 @@ import { openDb } from "../../src/db/connection.ts";
 import { migrate } from "../../src/db/schema.ts";
 
 const ROOT = join(import.meta.dir, "../..");
-const PICKER = join(ROOT, "bin/tmux-session-picker");
+const REAL_PICKER = join(ROOT, "bin/tmux-session-picker");
+const REAL_BUN = spawnSync("bash", ["-c", "command -v bun"], { encoding: "utf8" }).stdout.trim();
 
-// A shim `bun` that sleeps SHIM_DELAY_SEC before delegating to the real bun.
-// Placed first in $PATH so obs_runtime_argv's `command -v bun` picks it up
-// (bin/xtmux-obs isn't shipped in a checkout, so the picker falls through to
-// `bun run src/cli.ts`).
-function slowBunShim(binDir: string, realBun: string): void {
+// Route the picker's obs subprocess through a shim we control by copying the
+// picker into the test root, then placing an xtmux-obs shim next to it —
+// `obs_runtime_argv` resolves `$root/bin/xtmux-obs` from the picker's own
+// path, so this deterministically hijacks the write path without touching the
+// production binary at repo/bin/xtmux-obs (CI builds it; a local checkout may
+// not have it). SHIM_DELAY_SEC gates the sleep so the "fast obs" test can
+// reuse the same shim on the happy path.
+function installObsShim(root: string): { picker: string } {
+  const bin = join(root, "bin");
+  mkdirSync(bin, { recursive: true });
+  const picker = join(bin, "tmux-session-picker");
+  copyFileSync(REAL_PICKER, picker);
+  chmodSync(picker, 0o755);
   // exec sleep so the outer `timeout` can signal sleep directly. A trap+bash
   // wrapper would swallow SIGTERM until sleep returned on its own.
-  const script = `#!/usr/bin/env bash
+  const shim = `#!/usr/bin/env bash
 if [ -n "\${SHIM_DELAY_SEC:-}" ]; then
   for arg in "$@"; do
     case "$arg" in
@@ -30,26 +39,29 @@ if [ -n "\${SHIM_DELAY_SEC:-}" ]; then
     esac
   done
 fi
-exec ${JSON.stringify(realBun)} "$@"
+exec ${JSON.stringify(REAL_BUN)} run ${JSON.stringify(join(ROOT, "src/cli.ts"))} "$@"
 `;
-  writeFileSync(join(binDir, "bun"), script);
-  chmodSync(join(binDir, "bun"), 0o755);
+  writeFileSync(join(bin, "xtmux-obs"), shim);
+  chmodSync(join(bin, "xtmux-obs"), 0o755);
+  return { picker };
 }
 
 function setup(): {
   root: string;
+  picker: string;
   dbPath: string;
   calls: string;
   env: NodeJS.ProcessEnv;
   cleanup: () => void;
 } {
   const root = mkdtempSync(join(tmpdir(), "xtmux-safe-send-timeout-"));
-  const bin = join(root, "bin");
   const dbPath = join(root, "state", "observability.db");
   const calls = join(root, "tmux.calls");
-  for (const dir of [bin, join(root, "home"), join(root, "state"), join(root, "runtime"), join(root, "tmp"), join(root, "tmux")]) {
+  for (const dir of [join(root, "home"), join(root, "state"), join(root, "runtime"), join(root, "tmp"), join(root, "tmux")]) {
     mkdirSync(dir, { recursive: true });
   }
+  const { picker } = installObsShim(root);
+  const bin = join(root, "bin");
   writeFileSync(join(bin, "tmux"), `#!/bin/bash
 target=""; previous=""
 for arg in "$@"; do
@@ -77,11 +89,6 @@ esac
 `);
   chmodSync(join(bin, "tmux"), 0o755);
 
-  // Preserve access to the real bun so the shim can delegate, and to any node
-  // vendored alongside for the picker's fallback launcher path.
-  const realBun = spawnSync("bash", ["-c", "command -v bun"], { encoding: "utf8" }).stdout.trim();
-  slowBunShim(bin, realBun);
-
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     PATH: `${bin}:${process.env["PATH"] ?? ""}`,
@@ -100,11 +107,11 @@ esac
     XTMUX_OBS_V2_REPO: ROOT,
     XTMUX_OBS_DB_PATH: dbPath,
   };
-  return { root, dbPath, calls, env, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  return { root, picker, dbPath, calls, env, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
-function picker(args: string[], env: NodeJS.ProcessEnv, timeoutMs = 20_000) {
-  return spawnSync(PICKER, args, { cwd: ROOT, env, encoding: "utf8", timeout: timeoutMs });
+function runPicker(pickerPath: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs = 20_000) {
+  return spawnSync(pickerPath, args, { cwd: ROOT, env, encoding: "utf8", timeout: timeoutMs });
 }
 
 describe("safe-send-pointer wall-clock timeout on obs subprocess (xtrm-wiy5n.4.17)", () => {
@@ -120,7 +127,7 @@ describe("safe-send-pointer wall-clock timeout on obs subprocess (xtrm-wiy5n.4.1
       db.close();
 
       const started = Date.now();
-      const result = picker(
+      const result = runPicker(ctx.picker,
         ["safe-send-pointer", "--yes", "--force-freeform", "%worker", "/help"],
         { ...ctx.env, SHIM_DELAY_SEC: "8", XTMUX_OBS_CALL_TIMEOUT_SEC: "1" },
         15_000,
@@ -223,7 +230,7 @@ describe("safe-send-pointer wall-clock timeout on obs subprocess (xtrm-wiy5n.4.1
     const ctx = setup();
     try {
       const started = Date.now();
-      const result = picker(
+      const result = runPicker(ctx.picker,
         ["safe-send-pointer", "--yes", "--force-freeform", "%worker", "/help"],
         { ...ctx.env, XTMUX_OBS_CALL_TIMEOUT_SEC: "10" },
       );
