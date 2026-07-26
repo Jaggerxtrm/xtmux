@@ -86,7 +86,7 @@ and clean up tmux-based agent work.
   - `@agent_prompt_file`
   - `@agent_parent_session`
   - `@agent_last_transition`
-- `wait-agent`: requester-owned SQLite wait that blocks until an agent pane leaves working/running state; `--consume` claims a terminal wake once
+- `wait-agent`: requester-owned SQLite wait that blocks until an agent pane leaves working/running state; `--consume` claims a terminal wake once. A completed wake is replayed only while the target is idle — re-arming against a target that is working again always opens a fresh wait
 - `monitor-agent` / `monitor-list` / `monitor-kill`: durable background monitors linked to requester session and pane identity
 - `safe-send-pointer`: dry-run-first safe wrapper around `tmux send-keys`; `--reply-to <messageKey>` records a correlated reply only after successful injection; Claude targets receive the required delayed second Enter
 - `handoff`: generate `/tmp` prompt file + exact safe-send command for a bead
