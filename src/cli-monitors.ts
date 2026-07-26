@@ -100,7 +100,17 @@ function monitorProjection(row: Record<string, unknown>, wait: OutboundWait | un
     requesterPaneId: wait?.requesterPaneId ?? null,
     sessionId: row.session_id,
     paneId: row.pane_id,
-    state: row.state,
+    // xtrm-wiy5n.4.16: the projected `state` MUST reflect terminal_status when
+    // it is set. `row.state` is the target pane's observed agent state and
+    // churns every poll — it still reads "running" on a monitor that timed out,
+    // was killed, or lost its target. Consumers (humans, hygiene checks, the
+    // /multiplexing operator guidance, `monitors` pretty view) filter on this
+    // field to decide "is this monitor live"; without the terminal overlay a
+    // terminal monitor lies. terminalStatus stays in its own field for callers
+    // that want the raw pane state (they read `paneState` — added alongside so
+    // the split is explicit, not lost).
+    state: (row.terminal_status as string | null) ?? row.state,
+    paneState: row.state,
     startedAtMs: row.started_at_ms,
     updatedAtMs: row.updated_at_ms,
     timeoutMs: row.timeout_ms,
