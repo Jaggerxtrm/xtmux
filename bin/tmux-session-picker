@@ -796,6 +796,32 @@ obs_runtime_argv() {
     OBS_ARGV=("node" "$root/scripts/xtmux-obs.mjs")
   fi
 }
+# Bound each obs subprocess call from safe_send_pointer by wall-clock time so a
+# stuck coordination-DB call cannot silently hang the picker forever
+# (xtrm-wiy5n.4.17). The DB layer already sets busy_timeout (default 3s, see
+# src/db/connection.ts), but the shell caller previously wrapped every obs call
+# with `2>/dev/null || true`: any hang past busy_timeout — a stuck bun subprocess,
+# a WAL recovery stall, a fuse-backed disk syscall — became an invisible pane
+# freeze. This wrapper caps the call at $XTMUX_OBS_CALL_TIMEOUT_SEC (default 5s)
+# and, on timeout, emits a diagnostic that names the DB path AND the fuser-
+# reported holder pids so operators can find the process to kill instead of
+# guessing. It returns 124 on timeout so the caller can propagate (--reply-to
+# fulfilment) or swallow (best-effort delivery-record / handoff attempt).
+safe_pointer_obs_call() {
+  local db="${XTMUX_OBS_DB_PATH:-$HOME/.local/state/xtmux/observability.db}"
+  local subcmd="${1:-<none>}"
+  local cap="${XTMUX_OBS_CALL_TIMEOUT_SEC:-5}"
+  local rc holders
+  timeout "$cap" "${OBS_ARGV[@]}" "$@"
+  rc=$?
+  if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+    holders="$(fuser "$db" 2>/dev/null | tr -s ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)"
+    printf 'safe-send-pointer: obs subprocess "%s" hit %ss wall-clock cap (XTMUX_OBS_CALL_TIMEOUT_SEC); likely lock contention on coordination DB %s; holders (pids from fuser): %s\n' \
+      "$subcmd" "$cap" "$db" "${holders:-<none>}" >&2
+  fi
+  return "$rc"
+}
+
 obs_available() {
   local root binary
   root="${self%/bin/*}"
@@ -3570,16 +3596,16 @@ safe_send_pointer() {
     summary="$(printf '%s' "$payload" | head -c 80)"
     if [ -n "${XTMUX_HANDOFF_ID:-}" ] && [ "$send_mode" = 'on' ]; then
       obs_runtime_argv
-      "${OBS_ARGV[@]}" handoff attempt --id "$XTMUX_HANDOFF_ID" --summary "$summary" \
+      safe_pointer_obs_call handoff attempt --id "$XTMUX_HANDOFF_ID" --summary "$summary" \
         --succeeded "$([ "$send_rc" = 0 ] && printf true || printf false)" \
-        $([ "$send_rc" = 0 ] || printf '%s' '--failure-code target_gone') >/dev/null 2>&1 || true
+        $([ "$send_rc" = 0 ] || printf '%s' '--failure-code target_gone') >/dev/null || true
     elif [ "$send_mode" = 'on' ]; then
       # V2: pane pointer is a DELIVERY attempt, not a durable message.
       obs_runtime_argv
-      "${OBS_ARGV[@]}" delivery-record \
+      safe_pointer_obs_call delivery-record \
         --kind pane_pointer --source-session "${_from_session:-unknown}" \
         --target-session "$target_sid" --target-pane "$pane" --summary "$summary" \
-        --succeeded "$([ "$send_rc" = 0 ] && printf true || printf false)" 2>/dev/null || true
+        --succeeded "$([ "$send_rc" = 0 ] && printf true || printf false)" >/dev/null || true
     else
       log_event message.sent via=safe-send-pointer from="${_from_session:-unknown}" to="$target" pane="$pane" text="$payload" state="${state:-unknown}" double_enter="$double_enter" force_freeform="$force_freeform"
     fi
@@ -3591,7 +3617,7 @@ safe_send_pointer() {
       obs_runtime_argv
       local reply_args=(message-reply --in-reply-to "$reply_to" --text "$payload")
       [ "$json" = 1 ] && reply_args+=(--json)
-      fulfilment_json="$("${OBS_ARGV[@]}" "${reply_args[@]}")" || return $?
+      fulfilment_json="$(safe_pointer_obs_call "${reply_args[@]}")" || return $?
       [ "$json" = 1 ] || printf '%s' "$fulfilment_json"
     fi
     [ "$json" = 1 ] || printf 'sent target=%s pane=%s state=%s double_enter=%s\n' "$target" "$pane" "${state:-unknown}" "$double_enter"
