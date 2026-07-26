@@ -176,25 +176,14 @@ function hash(wrapper) {
   return createHash("sha256").update(JSON.stringify({ matcher: wrapper.matcher ?? null, hooks: wrapper.hooks })).digest("hex");
 }
 
-// Untagged entries need ownership proven some other way, because copies written
-// before provenance tagging carry no _source and would otherwise survive every
-// remove-then-write cycle and accumulate (xtmux-2zh: 3x per hook). The proof is
-// the managed hooks directory PLUS a filename this installer actually writes
-// there — the directory alone would also adopt a user's own script dropped
-// alongside ours, and mergeClaude(true) runs before the directory is examined,
-// so uninstall would strip its registration. Derived from managedSources so a
-// new managed hook cannot drift out of the ownership sweep. Matched
-// home-relative: an install done under a different HOME is still adopted.
-const managedHookCommand = (command) =>
-  Object.keys(managedSources.claudeHooks).some((name) => command.includes(`/.claude/hooks/xtmux/${name}`));
-
+// Strict tag-based ownership: only entries carrying our _source are ours to
+// remove (xtrm-wiy5n.4.27). Pattern-based adoption of untagged entries could
+// silently delete a user hook that happens to invoke our script paths, so
+// untagged entries are always left alone. Live untagged duplicates leak once
+// but stop growing, because every entry the installer writes from here on is
+// tagged and self-removes on the next run.
 function owned(wrapper) {
-  if (wrapper && Object.hasOwn(wrapper, "_source") && wrapper._source !== source) return false;
-  if (wrapper?._source === source) return true;
-  const commands = Array.isArray(wrapper?.hooks) ? wrapper.hooks.map((hook) => hook?.command).filter(Boolean) : [];
-  return commands.length > 0 && commands.every((command) =>
-    managedHookCommand(command) || command.includes("/.tmux/scripts/agent-state.sh") || command.includes("/.xtrm/hooks/auto-monitor-") || command.includes("claude-agent-turn-capture.mjs")
-  );
+  return wrapper?._source === source;
 }
 
 function wrapper(matcher, command, timeout = 5000) {
@@ -246,10 +235,12 @@ function mergeClaude(removeOnly = false) {
 }
 
 function codexOwned(entry) {
-  const commands = Array.isArray(entry?.hooks) ? entry.hooks.map((hook) => hook?.command).filter(Boolean) : [];
-  return commands.length > 0 && commands.every((command) =>
-    command.includes("/.codex/hooks/xtmux/agent-state.sh") || command.includes("/.tmux/scripts/agent-state.sh")
-  );
+  return entry?._source === source;
+}
+
+function codexEntry(matcher, command, statusMessage) {
+  const data = { ...(matcher === undefined ? {} : { matcher }), hooks: [{ type: "command", command, statusMessage }] };
+  return { ...data, _source: source, _xtmux: { version: pkg.version, hash: hash(data) } };
 }
 
 function mergeCodex(removeOnly = false) {
@@ -263,8 +254,13 @@ function mergeCodex(removeOnly = false) {
   }
   if (!removeOnly) {
     const script = join(codexHooks, "agent-state.sh");
-    next.SessionStart = [{ matcher: "startup|resume|clear", hooks: [{ type: "command", command: `bash "${script}" idle`, statusMessage: "marking pane idle" }] }, ...(next.SessionStart || [])];
-    next.UserPromptSubmit = [{ hooks: [{ type: "command", command: `bash "${script}" running`, statusMessage: "marking pane running" }] }, ...(next.UserPromptSubmit || [])];
+    // --new-instance on SessionStart ONLY (docs/xtmux-gaps.md 12.1): without it
+    // a Codex pane never mints @agent_instance_id, never emits agent.ready, and
+    // stays invisible to every identity-keyed feature (mirror of the Claude fix
+    // in PR #79 / xtrm-wiy5n.4.25). The startup|resume|clear matcher keeps
+    // compaction out of the rotation.
+    next.SessionStart = [codexEntry("startup|resume|clear", `bash "${script}" idle --new-instance`, "marking pane idle"), ...(next.SessionStart || [])];
+    next.UserPromptSubmit = [codexEntry(undefined, `bash "${script}" running`, "marking pane running"), ...(next.UserPromptSubmit || [])];
   }
   settings.hooks = next;
   if (existsSync(codexSettings) && !existsSync(`${codexSettings}.pre-xtmux`)) copyFileSync(codexSettings, `${codexSettings}.pre-xtmux`);
