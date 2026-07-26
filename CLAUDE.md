@@ -1,3 +1,29 @@
+<!-- BEGIN INJECTED BLOCK -->
+## Communication Style
+
+Use controlled, precise, and direct language throughout the work session, including plans, progress updates, analysis, reviews, implementation notes, documentation, handoffs, and final reports. Prefer explicit subjects, active voice, consistent terminology, concrete statements, and logically ordered sentences. Keep the writing natural and concise. Avoid conversational filler, ornamental language, vague qualifiers, unnecessary jargon, and exaggerated certainty.
+
+Adapt the level of rigor to the context. Use clear technical prose for analysis, architecture, debugging, design discussion, and collaboration. Use a stricter ASD-STE100-oriented style for procedures, commands, migrations, deployments, security requirements, destructive operations, rollback instructions, acceptance criteria, and operator handoffs. In these cases, state conditions before actions, identify the responsible actor, express one principal action per sentence, preserve the required sequence, and describe expected results and failure conditions explicitly.
+
+Clearly distinguish verified facts, observations, assumptions, inferences, recommendations, and unresolved questions. Do not report an action as successful without evidence. Preserve exact names for repositories, services, contracts, routes, identifiers, configuration fields, and work items. Do not omit material ownership, dependencies, risks, preconditions, rollback requirements, or verification criteria for the sake of brevity.
+
+## Task Tracking (two-tier)
+
+Two task systems coexist in this repo. Use both; do not substitute one for the other.
+
+- **Beads (`bd`)** — top-level durable tracking. Authoritative for ownership, dependencies, cross-session memory, and closure. Read the rest of this file and run `bd prime` for beads context before starting work. File, claim, and close work here.
+- **Native integrated task system** (`TaskCreate` / `TaskList` / `TaskGet` / `TaskUpdate` / `TaskExecute`) — this-session execution tracking. Use it to mirror the active bead and break it into smaller intermediate steps. Ephemeral; does not replace beads.
+
+Rule: when you pick up a bead, create native tasks that track it — reference the bead ID in each task title (e.g. `N.N summary — status (worker %NNNN)`) — and add any smaller intermediate steps as native sub-tasks. Beads own the durable record; native tasks own the in-flight breakdown.
+
+Example native task list mirroring beads:
+- ◼ N.N smoke container global surface — BLOCKS RELEASE (worker %NNNN)
+- ◼ N.N status test flake under load (worker %NNNN)
+- ◻ Pre-release smoke run against current main branches
+- ◻ Dispatch N.N stale doc metrics + N.N Claude inbox surface
+- ◻ Dispatch N.N, N.N, N.N remaining small beads
+<!-- END INJECTED BLOCK -->
+
 <!-- xtrm:start -->
 # XTRM Agent Workflow
 
@@ -87,7 +113,7 @@ bd close <id>         # Complete work
 
 ### Rules
 
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
+- `bd` is authoritative for ALL task tracking, and markdown TODO lists are never a substitute. A runtime's own ephemeral task tools may mirror the active bead — see Task Tracking (two-tier) above — but never replace `bd`.
 - Run `bd prime` for detailed command reference and session close protocol
 - Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
 
