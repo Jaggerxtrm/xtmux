@@ -255,6 +255,14 @@ describe("coordination CLI acceptance", () => {
       expect(JSON.parse(blocked.stderr)).toMatchObject({ code: "XTMUX_WAIT_TIMEOUT" });
       expect(JSON.parse(blocked.stderr).detail.waitId).not.toBe(first.waitId);
 
+      // --consume against a working target claims this requester's own stale wake and
+      // still opens a fresh blocking wait — it must not trip over a stranger's row.
+      const other = { ...ctx.env, TMUX_PANE: "%other", MOCK_SESSION: "$other", MOCK_PANE: "%other" };
+      expect(raw(["wait-agent", "%target", "--interval", "0", "--timeout", "1", "--json"], other).status).toBe(0);
+      const otherBlocked = raw(["wait-agent", "%target", "--interval", "0", "--timeout", "1", "--consume", "--json"], { ...other, MOCK_STATE: "running" });
+      expect(otherBlocked.status).toBe(124);
+      expect(JSON.parse(otherBlocked.stderr)).toMatchObject({ code: "XTMUX_WAIT_TIMEOUT" });
+
       // Replay of the earlier wake stays available once the target is idle again.
       const replayed = raw(["wait-agent", "%target", "--interval", "0", "--timeout", "1", "--json"], ctx.env);
       expect(replayed.status).toBe(0);

@@ -204,8 +204,15 @@ export function cliWaitAgent(db: Db, argv: string[], nowMs: number): number {
       && row.targetSessionId === target.sessionId && row.targetPaneId === target.paneId
       && (["unarmed", "armed"].includes(row.state)
         || (!transitionRequired && !isWorking(liveState) && ["terminal-unconsumed", "consumed"].includes(row.state))));
-    const existingAny = listAllWaits(db).find((row) => row.targetSessionId === target.sessionId && row.targetPaneId === target.paneId
+    // Consumption is requester-owned, so the fallback lookup prefers this requester's
+    // own row: with a working target its terminal row is no longer `existing`, and
+    // picking a stranger's row instead would fail as not-owner rather than claiming
+    // the stale wake it does own. A foreign row is still selected when the requester
+    // owns none — that path is what enforces ownership.
+    const targetWaits = listAllWaits(db).filter((row) => row.targetSessionId === target.sessionId && row.targetPaneId === target.paneId
       && ["unarmed", "armed", "terminal-unconsumed", "consumed"].includes(row.state));
+    const existingAny = targetWaits.find((row) => row.requesterSessionId === requester.sessionId && row.requesterPaneId === requester.paneId)
+      ?? targetWaits[0];
     if (flags.get("consume") === true && existingAny && !existing) {
       consumeOutboundWake(db, { waitId: existingAny.waitId, requesterSessionId: requester.sessionId, requesterPaneId: requester.paneId, nowMs: Date.now() });
     }
