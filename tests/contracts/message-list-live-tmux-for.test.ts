@@ -171,26 +171,77 @@ describe("message-list / unread-count derive --for from live tmux (xtrm-wiy5n.4.
     }
   }, 30_000);
 
-  test("--for omitted without tmux fails with a structured error, not a stack", () => {
+  // Codex PR #87: `message-list` outside tmux, without `--json`, must emit
+  // human text — NOT a JSON object. The pre-fix path unconditionally
+  // serialized the error and broke the CLI's human-versus-JSON split, so
+  // scripts parsing ordinary stderr would suddenly see a JSON blob after
+  // xtrm-wiy5n.4.24. Redirect through the shared fail() helper so the same
+  // invocation on --json still gets structured output.
+  test("--for omitted without tmux emits human text unless --json is asked for", () => {
     const ctx = setup();
     try {
-      // Strip TMUX + TMUX_PANE so liveTmuxRequester cannot resolve — the
-      // fallback error path is the only thing under test here.
       const { TMUX: _tmux, TMUX_PANE: _pane, ...rest } = ctx.env;
       void _tmux; void _pane;
-      const r = run(["message-list", "--pane", "%me", "--unacked", "--json"], rest);
-      expect(r.status).not.toBe(0);
-      // The error is a single JSON object so callers can parse it, not a
-      // stack trace. Same shape liveTmuxRequester emits elsewhere.
-      const err = JSON.parse(r.stderr);
+
+      // Human path (no --json): plain-text error, NOT JSON. Codex called this
+      // out as the split-breaker; the assertion here is red without the fix.
+      const human = run(["message-list", "--pane", "%me", "--unacked"], rest);
+      expect(human.status).not.toBe(0);
+      expect(human.stderr).toContain("message-list");
+      expect(human.stderr).toContain("--for");
+      expect(() => JSON.parse(human.stderr.trim())).toThrow();
+
+      // JSON path: structured object with the same shape liveTmuxRequester
+      // emits elsewhere, so JSON callers keep parseable output.
+      const jsonRes = run(["message-list", "--pane", "%me", "--unacked", "--json"], rest);
+      expect(jsonRes.status).not.toBe(0);
+      const err = JSON.parse(jsonRes.stderr);
       expect(String(err.code)).toMatch(/^XTMUX_/);
       expect(String(err.message)).toContain("message-list");
 
+      // unread-count's output shape is always JSON (no --json flag), so its
+      // structured stderr is a match for its stdout shape and stays JSON.
       const rc = run(["unread-count", "--pane", "%me"], rest);
       expect(rc.status).not.toBe(0);
       const errc = JSON.parse(rc.stderr);
       expect(String(errc.code)).toMatch(/^XTMUX_/);
       expect(String(errc.message)).toContain("unread-count");
+    } finally {
+      ctx.cleanup();
+    }
+  }, 30_000);
+
+  // Codex PR #87: in legacy modes (XTMUX_OBS_V2=0 or shadow) the picker's
+  // v1/shadow scanner receives $to VERBATIM and, when it is empty, skips
+  // its recipient predicate — returning messages for EVERY recipient in
+  // events.jsonl. That is an information-disclosure shape, not a cosmetic
+  // gap, so the no-`--for` form must be REFUSED in those modes (the CLI's
+  // implicit-recipient resolution only exists on the V2 path). This test
+  // seeds a message for `$other` and asserts that a v1-mode `message-list
+  // --unacked` without `--for` refuses AND never leaks the row.
+  test("legacy XTMUX_OBS_V2=0 refuses --for omission and never leaks other inboxes", () => {
+    const ctx = setup();
+    try {
+      seedInboundReplyRequest(ctx.dbPath, "leak-target", "%other");
+      const PICKER = join(ROOT, "bin/tmux-session-picker");
+      const legacyEnv = { ...ctx.env, XTMUX_OBS_V2: "0" };
+      // Also emit the sent envelope to the V1 events log so `_message_list_v1_body`
+      // has something to leak if the guard is broken.
+      const emit = spawnSync("bun", ["run", CLI, "log-emit", "message.sent",
+        "--field", "id=leak-target", "--field", "from=$peer", "--field", "to=$other",
+        "--field", "text=leaked", "--field", "bead=xt-leak",
+      ], { cwd: ROOT, env: ctx.env, encoding: "utf8", timeout: 15_000 });
+      expect(emit.status).toBe(0);
+
+      const res = spawnSync(PICKER, ["message-list", "--unacked"], {
+        cwd: ROOT, env: legacyEnv, encoding: "utf8", timeout: 15_000,
+      });
+      expect(res.status).not.toBe(0);
+      expect(res.stderr).toContain("--for");
+      // The information-disclosure invariant: no matter what the picker
+      // did, the leaked messageKey MUST NOT appear on stdout or stderr.
+      expect(res.stdout).not.toContain("leak-target");
+      expect(res.stderr).not.toContain("leak-target");
     } finally {
       ctx.cleanup();
     }

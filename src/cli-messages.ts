@@ -246,6 +246,7 @@ export function cliMessageSend(db: Db, argv: string[]): number {
  */
 export function cliMessageList(db: Db, argv: string[]): number {
   const { flags } = parseArgs(argv);
+  const json = flags.get("json") === true;
   // xtrm-wiy5n.4.24: allow --for to be omitted when running under tmux; a
   // Claude Stop / PostToolUse hook only carries TMUX_PANE and had to look up
   // its own session id to call this. Pi and every existing caller that
@@ -254,14 +255,16 @@ export function cliMessageList(db: Db, argv: string[]): number {
   // so the pane-scoped inbox query the Claude reminder hook needs is one
   // call, not two. --pane still filters explicitly and stays required for
   // pane-scoped queries; nothing here auto-scopes the query without it.
+  //
+  // Reported by Codex on PR #87: use the shared fail() helper so a caller
+  // that did NOT ask for --json gets human stderr, not a JSON blob. Emitting
+  // structured JSON when the caller wanted plain text breaks the CLI's
+  // human-versus-JSON split and any scripts parsing ordinary stderr.
   let forTarget = String(flags.get("for") ?? "");
   if (!forTarget) {
     const requester = liveTmuxRequester();
     if (!requester.ok) {
-      process.stderr.write(JSON.stringify({
-        code: requester.code, message: `message-list: --for is required (${requester.message})`, detail: requester.detail,
-      }) + "\n");
-      return 2;
+      return fail(json, requester.code, `message-list: --for is required (${requester.message})`, 2, requester.detail, true);
     }
     forTarget = requester.sessionId;
   }
