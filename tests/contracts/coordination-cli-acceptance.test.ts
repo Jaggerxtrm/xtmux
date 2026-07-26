@@ -239,6 +239,39 @@ describe("coordination CLI acceptance", () => {
     }
   });
 
+  test("bare wait-agent never replays a stale done against a working target", () => {
+    const ctx = setup();
+    try {
+      const idle = raw(["wait-agent", "%target", "--interval", "0", "--timeout", "1", "--json"], ctx.env);
+      expect(idle.status).toBe(0);
+      const first = JSON.parse(idle.stdout);
+      expect(first).toMatchObject({ terminalStatus: "done" });
+
+      // Same requester, same target, target now working: the terminal row above must
+      // not short-circuit the poll loop (xtrm-wiy5n.4.14 — premature done).
+      const working = { ...ctx.env, MOCK_STATE: "running" };
+      const blocked = raw(["wait-agent", "%target", "--interval", "0", "--timeout", "1", "--json"], working);
+      expect(blocked.status).toBe(124);
+      expect(JSON.parse(blocked.stderr)).toMatchObject({ code: "XTMUX_WAIT_TIMEOUT" });
+      expect(JSON.parse(blocked.stderr).detail.waitId).not.toBe(first.waitId);
+
+      // --consume against a working target claims this requester's own stale wake and
+      // still opens a fresh blocking wait — it must not trip over a stranger's row.
+      const other = { ...ctx.env, TMUX_PANE: "%other", MOCK_SESSION: "$other", MOCK_PANE: "%other" };
+      expect(raw(["wait-agent", "%target", "--interval", "0", "--timeout", "1", "--json"], other).status).toBe(0);
+      const otherBlocked = raw(["wait-agent", "%target", "--interval", "0", "--timeout", "1", "--consume", "--json"], { ...other, MOCK_STATE: "running" });
+      expect(otherBlocked.status).toBe(124);
+      expect(JSON.parse(otherBlocked.stderr)).toMatchObject({ code: "XTMUX_WAIT_TIMEOUT" });
+
+      // Replay of the earlier wake stays available once the target is idle again.
+      const replayed = raw(["wait-agent", "%target", "--interval", "0", "--timeout", "1", "--json"], ctx.env);
+      expect(replayed.status).toBe(0);
+      expect(JSON.parse(replayed.stdout)).toMatchObject({ waitId: first.waitId, terminalStatus: "done" });
+    } finally {
+      ctx.cleanup();
+    }
+  });
+
   test("wait and monitor reject self-target cycles without durable rows", () => {
     const ctx = setup();
     try {

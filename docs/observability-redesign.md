@@ -388,6 +388,8 @@ Heartbeat is an in-place update of `updated_at_ms` + `heartbeat_at_ms`. Never in
 
 `wait-agent` and `monitor-agent` accept `--wait-for-transition` for reply monitoring: an initially terminal target must first become working, then return terminal before completion. Without the flag, both retain their immediate-terminal behavior. The send hooks use the flag so an idle recipient does not consume its monitor before handling the next message.
 
+Immediate-terminal behavior is bounded by the live pane state: a completed wait row is replayed to its requester only while the target is not working. Re-arming a bare `wait-agent` against a target that is working again opens a fresh wait and blocks, so a stale `done` can never resolve against a busy pane.
+
 ### 4.6a `outbound_waits`
 
 ```sql

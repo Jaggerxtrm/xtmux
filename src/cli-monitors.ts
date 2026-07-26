@@ -195,17 +195,29 @@ export function cliWaitAgent(db: Db, argv: string[], nowMs: number): number {
     const target = resolveTarget(targetName);
     rejectSelfTarget(requester, target);
     const transitionRequired = flags.get("wait-for-transition") === true;
+    // A terminal wait is replayable only while the target is idle. Replaying a stale
+    // `done` against a pane that is working again is the premature-done bug: the bare
+    // form returned done in 0s on a confirmed-running target, and an orchestrator that
+    // trusts it sends into a working pane (xtrm-wiy5n.4.14).
+    const liveState = liveProbes.observe(target.paneId);
     const existing = listAllWaits(db).find((row) => row.requesterSessionId === requester.sessionId && row.requesterPaneId === requester.paneId
       && row.targetSessionId === target.sessionId && row.targetPaneId === target.paneId
-      && ["unarmed", "armed", "terminal-unconsumed", "consumed"].includes(row.state)
-      && (!transitionRequired || ["unarmed", "armed"].includes(row.state)));
-    const existingAny = listAllWaits(db).find((row) => row.targetSessionId === target.sessionId && row.targetPaneId === target.paneId
+      && (["unarmed", "armed"].includes(row.state)
+        || (!transitionRequired && !isWorking(liveState) && ["terminal-unconsumed", "consumed"].includes(row.state))));
+    // Consumption is requester-owned, so the fallback lookup prefers this requester's
+    // own row: with a working target its terminal row is no longer `existing`, and
+    // picking a stranger's row instead would fail as not-owner rather than claiming
+    // the stale wake it does own. A foreign row is still selected when the requester
+    // owns none — that path is what enforces ownership.
+    const targetWaits = listAllWaits(db).filter((row) => row.targetSessionId === target.sessionId && row.targetPaneId === target.paneId
       && ["unarmed", "armed", "terminal-unconsumed", "consumed"].includes(row.state));
+    const existingAny = targetWaits.find((row) => row.requesterSessionId === requester.sessionId && row.requesterPaneId === requester.paneId)
+      ?? targetWaits[0];
     if (flags.get("consume") === true && existingAny && !existing) {
       consumeOutboundWake(db, { waitId: existingAny.waitId, requesterSessionId: requester.sessionId, requesterPaneId: requester.paneId, nowMs: Date.now() });
     }
     const created = existing?.monitorId
-      ? { monitorId: existing.monitorId, waitId: existing.waitId, requester, target, state: liveProbes.observe(target.paneId) }
+      ? { monitorId: existing.monitorId, waitId: existing.waitId, requester, target, state: liveState }
       : createMonitorAndWait(db, targetName, timeoutMs, intervalMs, nowMs);
     if (!existing || existing.terminalStatus === null) {
       adopt(db, created.monitorId, process.pid, Date.now());
