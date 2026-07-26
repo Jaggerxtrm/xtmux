@@ -133,21 +133,28 @@ test("refuses to overwrite a foreign command", () => {
 });
 
 
-test("adopts legacy xtmux hooks without duplicating them", () => {
+// Ownership is proven ONLY by the _source tag (xtrm-wiy5n.4.27). Untagged
+// entries — even ones pointing at our own script paths — are left alone; the
+// installer cannot prove it wrote them. Live untagged duplicates stop growing
+// because every entry the installer writes is tagged and self-removes.
+test("leaves untagged legacy entries alone and stops growing on rerun", () => {
   const home = mkdtempSync(join(tmpdir(), "xtmux-legacy-"));
   const claude = join(home, ".claude", "settings.json");
   mkdirSync(join(home, ".claude"), { recursive: true });
-  writeFileSync(claude, JSON.stringify({ hooks: { Stop: [
+  const legacyStop = [
     { hooks: [{ type: "command", command: "CLAUDE_HOOK_EVENT=Stop ~/.tmux/scripts/agent-state.sh done" }] },
     { hooks: [{ type: "command", command: 'node "$CLAUDE_PROJECT_DIR/.xtrm/hooks/auto-monitor-drain-stop.mjs"' }] },
-  ] } }));
+  ];
+  writeFileSync(claude, JSON.stringify({ hooks: { Stop: legacyStop } }));
 
-  const result = run(home);
-  assert.equal(result.status, 0, result.stderr);
-  const commands = Object.values(json(claude).hooks).flat().flatMap((entry) => entry.hooks?.map((hook) => hook.command) || []);
-  assert.equal(commands.some((command) => command.includes("~/.tmux/scripts/agent-state.sh")), false);
-  assert.equal(commands.some((command) => command.includes("$CLAUDE_PROJECT_DIR")), false);
-  assert.equal(commands.filter((command) => command.includes("auto-monitor-drain-stop.mjs")).length, 1);
+  assert.equal(run(home).status, 0);
+  const commands = () => Object.values(json(claude).hooks).flat().flatMap((entry) => entry.hooks?.map((hook) => hook.command) || []);
+  assert.equal(commands().some((command) => command.includes("~/.tmux/scripts/agent-state.sh")), true, "legacy untagged tmux entry must survive");
+  assert.equal(commands().some((command) => command.includes("$CLAUDE_PROJECT_DIR")), true, "legacy untagged xtrm entry must survive");
+  const firstBytes = readFileSync(claude, "utf8");
+
+  assert.equal(run(home).status, 0);
+  assert.equal(readFileSync(claude, "utf8"), firstBytes, "second install must not add duplicates");
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -203,6 +210,67 @@ test("merges hooks for existing Codex without installing Codex CLI", () => {
   assert.equal(run(home, "--uninstall").status, 0);
   assert.deepEqual(json(hooks).hooks, { SessionStart: [{ hooks: [{ type: "command", command: "foreign-codex-hook" }] }] });
   assert.equal(existsSync(join(home, ".codex/hooks/xtmux")), false);
+  rmSync(home, { recursive: true, force: true });
+});
+
+// Codex mirror of the Claude test in PR #79 (xtrm-wiy5n.4.25). Without the flag
+// a Codex pane never mints @agent_instance_id, never emits agent.ready, and is
+// invisible to every identity-keyed feature. The negative half enforces
+// docs/xtmux-gaps.md 12.1: identity must NOT rotate on ordinary transitions.
+test("Codex SessionStart mints a new agent instance, and no other event does", () => {
+  const home = mkdtempSync(join(tmpdir(), "xtmux-codex-new-instance-"));
+  mkdirSync(join(home, ".codex"), { recursive: true });
+  assert.equal(run(home).status, 0);
+  const hooks = json(join(home, ".codex", "hooks.json")).hooks;
+  const commandsFor = (event) => (hooks[event] || []).flatMap((entry) => entry.hooks?.map((hook) => hook.command) || []);
+
+  const minting = (hooks.SessionStart || []).filter((entry) => entry.hooks?.some((hook) => /agent-state\.sh" idle --new-instance$/.test(hook.command)));
+  assert.equal(minting.length, 1);
+  // SessionStart also fires on `compact`, which continues an occupation instead
+  // of starting one; a matcher that took it would mint a phantom second instance.
+  assert.equal(minting[0].matcher, "startup|resume|clear");
+  for (const event of Object.keys(hooks).filter((event) => event !== "SessionStart")) {
+    assert.deepEqual(commandsFor(event).filter((command) => command.includes("--new-instance")), [], `${event} must not mint a new instance id`);
+  }
+  rmSync(home, { recursive: true, force: true });
+});
+
+// Only tagged entries have a known owner; every Codex entry the installer
+// writes must carry _source so a subsequent install can remove it without
+// pattern-matching untagged neighbors.
+test("Codex entries the installer writes carry _source", () => {
+  const home = mkdtempSync(join(tmpdir(), "xtmux-codex-tag-"));
+  mkdirSync(join(home, ".codex"), { recursive: true });
+  assert.equal(run(home).status, 0);
+  const hooks = json(join(home, ".codex", "hooks.json")).hooks;
+  const owned = (entry) => entry?._source === "xtmux";
+  const xtmuxCommand = (entry) => entry.hooks?.some((hook) => hook.command?.includes("/.codex/hooks/xtmux/agent-state.sh"));
+  for (const event of ["SessionStart", "UserPromptSubmit"]) {
+    const xtmuxEntries = (hooks[event] || []).filter(xtmuxCommand);
+    assert.equal(xtmuxEntries.length, 1, `${event} must have exactly one xtmux entry`);
+    assert.ok(xtmuxEntries.every(owned), `${event} xtmux entry must be tagged`);
+  }
+  rmSync(home, { recursive: true, force: true });
+});
+
+// Live untagged Codex entries pointing at our script must survive both install
+// and uninstall — the installer cannot prove it wrote them (xtrm-wiy5n.4.27).
+// A tagged entry it did write must self-remove on rerun so growth stays bounded.
+test("Codex install leaves untagged xtmux-shaped entries alone and dedupes its own tagged writes", () => {
+  const home = mkdtempSync(join(tmpdir(), "xtmux-codex-untagged-"));
+  const hooks = join(home, ".codex", "hooks.json");
+  mkdirSync(join(home, ".codex"), { recursive: true });
+  const legacy = { matcher: "startup|resume|clear", hooks: [{ type: "command", command: `bash "${home}/.codex/hooks/xtmux/agent-state.sh" idle` }] };
+  writeFileSync(hooks, JSON.stringify({ hooks: { SessionStart: [legacy] } }));
+
+  assert.equal(run(home).status, 0);
+  const afterFirst = readFileSync(hooks, "utf8");
+  const parsed = json(hooks).hooks.SessionStart;
+  assert.equal(parsed.some((entry) => !entry._source && entry.hooks?.[0]?.command === legacy.hooks[0].command), true, "untagged legacy entry must survive");
+  assert.equal(parsed.filter((entry) => entry._source === "xtmux").length, 1, "installer must write exactly one tagged entry");
+
+  assert.equal(run(home).status, 0);
+  assert.equal(readFileSync(hooks, "utf8"), afterFirst, "second install must be idempotent");
   rmSync(home, { recursive: true, force: true });
 });
 
