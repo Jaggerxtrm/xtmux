@@ -101,6 +101,27 @@ test("clean install, idempotent update, xtrm coexistence, and uninstall", () => 
   rmSync(home, { recursive: true, force: true });
 });
 
+// Without the flag a Claude pane never mints @agent_instance_id, never emits
+// agent.ready, and every identity-keyed feature silently skips it (xtrm-wiy5n.4.25).
+// The negative half is the other half of the spec: identity must NOT rotate on
+// ordinary transitions (docs/xtmux-gaps.md 12.1).
+test("Claude SessionStart mints a new agent instance, and no other event does", () => {
+  const home = mkdtempSync(join(tmpdir(), "xtmux-new-instance-"));
+  assert.equal(run(home).status, 0);
+  const hooks = json(join(home, ".claude", "settings.json")).hooks;
+  const commandsFor = (event) => (hooks[event] || []).flatMap((entry) => entry.hooks?.map((hook) => hook.command) || []);
+
+  const minting = (hooks.SessionStart || []).filter((entry) => entry.hooks?.some((hook) => /agent-state\.sh" idle --new-instance$/.test(hook.command)));
+  assert.equal(minting.length, 1);
+  // SessionStart also fires on `compact`, which continues an occupation instead
+  // of starting one; a matcher that took it would mint a phantom second instance.
+  assert.equal(minting[0].matcher, "startup|resume|clear");
+  for (const event of Object.keys(hooks).filter((event) => event !== "SessionStart")) {
+    assert.deepEqual(commandsFor(event).filter((command) => command.includes("--new-instance")), [], `${event} must not mint a new instance id`);
+  }
+  rmSync(home, { recursive: true, force: true });
+});
+
 test("refuses to overwrite a foreign command", () => {
   const home = mkdtempSync(join(tmpdir(), "xtmux-conflict-"));
   mkdirSync(join(home, ".local", "bin"), { recursive: true });
