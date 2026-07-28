@@ -15,6 +15,14 @@ const fromNpm = args.includes("--from-npm");
 const installTmuxHooks = args.includes("--tmux-hooks") || args.includes("--hooks");
 
 if (!home) throw new Error("HOME is not set; pass --home <path>");
+// --from-npm is set by the package.json `postinstall` script and MUST no-op
+// on a non-global install. The signal is `npm_config_global` alone, not the
+// presence of an npm-only env var — bun runs postinstall without setting
+// `npm_lifecycle_event` (Codex #88, xtrm-9hq6w), and a matrix of runner
+// vars would just leak into a silent HOME write the next time a runner is
+// added. Callers that want the installer to actually run must NOT pass
+// --from-npm (npm's own `install:global` script and the smoke-container
+// drift-repair invocation both use a bare `node scripts/install.mjs`).
 if (fromNpm && process.env.npm_config_global !== "true") process.exit(0);
 
 const source = "xtmux";

@@ -394,3 +394,91 @@ test("refuses foreign product directories and uninstall preserves later user-own
   assert.equal(readFileSync(join(hooks, "agent-state.sh"), "utf8"), "user-modified\n");
   rmSync(changedHome, { recursive: true, force: true });
 });
+
+// xtrm-9hq6w: the smoke-container drift-repair (core scripts/smoke-container/
+// verify.sh:global_drift_and_repair) tampers ~/.claude/settings.json to strip
+// --new-instance from every owned SessionStart agent-state.sh entry, then
+// invokes the installer directly to prove the drift is repaired. The caller
+// must use a bare `node scripts/install.mjs` — passing --from-npm keeps the
+// installer behind the non-global-install guard by design.
+test("drift-repair restores --new-instance on tampered owned SessionStart entry", () => {
+  const home = mkdtempSync(join(tmpdir(), "xtmux-drift-repair-"));
+  mkdirSync(join(home, ".codex"), { recursive: true });
+  assert.equal(run(home).status, 0);
+  const claude = join(home, ".claude", "settings.json");
+  const codex = join(home, ".codex", "hooks.json");
+  const strip = (path) => {
+    const settings = json(path);
+    settings.hooks.SessionStart = settings.hooks.SessionStart.map((entry) => {
+      if (!entry.hooks?.some((h) => h.command?.includes("agent-state.sh"))) return entry;
+      return { ...entry, hooks: entry.hooks.map((h) => ({ ...h, command: h.command.replace(" --new-instance", "") })) };
+    });
+    writeFileSync(path, JSON.stringify(settings, null, 2));
+  };
+  const missing = (path) => json(path).hooks.SessionStart
+    .flatMap((entry) => entry.hooks || [])
+    .filter((h) => h.command?.includes("agent-state.sh") && !h.command.includes("--new-instance"))
+    .length;
+  strip(claude);
+  strip(codex);
+  assert.equal(missing(claude), 1, "tamper must strip the Claude flag");
+  assert.equal(missing(codex), 1, "tamper must strip the Codex flag");
+
+  // Bare invocation — no --from-npm, matching the paired verify.sh change.
+  const repair = run(home);
+  assert.equal(repair.status, 0, repair.stderr);
+  assert.equal(missing(claude), 0, "Claude --new-instance must be restored");
+  assert.equal(missing(codex), 0, "Codex --new-instance must be restored");
+  rmSync(home, { recursive: true, force: true });
+});
+
+// Mirror case (xtrm-wiy5n.4.27 strict ownership): an UNTAGGED SessionStart
+// agent-state.sh entry, even with the flag stripped, must be left alone —
+// the installer cannot prove it wrote it.
+test("drift-repair leaves an untagged tampered SessionStart entry alone", () => {
+  const home = mkdtempSync(join(tmpdir(), "xtmux-drift-untagged-"));
+  mkdirSync(join(home, ".claude"), { recursive: true });
+  const claude = join(home, ".claude", "settings.json");
+  const untampered = 'CLAUDE_HOOK_EVENT=SessionStart bash "~/.tmux/scripts/agent-state.sh" idle';
+  writeFileSync(claude, JSON.stringify({ hooks: { SessionStart: [
+    { matcher: "startup|resume|clear", hooks: [{ type: "command", command: untampered, timeout: 2000 }] },
+  ] } }));
+
+  const repair = run(home);
+  assert.equal(repair.status, 0, repair.stderr);
+  const survivors = json(claude).hooks.SessionStart.filter((entry) => !entry._source);
+  assert.equal(survivors.length, 1, "untagged entry must survive");
+  assert.equal(survivors[0].hooks[0].command, untampered, "untagged entry must be byte-identical");
+  rmSync(home, { recursive: true, force: true });
+});
+
+// Safety valve: a non-global `npm i` OR `bun install` postinstall MUST no-op.
+// This is runner-agnostic on purpose — the guard reads `npm_config_global`
+// only. Codex #88 caught an earlier attempt at this fix that gated on
+// `npm_lifecycle_event`, which bun does not set for a local postinstall; the
+// installer then silently rewrote the user's HOME.
+for (const [runner, env] of [
+  ["npm local postinstall", { npm_lifecycle_event: "postinstall", npm_config_global: "false" }],
+  // Bun runs `postinstall` with neither var set (Bun 1.2.14, `bun install --help`).
+  ["bun local postinstall", { npm_lifecycle_event: "", npm_config_global: "" }],
+]) {
+  test(`--from-npm no-ops for a non-global ${runner}`, () => {
+    const home = mkdtempSync(join(tmpdir(), "xtmux-postinstall-guard-"));
+    const result = runWithEnv(home, env, "--from-npm");
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(join(home, ".claude", "settings.json")), false, `${runner} must not touch HOME`);
+    assert.equal(existsSync(join(home, ".local", "bin", "xtmux")), false, `${runner} must not install bins`);
+    rmSync(home, { recursive: true, force: true });
+  });
+}
+
+// A global install (npm_config_global=true) MUST proceed even under --from-npm
+// — this is the normal `npm i -g @jaggerxtrm/xtmux` postinstall path.
+test("--from-npm proceeds for a global postinstall", () => {
+  const home = mkdtempSync(join(tmpdir(), "xtmux-global-guard-"));
+  const result = runWithEnv(home, { npm_lifecycle_event: "postinstall", npm_config_global: "true" }, "--from-npm");
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(join(home, ".claude", "settings.json")), true, "global postinstall must install");
+  assert.equal(existsSync(join(home, ".local", "bin", "xtmux")), true, "global postinstall must install bins");
+  rmSync(home, { recursive: true, force: true });
+});
