@@ -11,10 +11,15 @@
 >
 > 1. the source and generated contracts at that revision;
 > 2. `xtmux help`, `xtmux <command> --help`, and `xtmux-obs --help`;
-> 3. the canonical `/multiplexing` and `/multiplexing-team` skills shipped by XTRM Tools;
+> 3. the canonical `/multiplexing` and `/multiplexing-team` skills shipped by Core;
 > 4. `CHANGELOG.md`, release notes, and merged pull requests.
 >
 > The README is an orientation surface, not a substitute for the live command contract. For development or integration work, clone and inspect xtmux, Core, and Specialists together rather than relying only on npm package contents.
+
+> [!NOTE]
+> **Naming**
+>
+> **XTRM** is the whole stack. **Core** is its control-plane component. The npm name `xtrm-tools` is only Core's transitional package name and is planned for retirement as Core, Specialists, and xtmux converge into the XTRM monorepo.
 
 **xtmux is a tmux-native runtime and coordination layer for humans and coding agents.**
 
@@ -30,7 +35,7 @@ The original fzf picker is still important, but it is now one surface of a broad
 
 ```mermaid
 flowchart LR
-    C[XTRM Tools<br/>launch + policy + topology] --> A[Claude / Pi panes]
+    C[Core<br/>launch + policy + topology] --> A[Claude / Pi panes]
     C --> S[Specialists jobs]
 
     A <--> X[xtmux<br/>identity + coordination]
@@ -50,7 +55,7 @@ flowchart LR
 | Component | Responsibility |
 |---|---|
 | **xtmux** | Local runtime identity, lifecycle, coordination, and event delivery |
-| **XTRM Tools** | Launch, policy, worktree control, aggregate topology, and installation |
+| **Core** | Launch, policy, worktree control, aggregate topology, and installation |
 | **Specialists** | Managed role jobs and structured results |
 | **Beads** | Durable task contracts and notes |
 
@@ -264,7 +269,7 @@ Useful surfaces:
 
 ```bash
 xtmux log query --bead <bead-id> --json
-xtmux log tail 50
+xtmux log tail --format human
 xtmux log follow --after-id <event-id> --json
 xtmux-events
 ```
