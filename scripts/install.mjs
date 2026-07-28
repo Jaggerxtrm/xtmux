@@ -15,7 +15,13 @@ const fromNpm = args.includes("--from-npm");
 const installTmuxHooks = args.includes("--tmux-hooks") || args.includes("--hooks");
 
 if (!home) throw new Error("HOME is not set; pass --home <path>");
-if (fromNpm && process.env.npm_config_global !== "true") process.exit(0);
+// The --from-npm guard exists so a non-global `npm i` postinstall does not
+// touch HOME. It must fire ONLY when npm actually spawned us (npm sets
+// npm_lifecycle_event during any script) AND the install is non-global; a
+// direct `node scripts/install.mjs --from-npm` (the smoke-container's
+// drift-repair entrypoint — xtrm-9hq6w) has no npm_lifecycle_event and must
+// proceed.
+if (fromNpm && process.env.npm_lifecycle_event && process.env.npm_config_global !== "true") process.exit(0);
 
 const source = "xtmux";
 const stateDir = join(home, ".local", "state", "xtmux");
