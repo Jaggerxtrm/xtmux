@@ -10,8 +10,10 @@ Status: read-only characterization for `xtmux-s96.1`.
   stdin, `codex exec --ephemeral --skip-git-repo-check --sandbox read-only
   --dangerously-bypass-hook-trust --json`, and a redacted prompt.
 - The live request was unauthenticated. `SessionStart`, `UserPromptSubmit`, and
-  `SessionEnd` were captured. A successful turn was not available, so `Stop` is a
-  release-document reference fixture, not a live capture.
+  `SessionEnd` were captured. A successful turn was not available, so `Stop` is an
+  official release-schema reference fixture, not a live capture. Its source is pinned
+  to `openai/codex` tag `rust-v0.146.0`, commit
+  `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`.
 - Dynamic identifiers, paths, model names, prompts, and assistant text are redacted.
   The original payload shape and field presence remain unchanged.
 
@@ -22,7 +24,7 @@ Fixtures are versioned under `tests/fixtures/codex/0.146.0/`:
 | `session-start.json` | live Codex capture | `session_id`, `transcript_path`, `cwd`, `hook_event_name`, `model`, `permission_mode`, `source` |
 | `user-prompt-submit.json` | live Codex capture | common fields plus `turn_id`, `prompt` |
 | `session-end.json` | live Codex capture after request failure | `session_id`, `transcript_path`, `cwd`, `hook_event_name`, `reason` |
-| `stop-reference.json` | Codex 0.146.0 release docs | common fields plus `turn_id`, `stop_hook_active`, `last_assistant_message` |
+| `stop-reference.json` | `openai/codex` `rust-v0.146.0` schema at commit `e363b08c` | common fields plus `turn_id`, `stop_hook_active`, `last_assistant_message` |
 
 ## Current installed xtmux wiring
 
@@ -93,7 +95,7 @@ The focused replay/ownership test is `tests/contracts/codex-characterization.tes
 
 ```text
 bun test tests/contracts/codex-characterization.test.ts
-3 pass, 0 fail, 51 expect() calls
+3 pass, 0 fail, 53 expect() calls
 ```
 
 It verifies fixture provenance and redaction, executes the configured startup/prompt
