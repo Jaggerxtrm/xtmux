@@ -1,10 +1,11 @@
 /**
  * Core K2 launch-outcome consumption (xtmux-s96.2, KAN-127 K3-xtmux).
  *
- * Consumes `xtrm.command-outcome.v1` (Core commit
- * 1ed512a49efaf75f3e84c128f9d82958ece09d3a) as STRUCTURED DATA and maps it onto
- * the existing lifecycle authority (agent_state_transitions + event_journal).
- * No prose parsing, no private state, no Codex-specific store:
+ * Consumes `xtrm.command-outcome.v1` (schema pinned at Core commit
+ * 1ed512a49efaf75f3e84c128f9d82958ece09d3a; Codex outcome shape at Core K3
+ * commit 9b59fa5a7eed86b68f18f929ea3d37b072ae0891) as STRUCTURED DATA and maps
+ * it onto the existing lifecycle authority (agent_state_transitions +
+ * event_journal). No prose parsing, no private state, no Codex-specific store:
  *
  *  - `status: degraded` with a correlatable pane records exactly one `degraded`
  *    lifecycle fact (idempotent across replay and restart);
@@ -12,7 +13,8 @@
  *    an outcome never fabricates an authoritative mutation;
  *  - `next_actions` argv is passed through verbatim for the caller to execute.
  *
- * Experimental until GATE-IFACE (K5).
+ * K3 is experimental until K5 (the programme GATE-IFACE has already passed);
+ * promotion/release follow K4/K5.
  */
 import type { Db } from "../../db/connection.ts";
 import { recordTransition } from "./transition.ts";
@@ -22,12 +24,25 @@ export const OUTCOME_SCHEMA_V1 = "xtrm.command-outcome.v1";
 const STATUSES = ["ok", "degraded", "noop", "rejected", "failed"] as const;
 const ACTION_KINDS = ["attach", "resume", "repair", "end", "wait", "inspect"] as const;
 const RUNTIMES = ["pi", "claude", "codex"] as const;
+const READINESS_STATUSES = ["ready", "unverified", "not_ready"] as const;
+const READINESS_SOURCES = ["agent.ready", "tmux-pane", "none"] as const;
+const SIDE_EFFECT_STATUSES = ["ok", "degraded", "failed", "skipped"] as const;
+
 const TOP_LEVEL_KEYS = new Set([
   "schema_version", "status", "reason_code", "summary", "runtime", "identity",
   "worktree", "readiness", "safety_profile", "persistence",
   "authoritative_mutation", "side_effects", "next_actions",
 ]);
+
+// The published schema is `additionalProperties: false` on every object and
+// validates every field. The consumer enforces the same boundary: a payload
+// that @xtrm/contracts would reject is never silently accepted here.
 const CONTROL_CHARACTER = /[\u0000-\u001F\u007F]/;
+const REASON_PATTERN = /^[a-z][a-z0-9_]*$/;
+const TOKEN_PATTERN = /^[a-z][a-z0-9-]*$/;
+const DOTTED_PATTERN = /^[a-z][a-z0-9.-]*$/;
+const TMUX_SESSION_PATTERN = /^\$[0-9]+$/;
+const TMUX_PANE_PATTERN = /^%[0-9]+$/;
 
 export type OutcomeStatus = (typeof STATUSES)[number];
 
@@ -65,32 +80,81 @@ export class OutcomeError extends Error {
   }
 }
 
+function invalid(message: string, detailKey?: string, detailValue?: string): OutcomeError {
+  return new OutcomeError("XTMUX_INVALID_ARGUMENT", message, detailKey && detailValue !== undefined ? { [detailKey]: detailValue } : {});
+}
+
 function asObject(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new OutcomeError("XTMUX_INVALID_ARGUMENT", `outcome ${label} must be an object`);
+    throw invalid(`outcome ${label} must be an object`);
   }
   return value as Record<string, unknown>;
 }
 
+// Schema `additionalProperties: false` at every level.
+function noUnknownKeys(o: Record<string, unknown>, allowed: ReadonlySet<string>, label: string): void {
+  for (const key of Object.keys(o)) {
+    if (!allowed.has(key)) {
+      throw invalid(`unknown outcome field: ${label}.${key}`, "field", `${label}.${key}`.slice(0, 96));
+    }
+  }
+}
+
+function requireKeys(o: Record<string, unknown>, keys: readonly string[], label: string): void {
+  for (const key of keys) {
+    if (!(key in o)) throw invalid(`outcome ${label}.${key} is required`);
+  }
+}
+
 function boundedText(label: string, value: unknown, maxLength: number): string {
   if (typeof value !== "string" || value.length === 0 || value.length > maxLength || CONTROL_CHARACTER.test(value)) {
-    throw new OutcomeError("XTMUX_INVALID_ARGUMENT", `outcome ${label} is missing or out of bounds`);
+    throw invalid(`outcome ${label} is missing or out of bounds`);
   }
   return value;
+}
+
+function nullableBoundedText(label: string, value: unknown, maxLength: number): string | null {
+  if (value === null) return null;
+  return boundedText(label, value, maxLength);
 }
 
 function token(label: string, value: unknown, pattern: RegExp, maxLength: number): string {
   if (typeof value !== "string" || value.length === 0 || value.length > maxLength || !pattern.test(value)) {
-    throw new OutcomeError("XTMUX_INVALID_ARGUMENT", `outcome ${label} is not a valid token`);
+    throw invalid(`outcome ${label} is not a valid token`);
   }
   return value;
 }
 
+function enumValue<T extends string>(label: string, value: unknown, allowed: readonly T[]): T {
+  if (typeof value !== "string" || !(allowed as readonly string[]).includes(value)) {
+    throw invalid(`outcome ${label} is not one of: ${allowed.join(", ")}`);
+  }
+  return value as T;
+}
+
+function booleanValue(label: string, value: unknown): boolean {
+  if (typeof value !== "boolean") throw invalid(`outcome ${label} must be a boolean`);
+  return value;
+}
+
+// schema `persistence` / `authoritative_mutation`: { completed, kind }.
+function mutationObject(value: unknown, label: string): { completed: boolean; kind: string } {
+  const o = asObject(value, label);
+  noUnknownKeys(o, new Set(["completed", "kind"]), label);
+  requireKeys(o, ["completed", "kind"], label);
+  return {
+    completed: booleanValue(`${label}.completed`, o["completed"]),
+    kind: token(`${label}.kind`, o["kind"], DOTTED_PATTERN, 96),
+  };
+}
+
 /**
- * Parse and validate an untrusted outcome payload. Rejects unknown schema
- * versions (payload-version awareness), unknown top-level keys, hostile
- * identities, hook-trust bypass claims, and non-string argv elements. Throws
- * OutcomeError with a stable code; never writes on failure.
+ * Parse and validate an untrusted outcome payload against the FULL published
+ * v1 schema boundary: every object is closed (`additionalProperties: false`
+ * semantics), every field is type- and pattern-checked, unknown schema
+ * versions are rejected (payload-version awareness), and hook-trust bypass
+ * claims are refused. Throws OutcomeError with a stable code; never writes on
+ * failure.
  */
 export function parseCommandOutcomeV1(raw: unknown): CommandOutcomeV1 {
   const o = asObject(raw, "payload");
@@ -103,33 +167,40 @@ export function parseCommandOutcomeV1(raw: unknown): CommandOutcomeV1 {
       { schema_version: typeof version === "string" ? version.slice(0, 64) : "" },
     );
   }
-  for (const key of Object.keys(o)) {
-    if (!TOP_LEVEL_KEYS.has(key)) {
-      throw new OutcomeError("XTMUX_INVALID_ARGUMENT", `unknown outcome field: ${key}`, { field: key.slice(0, 64) });
-    }
-  }
+  noUnknownKeys(o, TOP_LEVEL_KEYS, "payload");
+  requireKeys(o, ["schema_version", "status", "reason_code", "summary", "authoritative_mutation", "side_effects", "next_actions"], "payload");
 
-  const status = o["status"];
-  if (!STATUSES.includes(status as OutcomeStatus)) {
-    throw new OutcomeError("XTMUX_INVALID_ARGUMENT", `unknown outcome status: ${String(status).slice(0, 32)}`);
-  }
-  const reasonCode = token("reason_code", o["reason_code"], /^[a-z][a-z0-9_]*$/, 64);
+  const status = enumValue("status", o["status"], STATUSES);
+  const reasonCode = token("reason_code", o["reason_code"], REASON_PATTERN, 64);
   const summary = boundedText("summary", o["summary"], 240);
 
-  const mutation = asObject(o["authoritative_mutation"], "authoritative_mutation");
-  if (typeof mutation["completed"] !== "boolean") {
-    throw new OutcomeError("XTMUX_INVALID_ARGUMENT", "outcome authoritative_mutation.completed must be a boolean");
-  }
-  token("authoritative_mutation.kind", mutation["kind"], /^[a-z][a-z0-9.-]*$/, 96);
+  const mutation = mutationObject(o["authoritative_mutation"], "authoritative_mutation");
 
-  if (!Array.isArray(o["side_effects"]) || o["side_effects"].length > 32) {
-    throw new OutcomeError("XTMUX_INVALID_ARGUMENT", "outcome side_effects must be an array (max 32)");
+  // side_effects: array (max 32) of { kind, status, id? } — all closed.
+  const rawSideEffects = o["side_effects"];
+  if (!Array.isArray(rawSideEffects) || rawSideEffects.length > 32) {
+    throw invalid("outcome side_effects must be an array (max 32)");
   }
+  rawSideEffects.forEach((rawEffect, index) => {
+    const label = `side_effects[${index}]`;
+    const effect = asObject(rawEffect, label);
+    noUnknownKeys(effect, new Set(["kind", "status", "id"]), label);
+    requireKeys(effect, ["kind", "status"], label);
+    token(`${label}.kind`, effect["kind"], DOTTED_PATTERN, 96);
+    enumValue(`${label}.status`, effect["status"], SIDE_EFFECT_STATUSES);
+    if ("id" in effect) nullableBoundedText(`${label}.id`, effect["id"], 256);
+  });
 
   // Hook trust is a hard gate: an outcome claiming a bypass is rejected
   // instead of applied. The managed profile never bypasses hook trust.
   if (o["safety_profile"] !== undefined) {
-    const profile = asObject(o["safety_profile"], "safety_profile");
+    const label = "safety_profile";
+    const profile = asObject(o[label], label);
+    noUnknownKeys(profile, new Set(["name", "sandbox", "approvals", "hook_trust"]), label);
+    requireKeys(profile, ["name", "sandbox", "approvals", "hook_trust"], label);
+    token(`${label}.name`, profile["name"], TOKEN_PATTERN, 64);
+    token(`${label}.sandbox`, profile["sandbox"], TOKEN_PATTERN, 64);
+    token(`${label}.approvals`, profile["approvals"], TOKEN_PATTERN, 64);
     if (profile["hook_trust"] !== "preserved") {
       throw new OutcomeError(
         "XTMUX_HOOK_TRUST_VIOLATED",
@@ -138,80 +209,91 @@ export function parseCommandOutcomeV1(raw: unknown): CommandOutcomeV1 {
     }
   }
 
-  if (o["worktree"] !== undefined) {
-    const worktree = asObject(o["worktree"], "worktree");
-    if (worktree["owner"] !== "core") {
-      throw new OutcomeError("XTMUX_INVALID_ARGUMENT", "outcome worktree.owner must be 'core'");
-    }
-  }
-
   let runtime: CommandOutcomeV1["runtime"] = null;
   if (o["runtime"] !== undefined) {
-    const r = asObject(o["runtime"], "runtime");
-    if (!RUNTIMES.includes(r["name"] as (typeof RUNTIMES)[number])) {
-      throw new OutcomeError("XTMUX_INVALID_ARGUMENT", `unknown outcome runtime: ${String(r["name"]).slice(0, 32)}`);
-    }
-    const versionRaw = r["version"];
-    runtime = {
-      name: r["name"] as (typeof RUNTIMES)[number],
-      version: versionRaw === null ? null : boundedText("runtime.version", versionRaw, 128),
-    };
+    const label = "runtime";
+    const r = asObject(o[label], label);
+    noUnknownKeys(r, new Set(["name", "version"]), label);
+    requireKeys(r, ["name", "version"], label);
+    const name = enumValue(`${label}.name`, r["name"], RUNTIMES);
+    const versionValue = nullableBoundedText(`${label}.version`, r["version"], 128);
+    runtime = { name, version: versionValue };
   }
 
   let paneId: string | null = null;
   let sessionId: string | null = null;
   if (o["identity"] !== undefined) {
-    const identity = asObject(o["identity"], "identity");
-    for (const key of ["thread_id", "session_name", "tmux_session_id", "pane_id"]) {
-      if (!(key in identity)) {
-        throw new OutcomeError("XTMUX_INVALID_ARGUMENT", `outcome identity.${key} is required when identity is present`);
-      }
+    const label = "identity";
+    const identity = asObject(o[label], label);
+    noUnknownKeys(identity, new Set(["thread_id", "session_name", "tmux_session_id", "pane_id"]), label);
+    requireKeys(identity, ["thread_id", "session_name", "tmux_session_id", "pane_id"], label);
+    nullableBoundedText(`${label}.thread_id`, identity["thread_id"], 256);
+    nullableBoundedText(`${label}.session_name`, identity["session_name"], 256);
+    const session = identity["tmux_session_id"];
+    if (session !== null && (typeof session !== "string" || session.length > 32 || !TMUX_SESSION_PATTERN.test(session))) {
+      throw invalid(`outcome ${label}.tmux_session_id must be null or $N`);
     }
     const pane = identity["pane_id"];
-    if (pane !== null && !/^%[0-9]{1,31}$/.test(String(pane))) {
-      throw new OutcomeError("XTMUX_INVALID_ARGUMENT", "outcome identity.pane_id must be null or %N");
-    }
-    const session = identity["tmux_session_id"];
-    if (session !== null && !/^\$[0-9]{1,31}$/.test(String(session))) {
-      throw new OutcomeError("XTMUX_INVALID_ARGUMENT", "outcome identity.tmux_session_id must be null or $N");
-    }
-    for (const key of ["thread_id", "session_name"]) {
-      const value = identity[key];
-      if (value !== null) boundedText(`identity.${key}`, value, 256);
+    if (pane !== null && (typeof pane !== "string" || pane.length > 32 || !TMUX_PANE_PATTERN.test(pane))) {
+      throw invalid(`outcome ${label}.pane_id must be null or %N`);
     }
     paneId = pane as string | null;
     sessionId = session as string | null;
   }
 
+  if (o["worktree"] !== undefined) {
+    const label = "worktree";
+    const worktree = asObject(o[label], label);
+    noUnknownKeys(worktree, new Set(["path", "branch", "owner"]), label);
+    requireKeys(worktree, ["path", "branch", "owner"], label);
+    boundedText(`${label}.path`, worktree["path"], 4096);
+    boundedText(`${label}.branch`, worktree["branch"], 4096);
+    if (worktree["owner"] !== "core") throw invalid(`outcome ${label}.owner must be 'core'`);
+  }
+
+  if (o["readiness"] !== undefined) {
+    const label = "readiness";
+    const readiness = asObject(o[label], label);
+    noUnknownKeys(readiness, new Set(["status", "source"]), label);
+    requireKeys(readiness, ["status", "source"], label);
+    enumValue(`${label}.status`, readiness["status"], READINESS_STATUSES);
+    enumValue(`${label}.source`, readiness["source"], READINESS_SOURCES);
+  }
+
+  if (o["persistence"] !== undefined) {
+    mutationObject(o["persistence"], "persistence");
+  }
+
   const rawActions = o["next_actions"];
   if (!Array.isArray(rawActions) || rawActions.length > 16) {
-    throw new OutcomeError("XTMUX_INVALID_ARGUMENT", "outcome next_actions must be an array (max 16)");
+    throw invalid("outcome next_actions must be an array (max 16)");
   }
   const nextActions: OutcomeAction[] = rawActions.map((rawAction, index) => {
-    const action = asObject(rawAction, `next_actions[${index}]`);
-    if (!ACTION_KINDS.includes(action["kind"] as (typeof ACTION_KINDS)[number])) {
-      throw new OutcomeError("XTMUX_INVALID_ARGUMENT", `outcome next_actions[${index}].kind is invalid`);
-    }
-    if (typeof action["required"] !== "boolean") {
-      throw new OutcomeError("XTMUX_INVALID_ARGUMENT", `outcome next_actions[${index}].required must be a boolean`);
-    }
+    const label = `next_actions[${index}]`;
+    const action = asObject(rawAction, label);
+    noUnknownKeys(action, new Set(["kind", "required", "argv", "display", "cwd", "why"]), label);
+    requireKeys(action, ["kind", "required", "argv", "display", "why"], label);
+    const kind = enumValue(`${label}.kind`, action["kind"], ACTION_KINDS);
+    const required = booleanValue(`${label}.required`, action["required"]);
     const argv = action["argv"];
     if (!Array.isArray(argv) || argv.length === 0 || argv.length > 32 || argv.some((arg) => typeof arg !== "string" || arg.length > 4096 || CONTROL_CHARACTER.test(arg))) {
-      throw new OutcomeError("XTMUX_INVALID_ARGUMENT", `outcome next_actions[${index}].argv must be 1-32 bounded strings`);
+      throw invalid(`outcome ${label}.argv must be 1-32 bounded strings`);
     }
     const parsed: OutcomeAction = {
-      kind: action["kind"] as (typeof ACTION_KINDS)[number],
-      required: action["required"],
+      kind,
+      required,
       argv: argv as string[],
-      display: boundedText(`next_actions[${index}].display`, action["display"], 8192),
-      why: boundedText(`next_actions[${index}].why`, action["why"], 240),
+      display: boundedText(`${label}.display`, action["display"], 8192),
+      why: boundedText(`${label}.why`, action["why"], 240),
     };
-    if (action["cwd"] !== undefined) parsed.cwd = boundedText(`next_actions[${index}].cwd`, action["cwd"], 4096);
+    if ("cwd" in action) parsed.cwd = boundedText(`${label}.cwd`, action["cwd"], 4096);
     return parsed;
   });
 
+  void mutation; // validated for schema closure; not consumed by the adapter
+
   return {
-    status: status as OutcomeStatus,
+    status,
     reasonCode,
     summary,
     runtime,

@@ -494,7 +494,14 @@ structured data — never prose. A `status: degraded` outcome with a
 and `next_actions` argv is passed through verbatim. Outcomes claiming a
 `hook_trust` bypass are rejected. The hook `permission_mode` field is never a
 sandbox signal: the Core launch argv / outcome `safety_profile` is the only
-safety authority. This surface stays experimental until GATE-IFACE (K5).
+safety authority. Note: Core K3 cleans up via `cleanupAndFail` when Codex
+session-metadata persistence fails, so no degraded *Codex* outcome is observed
+Core behavior; the degraded branch is exercised with the generic K2 Pi/Claude
+outcome shape. Successful Codex outcomes (Core K3) carry an explicit persisted
+thread UUID and an exact `codex --profile <profile> resume … <thread_uuid>`
+action. The programme `GATE-IFACE` has already passed; this K3 surface stays
+experimental until K5, source merge is allowed on K3 evidence, and no
+release/promotion occurs before K4/K5.
 
 Codex `Notification` remains unverified, and no Codex equivalent is currently
 wired for Claude `Notification`.

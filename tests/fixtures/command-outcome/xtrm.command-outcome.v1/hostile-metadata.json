@@ -1,14 +1,15 @@
 {
   "fixture": {
     "schema": "xtrm.command-outcome.v1",
-    "core_commit": "1ed512a49efaf75f3e84c128f9d82958ece09d3a",
+    "schema_commit": "1ed512a49efaf75f3e84c128f9d82958ece09d3a",
+    "core_commit": "9b59fa5a7eed86b68f18f929ea3d37b072ae0891",
     "capture_provenance": {
       "kind": "constructed-hostile",
-      "source": "xtrm-dev/core packages/contracts/schemas/xtrm.command-outcome.v1.json",
-      "observed_at": "2026-08-02",
+      "source": "derived from xtrm-dev/core buildCodexDetachedOutcome shape at K3 commit 9b59fa5a, then corrupted",
+      "observed_at": "2026-08-03",
       "notes": "Hostile outcome variant: hook_trust claims a bypass, pane_id escapes the %N identity shape, an unknown top-level key is injected, and an argv action carries a non-string element. The consumer must reject the payload instead of applying lifecycle facts or surfacing executable argv."
     },
-    "redactions": ["session_name", "worktree_path", "branch"]
+    "redactions": ["session_name", "session_slug", "worktree_path", "branch"]
   },
   "payload": {
     "schema_version": "xtrm.command-outcome.v1",
@@ -26,7 +27,7 @@
     "readiness": { "status": "unverified", "source": "tmux-pane" },
     "safety_profile": {
       "name": "codex-yolo",
-      "sandbox": "workspace-write",
+      "sandbox": "disabled",
       "approvals": "bypassed",
       "hook_trust": "bypassed"
     },

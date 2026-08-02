@@ -141,10 +141,6 @@ exec bun "$cli" "$@"
     XTMUX_OBS_DB_PATH: dbPath,
     XTMUX_OBS_V2: "1",
     XTMUX_PICKER: join(bin, "picker"),
-    // The wired chain spawns several cold bun CLI processes back to back; widen
-    // the hook's picker budget so the suite measures behavior, not host load.
-    // Production default stays 2000ms (hook code).
-    XTMUX_CODEX_HOOK_TIMEOUT_MS: "20000",
   };
   delete env.CLAUDE_HOOK_EVENT;
   delete env.PI_HOOK_EVENT;
@@ -306,6 +302,30 @@ describe("Codex turn capture hook (Stop)", () => {
     expect(messages[0].expects_reply).toBe(0);
     expect(messages[0].message_key).toMatch(/^codex-turn-[a-f0-9]+$/);
     expect(messages[0].summary).toContain("turn done:");
+  });
+
+  test("FYI dedupe key is independent of tmux session identity (tmux restart)", () => {
+    const ctx = setupPane();
+    const payload = codexPayload("stop-reference.json", {
+      last_assistant_message: "restart turn",
+      session_id: "0192a17e-c0de-7000-8000-000000000001",
+      turn_id: "turn-0001",
+    });
+    const run = () => {
+      const result = spawnSync("node", [turnCaptureHook], { encoding: "utf8", input: JSON.stringify(payload), env: ctx.env });
+      expect(result.status).toBe(0);
+    };
+    run();
+    expect(dbRows(ctx, "SELECT COUNT(*) AS n FROM messages")[0].n).toBe(1);
+    // Simulate a tmux server restart: the same Codex session resumes under a
+    // DIFFERENT tmux session id. The message key derives only from Codex
+    // session_id + turn_id + text, so the replayed Stop still dedupes.
+    const stub = join(ctx.home, "bin", "tmux");
+    writeFileSync(stub, readFileSync(stub, "utf8").replace(`session_id='${SESSION}'`, "session_id='$9'"), { mode: 0o755 });
+    run();
+    const messages = dbRows(ctx, "SELECT message_key, sender_id FROM messages");
+    expect(messages).toHaveLength(1);
+    expect(messages[0].message_key).toMatch(/^codex-turn-[a-f0-9]+$/);
   });
 
   test("no tmux client context: hook exits silently without writes", () => {
@@ -528,5 +548,62 @@ describe("Core K2 outcome consumption (xtrm.command-outcome.v1)", () => {
     const error = JSON.parse(result.stderr);
     expect(error.code).toBe("XTMUX_INVALID_ARGUMENT");
     expect(result.stdout).toBe("");
+  });
+
+  // The published schema is additionalProperties:false on EVERY object and
+  // validates every field; the consumer enforces the same boundary. Each
+  // mutation below starts from the valid Core K3 codex fixture.
+  describe("v1 schema boundary enforcement (nested objects)", () => {
+    // One shared pane per test: every mutation is refused BEFORE any write, so
+    // the store stays empty and the context is reusable across mutations.
+    function makeReject(ctx: Env) {
+      return (mutate: (payload: Record<string, any>) => void): void => {
+        const payload = outcomePayload("xtrm.command-outcome.v1", "ok-launch.json");
+        mutate(payload);
+        const result = applyOutcome(ctx, payload);
+        expect(result.status).toBeGreaterThanOrEqual(2);
+        expect(JSON.parse(result.stderr).code).not.toBe("XTMUX_UNSUPPORTED_SCHEMA");
+        expect(dbRows(ctx, "SELECT COUNT(*) AS n FROM agent_state_transitions")[0]?.n ?? 0).toBe(0);
+      };
+    }
+
+    test("unknown nested keys are refused in every closed object", () => {
+      const ctx = setupPane();
+      const reject = makeReject(ctx);
+      reject((p) => { p.identity.extra = "x"; });
+      reject((p) => { p.runtime.extra = "x"; });
+      reject((p) => { p.worktree.extra = "x"; });
+      reject((p) => { p.readiness.extra = "x"; });
+      reject((p) => { p.safety_profile.extra = "x"; });
+      reject((p) => { p.persistence.extra = "x"; });
+      reject((p) => { p.authoritative_mutation.extra = "x"; });
+      reject((p) => { p.side_effects[0].extra = "x"; });
+      reject((p) => { p.next_actions[0].extra = "x"; });
+    }, 120_000);
+
+    test("wrong nested types and enums are refused", () => {
+      const ctx = setupPane();
+      const reject = makeReject(ctx);
+      reject((p) => { p.readiness.status = "maybe"; });
+      reject((p) => { p.readiness.source = "guess"; });
+      reject((p) => { p.side_effects[0].status = "exploded"; });
+      reject((p) => { p.runtime.name = "codex-cli"; });
+      reject((p) => { p.runtime.version = "bad\u0007version"; });
+      reject((p) => { p.persistence.completed = "yes"; });
+      reject((p) => { delete p.persistence.kind; });
+      reject((p) => { p.authoritative_mutation.kind = "NOT_A_TOKEN"; });
+      reject((p) => { p.worktree.owner = "attacker"; });
+      reject((p) => { delete p.worktree.branch; });
+      reject((p) => { p.identity.tmux_session_id = "session-seven"; });
+      reject((p) => { p.identity.thread_id = "x".repeat(257); });
+      reject((p) => { p.next_actions[0].kind = "teleport"; });
+      reject((p) => { p.next_actions[0].required = "yes"; });
+      reject((p) => { delete p.next_actions[0].why; });
+      reject((p) => { p.next_actions[0].argv = []; });
+      reject((p) => { p.next_actions[0].display = "bad\u001b[0m"; });
+      reject((p) => { p.reason_code = "Not_Snake"; });
+      reject((p) => { p.summary = ""; });
+      reject((p) => { delete p.side_effects; });
+    }, 120_000);
   });
 });

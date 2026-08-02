@@ -24,9 +24,8 @@ import { spawnSync } from "node:child_process";
 
 const PICKER = process.env.XTMUX_PICKER || `${process.env.HOME}/.local/bin/xtmux`;
 const SUMMARY_MAX = Number(process.env.XTMUX_CODEX_SUMMARY_MAX ?? "600");
-// Picker call budget. 2s matches the Claude turn-capture hook; the knob exists
-// so constrained hosts can widen it without editing the managed hook.
-const PICKER_TIMEOUT_MS = Number(process.env.XTMUX_CODEX_HOOK_TIMEOUT_MS ?? "2000");
+// Picker call budget. 2s matches the Claude turn-capture hook.
+const PICKER_TIMEOUT_MS = 2000;
 
 function readJsonStdin() {
   try { return JSON.parse(readFileSync(0, "utf8")); } catch { return null; }
@@ -67,13 +66,14 @@ function main() {
   const bead = tmuxValue(["show-options", "-p", "-qv", "@agent_bead"], pane);
   const parent = tmuxValue(["show-options", "-p", "-qv", "@agent_parent_session"], pane);
 
-  // Codex payloads carry stable turn identity (session_id + turn_id), so a
-  // replayed or duplicate-delivered Stop produces the SAME message key and
-  // dedupes at the message authority instead of waking a parent twice. The
-  // key survives tmux restarts because it is keyed on Codex identity, not on
-  // transcript size.
+  // Duplicate-delivery identity comes ONLY from stable Codex fields
+  // (session_id + turn_id + text) — deliberately NOT from the tmux session
+  // identity, so a replayed Stop after a tmux server restart (fresh $N)
+  // dedupes to the same message key. Both fields are untrusted: coerced to
+  // bounded strings before hashing.
+  const boundedId = (value) => (typeof value === "string" ? value.slice(0, 256) : "");
   const turnKey = createHash("sha256")
-    .update(`${sessionId}\0${String(input.session_id ?? "")}\0${String(input.turn_id ?? "")}\0${fullText}`)
+    .update(`${boundedId(input.session_id)}\0${boundedId(input.turn_id)}\0${fullText}`)
     .digest("hex").slice(0, 24);
 
   let tmpDir = "";

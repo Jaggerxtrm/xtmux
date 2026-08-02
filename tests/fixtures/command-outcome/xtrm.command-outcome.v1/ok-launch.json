@@ -1,23 +1,24 @@
 {
   "fixture": {
     "schema": "xtrm.command-outcome.v1",
-    "core_commit": "1ed512a49efaf75f3e84c128f9d82958ece09d3a",
+    "schema_commit": "1ed512a49efaf75f3e84c128f9d82958ece09d3a",
+    "core_commit": "9b59fa5a7eed86b68f18f929ea3d37b072ae0891",
     "capture_provenance": {
-      "kind": "constructed-from-contract",
-      "source": "xtrm-dev/core packages/contracts/schemas/xtrm.command-outcome.v1.json + cli/src/core/launch-outcome.ts",
-      "observed_at": "2026-08-02",
-      "notes": "Detached Codex launch outcome with status ok (metadata persisted, readiness unverified). Shape mirrors Core buildDetachedLaunchOutcome at the pinned commit; volatile identities and paths are redacted. Pane/tmux ids are synthetic constants so correlation is assertable."
+      "kind": "derived-from-core-k3",
+      "source": "xtrm-dev/core cli/src/core/codex-runtime.ts buildCodexDetachedOutcome at merged K3 commit 9b59fa5a; schema at K2 commit 1ed512a4",
+      "observed_at": "2026-08-03",
+      "notes": "Successful detached Codex launch outcome exactly as Core K3 builds it: status ok, explicit persisted thread UUID, codex-yolo safety profile (sandbox disabled, approvals bypassed, hook trust preserved), and the exact `codex --profile <profile> resume ... <thread_uuid>` resume action. Volatile identities and paths redacted; pane/tmux ids are synthetic constants so correlation is assertable."
     },
-    "redactions": ["session_name", "session_slug", "worktree_path", "branch"]
+    "redactions": ["thread_id", "profile_name", "session_name", "session_slug", "worktree_path", "branch"]
   },
   "payload": {
     "schema_version": "xtrm.command-outcome.v1",
     "status": "ok",
     "reason_code": "session_created_readiness_unverified",
-    "summary": "Detached codex session created; runtime readiness is not asserted.",
+    "summary": "Detached codex session created with an explicit persisted thread id.",
     "runtime": { "name": "codex", "version": "0.146.0" },
     "identity": {
-      "thread_id": null,
+      "thread_id": "<THREAD_UUID>",
       "session_name": "<SESSION_NAME>",
       "tmux_session_id": "$7",
       "pane_id": "%3"
@@ -26,7 +27,7 @@
     "readiness": { "status": "unverified", "source": "tmux-pane" },
     "safety_profile": {
       "name": "codex-yolo",
-      "sandbox": "workspace-write",
+      "sandbox": "disabled",
       "approvals": "bypassed",
       "hook_trust": "preserved"
     },
@@ -44,15 +45,15 @@
         "argv": ["tmux", "attach-session", "-t", "<SESSION_NAME>"],
         "display": "tmux attach-session -t '<SESSION_NAME>'",
         "cwd": "<WORKTREE>",
-        "why": "Attach to the live detached session."
+        "why": "Attach to the live detached Codex session."
       },
       {
         "kind": "resume",
         "required": false,
-        "argv": ["xt", "attach", "<BRANCH>"],
-        "display": "xt attach '<BRANCH>'",
+        "argv": ["codex", "--profile", "<PROFILE_NAME>", "resume", "--dangerously-bypass-approvals-and-sandbox", "<THREAD_UUID>"],
+        "display": "codex --profile '<PROFILE_NAME>' resume --dangerously-bypass-approvals-and-sandbox '<THREAD_UUID>'",
         "cwd": "<WORKTREE>",
-        "why": "Resume the runtime in this worktree after the tmux session ends."
+        "why": "Resume this exact Codex thread after the tmux session ends."
       },
       {
         "kind": "repair",
@@ -60,7 +61,7 @@
         "argv": ["xt", "doctor"],
         "display": "xt doctor",
         "cwd": "<WORKTREE>",
-        "why": "Inspect runtime and managed configuration drift."
+        "why": "Inspect managed runtime drift."
       },
       {
         "kind": "end",
@@ -68,7 +69,7 @@
         "argv": ["xt", "end"],
         "display": "xt end",
         "cwd": "<WORKTREE>",
-        "why": "Close the worktree session through the existing Core lifecycle."
+        "why": "Close the xt-owned worktree session."
       }
     ]
   }
