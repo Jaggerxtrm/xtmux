@@ -39,7 +39,8 @@ legacy entries survive install and uninstall. The managed Codex directory contai
 only `agent-state.sh`; the Claude turn-capture hook is not installed there.
 
 The `SessionStart` matcher intentionally excludes `compact`, so compaction does not
-mint a second `@agent_instance_id`. `agent-state.sh` requires both `TMUX` and
+mint a second `@agent_instance_id`. The Codex commands pass state through argv;
+`agent-state.sh` does not parse the Codex JSON on stdin. It requires both `TMUX` and
 `TMUX_PANE`; outside a live tmux client it exits successfully without changing state.
 
 ## Authority inventory
@@ -92,10 +93,11 @@ The focused replay/ownership test is `tests/contracts/codex-characterization.tes
 
 ```text
 bun test tests/contracts/codex-characterization.test.ts
-3 pass, 0 fail, 45 expect() calls
+3 pass, 0 fail, 51 expect() calls
 ```
 
-It verifies fixture provenance and redaction, replays the live startup/prompt payloads
-through the current fail-open state adapter, proves tagged versus untagged installer
-ownership, and proves the current Codex turn-capture/stop gaps without changing
-runtime behavior.
+It verifies fixture provenance and redaction, executes the configured startup/prompt
+state commands with the captured payloads as stdin under a deterministic tmux stub,
+and asserts the resulting `idle`/`running` pane state. It also proves tagged versus
+untagged installer ownership and the current Codex turn-capture/stop gaps without
+claiming that `agent-state.sh` parses Codex payloads or changing runtime behavior.

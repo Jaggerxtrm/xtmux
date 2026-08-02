@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -36,6 +36,36 @@ function commands(entries: any[] = []): string[] {
   return entries.flatMap((entry) => entry.hooks?.map((hook: any) => hook.command) ?? []);
 }
 
+function tmuxStub(home: string): string {
+  const dir = join(home, "bin");
+  mkdirSync(dir, { recursive: true });
+  const script = join(dir, "tmux");
+  writeFileSync(script, `#!/usr/bin/env bash
+set -euo pipefail
+state_file="${"${XTMUX_TEST_TMUX_STATE}"}"
+args=("$@")
+case "${"${args[0]}"}" in
+  display-message)
+    [ "${"${args[${#args[@]} - 1]}"}" = "#S" ] && printf 'fixture-session\\n' || printf '%%1\\n'
+    ;;
+  show-options)
+    case "${"${args[${#args[@]} - 1]}"}" in
+      @agent_state) [ -f "$state_file" ] && cat "$state_file" || true ;;
+      *) true ;;
+    esac
+    ;;
+  set-option)
+    option="${"${args[${#args[@]} - 2]}"}"
+    value="${"${args[${#args[@]} - 1]}"}"
+    [ "$option" = "@agent_state" ] && printf '%s\\n' "$value" > "$state_file"
+    ;;
+  *) exit 1 ;;
+esac
+`, { mode: 0o700 });
+  chmodSync(script, 0o700);
+  return dir;
+}
+
 afterEach(() => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
@@ -63,17 +93,43 @@ describe("Codex 0.146.0 characterization fixtures", () => {
     expect(stop.last_assistant_message).toBe("<REDACTED_MESSAGE>");
   });
 
-  test("current Codex state adapter replays captured startup and prompt payloads fail-open", () => {
-    for (const file of ["session-start.json", "user-prompt-submit.json"]) {
+  test("current Codex state commands execute with captured payload fixtures in a stubbed tmux context", () => {
+    const home = mkdtempSync(join(tmpdir(), "xtmux-codex-state-replay-"));
+    homes.push(home);
+    const stateFile = join(home, "state");
+    const eventLog = join(home, "events.jsonl");
+    const stubPath = tmuxStub(home);
+    const env = {
+      ...process.env,
+      HOME: home,
+      PATH: `${stubPath}:${process.env.PATH ?? ""}`,
+      TMUX: "fixture-socket",
+      TMUX_PANE: "%1",
+      XDG_STATE_HOME: join(home, ".local", "state"),
+      XTMUX_EVENT_LOG_FILE: eventLog,
+      XTMUX_HOST_ID_FILE: join(home, "host-id"),
+      XTMUX_OBS_V2: "0",
+      XTMUX_TEST_TMUX_STATE: stateFile,
+    };
+
+    for (const [file, args, state] of [
+      ["session-start.json", ["idle", "--new-instance"], "idle"],
+      ["user-prompt-submit.json", ["running"], "running"],
+    ] as const) {
       const { payload } = fixture(file);
-      const state = file === "session-start.json" ? "idle" : "running";
-      const result = spawnSync("bash", [stateScript, state], {
+      const result = spawnSync("bash", [stateScript, ...args], {
         cwd: root,
         encoding: "utf8",
         input: `${JSON.stringify(payload)}\n`,
-        env: { ...process.env, TMUX: "", TMUX_PANE: "" },
+        env,
       });
       expect(result.status).toBe(0);
+      expect(readFileSync(stateFile, "utf8").trim()).toBe(state);
+      const events = readFileSync(eventLog, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      expect(events.at(-1).state).toBe(state);
+      // The current Codex commands pass state via argv and do not propagate
+      // hook_event_name into the script environment.
+      expect(events.at(-1).event).toBe("");
     }
   });
 
