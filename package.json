@@ -55,6 +55,7 @@
     "scripts/test-session-events.sh",
     "src/",
     "hooks/claude/",
+    "hooks/codex/",
     "CHANGELOG.md",
     "LICENSE",
     "README.md"

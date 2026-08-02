@@ -9,6 +9,7 @@ import { cliMessageAck, cliMessageCancel, cliMessageGet, cliMessageList, cliMess
 import { cliObligationsList } from "./cli-obligations.ts";
 import { cliMonitorAgent, cliMonitorList, cliWaitAgent } from "./cli-monitors.ts";
 import { cliLogEmit, cliLogTail, cliLogQuery, cliLogFollow } from "./cli-log.ts";
+import { cliOutcomeApply } from "./cli-outcome.ts";
 import { findLastTurn } from "./domains/agents/turn.ts";
 import { recordDelivery } from "./domains/deliveries/attempt.ts";
 import type { DeliveryKind } from "./domains/deliveries/attempt.ts";
@@ -61,6 +62,7 @@ commands:
   shadow-record --domain X --command Y --diff-kind Z [--v1-snippet S --v2-snippet S]
                                           record a shadow divergence (picker-internal)
   handoff create|attempt                       durable handoff and delivery attempt
+  outcome-apply                                consume one xtrm.command-outcome.v1 launch outcome from stdin (K3, experimental)
   bridge --stdio                               read-only NDJSON bridge over ssh (j46.9)
 `;
 }
@@ -309,7 +311,8 @@ async function main(argv: string[]): Promise<number> {
       case "log-follow":
       case "delivery-record":
       case "handoff":
-      case "agent-last": {
+      case "agent-last":
+      case "outcome-apply": {
         const db = openDb(cfg);
         try {
           migrate(db);
@@ -333,6 +336,7 @@ async function main(argv: string[]): Promise<number> {
             case "delivery-record":  return cliDeliveryRecord(db, rest);
             case "handoff":          return cliHandoff(db, rest);
             case "agent-last":       return cliAgentLast(db, rest);
+            case "outcome-apply":    return cliOutcomeApply(db, rest);
           }
         } finally {
           db.close();

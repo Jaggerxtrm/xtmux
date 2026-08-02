@@ -29,6 +29,16 @@ function parseArgs(argv: string[]): Args {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a.startsWith("--")) {
+      // Accept --flag=value as well as --flag value (same split as cli-log.ts).
+      // Without this, `--expects-reply=false` parsed as a truthy flag named
+      // "expects-reply=false" and booleanFlag fell back to its default — which
+      // turned bead-bound FYIs (Claude/Codex turn-done notices) into reply
+      // obligations.
+      const eq = a.indexOf("=");
+      if (eq > 2) {
+        flags.set(a.slice(2, eq), a.slice(eq + 1));
+        continue;
+      }
       const key = a.slice(2);
       const next = argv[i + 1];
       if (next !== undefined && !next.startsWith("--")) {

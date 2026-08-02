@@ -1,0 +1,22 @@
+{
+  "fixture": {
+    "schema": "xtrm.command-outcome.v2",
+    "core_commit": null,
+    "capture_provenance": {
+      "kind": "constructed-future-version",
+      "source": "tests/fixtures/command-outcome/xtrm.command-outcome.v1/degraded-launch.json",
+      "observed_at": "2026-08-02",
+      "notes": "Payload-version-awareness case: a plausible future schema version. The v1 consumer must reject it rather than guess field semantics."
+    },
+    "redactions": ["session_name", "worktree_path", "branch"]
+  },
+  "payload": {
+    "schema_version": "xtrm.command-outcome.v2",
+    "status": "degraded",
+    "reason_code": "session_created_metadata_not_persisted",
+    "summary": "Detached codex session created, but exact resume metadata was not persisted.",
+    "authoritative_mutation": { "completed": true, "kind": "interactive-session.created" },
+    "side_effects": [],
+    "next_actions": []
+  }
+}

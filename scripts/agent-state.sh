@@ -17,7 +17,8 @@ usage() {
   printf '\n  --new-instance  start a new agent occupation of this pane: generate a\n' >&2
   printf '                  fresh @agent_instance_id before emitting the state event.\n' >&2
   printf '                  Call it on session start only (Pi session_start, Claude\n' >&2
-  printf '                  SessionStart), never on ordinary transitions.\n' >&2
+  printf '                  SessionStart, Codex SessionStart), never on ordinary\n' >&2
+  printf '                  transitions.\n' >&2
   printf '\noptional metadata env (pane-scoped):\n' >&2
   printf '  XTMUX_AGENT_BEAD           -> @agent_bead\n' >&2
   printf '  XTMUX_AGENT_TASK           -> @agent_task\n' >&2
@@ -84,7 +85,9 @@ log_agent_state_event() {
   parent="$(tmux show-options -p -t "$target" -qv @agent_parent_session 2>/dev/null || true)"
   instance="$(tmux show-options -p -t "$target" -qv @agent_instance_id 2>/dev/null || true)"
   host_id; host="$REPLY"
-  event="${CLAUDE_HOOK_EVENT:-${PI_HOOK_EVENT:-}}"
+  # CLAUDE_HOOK_EVENT / PI_HOOK_EVENT / CODEX_HOOK_EVENT may be exported by the
+  # calling hook config.
+  event="${CLAUDE_HOOK_EVENT:-${PI_HOOK_EVENT:-${CODEX_HOOK_EVENT:-}}}"
   printf '{"ts":"%s","ts_epoch":%s,"type":"agent.state","pane":"%s","session":"%s","state":"%s","event":"%s","bead":"%s","task":"%s","role":"%s","prompt_file":"%s","parent":"%s","host_id":"%s","agent_instance_id":"%s"}\n' \
     "$(json_escape "$ts")" "$epoch" "$(json_escape "$target")" "$(json_escape "$session")" "$(json_escape "$state")" "$(json_escape "$event")" "$(json_escape "$bead")" "$(json_escape "$task")" "$(json_escape "$role")" "$(json_escape "$prompt")" "$(json_escape "$parent")" "$(json_escape "$host")" "$(json_escape "$instance")" >> "$file" 2>/dev/null || true
 }
@@ -222,7 +225,7 @@ tmux set-option -p -t "$target" -q @agent_last_transition "$(date -Is)" 2>/dev/n
 # Emitted BEFORE clear_optional_meta: `off` wipes @agent_bead, and the closing
 # event is precisely the one that most needs to say which bead the agent died on.
 if [ "$new_instance" = 1 ] || [ "$prev_state" != "$state" ]; then
-  emit_v2 agent.state state="$state" hook_event="${CLAUDE_HOOK_EVENT:-${PI_HOOK_EVENT:-}}"
+  emit_v2 agent.state state="$state" hook_event="${CLAUDE_HOOK_EVENT:-${PI_HOOK_EVENT:-${CODEX_HOOK_EVENT:-}}}"
   # `|| true`: this is the if-body's last command, and a false test under set -e
   # would take the whole hook down with it.
   { [ "$state" = off ] && emit_v2 agent.instance.ended; } || true
@@ -233,9 +236,10 @@ log_agent_state_event
 
 # optional empirical audit log (off by default). records the firing event and
 # transition so an operator/orchestrator can verify hook ordering on real runs.
-# CLAUDE_HOOK_EVENT / PI_HOOK_EVENT may be exported by the calling hook config.
+# CLAUDE_HOOK_EVENT / PI_HOOK_EVENT / CODEX_HOOK_EVENT may be exported by the
+# calling hook config.
 if [ "${XTMUX_AGENT_STATE_LOG:-0}" = "1" ]; then
   log_file="${XTMUX_AGENT_STATE_LOG_FILE:-$HOME/.cache/xtmux/agent-state.log}"
   mkdir -p "$(dirname "$log_file")" 2>/dev/null || true
-  printf '%s\t%s\t%s\t%s\n' "$(date -Is)" "$target" "${CLAUDE_HOOK_EVENT:-${PI_HOOK_EVENT:-?}}" "$state" >> "$log_file" 2>/dev/null || true
+  printf '%s\t%s\t%s\t%s\n' "$(date -Is)" "$target" "${CLAUDE_HOOK_EVENT:-${PI_HOOK_EVENT:-${CODEX_HOOK_EVENT:-?}}}" "$state" >> "$log_file" 2>/dev/null || true
 fi

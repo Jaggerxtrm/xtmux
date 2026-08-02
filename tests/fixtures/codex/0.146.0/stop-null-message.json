@@ -1,0 +1,26 @@
+{
+  "fixture": {
+    "codex_version": "0.146.0",
+    "event": "Stop",
+    "capture_provenance": {
+      "kind": "official-schema-derived-variant",
+      "source": "https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/hooks/schema/generated/stop.command.input.schema.json",
+      "source_ref": "rust-v0.146.0",
+      "source_commit": "e363b08c9175ac1cbe5893615dd2cb9ddf95043b",
+      "retrieved_at": "2026-08-02",
+      "notes": "Variant of the official openai/codex rust-v0.146.0 Stop schema exercising the required-but-nullable last_assistant_message field (schema NullableString). No live capture: a successful authenticated turn was unavailable."
+    },
+    "redactions": ["session_id", "turn_id", "cwd", "model", "transcript_path"]
+  },
+  "payload": {
+    "session_id": "<SESSION_ID>",
+    "turn_id": "<TURN_ID>",
+    "transcript_path": "<TRANSCRIPT_PATH>",
+    "cwd": "<WORKTREE>",
+    "hook_event_name": "Stop",
+    "model": "<MODEL_SLUG>",
+    "permission_mode": "default",
+    "stop_hook_active": false,
+    "last_assistant_message": null
+  }
+}
