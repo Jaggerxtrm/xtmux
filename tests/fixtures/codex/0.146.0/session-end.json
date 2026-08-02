@@ -1,0 +1,21 @@
+{
+  "fixture": {
+    "codex_version": "0.146.0",
+    "event": "SessionEnd",
+    "capture_provenance": {
+      "kind": "live",
+      "source": "local Codex CLI",
+      "command": "codex exec --ephemeral --json <prompt>",
+      "observed_at": "2026-08-02",
+      "notes": "Captured after the unauthenticated request ended; volatile values are redacted."
+    },
+    "redactions": ["session_id", "cwd"]
+  },
+  "payload": {
+    "session_id": "<SESSION_ID>",
+    "transcript_path": null,
+    "cwd": "<WORKTREE>",
+    "hook_event_name": "SessionEnd",
+    "reason": "other"
+  }
+}
