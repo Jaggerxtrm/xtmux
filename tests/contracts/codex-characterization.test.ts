@@ -99,7 +99,7 @@ describe("Codex 0.146.0 characterization fixtures", () => {
     const stateFile = join(home, "state");
     const eventLog = join(home, "events.jsonl");
     const stubPath = tmuxStub(home);
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       HOME: home,
       PATH: `${stubPath}:${process.env.PATH ?? ""}`,
@@ -111,6 +111,10 @@ describe("Codex 0.146.0 characterization fixtures", () => {
       XTMUX_OBS_V2: "0",
       XTMUX_TEST_TMUX_STATE: stateFile,
     };
+    delete env.CLAUDE_HOOK_EVENT;
+    delete env.PI_HOOK_EVENT;
+    expect(env.CLAUDE_HOOK_EVENT).toBeUndefined();
+    expect(env.PI_HOOK_EVENT).toBeUndefined();
 
     for (const [file, args, state] of [
       ["session-start.json", ["idle", "--new-instance"], "idle"],

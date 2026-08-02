@@ -457,8 +457,12 @@ hook event names already used by this repo's `.codex/hooks.json`. The installer
 adds these files only when `~/.codex` already exists; xtmux never installs the
 Codex CLI.
 
-codex WAIT/DONE event coverage is intentionally not asserted here because this
-repo currently has no verified codex equivalent for claude `Notification`/`Stop`.
+Codex `Stop` is verified only at the official-schema boundary: the K1
+characterization stores a redacted Codex 0.146.0 release-document reference, not a
+live capture. xtmux does not currently install a Codex `Stop` hook, so no runtime
+DONE transition or `last_assistant_message` capture is asserted here. Codex
+`Notification` remains unverified, and no Codex equivalent is currently wired for
+Claude `Notification`.
 
 
 ## Optional command telemetry
