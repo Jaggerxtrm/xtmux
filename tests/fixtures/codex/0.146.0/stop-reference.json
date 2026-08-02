@@ -1,0 +1,24 @@
+{
+  "fixture": {
+    "codex_version": "0.146.0",
+    "event": "Stop",
+    "capture_provenance": {
+      "kind": "official-release-reference",
+      "source": "https://developers.openai.com/codex/hooks/",
+      "retrieved_at": "2026-08-02",
+      "notes": "Schema reference only; no live Stop capture was possible without a successful authenticated turn."
+    },
+    "redactions": ["session_id", "turn_id", "cwd", "model", "transcript_path", "last_assistant_message"]
+  },
+  "payload": {
+    "session_id": "<SESSION_ID>",
+    "turn_id": "<TURN_ID>",
+    "transcript_path": "<TRANSCRIPT_PATH>",
+    "cwd": "<WORKTREE>",
+    "hook_event_name": "Stop",
+    "model": "<MODEL_SLUG>",
+    "permission_mode": "default",
+    "stop_hook_active": false,
+    "last_assistant_message": "<REDACTED_MESSAGE>"
+  }
+}

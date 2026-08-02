@@ -1,0 +1,24 @@
+{
+  "fixture": {
+    "codex_version": "0.146.0",
+    "event": "UserPromptSubmit",
+    "capture_provenance": {
+      "kind": "live",
+      "source": "local Codex CLI",
+      "command": "codex exec --ephemeral --json <prompt>",
+      "observed_at": "2026-08-02",
+      "notes": "Captured before the unauthenticated request failed; prompt and volatile values are redacted."
+    },
+    "redactions": ["session_id", "turn_id", "cwd", "model", "prompt"]
+  },
+  "payload": {
+    "session_id": "<SESSION_ID>",
+    "turn_id": "<TURN_ID>",
+    "transcript_path": null,
+    "cwd": "<WORKTREE>",
+    "hook_event_name": "UserPromptSubmit",
+    "model": "<MODEL_SLUG>",
+    "permission_mode": "bypassPermissions",
+    "prompt": "<REDACTED_PROMPT>"
+  }
+}
