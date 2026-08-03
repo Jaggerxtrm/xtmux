@@ -474,13 +474,18 @@ record their source event exactly like the Claude wiring.
 
 Codex turn capture reads `last_assistant_message` DIRECTLY from the Stop
 payload. Codex 0.146.0 types the field as required-but-nullable
-(`string | null`): `null` lands a metadata-only turn row, and a non-string
-value is treated as data and stored as `null`, never stringified. Unlike the
+(`string | null`): `null` lands a metadata-only turn row; a MISSING property
+or any non-string/non-null value fails open with no turn row and no message
+write. Unlike the
 Claude hook there is no transcript tail-scan; `transcript_path` is never read.
 A payload whose `hook_event_name` is not `Stop` is rejected as hostile
-metadata. Duplicate Stop deliveries dedupe at the message authority through a
+metadata. `session_id` and `turn_id` are the stable dedupe identity: they
+must be non-empty strings bounded at 256 and are never truncated into
+possible collisions; payloads with missing or invalid identity fail open with
+no writes. Duplicate Stop deliveries dedupe at the message authority through a
 `codex-turn-<hash>` message key derived from Codex `session_id` + `turn_id` +
-text, so replays and tmux restarts cannot wake a parent twice.
+text — no tmux identity in the key — so replays and tmux restarts cannot wake
+a parent twice.
 
 Codex `SessionEnd` delivers a single `reason` value (`other`) in 0.146.0, so
 no reason-based lifecycle split is evidence-backed; `SessionEnd` always maps to
