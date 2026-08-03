@@ -178,6 +178,21 @@ exec bun "$cli" "$@"
   delete env.XTMUX_AGENT_ROLE;
   delete env.XTMUX_AGENT_PROMPT_FILE;
 
+/**
+ * Atomic read: attempt the read and handle ENOENT, never existsSync-then-read
+ * (CodeQL js/file-system-race, alert 11 — a TOCTOU sequence even in a test
+ * harness). Any non-ENOENT error (e.g. corrupt JSON) still fails the test
+ * loudly instead of silently resetting state.
+ */
+function readOptionsFile(file: string): Record<string, unknown> {
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+}
+
   const simDir = sim;
   const dbPath = join(home, "state", "xtmux", "observability.db");
   return {
@@ -188,14 +203,13 @@ exec bun "$cli" "$@"
     getState(pane) { return readFileSync(join(simDir, "states", pane), "utf8").trim(); },
     setOption(pane, option, value) {
       const file = join(simDir, "options", `${pane}.json`);
-      const options = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+      const options = readOptionsFile(file);
       options[option] = value;
       writeFileSync(file, JSON.stringify(options));
     },
     getOption(pane, option) {
       const file = join(simDir, "options", `${pane}.json`);
-      if (!existsSync(file)) return "";
-      return String(JSON.parse(readFileSync(file, "utf8"))[option] ?? "");
+      return String(readOptionsFile(file)[option] ?? "");
     },
     restartTmux() {
       writeFileSync(join(simDir, "panes.tsv"), [
