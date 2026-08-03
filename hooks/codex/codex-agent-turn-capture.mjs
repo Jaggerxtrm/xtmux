@@ -54,11 +54,21 @@ function main() {
   // hostile metadata: rejected as data, no turn row, no message, exit 0.
   if (input.hook_event_name !== "Stop") return;
 
-  // Required-but-nullable: null lands a metadata-only turn row; any non-string
-  // value (hostile object/number) is treated as null, never stringified into
-  // durable storage.
-  const fullText = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
-  const hasText = fullText.length > 0;
+  // last_assistant_message is REQUIRED but nullable (0.146.0 NullableString).
+  // null lands a metadata-only turn row. A missing property or any other type
+  // is hostile metadata: fail open with no turn row and no message.
+  if (!("last_assistant_message" in input)) return;
+  const rawMessage = input.last_assistant_message;
+  if (rawMessage !== null && typeof rawMessage !== "string") return;
+  const fullText = rawMessage ?? "";
+  const hasText = typeof rawMessage === "string" && rawMessage.length > 0;
+
+  // session_id + turn_id are the stable dedupe identity: required non-empty
+  // bounded strings. Never coerce missing/non-string values to "" and never
+  // truncate oversize ones into possible collisions — an unreliable identity
+  // would collide or duplicate FYIs, so fail open with no writes instead.
+  const validIdentity = (value) => typeof value === "string" && value.length > 0 && value.length <= 256;
+  if (!validIdentity(input.session_id) || !validIdentity(input.turn_id)) return;
 
   const pane = process.env.TMUX_PANE;
   const sessionId = tmuxValue(["display-message", "-p", "#{session_id}"], pane);
@@ -66,14 +76,12 @@ function main() {
   const bead = tmuxValue(["show-options", "-p", "-qv", "@agent_bead"], pane);
   const parent = tmuxValue(["show-options", "-p", "-qv", "@agent_parent_session"], pane);
 
-  // Duplicate-delivery identity comes ONLY from stable Codex fields
-  // (session_id + turn_id + text) — deliberately NOT from the tmux session
-  // identity, so a replayed Stop after a tmux server restart (fresh $N)
-  // dedupes to the same message key. Both fields are untrusted: coerced to
-  // bounded strings before hashing.
-  const boundedId = (value) => (typeof value === "string" ? value.slice(0, 256) : "");
+  // Duplicate-delivery identity comes ONLY from the stable Codex fields
+  // validated above (session_id + turn_id + text) — deliberately NOT from the
+  // tmux session identity, so a replayed Stop after a tmux server restart
+  // (fresh $N) dedupes to the same message key.
   const turnKey = createHash("sha256")
-    .update(`${boundedId(input.session_id)}\0${boundedId(input.turn_id)}\0${fullText}`)
+    .update(`${input.session_id}\0${input.turn_id}\0${fullText}`)
     .digest("hex").slice(0, 24);
 
   let tmpDir = "";

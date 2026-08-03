@@ -489,8 +489,12 @@ no reason-based lifecycle split is evidence-backed; `SessionEnd` always maps to
 Degraded launches arrive through the Core K2 outcome contract
 (`xtrm.command-outcome.v1`), consumed by `xtmux outcome-apply` from stdin as
 structured data — never prose. A `status: degraded` outcome with a
-`%N`-shaped `identity.pane_id` records exactly one `degraded` lifecycle fact
-(idempotent across replay and restart); every other status fabricates nothing,
+`%N`-shaped `identity.pane_id` records exactly one `degraded` lifecycle fact;
+duplicate deliveries of the same identity are suppressed within one tmux
+server lifetime. This is not idempotence across a real restart: tmux recycles
+`$N`/`%N` identities, and a recycled pair with the same reason_code can
+suppress a distinct later fact — recorded for K4 / contract evolution.
+Every other status fabricates nothing,
 and `next_actions` argv is passed through verbatim. Outcomes claiming a
 `hook_trust` bypass are rejected. The hook `permission_mode` field is never a
 sandbox signal: the Core launch argv / outcome `safety_profile` is the only

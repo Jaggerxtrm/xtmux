@@ -289,6 +289,30 @@ describe("Codex turn capture hook (Stop)", () => {
     expect(messages[0]?.n ?? 0).toBe(0);
   });
 
+  test("Stop type guards: missing/invalid last_assistant_message and missing/oversize identity write nothing", () => {
+    const ctx = setupPane();
+    // All variants keep hook_event_name: "Stop" — the stop-hostile fixture lies
+    // about the event and never reaches these guards, so each case is built
+    // from a genuine Stop payload.
+    const variants: Array<[string, (p: Record<string, any>) => void]> = [
+      ["missing last_assistant_message", (p) => { delete p.last_assistant_message; }],
+      ["object last_assistant_message", (p) => { p.last_assistant_message = { inject: true }; }],
+      ["number last_assistant_message", (p) => { p.last_assistant_message = 42; }],
+      ["missing session_id", (p) => { delete p.session_id; }],
+      ["empty session_id", (p) => { p.session_id = ""; }],
+      ["non-string turn_id", (p) => { p.turn_id = 7; }],
+      ["oversize session_id (collision-prone truncation refused)", (p) => { p.session_id = "x".repeat(257); }],
+    ];
+    for (const [name, mutate] of variants) {
+      const payload = codexPayload("stop-reference.json", { last_assistant_message: "guarded" });
+      mutate(payload);
+      const result = spawnSync("node", [turnCaptureHook], { encoding: "utf8", input: JSON.stringify(payload), env: ctx.env });
+      expect(result.status, name).toBe(0);
+    }
+    expect(dbRows(ctx, "SELECT COUNT(*) AS n FROM agent_turns")[0]?.n ?? 0).toBe(0);
+    expect(dbRows(ctx, "SELECT COUNT(*) AS n FROM messages")[0]?.n ?? 0).toBe(0);
+  });
+
   test("duplicate Stop delivery sends exactly one parent FYI (idempotent message key)", () => {
     const ctx = setupPane();
     const payload = codexPayload("stop-reference.json", { last_assistant_message: "dup turn" });
@@ -496,7 +520,7 @@ describe("Core K2 outcome consumption (xtrm.command-outcome.v1)", () => {
     expect(tableNames(ctx)).toEqual(before);
   });
 
-  test("duplicate degraded delivery is idempotent across replay and restart", () => {
+  test("duplicate degraded delivery is suppressed for the same identity within a tmux server lifetime", () => {
     const ctx = setupPane();
     const payload = outcomePayload("xtrm.command-outcome.v1", "degraded-launch.json");
     expect(applyOutcome(ctx, payload).status).toBe(0);

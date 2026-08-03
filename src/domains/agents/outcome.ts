@@ -8,7 +8,9 @@
  * event_journal). No prose parsing, no private state, no Codex-specific store:
  *
  *  - `status: degraded` with a correlatable pane records exactly one `degraded`
- *    lifecycle fact (idempotent across replay and restart);
+ *    lifecycle fact; duplicate deliveries of the SAME identity are suppressed
+ *    within one tmux server lifetime (not across a real restart — see
+ *    applyCommandOutcome);
  *  - every other status fabricates nothing — hooks own runtime lifecycle, and
  *    an outcome never fabricates an authoritative mutation;
  *  - `next_actions` argv is passed through verbatim for the caller to execute.
@@ -319,13 +321,16 @@ export interface ApplyOutcomeResult {
  *
  * Only `status: degraded` writes: one pane-scoped transition
  * (`state=degraded`, `source_event=outcome:<reason_code>`) plus its journal
- * envelope. The dedupe key is (pane, session, source_event), so a replayed or
- * restart-redelivered outcome stays idempotent; the worst case across a tmux
- * server restart is a suppressed duplicate, never a duplicated fact.
+ * envelope. The dedupe key is (pane, session, source_event): duplicate
+ * deliveries of the SAME identity within one tmux server lifetime are
+ * suppressed.
  *
- * ponytail: identity-scoped dedupe would need the instance_id, which does not
- * exist yet at launch (SessionStart mints it); pane+session is exact within a
- * tmux server lifetime.
+ * LIMITATION (recorded for K4 / contract evolution): this key cannot prove
+ * idempotence across a real tmux restart. tmux recycles `$N`/`%N` identities
+ * after a server restart, and a recycled `(pane, session)` pair carrying the
+ * same reason_code can suppress a DISTINCT later fact. Cross-restart
+ * correctness needs an instance- or thread-scoped identity; the instance_id
+ * does not exist yet at launch (SessionStart mints it).
  */
 export function applyCommandOutcome(
   db: Db,
