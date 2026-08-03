@@ -455,14 +455,65 @@ a minimal codex hook example is in `examples/codex/hooks.agent-state.json`. it
 sets `running` on `UserPromptSubmit` and `idle` on `SessionStart`, matching the
 hook event names already used by this repo's `.codex/hooks.json`. The installer
 adds these files only when `~/.codex` already exists; xtmux never installs the
-Codex CLI.
+Codex CLI. xtmux remains the sole writer of the `_source: "xtmux"` entries in
+`~/.codex/hooks.json`; untagged foreign entries are always preserved.
 
-Codex `Stop` is verified only at the official-schema boundary: the K1
-characterization stores a redacted Codex 0.146.0 release-document reference, not a
-live capture. xtmux does not currently install a Codex `Stop` hook, so no runtime
-DONE transition or `last_assistant_message` capture is asserted here. Codex
-`Notification` remains unverified, and no Codex equivalent is currently wired for
-Claude `Notification`.
+Since K3 (xtmux-s96.2), the installer wires the full verified Codex 0.146.0
+lifecycle through the SAME lifecycle authority as Claude and Pi
+(`agent-state.sh` plus the shared transition store):
+
+| Codex event | Matcher | Installed effect |
+|---|---|---|
+| `SessionStart` | `startup\|resume\|clear` | `idle --new-instance` (mints `@agent_instance_id`, emits `agent.ready`); tagged `XTMUX_AGENT_RUNTIME=codex` |
+| `UserPromptSubmit` | none | `running` |
+| `Stop` | none | `done` plus `codex-agent-turn-capture.mjs` |
+| `SessionEnd` | none | `off` (ends the durable instance) |
+
+Every state command carries `CODEX_HOOK_EVENT=<event>`, so durable transitions
+record their source event exactly like the Claude wiring.
+
+Codex turn capture reads `last_assistant_message` DIRECTLY from the Stop
+payload. Codex 0.146.0 types the field as required-but-nullable
+(`string | null`): `null` lands a metadata-only turn row; a MISSING property
+or any non-string/non-null value fails open with no turn row and no message
+write. Unlike the
+Claude hook there is no transcript tail-scan; `transcript_path` is never read.
+A payload whose `hook_event_name` is not `Stop` is rejected as hostile
+metadata. `session_id` and `turn_id` are the stable dedupe identity: they
+must be non-empty strings bounded at 256 and are never truncated into
+possible collisions; payloads with missing or invalid identity fail open with
+no writes. Duplicate Stop deliveries dedupe at the message authority through a
+`codex-turn-<hash>` message key derived from Codex `session_id` + `turn_id` +
+text — no tmux identity in the key — so replays and tmux restarts cannot wake
+a parent twice.
+
+Codex `SessionEnd` delivers a single `reason` value (`other`) in 0.146.0, so
+no reason-based lifecycle split is evidence-backed; `SessionEnd` always maps to
+`off`.
+
+Degraded launches arrive through the Core K2 outcome contract
+(`xtrm.command-outcome.v1`), consumed by `xtmux outcome-apply` from stdin as
+structured data — never prose. A `status: degraded` outcome with a
+`%N`-shaped `identity.pane_id` records exactly one `degraded` lifecycle fact;
+duplicate deliveries of the same identity are suppressed within one tmux
+server lifetime. This is not idempotence across a real restart: tmux recycles
+`$N`/`%N` identities, and a recycled pair with the same reason_code can
+suppress a distinct later fact — recorded for K4 / contract evolution.
+Every other status fabricates nothing,
+and `next_actions` argv is passed through verbatim. Outcomes claiming a
+`hook_trust` bypass are rejected. The hook `permission_mode` field is never a
+sandbox signal: the Core launch argv / outcome `safety_profile` is the only
+safety authority. Note: Core K3 cleans up via `cleanupAndFail` when Codex
+session-metadata persistence fails, so no degraded *Codex* outcome is observed
+Core behavior; the degraded branch is exercised with the generic K2 Pi/Claude
+outcome shape. Successful Codex outcomes (Core K3) carry an explicit persisted
+thread UUID and an exact `codex --profile <profile> resume … <thread_uuid>`
+action. The programme `GATE-IFACE` has already passed; this K3 surface stays
+experimental until K5, source merge is allowed on K3 evidence, and no
+release/promotion occurs before K4/K5.
+
+Codex `Notification` remains unverified, and no Codex equivalent is currently
+wired for Claude `Notification`.
 
 
 ## Optional command telemetry

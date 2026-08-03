@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.tmux/scripts/agent-state.sh running",
+            "command": "CODEX_HOOK_EVENT=UserPromptSubmit ~/.tmux/scripts/agent-state.sh running",
             "statusMessage": "marking pane running"
           }
         ]
@@ -17,8 +17,30 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.tmux/scripts/agent-state.sh idle",
+            "command": "XTMUX_AGENT_RUNTIME=codex CODEX_HOOK_EVENT=SessionStart ~/.tmux/scripts/agent-state.sh idle --new-instance",
             "statusMessage": "marking pane idle"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CODEX_HOOK_EVENT=Stop ~/.tmux/scripts/agent-state.sh done",
+            "statusMessage": "marking pane done"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CODEX_HOOK_EVENT=SessionEnd ~/.tmux/scripts/agent-state.sh off",
+            "statusMessage": "marking pane off"
           }
         ]
       }

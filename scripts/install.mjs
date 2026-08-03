@@ -100,7 +100,10 @@ const managedSources = {
     ...Object.fromEntries(["auto-monitor-on-send.mjs", "auto-monitor-on-send.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs", "claude-agent-turn-capture.mjs"]
       .map((name) => [name, join(root, "hooks", "claude", name)])),
   },
-  codexHooks: { "agent-state.sh": join(root, "scripts", "agent-state.sh") },
+  codexHooks: {
+    "agent-state.sh": join(root, "scripts", "agent-state.sh"),
+    "codex-agent-turn-capture.mjs": join(root, "hooks", "codex", "codex-agent-turn-capture.mjs"),
+  },
 };
 
 function expectedManagedSnapshot(key) {
@@ -262,13 +265,29 @@ function mergeCodex(removeOnly = false) {
   }
   if (!removeOnly) {
     const script = join(codexHooks, "agent-state.sh");
+    const turnCapture = join(codexHooks, "codex-agent-turn-capture.mjs");
     // --new-instance on SessionStart ONLY (docs/xtmux-gaps.md 12.1): without it
     // a Codex pane never mints @agent_instance_id, never emits agent.ready, and
     // stays invisible to every identity-keyed feature (mirror of the Claude fix
     // in PR #79 / xtrm-wiy5n.4.25). The startup|resume|clear matcher keeps
-    // compaction out of the rotation.
-    next.SessionStart = [codexEntry("startup|resume|clear", `bash "${script}" idle --new-instance`, "marking pane idle"), ...(next.SessionStart || [])];
-    next.UserPromptSubmit = [codexEntry(undefined, `bash "${script}" running`, "marking pane running"), ...(next.UserPromptSubmit || [])];
+    // compaction out of the rotation. XTMUX_AGENT_RUNTIME tags the durable
+    // instance with its runtime; CODEX_HOOK_EVENT attributes every transition
+    // to its hook event, mirroring the Claude wiring.
+    next.SessionStart = [codexEntry("startup|resume|clear", `XTMUX_AGENT_RUNTIME=codex CODEX_HOOK_EVENT=SessionStart bash "${script}" idle --new-instance`, "marking pane idle"), ...(next.SessionStart || [])];
+    next.UserPromptSubmit = [codexEntry(undefined, `CODEX_HOOK_EVENT=UserPromptSubmit bash "${script}" running`, "marking pane running"), ...(next.UserPromptSubmit || [])];
+    // K3 (xtmux-s96.2): Stop closes the turn. The state command and the turn
+    // capture are separate entries, mirroring Claude's Stop wiring; the capture
+    // reads last_assistant_message (required but nullable) directly from the
+    // Codex payload and never scans transcripts.
+    next.Stop = [
+      codexEntry(undefined, `CODEX_HOOK_EVENT=Stop bash "${script}" done`, "marking pane done"),
+      codexEntry(undefined, `node "${turnCapture}"`, "capturing Codex turn"),
+      ...(next.Stop || []),
+    ];
+    // SessionEnd is the lifecycle end marker: `off` ends the durable instance
+    // through the shared transition store. Codex 0.146.0 delivers a single
+    // reason value ("other"), so no reason-based split is evidence-backed.
+    next.SessionEnd = [codexEntry(undefined, `CODEX_HOOK_EVENT=SessionEnd bash "${script}" off`, "marking pane off"), ...(next.SessionEnd || [])];
   }
   settings.hooks = next;
   if (existsSync(codexSettings) && !existsSync(`${codexSettings}.pre-xtmux`)) copyFileSync(codexSettings, `${codexSettings}.pre-xtmux`);
@@ -345,7 +364,9 @@ function install() {
   if (existsSync(codexRoot)) {
     removeManagedDirectory(codexHooks, "codexHooks", state);
     mkdirSync(codexHooks, { recursive: true });
-    copyFileSync(join(root, "scripts", "agent-state.sh"), join(codexHooks, "agent-state.sh"));
+    for (const [name, sourcePath] of Object.entries(managedSources.codexHooks)) {
+      copyFileSync(sourcePath, join(codexHooks, name));
+    }
   }
 
   console.log("4/5 Updating Claude, Codex, and Pi settings");

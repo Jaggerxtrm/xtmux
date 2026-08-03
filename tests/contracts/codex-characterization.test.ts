@@ -137,7 +137,7 @@ describe("Codex 0.146.0 characterization fixtures", () => {
     }
   });
 
-  test("installer owns only its tagged Codex entries and leaves current gaps visible", () => {
+  test("installer owns only its tagged Codex entries and preserves foreign ones", () => {
     const home = mkdtempSync(join(tmpdir(), "xtmux-codex-characterization-"));
     homes.push(home);
     mkdirSync(join(home, ".codex"), { recursive: true });
@@ -158,10 +158,16 @@ describe("Codex 0.146.0 characterization fixtures", () => {
     expect(commands(owned("SessionStart"))[0]).toMatch(/agent-state\.sh" idle --new-instance$/);
     expect(owned("UserPromptSubmit")).toHaveLength(1);
     expect(commands(owned("UserPromptSubmit"))[0]).toMatch(/agent-state\.sh" running$/);
-    expect(owned("Stop")).toHaveLength(0);
-    expect(owned("SessionEnd")).toHaveLength(0);
+    // K3 (xtmux-s96.2) closed the Stop/SessionEnd gaps: the installer now owns
+    // done + turn capture on Stop and off on SessionEnd.
+    expect(owned("Stop")).toHaveLength(2);
+    expect(commands(owned("Stop")).some((command) => /agent-state\.sh" done$/.test(command))).toBe(true);
+    expect(commands(owned("Stop")).some((command) => /codex-agent-turn-capture\.mjs"$/.test(command))).toBe(true);
+    expect(owned("SessionEnd")).toHaveLength(1);
+    expect(commands(owned("SessionEnd"))[0]).toMatch(/agent-state\.sh" off$/);
     expect(commands(installed.Stop)).toContain("foreign-stop");
     expect(existsSync(join(home, ".codex/hooks/xtmux/agent-state.sh"))).toBe(true);
+    expect(existsSync(join(home, ".codex/hooks/xtmux/codex-agent-turn-capture.mjs"))).toBe(true);
     expect(existsSync(join(home, ".codex/hooks/xtmux/claude-agent-turn-capture.mjs"))).toBe(false);
   });
 });

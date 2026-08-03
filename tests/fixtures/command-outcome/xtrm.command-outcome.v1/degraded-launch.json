@@ -1,0 +1,113 @@
+{
+  "fixture": {
+    "schema": "xtrm.command-outcome.v1",
+    "schema_commit": "1ed512a49efaf75f3e84c128f9d82958ece09d3a",
+    "core_commit": "1ed512a49efaf75f3e84c128f9d82958ece09d3a",
+    "capture_provenance": {
+      "kind": "derived-from-core-k2",
+      "source": "xtrm-dev/core cli/src/core/launch-outcome.ts buildDetachedLaunchOutcome(metadataPersisted=false) at merged K2 commit 1ed512a4",
+      "observed_at": "2026-08-03",
+      "notes": "GENERIC K2 degraded launch outcome in the shape Core emits for Pi/Claude when exact-resume metadata was not persisted (no resume action offered). Identified accurately: Core K3 (commit 9b59fa5a) cleans up via cleanupAndFail when Codex session-metadata persistence fails, so no degraded Codex outcome is observed Core behavior and none is fabricated here. This fixture exercises the generic consumer only. Pane/tmux ids are synthetic constants so correlation is assertable."
+    },
+    "redactions": [
+      "session_name",
+      "session_slug",
+      "worktree_path",
+      "branch",
+      "runtime_version"
+    ]
+  },
+  "payload": {
+    "schema_version": "xtrm.command-outcome.v1",
+    "status": "degraded",
+    "reason_code": "session_created_metadata_not_persisted",
+    "summary": "Detached claude session created, but exact resume metadata was not persisted.",
+    "runtime": {
+      "name": "claude",
+      "version": "<CLAUDE_VERSION>"
+    },
+    "identity": {
+      "thread_id": null,
+      "session_name": "<SESSION_NAME>",
+      "tmux_session_id": "$7",
+      "pane_id": "%3"
+    },
+    "worktree": {
+      "path": "<WORKTREE>",
+      "branch": "<BRANCH>",
+      "owner": "core"
+    },
+    "readiness": {
+      "status": "unverified",
+      "source": "tmux-pane"
+    },
+    "safety_profile": {
+      "name": "claude-bypass-permissions",
+      "sandbox": "disabled",
+      "approvals": "bypassed",
+      "hook_trust": "preserved"
+    },
+    "persistence": {
+      "completed": false,
+      "kind": "worktree.session-metadata"
+    },
+    "authoritative_mutation": {
+      "completed": true,
+      "kind": "interactive-session.created"
+    },
+    "side_effects": [
+      {
+        "kind": "worktree.created",
+        "status": "ok",
+        "id": "<SESSION_SLUG>"
+      },
+      {
+        "kind": "tmux.session.created",
+        "status": "ok",
+        "id": "$7"
+      },
+      {
+        "kind": "runtime.readiness",
+        "status": "skipped",
+        "id": null
+      }
+    ],
+    "next_actions": [
+      {
+        "kind": "attach",
+        "required": false,
+        "argv": [
+          "tmux",
+          "attach-session",
+          "-t",
+          "<SESSION_NAME>"
+        ],
+        "display": "tmux attach-session -t '<SESSION_NAME>'",
+        "cwd": "<WORKTREE>",
+        "why": "Attach to the live detached session."
+      },
+      {
+        "kind": "repair",
+        "required": false,
+        "argv": [
+          "xt",
+          "doctor"
+        ],
+        "display": "xt doctor",
+        "cwd": "<WORKTREE>",
+        "why": "Inspect runtime and managed configuration drift."
+      },
+      {
+        "kind": "end",
+        "required": false,
+        "argv": [
+          "xt",
+          "end"
+        ],
+        "display": "xt end",
+        "cwd": "<WORKTREE>",
+        "why": "Close the worktree session through the existing Core lifecycle."
+      }
+    ]
+  }
+}
