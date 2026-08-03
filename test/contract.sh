@@ -2791,5 +2791,12 @@ JSON
     || nok "monitors: unreadable input surfaces a nonzero exit"
 fi
 
+# EVAL-01 Codex evidence gate (xtmux-s96.3): the failure classifier must pass
+# its deterministic contract tests before any gate run trusts it to classify a
+# red check. Mixed known+unknown or infra+assertion must land as `product`.
+bash "$ROOT/scripts/verify-eval-01-codex.sh" --selftest >/dev/null 2>&1 \
+  && ok "eval01-codex gate: failure classifier self-test" \
+  || nok "eval01-codex gate: failure classifier self-test"
+
 harness_summary
 exit $?

@@ -5,13 +5,20 @@
 # evidence bundle: per-check results, a criterion->evidence matrix, and a
 # failure classification (product / pre-existing / infrastructure).
 #
-#   product          an assertion about adapter behavior failed
-#   pre-existing     the failure is listed in KNOWN_PREEXISTING below
-#                    (reproduces on the K3 base commit; not caused by this gate)
-#   infrastructure   the environment failed (missing binary, spawn error,
-#                    disk/tmp exhaustion), not the product
+#   product          an assertion about adapter behavior failed, OR the log
+#                    mixes failure kinds, OR the failure is unrecognized.
+#                    This is the blocking class and the conservative default.
+#   pre-existing     at least one failing test identifier is present and EVERY
+#                    failing identifier is listed in KNOWN_PREEXISTING below.
+#                    A known flake never masks an unknown failure in the same
+#                    log: one unrecognized identifier makes the log `product`.
+#   infrastructure   NO assertion/test failure is present and the command
+#                    failed for an environment reason (missing binary, spawn
+#                    error, disk/tmp exhaustion). Any assertion failure mixed
+#                    with infrastructure noise classifies as `product`.
 #
-# usage: bash scripts/verify-eval-01-codex.sh
+# usage: bash scripts/verify-eval-01-codex.sh [--selftest]
+#   --selftest runs only the deterministic classifier contract tests.
 # env:   XTMUX_EVAL01_ARTIFACT_DIR  override the artifact directory
 #
 # Exit: 0 when no red check is classified `product` (a fully green run prints
@@ -20,10 +27,6 @@
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-artifact_dir="${XTMUX_EVAL01_ARTIFACT_DIR:-/tmp/xtmux-eval01-codex-$(date +%Y%m%d-%H%M%S)}"
-mkdir -p "$artifact_dir"
-summary="$artifact_dir/results.tsv"
-printf 'check\texit_code\tduration_ms\tcommand\tlog\n' > "$summary"
 
 # Failures known to reproduce independently of this gate's files, with the
 # evidence that classified them. Entries are `<test file>::<test name>`.
@@ -35,6 +38,104 @@ KNOWN_PREEXISTING=(
   # K3 base tree WITHOUT this gate's files (2026-08-03); passes in isolation.
   "tests/contracts/differential-v1-v2.test.ts::audit stable output matches V1 after the same deterministic sort"
 )
+
+# Shell-specific forms: bash prints `bash: bun: command not found`, dash
+# prints `/bin/sh: 1: bun: not found`. `: not found` is only consulted when no
+# failing test identifier exists, so product assertion prose ("was not found")
+# cannot be misread as infrastructure.
+INFRA_PATTERNS='command not found|binary not found|: not found|No such file or directory|ENOENT|cannot execute|Out of memory|No space left'
+
+# Failing test identifiers in a suite log: bun prints `(fail) <describe > test
+# [Nms]` (inline and again in the trailing summary), node --test prints
+# `not ok N - <name>`. Deduplicated; the trailing `[Nms]` is stripped so an
+# identifier compares equal to its allowlist entry.
+extract_failing_identifiers() {
+  local log="$1"
+  {
+    grep -E '^\(fail\) ' "$log" 2>/dev/null | sed -E 's/^\(fail\) //; s/ \[[0-9]+(\.[0-9]+)?ms\]$//'
+    grep -E '^not ok [0-9]+ - ' "$log" 2>/dev/null | sed -E 's/^not ok [0-9]+ - //'
+  } | sort -u
+}
+
+is_allowlisted() {
+  local id="$1" known
+  for known in "${KNOWN_PREEXISTING[@]:-}"; do
+    [ -n "$known" ] || continue
+    case "$id" in *"${known##*::}"*) return 0 ;; esac
+  done
+  return 1
+}
+
+classify_failure() {
+  local log="$1" id all_known
+  local ids
+  ids="$(extract_failing_identifiers "$log")"
+  if [ -n "$ids" ]; then
+    # Mixed kinds (assertion failures + infrastructure noise) are product: a
+    # missing binary can explain the crash but not the assertion.
+    grep -qE "$INFRA_PATTERNS" "$log" && { printf 'product'; return; }
+    all_known=1
+    while IFS= read -r id; do
+      is_allowlisted "$id" || { all_known=0; break; }
+    done <<< "$ids"
+    [ "$all_known" -eq 1 ] && printf 'pre-existing' || printf 'product'
+    return
+  fi
+  grep -qE "$INFRA_PATTERNS" "$log" && { printf 'infrastructure'; return; }
+  printf 'product'
+}
+
+# Deterministic contract tests for the classifier. Fixed literals on purpose:
+# they also fail loudly if KNOWN_PREEXISTING loses the entries the gate's
+# honesty depends on.
+SELFTEST_KNOWN_FRESH="concurrent first-touch of a virgin DB does not corrupt or crash"
+SELFTEST_KNOWN_DIFF="audit stable output matches V1 after the same deterministic sort"
+
+run_selftest() {
+  local dir fails=0 name want got
+  dir="$(mktemp -d)"
+  printf '(fail) V2 commands on a virgin observability DB > %s [3881.02ms]\n' "$SELFTEST_KNOWN_FRESH" > "$dir/known-only.log"
+  printf '(fail) V2 commands on a virgin observability DB > %s [3881.02ms]\n(fail) V2 commands on a virgin observability DB > %s [3881.02ms]\n' "$SELFTEST_KNOWN_FRESH" "$SELFTEST_KNOWN_DIFF" > "$dir/known-only-two.log"
+  printf '(fail) V2 commands on a virgin observability DB > %s [3881.02ms]\n(fail) messages suite > brand new regression nobody allowlisted [5.00ms]\n' "$SELFTEST_KNOWN_FRESH" > "$dir/mixed-known-unknown.log"
+  printf '/bin/sh: 1: bun: not found\nspawn bun ENOENT\n' > "$dir/infra-only.log"
+  printf '(fail) messages suite > brand new regression nobody allowlisted [5.00ms]\n/bin/sh: 1: bun: not found\n' > "$dir/mixed-infra-assertion.log"
+  printf '(fail) V2 commands on a virgin observability DB > %s [3881.02ms]\n/bin/sh: 1: bun: not found\n' "$SELFTEST_KNOWN_FRESH" > "$dir/mixed-infra-known.log"
+  printf 'some unrecognized crash without test identifiers\n' > "$dir/unknown.log"
+
+  st_check() {
+    name="$1"; want="$2"
+    got="$(classify_failure "$dir/$name.log")"
+    if [ "$got" = "$want" ]; then
+      printf 'selftest\tPASS\t%s -> %s\n' "$name" "$got"
+    else
+      printf 'selftest\tFAIL\t%s: want=%s got=%s\n' "$name" "$want" "$got"
+      fails=$((fails + 1))
+    fi
+  }
+  st_check known-only pre-existing
+  st_check known-only-two pre-existing
+  st_check mixed-known-unknown product
+  st_check infra-only infrastructure
+  st_check mixed-infra-assertion product
+  st_check mixed-infra-known product
+  st_check unknown product
+  rm -rf "$dir"
+  if [ "$fails" -ne 0 ]; then
+    printf 'eval01-codex-selftest\tFAIL\t%s case(s)\n' "$fails" >&2
+    return 1
+  fi
+  printf 'eval01-codex-selftest\tPASS\n'
+}
+
+if [ "${1:-}" = "--selftest" ]; then
+  run_selftest
+  exit $?
+fi
+
+artifact_dir="${XTMUX_EVAL01_ARTIFACT_DIR:-/tmp/xtmux-eval01-codex-$(date +%Y%m%d-%H%M%S)}"
+mkdir -p "$artifact_dir"
+summary="$artifact_dir/results.tsv"
+printf 'check\texit_code\tduration_ms\tcommand\tlog\n' > "$summary"
 
 overall_rc=0
 
@@ -56,21 +157,12 @@ run_check() {
   fi
 }
 
-classify_failure() {
-  local log="$1" line
-  if grep -qE 'command not found|binary not found|No such file or directory|ENOENT|cannot execute|Out of memory|No space left' "$log"; then
-    printf 'infrastructure'
-    return
-  fi
-  while IFS= read -r line; do
-    for known in "${KNOWN_PREEXISTING[@]:-}"; do
-      [ -n "$known" ] || continue
-      # Match on the test name (after ::) so bun's own file attribution does
-      # not have to line up byte-for-byte.
-      grep -qF "${known##*::}" "$log" && { printf 'pre-existing'; return; }
-    done
-  done < <(grep -E '\(fail\)|not ok' "$log" || true)
-  printf 'product'
+# The classifier must prove itself before it is trusted with the gate's red
+# checks: any self-test mismatch fails the gate immediately.
+run_selftest >> "$artifact_dir/selftest.log" 2>&1 || {
+  cat "$artifact_dir/selftest.log" >&2
+  printf 'eval01-codex-gate\tFAIL\tclassifier self-test failed\n' >&2
+  exit 2
 }
 
 # Gate suites. The column runs first: it is the EVAL-01 evidence itself.
