@@ -13,6 +13,7 @@ const home = resolve(value("--home") || process.env.HOME || "");
 const uninstall = args.includes("--uninstall");
 const fromNpm = args.includes("--from-npm");
 const installTmuxHooks = args.includes("--tmux-hooks") || args.includes("--hooks");
+const dryRun = args.includes("--dry-run");
 
 if (!home) throw new Error("HOME is not set; pass --home <path>");
 // --from-npm is set by the package.json `postinstall` script and MUST no-op
@@ -160,6 +161,57 @@ function ownedLink(path) {
   return false;
 }
 
+function sha256File(path) {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+// Compatibility links are plain mirrors of a packaged script, so a pre-installer
+// hand-copy of that same script is our own payload wearing the wrong hat. When the
+// bytes match the packaged source exactly it is safe to adopt: replacing an
+// identical file with a link to its own content changes nothing observable.
+//
+// This is the content-based adoption manageableDirectory() already performs for
+// managed directories (expectedManagedSnapshot); compatibility links had no
+// equivalent, so the installer refused forever on a file it authored itself.
+//
+// Deliberately NOT adopted: content that differs for any reason, including OUR OWN
+// earlier revisions. A stale copy of an old git-pane-status.sh is byte-indistinguishable
+// from a user edit of the same file, and the installer has no repository history at
+// install time to tell them apart. Those still refuse — but with a diagnostic that
+// names the remedy instead of a bare "refusing to replace".
+function compatibilityAction(dst, src) {
+  const current = lstatSafe(dst);
+  if (!current) return "link";
+  if (current.isSymbolicLink()) return ownedLink(dst) ? "relink" : "refuse";
+  if (current.isFile() && sha256File(dst) === sha256File(src)) return "adopt";
+  return "refuse";
+}
+
+function compatibilityRefusal(dst, src) {
+  const current = lstatSafe(dst);
+  const kind = current?.isSymbolicLink() ? "a symlink to content we do not own" : "a regular file whose content differs from the packaged script";
+  return [
+    `refusing to replace existing file: ${dst}`,
+    `  reason: ${kind}`,
+    `  packaged source: ${src}`,
+    "  xtmux only adopts a byte-identical copy of its own packaged script.",
+    "  If this file is yours, leave it and xtmux will keep refusing.",
+    `  If it is a stale xtmux copy, move it aside and re-run: mv ${dst} ${dst}.pre-xtmux`,
+  ].join("\n");
+}
+
+// Adoption is recoverable: the displaced file is preserved as <dst>.pre-xtmux,
+// matching the convention already used for Claude and Codex settings.
+function linkCompatibility(src, dst) {
+  const action = compatibilityAction(dst, src);
+  if (action === "refuse") throw new Error(compatibilityRefusal(dst, src));
+  if (action === "adopt" && !existsSync(`${dst}.pre-xtmux`)) copyFileSync(dst, `${dst}.pre-xtmux`);
+  if (action !== "link") rmSync(dst, { force: true });
+  mkdirSync(dirname(dst), { recursive: true });
+  symlinkSync(src, dst);
+  return action;
+}
+
 function link(src, dst) {
   const current = lstatSafe(dst);
   if (current) {
@@ -171,12 +223,14 @@ function link(src, dst) {
 }
 
 function preflightInstall() {
-  for (const dst of [
-    ...Object.keys(bins).map((name) => join(home, ".local", "bin", name)),
-    ...Object.keys(compatibilityLinks),
-  ]) {
+  for (const dst of Object.keys(bins).map((name) => join(home, ".local", "bin", name))) {
     const current = lstatSafe(dst);
     if (current && (!current.isSymbolicLink() || !ownedLink(dst))) throw new Error(`refusing to replace existing file: ${dst}`);
+  }
+  // Compatibility links get the content-based adoption path; bins above do not,
+  // because a bin is an entry point a user may legitimately have shadowed.
+  for (const [dst, src] of Object.entries(compatibilityLinks)) {
+    if (compatibilityAction(dst, src) === "refuse") throw new Error(compatibilityRefusal(dst, src));
   }
   for (const path of [claudeSettings, piSettings, ...(existsSync(codexRoot) ? [codexSettings] : [])]) {
     if (existsSync(path)) readJson(path);
@@ -341,7 +395,10 @@ function install() {
 
   console.log("1/5 Installing command links");
   for (const [name, src] of Object.entries(bins)) link(src, join(home, ".local", "bin", name));
-  for (const [dst, src] of Object.entries(compatibilityLinks)) link(src, dst);
+  for (const [dst, src] of Object.entries(compatibilityLinks)) {
+    const action = linkCompatibility(src, dst);
+    if (action === "adopt") console.log(`    adopted byte-identical ${dst} (previous copy kept at ${dst}.pre-xtmux)`);
+  }
 
   console.log("2/5 Installing grouped Pi extensions");
   for (const name of ["xtmux-agent-state.ts", "xtmux-auto-monitor.ts", "xtmux-inbox-reply.ts"]) {
@@ -417,4 +474,15 @@ function remove() {
   console.log("Uninstall complete");
 }
 
-uninstall ? remove() : install();
+function planCompatibilityLinks() {
+  console.log("dry-run: compatibility link plan");
+  for (const [dst, src] of Object.entries(compatibilityLinks)) {
+    const action = compatibilityAction(dst, src);
+    console.log(`  ${action.padEnd(7)} ${dst}`);
+    if (action === "refuse") console.log(compatibilityRefusal(dst, src).split("\n").slice(1).join("\n"));
+  }
+  console.log("dry-run: no changes were made");
+}
+
+if (dryRun) planCompatibilityLinks();
+else uninstall ? remove() : install();
