@@ -274,6 +274,111 @@ test("Codex install leaves untagged xtmux-shaped entries alone and dedupes its o
   rmSync(home, { recursive: true, force: true });
 });
 
+// K4 (xtmux-s96.4). Codex records hook trust POSITIONALLY in ~/.codex/config.toml:
+//
+//   [hooks.state."<abs hooks.json>:<event_snake_case>:<entryIndex>:<hookIndex>"]
+//
+// so an entry's trust belongs to its INDEX, not its content. Every release up to
+// v0.2.3 PREPENDED, which shifted a pre-existing unowned entry from index 0 to 1
+// and silently invalidated the trust the operator had granted it. This is the
+// regression test for that: the unowned entry must hold index 0 through install,
+// update and uninstall. It is the load-bearing assertion of the whole slice.
+test("Codex install preserves the index of unowned entries so their hook trust survives", () => {
+  const home = mkdtempSync(join(tmpdir(), "xtmux-codex-trust-index-"));
+  const hooks = join(home, ".codex", "hooks.json");
+  mkdirSync(join(home, ".codex"), { recursive: true });
+  const unowned = { hooks: [{ type: "command", command: "third-party-session-start" }] };
+  const unownedPrompt = { hooks: [{ type: "command", command: "third-party-prompt" }] };
+  writeFileSync(hooks, JSON.stringify({ hooks: { SessionStart: [unowned], UserPromptSubmit: [unownedPrompt] } }));
+
+  const indexOfUnowned = (event, command) =>
+    (json(hooks).hooks[event] || []).findIndex((entry) => entry.hooks?.[0]?.command === command);
+
+  assert.equal(run(home).status, 0);
+  assert.equal(indexOfUnowned("SessionStart", "third-party-session-start"), 0, "install must not shift an unowned entry");
+  assert.equal(indexOfUnowned("UserPromptSubmit", "third-party-prompt"), 0, "install must not shift an unowned entry");
+  assert.ok((json(hooks).hooks.SessionStart || []).length > 1, "xtmux entry must still be installed");
+
+  assert.equal(run(home).status, 0);
+  assert.equal(indexOfUnowned("SessionStart", "third-party-session-start"), 0, "update must not shift an unowned entry");
+
+  assert.equal(run(home, "--uninstall").status, 0);
+  assert.equal(indexOfUnowned("SessionStart", "third-party-session-start"), 0, "uninstall must not shift an unowned entry");
+  assert.deepEqual(json(hooks).hooks, { SessionStart: [unowned], UserPromptSubmit: [unownedPrompt] });
+  rmSync(home, { recursive: true, force: true });
+});
+
+// K4 (xtmux-s96.4) legacy owned-entry repair. Releases BEFORE PR #82 wrote these
+// Codex entries with no _source tag (tagging shipped in #82, i.e. from v0.2.3
+// onward), so upgrading from one left the untagged entry beside the new tagged
+// one and every lifecycle transition fired TWICE. The shapes below are copied
+// verbatim from `git show 9708c2d~1:scripts/install.mjs`, so a byte-exact match
+// is proof of xtmux authorship — the same content-hash proof already used for
+// compatibility links and managed directories. Adoption is whole-entry: any
+// deviation is not provably ours and is preserved instead (asserted separately).
+test("Codex install adopts byte-exact pre-tag entries instead of duplicating their lifecycle", () => {
+  const home = mkdtempSync(join(tmpdir(), "xtmux-codex-legacy-adopt-"));
+  const hooks = join(home, ".codex", "hooks.json");
+  mkdirSync(join(home, ".codex"), { recursive: true });
+  const script = `${home}/.codex/hooks/xtmux/agent-state.sh`;
+  writeFileSync(hooks, JSON.stringify({ hooks: {
+    SessionStart: [{ matcher: "startup|resume|clear", hooks: [{ type: "command", command: `bash "${script}" idle`, statusMessage: "marking pane idle" }] }],
+    UserPromptSubmit: [{ hooks: [{ type: "command", command: `bash "${script}" running`, statusMessage: "marking pane running" }] }],
+  } }));
+
+  const result = run(home);
+  assert.equal(result.status, 0, result.stderr);
+  const after = json(hooks).hooks;
+  const firing = (event) => (after[event] || []).filter((entry) => entry.hooks?.some((hook) => hook.command?.includes("/.codex/hooks/xtmux/agent-state.sh")));
+  assert.equal(firing("SessionStart").length, 1, "pre-tag SessionStart entry must be adopted, not duplicated");
+  assert.equal(firing("UserPromptSubmit").length, 1, "pre-tag UserPromptSubmit entry must be adopted, not duplicated");
+  assert.equal(firing("SessionStart")[0]._source, "xtmux", "the surviving entry must be the tagged canonical one");
+  assert.match(result.stdout, /adopted/, "adoption must be reported to the operator");
+
+  assert.equal(run(home, "--uninstall").status, 0);
+  assert.deepEqual(json(hooks).hooks, {});
+  rmSync(home, { recursive: true, force: true });
+});
+
+// The conservative half of adoption. An entry that names our managed hook path
+// but does not match a known shape byte-for-byte is NOT provably ours: it may be
+// a hand edit the operator depends on. It must be preserved, keep its index, and
+// be surfaced so a human can decide — never silently removed or overwritten.
+test("Codex install preserves and reports a near-miss entry it cannot prove it wrote", () => {
+  const home = mkdtempSync(join(tmpdir(), "xtmux-codex-near-miss-"));
+  const hooks = join(home, ".codex", "hooks.json");
+  mkdirSync(join(home, ".codex"), { recursive: true });
+  const script = `${home}/.codex/hooks/xtmux/agent-state.sh`;
+  const nearMiss = { matcher: "startup|resume|clear", hooks: [{ type: "command", command: `bash "${script}" idle --operator-tweak`, statusMessage: "marking pane idle" }] };
+  writeFileSync(hooks, JSON.stringify({ hooks: { SessionStart: [nearMiss] } }));
+
+  const result = run(home);
+  assert.equal(result.status, 0, result.stderr);
+  const entries = json(hooks).hooks.SessionStart;
+  assert.deepEqual(entries[0], nearMiss, "a near-miss entry must be preserved verbatim at its original index");
+  assert.match(result.stdout, /preserved unowned SessionStart\[0\]/, "a near-miss must be reported for human review");
+  rmSync(home, { recursive: true, force: true });
+});
+
+// A distribution change that adds a managed Codex asset must not be able to ship
+// a tarball missing it. Nothing asserted this before: install.test.mjs checked
+// only scripts/agent-state.sh, and `npm pack --dry-run` runs in release.yml,
+// after merge, which is too late to block.
+test("package.json ships the managed Codex hook payload", () => {
+  const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  const files = manifest.files || [];
+  // npm `files` entries may carry a trailing slash ("hooks/codex/"); normalise
+  // both sides so a directory entry covers itself and everything beneath it.
+  const covers = (path) => files.some((raw) => {
+    const entry = raw.replace(/\/$/, "");
+    return entry === path || path.startsWith(`${entry}/`);
+  });
+  assert.ok(covers("hooks/codex"), `package.json files must ship hooks/codex; got ${JSON.stringify(files)}`);
+  for (const asset of readdirSync(join(root, "hooks", "codex"))) {
+    assert.ok(covers(`hooks/codex/${asset}`), `package.json files must ship hooks/codex/${asset}`);
+  }
+});
+
 test("upgrade reconciles a valid legacy reply marker without leaking its summary", () => {
   const home = mkdtempSync(join(tmpdir(), "xtmux-upgrade-marker-"));
   const env = isolatedEnv(home);

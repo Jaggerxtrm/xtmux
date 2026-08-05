@@ -308,18 +308,10 @@ function codexEntry(matcher, command, statusMessage) {
   return { ...data, _source: source, _xtmux: { version: pkg.version, hash: hash(data) } };
 }
 
-function mergeCodex(removeOnly = false) {
-  if (!existsSync(codexRoot) || (removeOnly && !existsSync(codexSettings))) return;
-  const settings = readJson(codexSettings);
-  const current = settings.hooks && typeof settings.hooks === "object" ? settings.hooks : {};
-  const next = {};
-  for (const [event, entries] of Object.entries(current)) {
-    const kept = Array.isArray(entries) ? entries.filter((entry) => !codexOwned(entry)) : [];
-    if (kept.length) next[event] = kept;
-  }
-  if (!removeOnly) {
-    const script = join(codexHooks, "agent-state.sh");
-    const turnCapture = join(codexHooks, "codex-agent-turn-capture.mjs");
+function canonicalCodexHooks() {
+  const script = join(codexHooks, "agent-state.sh");
+  const turnCapture = join(codexHooks, "codex-agent-turn-capture.mjs");
+  return {
     // --new-instance on SessionStart ONLY (docs/xtmux-gaps.md 12.1): without it
     // a Codex pane never mints @agent_instance_id, never emits agent.ready, and
     // stays invisible to every identity-keyed feature (mirror of the Claude fix
@@ -327,25 +319,161 @@ function mergeCodex(removeOnly = false) {
     // compaction out of the rotation. XTMUX_AGENT_RUNTIME tags the durable
     // instance with its runtime; CODEX_HOOK_EVENT attributes every transition
     // to its hook event, mirroring the Claude wiring.
-    next.SessionStart = [codexEntry("startup|resume|clear", `XTMUX_AGENT_RUNTIME=codex CODEX_HOOK_EVENT=SessionStart bash "${script}" idle --new-instance`, "marking pane idle"), ...(next.SessionStart || [])];
-    next.UserPromptSubmit = [codexEntry(undefined, `CODEX_HOOK_EVENT=UserPromptSubmit bash "${script}" running`, "marking pane running"), ...(next.UserPromptSubmit || [])];
+    SessionStart: [codexEntry("startup|resume|clear", `XTMUX_AGENT_RUNTIME=codex CODEX_HOOK_EVENT=SessionStart bash "${script}" idle --new-instance`, "marking pane idle")],
+    UserPromptSubmit: [codexEntry(undefined, `CODEX_HOOK_EVENT=UserPromptSubmit bash "${script}" running`, "marking pane running")],
     // K3 (xtmux-s96.2): Stop closes the turn. The state command and the turn
     // capture are separate entries, mirroring Claude's Stop wiring; the capture
     // reads last_assistant_message (required but nullable) directly from the
     // Codex payload and never scans transcripts.
-    next.Stop = [
+    Stop: [
       codexEntry(undefined, `CODEX_HOOK_EVENT=Stop bash "${script}" done`, "marking pane done"),
       codexEntry(undefined, `node "${turnCapture}"`, "capturing Codex turn"),
-      ...(next.Stop || []),
-    ];
+    ],
     // SessionEnd is the lifecycle end marker: `off` ends the durable instance
     // through the shared transition store. Codex 0.146.0 delivers a single
     // reason value ("other"), so no reason-based split is evidence-backed.
-    next.SessionEnd = [codexEntry(undefined, `CODEX_HOOK_EVENT=SessionEnd bash "${script}" off`, "marking pane off"), ...(next.SessionEnd || [])];
+    SessionEnd: [codexEntry(undefined, `CODEX_HOOK_EVENT=SessionEnd bash "${script}" off`, "marking pane off")],
+  };
+}
+
+// Codex records hook trust POSITIONALLY in ~/.codex/config.toml:
+//
+//   [hooks.state."<abs hooks.json>:<event_snake_case>:<entryIndex>:<hookIndex>"]
+//   trusted_hash = "sha256:..."
+//
+// An entry's trust therefore belongs to its INDEX, not to its content. Every
+// xtmux release up to v0.2.3 PREPENDED its entries, which shifted any
+// pre-existing unowned entry from index 0 to index 1; its recorded trusted_hash
+// key no longer matched its position and the user's own hook went silently
+// untrusted. Appending keeps unowned entries at the indices Codex trusted them
+// at, which is the whole point of "preserve unowned configuration".
+//
+// Execution precedence changes as a consequence: xtmux entries now run AFTER
+// unowned entries for the same event. That is safe for these hooks
+// specifically. They are recorders, not gates: agent-state.sh writes tmux pane
+// options and appends a JSONL event, codex-agent-turn-capture.mjs persists the
+// turn, and NEITHER writes anything to stdout that Codex could read as a
+// decision. Both fail open (agent-state.sh exits 0 without TMUX/TMUX_PANE; the
+// capture hook exits 0 on any unreadable payload). They are wired only to
+// SessionStart / UserPromptSubmit / Stop / SessionEnd — none of which carry a
+// deny/allow verdict, unlike pre_tool_use or permission_request, which xtmux
+// does not install into at all. No xtmux hook mutates state another hook reads
+// within the same event, so no ordering dependency exists to regress.
+//
+// The alternative — keep prepending and RE-KEY the trust store — was rejected:
+// it would make xtmux a writer of ~/.codex/config.toml, a file Codex owns and
+// that holds unowned configuration a lossy TOML round-trip could destroy, in
+// exchange for an execution order that carries no correctness weight here.
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
   }
+  return JSON.stringify(value === undefined ? null : value);
+}
+
+function entryFingerprint(entry) {
+  return createHash("sha256").update(stableStringify(entry)).digest("hex");
+}
+
+// Content-based adoption for hooks.json entries, mirroring compatibilityAction()
+// for links and expectedManagedSnapshot() for managed directories. Releases
+// v0.1.0 through v0.2.2 wrote these Codex entries WITHOUT the _source tag
+// (tagging landed in PR #82, first shipped in v0.2.3), so an upgrade from those
+// releases used to leave the untagged entry in place next to the new tagged one
+// and every lifecycle transition fired twice.
+//
+// The shapes below are the exact literals those releases emitted, reproduced
+// verbatim; `script` resolves to the same managed path they used. Adoption is
+// whole-entry: the fingerprint covers every key, so an entry that merely looks
+// similar — an extra field, a different statusMessage, a hand-edited command —
+// does not match, is preserved, and is reported. Anything not in this table is
+// not provably ours and is never touched.
+function legacyCodexFingerprints() {
+  const script = join(codexHooks, "agent-state.sh");
+  const shapes = {
+    SessionStart: [
+      { matcher: "startup|resume|clear", hooks: [{ type: "command", command: `bash "${script}" idle`, statusMessage: "marking pane idle" }] },
+      { matcher: "startup|resume|clear", hooks: [{ type: "command", command: `bash "${script}" idle --new-instance`, statusMessage: "marking pane idle" }] },
+    ],
+    UserPromptSubmit: [
+      { hooks: [{ type: "command", command: `bash "${script}" running`, statusMessage: "marking pane running" }] },
+    ],
+  };
+  return Object.fromEntries(Object.entries(shapes).map(([event, entries]) => [event, new Set(entries.map(entryFingerprint))]));
+}
+
+// The reader for _xtmux.hash, which every tagged release has WRITTEN and none
+// has read. It answers one question about an owned entry: is its body still the
+// body we recorded when we wrote it? A mismatch means the entry drifted (the
+// smoke-container drift-repair tamper, a hand edit, an older release's shape),
+// so the plan reports `replace` instead of `refresh`. Either way the canonical
+// entry is rewritten — the hash makes the repair visible instead of silent.
+function codexOwnedDrifted(entry) {
+  const recorded = entry?._xtmux?.hash;
+  if (typeof recorded !== "string") return true;
+  return recorded !== hash({ matcher: entry.matcher, hooks: entry.hooks });
+}
+
+function entryCommands(entry) {
+  return (Array.isArray(entry?.hooks) ? entry.hooks : []).map((item) => item?.command).filter(Boolean).join(" ; ");
+}
+
+// A preserved entry that names our managed hook directory is a near miss: it
+// looks like ours but did not match a known shape. It is kept, and reported so
+// an operator can decide, because the installer cannot prove it wrote it.
+function mentionsManagedCodexHook(entry) {
+  return entryCommands(entry).includes(`${codexHooks}/`);
+}
+
+function planCodexHooks(removeOnly = false) {
+  const settings = readJson(codexSettings);
+  const current = settings.hooks && typeof settings.hooks === "object" ? settings.hooks : {};
+  const legacy = legacyCodexFingerprints();
+  const actions = [];
+  const next = {};
+  for (const [event, entries] of Object.entries(current)) {
+    const kept = [];
+    for (const entry of Array.isArray(entries) ? entries : []) {
+      const command = entryCommands(entry);
+      if (codexOwned(entry)) {
+        actions.push({ event, action: removeOnly ? "remove" : codexOwnedDrifted(entry) ? "replace" : "refresh", command });
+      } else if (legacy[event]?.has(entryFingerprint(entry))) {
+        actions.push({ event, action: removeOnly ? "remove" : "adopt", command });
+      } else {
+        actions.push({ event, action: "keep", index: kept.length, command, nearMiss: mentionsManagedCodexHook(entry) });
+        kept.push(entry);
+      }
+    }
+    if (kept.length) next[event] = kept;
+  }
+  if (!removeOnly) {
+    for (const [event, entries] of Object.entries(canonicalCodexHooks())) {
+      const kept = next[event] || [];
+      // Appended, never prepended: see the trust-key note above.
+      for (const [offset, entry] of entries.entries()) actions.push({ event, action: "add", index: kept.length + offset, command: entryCommands(entry) });
+      next[event] = [...kept, ...entries];
+    }
+  }
+  return { settings, next, actions };
+}
+
+function reportCodexActions(actions) {
+  const count = (action) => actions.filter((item) => item.action === action).length;
+  const kept = actions.filter((item) => item.action === "keep");
+  console.log(`    codex hooks: ${count("add")} added, ${count("adopt")} adopted, ${count("replace")} repaired, ${count("remove")} removed, ${kept.length} unowned preserved`);
+  for (const item of kept.filter((entry) => entry.nearMiss)) {
+    console.log(`    preserved unowned ${item.event}[${item.index}] naming a managed hook (not a known xtmux shape): ${item.command}`);
+  }
+}
+
+function mergeCodex(removeOnly = false) {
+  if (!existsSync(codexRoot) || (removeOnly && !existsSync(codexSettings))) return;
+  const { settings, next, actions } = planCodexHooks(removeOnly);
   settings.hooks = next;
   if (existsSync(codexSettings) && !existsSync(`${codexSettings}.pre-xtmux`)) copyFileSync(codexSettings, `${codexSettings}.pre-xtmux`);
   writeJson(codexSettings, settings);
+  reportCodexActions(actions);
 }
 
 const CANONICAL_PI_PACKAGE = "npm:@jaggerxtrm/xtmux";
