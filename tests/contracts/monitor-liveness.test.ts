@@ -147,10 +147,14 @@ describe("xtmux-dvs defect 1: monitor-agent must arm a real poller", () => {
   test("monitor-agent errors loudly when the poller cannot start", () => {
     const ctx = scratch();
     try {
-      // An arm window of 1ms is unsatisfiable, so this exercises exactly the gate
-      // that was missing: the poller has not proved it reached the DB.
+      // An arm window of 0 performs zero waits, so the gate fires deterministically:
+      // the only elapsed time between the spawn and the adoption check is one
+      // SQLite read, which no Bun cold start can beat. A 1ms window was NOT
+      // equivalent — it can still admit one 50ms sleep when the deadline lands
+      // inside the same millisecond, which is long enough for the poller to adopt.
+      // That is what made this test green locally and red on CI.
       const armed = cli(
-        { ...ctx.env, XTMUX_MONITOR_ARM_TIMEOUT_MS: "1" },
+        { ...ctx.env, XTMUX_MONITOR_ARM_TIMEOUT_MS: "0" },
         ["monitor-agent", ctx.target, "--timeout", "30m", "--interval", "1s", "--json"],
       );
       expect(armed.status).not.toBe(0);

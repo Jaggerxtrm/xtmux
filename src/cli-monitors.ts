@@ -316,19 +316,45 @@ export function cliWaitAgent(db: Db, argv: string[], nowMs: number): number {
  * How long `monitor-agent` waits for its forked poller to prove it reached the
  * DB before declaring the arm failed. Generous enough for a cold Bun start on a
  * loaded host; a false "did not arm" is loud and retryable, which is the failure
- * direction this bead exists to enforce. Tune with XTMUX_MONITOR_ARM_TIMEOUT_MS.
+ * direction this bead exists to enforce. Tune with XTMUX_MONITOR_ARM_TIMEOUT_MS;
+ * 0 means "do not wait at all", so every arm fails — that is a test lever, not a
+ * production setting. Zero must survive the parse, hence the explicit finite
+ * check rather than `|| 3000`.
  */
-const ARM_TIMEOUT_MS = Number(process.env.XTMUX_MONITOR_ARM_TIMEOUT_MS ?? 3000) || 3000;
+const ARM_TIMEOUT_MS = armTimeoutMs();
+
+function armTimeoutMs(): number {
+  const raw = Number(process.env.XTMUX_MONITOR_ARM_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 3000;
+}
 
 /**
- * Argv prefix that re-invokes this same CLI. A checkout runs `bun src/cli.ts`,
- * so argv[1] is a real file; a compiled Bun binary reports a `/$bunfs/...`
- * argv[1] that does not exist on disk and must not be passed on.
+ * Bun bakes a standalone executable's entry module into a virtual filesystem
+ * rooted here, and its own `fs` shims report those paths as existing — so
+ * `existsSync` alone cannot tell a real entry file from a baked one.
+ */
+const BUN_VIRTUAL_ROOTS = ["/$bunfs/", "B:\\~BUN\\", "/~BUN/"];
+
+/**
+ * Argv prefix that re-invokes this same CLI. Two install shapes:
+ *   checkout          `bun src/cli.ts` — argv[1] is a real file, pass it on.
+ *   compiled binary   `bin/xtmux-obs`  — argv[1] is `/$bunfs/root/xtmux-obs`.
+ *                     Bun re-inserts that entry in the child's argv itself, so
+ *                     passing it explicitly shifts the command one slot right.
+ *
+ * Both traps here are Bun-specific and were invisible from a checkout run:
+ *   - `process.argv[0]` is the literal string "bun" in a compiled binary, not a
+ *     path. Only `process.execPath` names the real executable.
+ *   - `existsSync("/$bunfs/root/xtmux-obs")` is TRUE from inside that binary.
+ * Together they made the child start as `<exe> /$bunfs/root/xtmux-obs
+ * monitor-run <id>`, which the child read as the command `/$bunfs/root/…`,
+ * printed usage, and exited without adopting — so every arm through the
+ * compiled install failed loudly while a checkout install stayed green.
  */
 function selfArgv(): string[] {
-  const exec = process.argv[0] ?? "bun";
   const entry = process.argv[1] ?? "";
-  return entry && existsSync(entry) ? [exec, entry] : [exec];
+  const baked = BUN_VIRTUAL_ROOTS.some((root) => entry.includes(root));
+  return entry && !baked && existsSync(entry) ? [process.execPath, entry] : [process.execPath];
 }
 
 function ownerPidOf(db: Db, monitorId: string): number | null {
@@ -374,8 +400,11 @@ export function cliMonitorAgent(db: Db, argv: string[], nowMs: number): number {
     // The poller adopts the row as its first act, so a non-null owner_pid is
     // proof it reached the DB. Nothing cheaper proves that; a spawned pid that
     // dies on a missing module would otherwise look identical to a live monitor.
+    // Clock first: with an arm window of 0 this must perform zero waits, so the
+    // gate is exercisable without racing a Bun cold start against a 1ms deadline.
     const deadline = Date.now() + ARM_TIMEOUT_MS;
-    while (ownerPidOf(db, created.monitorId) === null && Date.now() < deadline) {
+    while (Date.now() < deadline) {
+      if (ownerPidOf(db, created.monitorId) !== null) break;
       spawnSync("sleep", ["0.05"], { stdio: "ignore" });
     }
     if (ownerPidOf(db, created.monitorId) === null) {

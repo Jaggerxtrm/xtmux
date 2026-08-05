@@ -553,7 +553,7 @@ always read fresh.
 | `XTMUX_AUTO_MONITOR_TIMEOUT` | `8h` | Pi auto-monitor timeout |
 | `XTMUX_AUTO_MONITOR_INTERVAL` | `60s` | Pi auto-monitor poll interval |
 | `XTMUX_AGENT_STALE_AFTER` | `45m` | age of `@agent_last_transition` past which a `running` pane reports `stale`; `0` disables |
-| `XTMUX_MONITOR_ARM_TIMEOUT_MS` | `3000` | how long `monitor-agent` waits for its forked poller to register before failing the arm |
+| `XTMUX_MONITOR_ARM_TIMEOUT_MS` | `3000` | how long `monitor-agent` waits for its forked poller to register before failing the arm; `0` waits not at all, so every arm fails (test lever, not a production setting) |
 
 ### Full monitoring terminal
 
