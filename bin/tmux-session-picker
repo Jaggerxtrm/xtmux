@@ -86,7 +86,7 @@ normalize_agent_state() {
     needs-input|permission|waiting|input) REPLY='needs-input'; return 0 ;;
     done|finished|stop|complete)          REPLY='done';        return 0 ;;
     running|working|thinking|busy|tool)
-      if agent_state_is_stale "$pane_id" "${4:-}"; then REPLY='stale'; else REPLY='running'; fi
+      if agent_state_is_stale "${4:-}"; then REPLY='stale'; else REPLY='running'; fi
       return 0 ;;
     idle)                                  REPLY='idle';        return 0 ;;
     ''|-|off|none) ;;
@@ -139,19 +139,23 @@ agent_stale_after_s() {
   REPLY="$_XTMUX_STALE_AFTER_S"
 }
 
-# agent_state_is_stale <pane_id> [last_transition] -> 0 when stale
-# Callers that already read @agent_last_transition in their list-panes format
-# pass it; the rest fall back to one show-options, and only on the `running`
-# branch, so quiet panes cost nothing.
+# agent_state_is_stale <last_transition> -> 0 when stale
+#
+# The timestamp is supplied by the caller, never fetched here. Every bulk caller
+# already enumerates panes with `tmux list-panes -F`, so carrying
+# @agent_last_transition in that same format costs no extra tmux call. An earlier
+# revision fell back to one `show-options` per running pane; that read is
+# invisible in normal use but is counted by the monitor_run poll-tick contracts
+# in test/contract.sh, which stub `tmux` and assert an exact call count. Reading
+# only what the caller already has keeps the probe count untouched and the hot
+# list path free.
+#
+# Callers with no timestamp to hand pass nothing and get the fail-open answer.
 agent_state_is_stale() {
-  local pane="${1:-}" lt="${2:-}" after ts now
+  local lt="${1:-}" after ts now
+  [ -n "$lt" ] && [ "$lt" != '-' ] || return 1
   agent_stale_after_s; after="$REPLY"
   [ "$after" -gt 0 ] || return 1
-  if [ -z "$lt" ] || [ "$lt" = '-' ]; then
-    [ -n "$pane" ] || return 1
-    lt="$(tmux show-options -p -t "$pane" -qv @agent_last_transition 2>/dev/null || true)"
-  fi
-  [ -n "$lt" ] && [ "$lt" != '-' ] || return 1
   ts="$(date -d "$lt" +%s 2>/dev/null)" || return 1
   [ -n "$ts" ] || return 1
   now="$(date +%s)"
@@ -481,7 +485,7 @@ session_meta() {
 }
 
 pane_meta() {
-  tmux list-panes -a -F $'#{session_id}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}'
+  tmux list-panes -a -F $'#{session_id}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}'
 }
 
 agent_meta_value() {
@@ -2701,7 +2705,7 @@ build_list() {
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$section" "$sort_key" "$stale_bucket" "$sid" "$sname" "$display" >> "$tmp_sessions"
   done < <(session_meta)
 
-  while IFS=$'\t' read -r sid window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_state pane_pid pane_bead pane_task pane_parent; do
+  while IFS=$'\t' read -r sid window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_state pane_pid pane_bead pane_task pane_parent pane_transition; do
     [ -n "$sid" ] || continue
     pane_row_path="${pane_row_path:-$HOME}"
 
@@ -2716,7 +2720,7 @@ build_list() {
       case " ${root_sids[$root]:-} " in *" $sid "*) ;; *) root_sids[$root]+=" $sid" ;; esac
     fi
 
-    normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd"; pane_state="$REPLY"
+    normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd" "$pane_transition"; pane_state="$REPLY"
     # specialist state takes precedence when tracked: a waiting specialist should
     # rank for attention like a waiting agent pane (xtmux-rib.4).
     # fast specialist detection for list hot path: session name + live pane pid.
@@ -2825,10 +2829,10 @@ build_list() {
 }
 
 attn_list() {
-  local sid sname pane_id pane_cmd activity pane_state pane_pid rank
-  while IFS=$'	' read -r sid sname pane_id pane_cmd activity pane_state pane_pid; do
+  local sid sname pane_id pane_cmd activity pane_state pane_pid pane_transition rank
+  while IFS=$'	' read -r sid sname pane_id pane_cmd activity pane_state pane_pid pane_transition; do
     [ -n "$pane_id" ] || continue
-    normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd"; pane_state="$REPLY"
+    normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd" "$pane_transition"; pane_state="$REPLY"
     sp_is_specialist "$sname" "$pane_pid"; sp_role="$REPLY"
     # no synthetic specialist state here: attn-jump/waiting use explicit
     # @agent_state only for sp panes, keeping the hot path truthful.
@@ -2836,7 +2840,7 @@ attn_list() {
     [ "$rank" -le 1 ] || continue
     printf '%s	%s	%s	%s
 ' "$rank" "${activity:-0}" "$sid" "$pane_id"
-  done < <(tmux list-panes -a -F $'#{session_id}	#{session_name}	#{pane_id}	#{pane_current_command}	#{window_activity}	#{?@agent_state,#{@agent_state},-}	#{pane_pid}') |
+  done < <(tmux list-panes -a -F $'#{session_id}	#{session_name}	#{pane_id}	#{pane_current_command}	#{window_activity}	#{?@agent_state,#{@agent_state},-}	#{pane_pid}	#{?@agent_last_transition,#{@agent_last_transition},-}') |
     sort -t $'	' -k1,1n -k2,2nr
 }
 
