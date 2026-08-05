@@ -212,7 +212,14 @@ const matrix = [
   { criterion: "EVAL-01 S4 wake consumed exactly once; stale done never replayed on a working target", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S4", status: column },
   { criterion: "EVAL-01 S5 wait-for-transition rides a real running->done cycle; never-worked times out", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S5", status: column },
   { criterion: "EVAL-01 S6 inbound reply-required visible until acked; FYIs create no duty", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S6", status: column },
-  { criterion: "EVAL-01 S7 bounded reminders: duplicate Stops dedupe, one FYI per turn", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S7", status: column },
+  // Relabelled in K4 (xtmux-s96.4). S7 asserts OUTBOUND turn-FYI dedupe and
+  // nothing else. It was labelled "bounded reminders", which reads as inbox
+  // reminder coverage — a capability Codex does not yet have (no Codex hook
+  // emits an inbox reminder, unlike Claude's auto-monitor-drain-stop.mjs and
+  // Pi's pi-inbox-reply.ts). Citing this row as bounded-reminder parity
+  // evidence would have been false. The real capability is tracked as an open
+  // K4 item, not claimed here.
+  { criterion: "EVAL-01 S7 outbound turn-FYI dedupe: duplicate Stops dedupe, one FYI per turn", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S7", status: column },
   { criterion: "EVAL-01 S8 restart reconstruction; resume re-mints; dedupe survives id rotation", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S8", status: column },
   { criterion: "EVAL-01 S9 hostile payloads are data: no turn, no message, no execution", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S9", status: column },
   { criterion: "EVAL-01 S10 duplicate lifecycle events idempotent (one instance, debounced transitions)", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S10", status: column },

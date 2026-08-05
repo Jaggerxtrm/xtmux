@@ -69,9 +69,10 @@
     "install:global": "node scripts/install.mjs",
     "uninstall:global": "node scripts/install.mjs --uninstall",
     "postinstall": "node scripts/install.mjs --from-npm",
-    "test": "bun test && bash test/contract.sh && node --test tests/installer/*.test.mjs",
+    "test": "bun test && bash test/contract.sh && node --test tests/installer/*.test.mjs && bash scripts/verify-codex-distribution.sh",
     "test:installer": "node --test tests/installer/*.test.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:codex-distribution": "bash scripts/verify-codex-distribution.sh"
   },
   "dependencies": {
     "bun": "1.3.14",

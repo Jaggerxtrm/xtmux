@@ -609,8 +609,30 @@ function planCompatibilityLinks() {
     console.log(`  ${action.padEnd(7)} ${dst}`);
     if (action === "refuse") console.log(compatibilityRefusal(dst, src).split("\n").slice(1).join("\n"));
   }
-  console.log("dry-run: no changes were made");
 }
 
-if (dryRun) planCompatibilityLinks();
+// A dry run previously planned links only, so the one file where a mistake is
+// least recoverable — a Codex hooks.json holding the operator's unowned,
+// individually trusted entries — was the one part nobody could preview. Every
+// action planCodexHooks would take is reported here, and nothing is written.
+function planCodexHooksDryRun() {
+  console.log("dry-run: codex hooks plan");
+  if (!existsSync(codexRoot)) {
+    console.log("  skip    no ~/.codex directory; xtmux never creates one");
+    return;
+  }
+  const { actions } = planCodexHooks(uninstall);
+  if (!actions.length) console.log("  (no codex hook entries to change)");
+  for (const item of actions) {
+    const where = item.index === undefined ? item.event : `${item.event}[${item.index}]`;
+    console.log(`  ${item.action.padEnd(7)} ${where.padEnd(26)} ${item.command}`);
+    if (item.nearMiss) console.log("          ^ names a managed hook but is not a known xtmux shape; preserved for review");
+  }
+}
+
+if (dryRun) {
+  planCompatibilityLinks();
+  planCodexHooksDryRun();
+  console.log("dry-run: no changes were made");
+}
 else uninstall ? remove() : install();
