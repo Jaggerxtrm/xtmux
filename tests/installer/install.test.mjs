@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, existsSync, readdirSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { chmodSync, lstatSync, mkdtempSync, readFileSync, existsSync, readdirSync, readlinkSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -480,5 +480,110 @@ test("--from-npm proceeds for a global postinstall", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(existsSync(join(home, ".claude", "settings.json")), true, "global postinstall must install");
   assert.equal(existsSync(join(home, ".local", "bin", "xtmux")), true, "global postinstall must install bins");
+  rmSync(home, { recursive: true, force: true });
+});
+
+// xtmux-s96.2.1 — compatibility links must adopt a byte-identical copy of our own
+// packaged script instead of refusing forever. A pre-installer hand-copy of
+// git-pane-status.sh blocked reinstall on a live host and took the whole xtmux
+// observability spine down with it, because agent-state.sh gates its emit on
+// `command -v xtmux` and the bins never got installed.
+const compatDst = (home) => join(home, ".tmux", "scripts", "git-pane-status.sh");
+const packagedCompat = join(root, "scripts", "git-pane-status.sh");
+const seedCompat = (home, content) => {
+  mkdirSync(join(home, ".tmux", "scripts"), { recursive: true });
+  writeFileSync(compatDst(home), content);
+};
+
+test("adopts a byte-identical pre-existing compatibility file and keeps it recoverable", () => {
+  const home = mkdtempSync(join(tmpdir(), "xtmux-compat-adopt-"));
+  seedCompat(home, readFileSync(packagedCompat, "utf8"));
+
+  const result = run(home);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /adopted byte-identical/);
+
+  // The destination is now a symlink pointing at the packaged script.
+  const stat = lstatSync(compatDst(home));
+  assert.ok(stat.isSymbolicLink(), "destination should be a symlink after adoption");
+  assert.equal(resolve(readlinkSync(compatDst(home))), packagedCompat);
+
+  // The displaced copy is preserved, matching the .pre-xtmux convention.
+  assert.ok(existsSync(`${compatDst(home)}.pre-xtmux`), "displaced copy must be recoverable");
+  assert.equal(readFileSync(`${compatDst(home)}.pre-xtmux`, "utf8"), readFileSync(packagedCompat, "utf8"));
+
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("refuses foreign compatibility content and names the remedy", () => {
+  const home = mkdtempSync(join(tmpdir(), "xtmux-compat-foreign-"));
+  seedCompat(home, "#!/bin/sh\n# a user's own script\necho mine\n");
+
+  const result = run(home);
+  assert.notEqual(result.status, 0, "foreign content must refuse");
+  assert.match(result.stderr, /refusing to replace existing file/);
+  assert.match(result.stderr, /content differs from the packaged script/);
+  assert.match(result.stderr, /move it aside and re-run/);
+
+  // The user's file is untouched and no backup was fabricated.
+  assert.equal(readFileSync(compatDst(home), "utf8"), "#!/bin/sh\n# a user's own script\necho mine\n");
+  assert.ok(!existsSync(`${compatDst(home)}.pre-xtmux`), "must not back up a file it refused to touch");
+
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("refuses an xtmux copy that has drifted from the packaged script", () => {
+  // Our OWN older revision is byte-indistinguishable from a user edit at install
+  // time, so it must refuse rather than silently overwrite. This is the case that
+  // actually occurred on the live host.
+  const home = mkdtempSync(join(tmpdir(), "xtmux-compat-drift-"));
+  seedCompat(home, `${readFileSync(packagedCompat, "utf8")}\n# drifted\n`);
+
+  const result = run(home);
+  assert.notEqual(result.status, 0, "drifted content must refuse");
+  assert.match(result.stderr, /content differs from the packaged script/);
+
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("dry-run reports the exact compatibility action and mutates nothing", () => {
+  const home = mkdtempSync(join(tmpdir(), "xtmux-compat-dryrun-"));
+  seedCompat(home, readFileSync(packagedCompat, "utf8"));
+
+  const result = run(home, "--dry-run");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /dry-run: compatibility link plan/);
+  assert.match(result.stdout, /adopt\s+.*git-pane-status\.sh/);
+  assert.match(result.stdout, /link\s+.*agent-state\.sh/);
+  assert.match(result.stdout, /dry-run: no changes were made/);
+
+  // Nothing was written: still a regular file, no backup, no bins installed.
+  assert.ok(lstatSync(compatDst(home)).isFile(), "dry-run must not replace the file");
+  assert.ok(!existsSync(`${compatDst(home)}.pre-xtmux`));
+  assert.ok(!existsSync(join(home, ".local", "bin", "xtmux")), "dry-run must not install bins");
+
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("dry-run reports a refusal without failing, and a second install is a no-op", () => {
+  const home = mkdtempSync(join(tmpdir(), "xtmux-compat-idempotent-"));
+  seedCompat(home, readFileSync(packagedCompat, "utf8"));
+
+  assert.equal(run(home).status, 0);
+  const firstTarget = readlinkSync(compatDst(home));
+  const backup = readFileSync(`${compatDst(home)}.pre-xtmux`, "utf8");
+
+  // Second run: already an owned symlink, so it relinks rather than adopting,
+  // and must not overwrite the preserved copy.
+  const second = run(home);
+  assert.equal(second.status, 0, second.stderr);
+  assert.doesNotMatch(second.stdout, /adopted byte-identical/, "second run should not re-adopt");
+  assert.equal(readlinkSync(compatDst(home)), firstTarget);
+  assert.equal(readFileSync(`${compatDst(home)}.pre-xtmux`, "utf8"), backup);
+
+  const plan = run(home, "--dry-run");
+  assert.equal(plan.status, 0);
+  assert.match(plan.stdout, /relink\s+.*git-pane-status\.sh/);
+
   rmSync(home, { recursive: true, force: true });
 });
