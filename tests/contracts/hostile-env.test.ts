@@ -98,7 +98,16 @@ describe("hostile invocation environments", () => {
         "SELECT state, owner_pid, terminal_status FROM monitors ORDER BY started_at_ms DESC LIMIT 1",
       ).get();
       db.close();
-      expect(row).toEqual({ state: "unknown", owner_pid: null, terminal_status: null });
+      // The claim under test: an unobservable pane is stored as `unknown`, never
+      // as the empty string.
+      expect(row!.state).toBe("unknown");
+      // owner_pid and terminal_status were previously asserted NULL, which locked
+      // in xtmux-dvs defect 1: monitor-agent registered a row and returned, so
+      // nothing ever polled it and its lease expired into a false `process_gone`.
+      // A monitor that reports success now has an adopted poller, and that poller
+      // concludes at once here — `unknown` is not a working state.
+      expect(row!.owner_pid).not.toBeNull();
+      expect(row!.terminal_status).toBe("done");
     } finally {
       ctx.cleanup();
     }
