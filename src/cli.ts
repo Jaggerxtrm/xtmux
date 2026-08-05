@@ -7,7 +7,7 @@ import { DbError } from "./db/errors.ts";
 import { MessageError } from "./domains/messages/errors.ts";
 import { cliMessageAck, cliMessageCancel, cliMessageGet, cliMessageList, cliMessageReply, cliMessageSend, cliMessageStatus, cliUnreadCount } from "./cli-messages.ts";
 import { cliObligationsList } from "./cli-obligations.ts";
-import { cliMonitorAgent, cliMonitorList, cliWaitAgent } from "./cli-monitors.ts";
+import { cliMonitorAgent, cliMonitorList, cliMonitorRun, cliWaitAgent } from "./cli-monitors.ts";
 import { cliLogEmit, cliLogTail, cliLogQuery, cliLogFollow } from "./cli-log.ts";
 import { cliOutcomeApply } from "./cli-outcome.ts";
 import { findLastTurn } from "./domains/agents/turn.ts";
@@ -44,6 +44,8 @@ commands:
   obligations list [--pane %N] [--json] print active reply obligations; live pane required
   wait-agent <pane> [--wait-for-transition] --timeout <dur> --interval <dur> [--consume] [--json]
   monitor-agent <pane> [--wait-for-transition] --timeout <dur> --interval <dur> [--json]
+  monitor-run <monitorId> [--wait-for-transition] --timeout <dur> --interval <dur>
+                                    internal: the detached poller monitor-agent forks
   monitor-list --json                    monitor and wake state array
   log-tail [N] [--json]             print NDJSON or one JSON event array
   log-query [filters] [--json]      query NDJSON or one JSON event array
@@ -303,6 +305,7 @@ async function main(argv: string[]): Promise<number> {
       case "message-status":
       case "wait-agent":
       case "monitor-agent":
+      case "monitor-run":
       case "monitor-list":
       case "unread-count":
       case "log-emit":
@@ -319,6 +322,7 @@ async function main(argv: string[]): Promise<number> {
           const rest = argv.slice(3);
           if (cmd === "wait-agent") return cliWaitAgent(db, rest, now);
           if (cmd === "monitor-agent") return cliMonitorAgent(db, rest, now);
+          if (cmd === "monitor-run") return cliMonitorRun(db, rest, now);
           if (cmd === "monitor-list") return cliMonitorList(db, rest, now);
           switch (cmd) {
             case "message-send":     return cliMessageSend(db, rest);

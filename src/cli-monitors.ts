@@ -1,4 +1,5 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import type { Db } from "./db/connection.ts";
 import {
   armOutboundWait,
@@ -166,14 +167,64 @@ function isWorking(state: string): boolean {
   return ["running", "working", "busy", "thinking", "tool"].includes(state);
 }
 
-function finishIfTerminal(db: Db, monitorId: string, state: string, nowMs: number): void {
-  heartbeat(db, monitorId, state, nowMs);
-  if (!isWorking(state)) {
-    terminate(db, monitorId, "done", nowMs);
-    terminalizeOutboundWait(db, monitorId, "done", nowMs);
-    replayOutboundWakes(db, nowMs);
-    const wait = listAllWaits(db).find((row) => row.monitorId === monitorId);
-    if (wait) deliverOutboundWake(db, { waitId: wait.waitId, requesterSessionId: wait.requesterSessionId, requesterPaneId: wait.requesterPaneId, nowMs });
+/** Terminate the monitor, terminalize its wait, and wake the requester. */
+function deliverTerminal(db: Db, monitorId: string, status: TerminalStatus, nowMs: number, detail?: string): void {
+  terminate(db, monitorId, status, nowMs, detail);
+  terminalizeOutboundWait(db, monitorId, status, nowMs);
+  replayOutboundWakes(db, nowMs);
+  const wait = listAllWaits(db).find((row) => row.monitorId === monitorId);
+  if (wait) deliverOutboundWake(db, { waitId: wait.waitId, requesterSessionId: wait.requesterSessionId, requesterPaneId: wait.requesterPaneId, nowMs });
+}
+
+interface PollParams {
+  monitorId: string;
+  paneId: string;
+  timeoutMs: number;
+  intervalMs: number;
+  transitionRequired: boolean;
+  initialState: string;
+}
+
+/**
+ * The monitor poll loop. Shared by `wait-agent` (runs it in the foreground) and
+ * `monitor-run` (the detached poller `monitor-agent` forks).
+ *
+ * `stale` terminates as `error`, not `done` (xtmux-dvs defect 2): the pane
+ * stopped transitioning, which is not the same fact as the agent finishing its
+ * turn, and reporting it as `done` would hand the requester a completion that
+ * never happened. The requester is still woken — being woken is the point.
+ */
+function pollMonitor(db: Db, p: PollParams): void {
+  let state = p.initialState;
+  const startedAtMs = Date.now();
+  let observedWorking = !p.transitionRequired || isWorking(state);
+  while (true) {
+    // Every tick heartbeats — that is what refreshes the lease (V1's poll loop
+    // did the same via `obs_call monitor heartbeat`). Without it a monitor whose
+    // poller is alive and ticking still lease-expires after max(3*interval, 30s),
+    // and the next reconcile calls it `process_gone`. The store writes a journal
+    // envelope only when the observed state actually changed, so this is one row
+    // update per tick, not one historical event per tick.
+    heartbeat(db, p.monitorId, state, Date.now());
+    if (state === "stale") {
+      deliverTerminal(db, p.monitorId, "error", Date.now(), "agent state stale: no @agent_last_transition inside the liveness window");
+      break;
+    }
+    if (!observedWorking) {
+      if (isWorking(state)) observedWorking = true;
+    } else if (!isWorking(state)) {
+      deliverTerminal(db, p.monitorId, "done", Date.now());
+      break;
+    }
+    if (!p.transitionRequired && !isWorking(state)) break;
+    if (p.timeoutMs > 0 && Date.now() - startedAtMs >= p.timeoutMs) {
+      terminate(db, p.monitorId, "timeout", Date.now());
+      terminalizeOutboundWait(db, p.monitorId, "timeout", Date.now());
+      replayOutboundWakes(db, Date.now());
+      break;
+    }
+    if (p.intervalMs > 0) spawnSync("sleep", [String(p.intervalMs / 1000)], { stdio: "ignore" });
+    state = liveProbes.observe(p.paneId);
   }
 }
 
@@ -231,26 +282,10 @@ export function cliWaitAgent(db: Db, argv: string[], nowMs: number): number {
       : createMonitorAndWait(db, targetName, timeoutMs, intervalMs, nowMs);
     if (!existing || existing.terminalStatus === null) {
       adopt(db, created.monitorId, process.pid, Date.now());
-      let state = created.state;
-      const startedAtMs = Date.now();
-      let observedWorking = !transitionRequired || isWorking(state);
-      while (true) {
-        if (!observedWorking) {
-          if (isWorking(state)) observedWorking = true;
-        } else if (!isWorking(state)) {
-          finishIfTerminal(db, created.monitorId, state, Date.now());
-          break;
-        }
-        if (!transitionRequired && !isWorking(state)) break;
-        if (timeoutMs > 0 && Date.now() - startedAtMs >= timeoutMs) {
-          terminate(db, created.monitorId, "timeout", Date.now());
-          terminalizeOutboundWait(db, created.monitorId, "timeout", Date.now());
-          replayOutboundWakes(db, Date.now());
-          break;
-        }
-        if (intervalMs > 0) spawnSync("sleep", [String(intervalMs / 1000)], { stdio: "ignore" });
-        state = liveProbes.observe(created.target.paneId);
-      }
+      pollMonitor(db, {
+        monitorId: created.monitorId, paneId: created.target.paneId,
+        timeoutMs, intervalMs, transitionRequired, initialState: created.state,
+      });
     }
     let wait = listAllWaits(db).find((row) => row.waitId === created.waitId);
     if (!wait) throw new Error("wait registration disappeared");
@@ -277,6 +312,29 @@ export function cliWaitAgent(db: Db, argv: string[], nowMs: number): number {
   } catch (error) { return operationError(error, "wait-agent"); }
 }
 
+/**
+ * How long `monitor-agent` waits for its forked poller to prove it reached the
+ * DB before declaring the arm failed. Generous enough for a cold Bun start on a
+ * loaded host; a false "did not arm" is loud and retryable, which is the failure
+ * direction this bead exists to enforce. Tune with XTMUX_MONITOR_ARM_TIMEOUT_MS.
+ */
+const ARM_TIMEOUT_MS = Number(process.env.XTMUX_MONITOR_ARM_TIMEOUT_MS ?? 3000) || 3000;
+
+/**
+ * Argv prefix that re-invokes this same CLI. A checkout runs `bun src/cli.ts`,
+ * so argv[1] is a real file; a compiled Bun binary reports a `/$bunfs/...`
+ * argv[1] that does not exist on disk and must not be passed on.
+ */
+function selfArgv(): string[] {
+  const exec = process.argv[0] ?? "bun";
+  const entry = process.argv[1] ?? "";
+  return entry && existsSync(entry) ? [exec, entry] : [exec];
+}
+
+function ownerPidOf(db: Db, monitorId: string): number | null {
+  return db.raw.query<{ owner_pid: number | null }, [string]>("SELECT owner_pid FROM monitors WHERE id = ?").get(monitorId)?.owner_pid ?? null;
+}
+
 export function cliMonitorAgent(db: Db, argv: string[], nowMs: number): number {
   const { positional, flags } = parseArgs(argv);
   const json = flags.get("json") === true;
@@ -286,12 +344,80 @@ export function cliMonitorAgent(db: Db, argv: string[], nowMs: number): number {
   if (!targetName || Number.isNaN(timeoutMs) || Number.isNaN(intervalMs)) return jsonError("XTMUX_INVALID_ARGUMENT", "monitor-agent: target, timeout, and interval are required", {}, 2);
   try {
     const created = createMonitorAndWait(db, targetName, timeoutMs, intervalMs, nowMs);
+
+    // xtmux-dvs defect 1. Until now this command registered a monitor row and
+    // returned — nothing ever polled it. Its lease (max(3*interval, 30s), set at
+    // registration and refreshed only by a heartbeat that never came) therefore
+    // expired by construction, and the next `monitor-list` reconcile stamped
+    // `process_gone` on a pane that was demonstrably alive, replayed the wait and
+    // delivered a wake. The caller had already been handed a normal monitorId and
+    // exit 0, so it saw an armed monitor. Fork the poller, and refuse to report
+    // success unless it proves it started.
+    const runArgs = ["monitor-run", created.monitorId, "--timeout", `${timeoutMs}ms`, "--interval", `${intervalMs}ms`];
+    if (flags.get("wait-for-transition") === true) runArgs.push("--wait-for-transition");
+    const [exec, ...prefix] = selfArgv();
+    // ponytail: one detached Bun poller per armed monitor (~40MB RSS), matching
+    // V1's one-forked-poller-per-monitor shape. If armed-monitor counts ever grow
+    // past a handful per host, the upgrade path is a single poller process that
+    // ticks every active row, not a lighter per-monitor process.
+    const child = spawn(exec!, [...prefix, ...runArgs], { detached: true, stdio: "ignore", env: process.env });
+    child.unref();
+
+    const armFailed = (reason: string, detail: Record<string, unknown> = {}): number => {
+      const at = Date.now();
+      terminate(db, created.monitorId, "error", at, reason);
+      terminalizeOutboundWait(db, created.monitorId, "error", at);
+      return jsonError("XTMUX_MONITOR_ARM_FAILED", `monitor-agent: poller did not arm: ${reason}`,
+        { command: "monitor-agent", monitorId: created.monitorId, waitId: created.waitId, target: targetName, terminalStatus: "error", ...detail }, 3);
+    };
+    if (child.pid === undefined) return armFailed("poller process could not be spawned");
+    // The poller adopts the row as its first act, so a non-null owner_pid is
+    // proof it reached the DB. Nothing cheaper proves that; a spawned pid that
+    // dies on a missing module would otherwise look identical to a live monitor.
+    const deadline = Date.now() + ARM_TIMEOUT_MS;
+    while (ownerPidOf(db, created.monitorId) === null && Date.now() < deadline) {
+      spawnSync("sleep", ["0.05"], { stdio: "ignore" });
+    }
+    if (ownerPidOf(db, created.monitorId) === null) {
+      try { process.kill(child.pid, "SIGTERM"); } catch { /* already gone */ }
+      return armFailed("poller did not register inside the arm window", { armTimeoutMs: ARM_TIMEOUT_MS, pollerPid: child.pid });
+    }
+
     const row = db.raw.query<Record<string, unknown>, [string]>("SELECT id, target, session_id, pane_id, state, started_at_ms, updated_at_ms, timeout_ms, interval_ms, terminal_status, terminal_at_ms FROM monitors WHERE id = ?").get(created.monitorId);
     const wait = listAllWaits(db).find((item) => item.waitId === created.waitId);
     const result = monitorProjection(row ?? {}, wait, false);
     if (json) process.stdout.write(JSON.stringify(result) + "\n"); else process.stdout.write(`monitor\t${created.monitorId}\t${targetName}\t${created.target.paneId}\n`);
     return 0;
   } catch (error) { return operationError(error, "monitor-agent"); }
+}
+
+/**
+ * The detached poller `monitor-agent` forks. Not an operator-facing command: it
+ * polls an already-registered monitor row until it reaches a terminal status.
+ */
+export function cliMonitorRun(db: Db, argv: string[], _nowMs: number): number {
+  const { positional, flags } = parseArgs(argv);
+  const monitorId = positional[0] ?? "";
+  const timeoutMs = duration(flags.get("timeout"), 30 * 60_000);
+  const intervalMs = duration(flags.get("interval"), 30_000);
+  if (!monitorId || Number.isNaN(timeoutMs) || Number.isNaN(intervalMs)) return jsonError("XTMUX_INVALID_ARGUMENT", "monitor-run: monitor id, timeout, and interval are required", {}, 2);
+  const row = db.raw.query<{ pane_id: string; state: string; terminal_status: string | null }, [string]>(
+    "SELECT pane_id, state, terminal_status FROM monitors WHERE id = ?").get(monitorId);
+  if (!row) return jsonError("XTMUX_MONITOR_NOT_FOUND", `monitor-run: monitor not found: ${monitorId}`, { command: "monitor-run", monitorId }, 1);
+  if (row.terminal_status !== null) return 0;
+  adopt(db, monitorId, process.pid, Date.now());
+  try {
+    pollMonitor(db, {
+      monitorId, paneId: row.pane_id, timeoutMs, intervalMs,
+      transitionRequired: flags.get("wait-for-transition") === true, initialState: row.state,
+    });
+    return 0;
+  } catch (error) {
+    // A poller that dies mid-loop must leave a terminal row behind, not an
+    // active one that only the lease will eventually (and misleadingly) reap.
+    deliverTerminal(db, monitorId, "error", Date.now(), (error instanceof Error ? error.message : String(error)).slice(0, 200));
+    return operationError(error, "monitor-run");
+  }
 }
 
 export function cliMonitorList(db: Db, argv: string[], nowMs: number): number {
@@ -308,6 +434,15 @@ export function cliMonitorList(db: Db, argv: string[], nowMs: number): number {
     const waits = listAllWaits(db);
     const results = monitors.map((row) => {
       const wait = waits.find((item) => item.monitorId === row.id);
+      // Re-observe active rows (V1's "mutate on read": _monitor_list_v1_body does
+      // the same). The stored `state` is only as fresh as the last poll tick, so
+      // without this a pane that went stale between ticks still reads `running`
+      // here — the exact blindness of xtmux-dvs defect 2. `unknown` means the
+      // pane advertises nothing, which is not a reason to discard what we knew.
+      if (row.terminal_status === null) {
+        const observed = liveProbes.observe(String(row.pane_id));
+        if (observed !== "unknown") row.state = observed;
+      }
       return monitorProjection(row, wait, row.terminal_status !== null && wait === undefined);
     });
     if (json) process.stdout.write(JSON.stringify(results) + "\n"); else for (const row of results) process.stdout.write(`monitor\t${String(row.monitorId)}\t${String(row.state)}\n`);
