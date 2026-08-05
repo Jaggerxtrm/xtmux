@@ -2837,7 +2837,10 @@ attn_list() {
     # no synthetic specialist state here: attn-jump/waiting use explicit
     # @agent_state only for sp panes, keeping the hot path truthful.
     agent_rank "$pane_state"; rank="$REPLY"
-    [ "$rank" -le 1 ] || continue
+    # stale/needs-input/done. The bound tracks agent_rank: inserting `stale` at 0
+    # shifted done from 1 to 2, and leaving the bound at 1 would have silently
+    # dropped finished panes out of attn-jump.
+    [ "$rank" -le 2 ] || continue
     printf '%s	%s	%s	%s
 ' "$rank" "${activity:-0}" "$sid" "$pane_id"
   done < <(tmux list-panes -a -F $'#{session_id}	#{session_name}	#{pane_id}	#{pane_current_command}	#{window_activity}	#{?@agent_state,#{@agent_state},-}	#{pane_pid}	#{?@agent_last_transition,#{@agent_last_transition},-}') |

@@ -25,7 +25,15 @@ export function pidAlive(pid: number): boolean {
 }
 
 export function paneAlive(paneId: string): boolean {
-  return tmux(["display-message", "-p", "-t", paneId, "#{pane_id}"]).ok;
+  const r = tmux(["display-message", "-p", "-t", paneId, "#{pane_id}"]);
+  // The status alone is not the answer: asked about a pane that no longer
+  // exists, tmux exits 0 and prints an EMPTY line (verified against tmux 3.x
+  // with $TMUX set — it resolves the server, finds no such pane, and formats
+  // nothing). Reading `ok` only, this reported every destroyed pane as alive, so
+  // reconcile's `target_gone` branch could never fire and a monitor on a killed
+  // pane stayed active until its lease or timeout invented some other reason.
+  // A live pane always formats its own id, so a non-empty answer is the test.
+  return r.ok && r.out !== "";
 }
 
 /**

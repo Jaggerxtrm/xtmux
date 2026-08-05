@@ -172,6 +172,52 @@ describe("xtmux-dvs defect 1: monitor-agent must arm a real poller", () => {
     } finally { ctx.cleanup(); }
   }, 60_000);
 
+  // Terminal status is absorbing (src/domains/monitors/terminal.ts), and the
+  // poller is not its only writer: a `monitor-list` reconcile stamps target_gone
+  // the moment the pane disappears. Once the poll loop heartbeats every tick —
+  // which is what keeps the lease alive — a live poller meets that absorbing rule
+  // on its very next tick and `assertHeartbeat` throws. The handler then tried to
+  // stamp `error` over the existing terminal status, which throws a SECOND time,
+  // out of the handler: a handled failure became an uncaught crash.
+  //
+  // The poller runs in the FOREGROUND here on purpose. `monitor-agent` detaches
+  // its poller with stdio ignored, so the crash this pins is invisible from
+  // there — an earlier version of this test watched a detached poller and passed
+  // against the unguarded code. `monitor-kill` is not the trigger either: it
+  // SIGTERMs owner_pid, so the poller dies by signal before reaching the rule.
+  //
+  // The same guard covers `wait-agent`, which runs this loop in-process: a
+  // concurrent reconcile stamping `timeout` used to surface there as
+  // XTMUX_INVALID_ARGUMENT exit 2 instead of the wait's real outcome.
+  test("a monitor terminated underneath a live poller stands down instead of crashing", async () => {
+    const ctx = scratch();
+    try {
+      expect(cli(ctx.env, ["monitor", "register", "--id", "m-standdown", "--target", ctx.target,
+        "--pane", ctx.target, "--state", "running", "--timeout", "1800", "--interval", "1"]).status).toBe(0);
+      // A 5s interval parks the poller in its sleep for the whole setup below, so
+      // the reconcile deterministically wins the race to conclude the row. With a
+      // 1s interval the poller gets there first and concludes target_gone itself,
+      // which is correct behaviour but exercises a different branch.
+      const poller = Bun.spawn(["bun", "run", CLI, "monitor-run", "m-standdown", "--wait-for-transition", "--timeout", "30m", "--interval", "5s"],
+        { cwd: ROOT, env: ctx.env, stdout: "pipe", stderr: "pipe" });
+      await Bun.sleep(1500); // adopt, tick once, then park in the interval sleep
+
+      // The other writer: the target pane vanishes, and a reconcile concludes it.
+      tmux(["kill-session", "-t", ctx.targetSession]);
+      expect(cli(ctx.env, ["monitor-list", "--json"]).status).toBe(0);
+
+      const exitCode = await poller.exited;
+      const stderr = await new Response(poller.stderr).text();
+      expect(stderr).not.toContain("IllegalTransitionError");
+      expect(stderr).toBe("");
+      expect(exitCode).toBe(0);
+
+      // ...and the reconcile's conclusion survives, unoverwritten.
+      const row = monitorRows(ctx.env).find((r) => r.monitorId === "m-standdown");
+      expect(row!.terminalStatus).toBe("target_gone");
+    } finally { ctx.cleanup(); }
+  }, 60_000);
+
   test("--wait-for-transition reaches the poller instead of being parsed and dropped", () => {
     const ctx = scratch();
     try {

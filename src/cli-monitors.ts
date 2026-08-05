@@ -176,6 +176,12 @@ function deliverTerminal(db: Db, monitorId: string, status: TerminalStatus, nowM
   if (wait) deliverOutboundWake(db, { waitId: wait.waitId, requesterSessionId: wait.requesterSessionId, requesterPaneId: wait.requesterPaneId, nowMs });
 }
 
+/** The row's own lifecycle: null while active, undefined if the row is gone. */
+function terminalStatusOf(db: Db, monitorId: string): TerminalStatus | null | undefined {
+  return db.raw.query<{ terminal_status: TerminalStatus | null }, [string]>(
+    "SELECT terminal_status FROM monitors WHERE id = ?").get(monitorId)?.terminal_status;
+}
+
 interface PollParams {
   monitorId: string;
   paneId: string;
@@ -199,6 +205,12 @@ function pollMonitor(db: Db, p: PollParams): void {
   const startedAtMs = Date.now();
   let observedWorking = !p.transitionRequired || isWorking(state);
   while (true) {
+    // Someone else can conclude this monitor underneath a live poller: a
+    // `monitor-list` reconcile stamps target_gone when the pane disappears, and
+    // `monitor-kill` stamps killed. Terminal is absorbing, so both heartbeating
+    // and terminating again throw. Stop instead — the fact is already recorded
+    // and the wake already replayed, and there is nothing left to poll.
+    if (terminalStatusOf(db, p.monitorId) !== null) break;
     // Every tick heartbeats — that is what refreshes the lease (V1's poll loop
     // did the same via `obs_call monitor heartbeat`). Without it a monitor whose
     // poller is alive and ticking still lease-expires after max(3*interval, 30s),
@@ -208,6 +220,15 @@ function pollMonitor(db: Db, p: PollParams): void {
     heartbeat(db, p.monitorId, state, Date.now());
     if (state === "stale") {
       deliverTerminal(db, p.monitorId, "error", Date.now(), "agent state stale: no @agent_last_transition inside the liveness window");
+      break;
+    }
+    // `unknown` means the pane advertises no @agent_state, which is true both of
+    // a live pane with no agent hooks and of a pane that no longer exists. Only
+    // the second is `target_gone`, and calling it `done` would report a turn that
+    // finished when the pane was destroyed mid-turn. The liveness probe runs only
+    // on that branch, so a normally-reporting pane costs no extra tmux call.
+    if (state === "unknown" && !liveProbes.paneAlive(p.paneId)) {
+      deliverTerminal(db, p.monitorId, "target_gone", Date.now());
       break;
     }
     if (!observedWorking) {
@@ -444,7 +465,12 @@ export function cliMonitorRun(db: Db, argv: string[], _nowMs: number): number {
   } catch (error) {
     // A poller that dies mid-loop must leave a terminal row behind, not an
     // active one that only the lease will eventually (and misleadingly) reap.
-    deliverTerminal(db, monitorId, "error", Date.now(), (error instanceof Error ? error.message : String(error)).slice(0, 200));
+    // Only when the row is still active: terminal is absorbing, so stamping
+    // `error` over someone else's conclusion throws a second time, out of the
+    // handler, and turns a handled failure into a crash.
+    if (terminalStatusOf(db, monitorId) === null) {
+      deliverTerminal(db, monitorId, "error", Date.now(), (error instanceof Error ? error.message : String(error)).slice(0, 200));
+    }
     return operationError(error, "monitor-run");
   }
 }
