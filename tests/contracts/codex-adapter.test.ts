@@ -367,11 +367,13 @@ describe("installed Codex lifecycle wiring (hooks.json -> existing authority)", 
   test("installer writes tagged Stop and SessionEnd entries and deploys the turn-capture hook", () => {
     const { home, hooks } = installCodexHome();
     const owned = (event: string) => (hooks[event] ?? []).filter((e) => e._source === "xtmux");
-    expect(owned("Stop")).toHaveLength(2);
+    // K4 (xtmux-s96.4): state + turn capture + inbox/obligation pass.
+    expect(owned("Stop")).toHaveLength(3);
     expect(owned("SessionEnd")).toHaveLength(1);
     const stopCommands = owned("Stop").flatMap((e) => e.hooks.map((h: any) => h.command));
     expect(stopCommands.some((c: string) => /agent-state\.sh" done$/.test(c))).toBe(true);
     expect(stopCommands.some((c: string) => /codex-agent-turn-capture\.mjs"$/.test(c))).toBe(true);
+    expect(stopCommands.some((c: string) => /codex-inbox-reply-stop\.mjs"$/.test(c))).toBe(true);
     expect(owned("SessionEnd").flatMap((e) => e.hooks.map((h: any) => h.command)).join(" ")).toMatch(/agent-state\.sh" off$/);
     // Every state command carries the Codex hook event for durable attribution.
     for (const event of ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"]) {
@@ -383,6 +385,7 @@ describe("installed Codex lifecycle wiring (hooks.json -> existing authority)", 
     expect((hooks.Stop ?? []).some((e: any) => e.hooks?.[0]?.command === "foreign-stop")).toBe(true);
     expect(existsSync(join(home, ".codex/hooks/xtmux/agent-state.sh"))).toBe(true);
     expect(existsSync(join(home, ".codex/hooks/xtmux/codex-agent-turn-capture.mjs"))).toBe(true);
+    expect(existsSync(join(home, ".codex/hooks/xtmux/codex-inbox-reply-stop.mjs"))).toBe(true);
     expect(existsSync(join(home, ".codex/hooks/xtmux/claude-agent-turn-capture.mjs"))).toBe(false);
   });
 

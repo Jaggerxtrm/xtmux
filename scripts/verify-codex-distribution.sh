@@ -59,6 +59,10 @@ xtmux_count() {
      const e=h[process.argv[2]]||[];
      process.stdout.write(String(e.filter((x)=>x.hooks?.some((k)=>String(k.command||"").includes("/.codex/hooks/xtmux/agent-state.sh"))).length));' "$1"
 }
+owned_count() {
+  q 'const h=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).hooks||{};
+     process.stdout.write(String((h[process.argv[2]]||[]).filter((x)=>x._source==="xtmux").length));' "$1"
+}
 
 echo "codex-distribution smoke (HOME=$home)"
 
@@ -93,6 +97,11 @@ check "UNOWNED_INDEX UserPromptSubmit after install" "0" "$(unowned_index UserPr
 # the pane does not fire its whole lifecycle twice.
 check "one xtmux SessionStart entry (no duplicate firing)" "1" "$(xtmux_count SessionStart)"
 check "one xtmux UserPromptSubmit entry" "1" "$(xtmux_count UserPromptSubmit)"
+# K4 (xtmux-s96.4) added the inbound half of the Codex column: the inbox /
+# obligation Stop hook must be part of the managed payload, not just the repo.
+check "K4 inbox hook shipped to the managed dir" "yes" \
+  "$([ -f "$home/.codex/hooks/xtmux/codex-inbox-reply-stop.mjs" ] && echo yes || echo no)"
+check "Stop owns state + turn capture + inbox" "3" "$(owned_count Stop)"
 
 echo "[3/6] update is idempotent"
 snapshot="$(sha256sum "$hooks" | cut -d' ' -f1)"

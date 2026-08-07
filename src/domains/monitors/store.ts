@@ -1,5 +1,7 @@
 import type { Db } from "../../db/connection.ts";
 import { insertEnvelope } from "../../db/journal.ts";
+import { reconcileAgentInstances } from "../agents/recovery.ts";
+import { cancelOutboundWait } from "./outbound-wake.ts";
 import {
   assertHeartbeat,
   assertTransition,
@@ -200,6 +202,83 @@ export interface Probes {
   pidAlive(pid: number): boolean;
   /** does the tmux pane still exist? */
   paneAlive(paneId: string): boolean;
+  /**
+   * Is the tmux server answering at all? Optional; absent means "assume yes",
+   * which is exactly what every pre-K4 caller meant.
+   *
+   * `paneAlive` cannot tell "this pane died" from "tmux is not reachable", and
+   * the two demand opposite responses: the first should close the pane's agent
+   * instance, the second must close NOTHING (a transient outage would otherwise
+   * end every occupation in the database at once). Consulted only when a pane
+   * probe already came back negative, so the extra spawn is not on the hot path.
+   */
+  serverAlive?(): boolean;
+}
+
+export interface PaneOwnedCleanup {
+  waits: string[];
+  monitors: string[];
+}
+
+/**
+ * Terminal cleanup for the monitors a pane ARMED (K4, xtmux-s96.4).
+ *
+ * Ownership here is the requester side, not the target side: `monitors.pane_id`
+ * is who is being watched, `outbound_waits.requester_pane_id` is who is doing
+ * the watching. When an occupation ends, its own watches are the ones that
+ * leak — the wake they are waiting to deliver has no live consumer left, so the
+ * monitor keeps polling and heart-beating until its timeout hours later. A
+ * monitor TARGETING the ended pane is deliberately untouched: it belongs to
+ * another pane, and the existing `target_gone` reconciliation is that pane's
+ * correct signal.
+ *
+ * Idempotent by construction: `cancelOutboundWait` no-ops on a wait that is
+ * already terminal, and the monitor is only terminated while
+ * `terminal_status IS NULL`, so a second cleanup pass writes nothing.
+ */
+export function cancelMonitorsOwnedByPane(
+  db: Db,
+  paneId: string,
+  nowMs: number,
+  detail = "owner_instance_ended",
+): PaneOwnedCleanup {
+  if (!paneId) return { waits: [], monitors: [] };
+  const rows = db.raw
+    .query<
+      { id: string; requester_session_id: string; monitor_id: string | null; state: string },
+      [string]
+    >(
+      `SELECT id, requester_session_id, monitor_id, state
+         FROM outbound_waits
+        WHERE requester_pane_id = ?
+          AND state IN ('unarmed', 'armed', 'terminal-unconsumed')
+        ORDER BY created_at_ms, id`,
+    )
+    .all(paneId);
+
+  const waits: string[] = [];
+  const monitors: string[] = [];
+  for (const row of rows) {
+    if (row.state === "unarmed" || row.state === "armed") {
+      const result = cancelOutboundWait(db, {
+        waitId: row.id,
+        requesterSessionId: row.requester_session_id,
+        requesterPaneId: paneId,
+        nowMs,
+        reasonCode: detail,
+      });
+      if (!result.duplicate) waits.push(row.id);
+    }
+    if (row.monitor_id === null) continue;
+    const monitor = db.raw
+      .query<{ terminal_status: string | null }, [string]>(
+        "SELECT terminal_status FROM monitors WHERE id = ?",
+      )
+      .get(row.monitor_id);
+    if (!monitor || monitor.terminal_status !== null) continue;
+    if (terminate(db, row.monitor_id, "killed", nowMs, detail)) monitors.push(row.monitor_id);
+  }
+  return { waits, monitors };
 }
 
 interface ActiveRow {
@@ -224,6 +303,34 @@ export function reconcileAll(
   probes: Probes,
   nowMs: number,
 ): Array<{ id: string; status: TerminalStatus }> {
+  // K4 restart recovery (xtmux-s96.4): the SAME convergence read that repairs a
+  // crashed monitor now repairs a crashed agent occupation. Deliberately hung
+  // off this entry point rather than a parallel one — `monitor-list` (CLI,
+  // picker, hooks, `listResults`) is already the pass everything runs, so
+  // instances converge wherever monitors do, with no new caller to remember.
+  //
+  // Runs BEFORE the active-monitor scan is read, because cancelling a dead
+  // owner's monitors mutates exactly the rows that scan would otherwise decide
+  // on: a monitor terminated here and then re-terminated as `target_gone` from
+  // a stale snapshot would trip the absorbing-terminal invariant.
+  //
+  // The `|| !serverAlive()` guard is the fail-safe: a pane probe that says
+  // "gone" because tmux itself is unreachable must not end every occupation in
+  // the database. serverAlive is memoized and only consulted after a negative
+  // pane probe.
+  let serverAliveAnswer: boolean | undefined;
+  const serverAlive = (): boolean => {
+    if (serverAliveAnswer === undefined) serverAliveAnswer = probes.serverAlive?.() ?? true;
+    return serverAliveAnswer;
+  };
+  for (const closed of reconcileAgentInstances(
+    db,
+    { paneAlive: (paneId) => probes.paneAlive(paneId) || !serverAlive() },
+    nowMs,
+  )) {
+    cancelMonitorsOwnedByPane(db, closed.paneId, nowMs, `instance_${closed.reason}`);
+  }
+
   const active = db.raw
     .query<ActiveRow, []>(
       `SELECT id, owner_pid, pane_id, lease_expires_at_ms, started_at_ms, timeout_ms

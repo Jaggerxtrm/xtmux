@@ -11,6 +11,7 @@ import { cliMonitorAgent, cliMonitorList, cliWaitAgent } from "./cli-monitors.ts
 import { cliLogEmit, cliLogTail, cliLogQuery, cliLogFollow } from "./cli-log.ts";
 import { cliOutcomeApply } from "./cli-outcome.ts";
 import { findLastTurn } from "./domains/agents/turn.ts";
+import { getInstance } from "./domains/agents/instance.ts";
 import { recordDelivery } from "./domains/deliveries/attempt.ts";
 import type { DeliveryKind } from "./domains/deliveries/attempt.ts";
 import { runMigration } from "./migration/runner.ts";
@@ -51,6 +52,9 @@ commands:
 
   agent-last <pane-id|session-id> [--json]   full text of the target's most
                                            recent agent turn (xtmux-avz)
+  instance-get <instance-id> [--json]        durable metadata of one agent
+                                           occupation; used by agent-state.sh to
+                                           rehydrate pane options (K4)
 
   monitor register|adopt|heartbeat|terminate|list|kill   monitor registry; list/kill accept --json (3xs.4)
   telemetry start|finish                                 correlated command runs (3xs.7)
@@ -312,6 +316,7 @@ async function main(argv: string[]): Promise<number> {
       case "delivery-record":
       case "handoff":
       case "agent-last":
+      case "instance-get":
       case "outcome-apply": {
         const db = openDb(cfg);
         try {
@@ -336,6 +341,7 @@ async function main(argv: string[]): Promise<number> {
             case "delivery-record":  return cliDeliveryRecord(db, rest);
             case "handoff":          return cliHandoff(db, rest);
             case "agent-last":       return cliAgentLast(db, rest);
+            case "instance-get":     return cliInstanceGet(db, rest);
             case "outcome-apply":    return cliOutcomeApply(db, rest);
           }
         } finally {
@@ -504,6 +510,71 @@ function cliAgentLast(db: import("./db/connection.ts").Db, argv: string[]): numb
   // nothing — a clean pipe surface for sibling agents / orchestrators.
   const text = row.lastMessageText ?? row.summary ?? "";
   process.stdout.write(text + (text && !text.endsWith("\n") ? "\n" : ""));
+  return 0;
+}
+
+/**
+ * K4 restart recovery (xtmux-s96.4): read back one occupation's durable
+ * metadata by instance id.
+ *
+ * `agent-state.sh off` clears @agent_bead / @agent_task / @agent_role /
+ * @agent_prompt_file / @agent_parent_session from the pane, so a Codex (or
+ * Claude, or Pi) process restarted in that same pane WITHOUT the launcher
+ * environment came back with no task binding and nothing to recover it from.
+ * @agent_instance_id deliberately survives `off`, and it is the only handle
+ * that proves which occupation the pane last held — so it is the key here.
+ *
+ * Deliberately keyed on the instance id and NOT on the pane id: tmux recycles
+ * `%N` across server restarts, and a pane-keyed lookup would happily hand a
+ * fresh agent the bead of whoever previously held that number.
+ */
+function cliInstanceGet(db: import("./db/connection.ts").Db, argv: string[]): number {
+  const positional = argv.filter((a) => !a.startsWith("--"));
+  const instanceId = positional[0] ?? "";
+  if (!instanceId) {
+    process.stderr.write("instance-get: <instance-id> required\n");
+    return 2;
+  }
+  const row = getInstance(db, instanceId);
+  if (!row) {
+    process.stderr.write(JSON.stringify({
+      code: "XTMUX_NOT_FOUND",
+      message: `no agent instance recorded for ${instanceId}`,
+      detail: { instanceId },
+    }) + "\n");
+    return 5;
+  }
+  const projection: Record<string, unknown> = {
+    instanceId: row.instance_id,
+    sessionId: row.session_id,
+    sessionName: row.session_name,
+    paneId: row.pane_id,
+    runtime: row.runtime,
+    role: row.role,
+    beadId: row.bead_id,
+    task: row.task,
+    promptFile: row.prompt_file,
+    parentSessionId: row.parent_session_id,
+    startedAtMs: row.started_at_ms,
+    endedAtMs: row.ended_at_ms,
+    endReason: row.end_reason,
+    lastState: row.last_state,
+  };
+  if (argv.includes("--json")) {
+    process.stdout.write(JSON.stringify(projection) + "\n");
+    return 0;
+  }
+  // Plain output is `field<TAB>value`, one per line, so `agent-state.sh` can
+  // consume it with a bash read loop. The hook path must stay dependency-free:
+  // it has bash, tmux and date, and adding a JSON parser (node, jq, python) to
+  // a lifecycle hook that has to work in bare environments is not worth one
+  // field lookup. Tabs and newlines are stripped from values so one record can
+  // never forge a second one.
+  const sanitize = (value: unknown): string =>
+    value === null || value === undefined ? "" : String(value).replace(/[\t\r\n]+/g, " ");
+  for (const [key, value] of Object.entries(projection)) {
+    process.stdout.write(`${key}\t${sanitize(value)}\n`);
+  }
   return 0;
 }
 

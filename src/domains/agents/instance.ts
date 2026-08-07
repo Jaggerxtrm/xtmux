@@ -1,5 +1,6 @@
 import type { Db } from "../../db/connection.ts";
 import { insertEnvelope } from "../../db/journal.ts";
+import { cancelPaneObligations } from "../messages/obligations.ts";
 import type { AgentInstanceRow, EndReason } from "./types.ts";
 
 export interface OpenInstanceInput {
@@ -32,6 +33,21 @@ export function openInstance(
     )
     .get(input.instanceId);
   if (existing) return { created: false, instanceId: input.instanceId };
+
+  // K4 restart recovery (xtmux-s96.4): a pane hosts at most ONE live agent
+  // occupation. A new occupation opening on a pane that still has an active
+  // instance is proof that the previous one ended without a lifecycle event —
+  // only `off` used to close a row, so a Codex pane killed with `tmux kill-pane`
+  // or lost to a harness restart left a permanently-open instance that no later
+  // event could ever repair (openInstance is idempotent; closeInstance needs the
+  // dead instance's id, which nothing still holds).
+  //
+  // Done BEFORE the insert and OUTSIDE its transaction so the predecessor's
+  // close and the successor's open are separate journal facts in causal order.
+  for (const stale of activeInstancesForPane(db, input.paneId)) {
+    if (stale.instance_id === input.instanceId) continue;
+    closeInstance(db, { instanceId: stale.instance_id, reason: "superseded" }, now);
+  }
 
   const insert = db.raw.prepare<
     unknown,
@@ -87,6 +103,20 @@ export interface CloseInstanceInput {
   reason: EndReason;
 }
 
+/**
+ * End one agent occupation.
+ *
+ * K4 terminal cleanup (xtmux-s96.4): closing the row also CANCELS the reply
+ * obligations that occupation still owed a reply to. The agent that sent them
+ * is gone, so nothing can ever discharge them; left pending they keep surfacing
+ * in `obligations list` and keep the Stop-time gate arming waits against a dead
+ * requester. Scoping is the ending pane's own `sender_pane_id` — never another
+ * pane's duty, and never a pane-less sender (see cancelPaneObligations).
+ *
+ * Monitors and waits armed BY the pane are cancelled by the monitors domain
+ * (cancelMonitorsOwnedByPane), which owns the monitor lifecycle; this function
+ * deliberately does not reach into it.
+ */
 export function closeInstance(
   db: Db,
   input: CloseInstanceInput,
@@ -117,9 +147,39 @@ export function closeInstance(
       payload: { end_reason: input.reason },
       createdAtMs: endedAtMs,
     });
+    cancelPaneObligations(db, {
+      senderPaneId: existing.pane_id,
+      senderId: existing.session_id,
+      reason: `instance_${input.reason}`,
+      nowMs: endedAtMs,
+    });
   });
   tx();
   return true;
+}
+
+/** One instance row by id, or null. */
+export function getInstance(db: Db, instanceId: string): AgentInstanceRow | null {
+  if (!instanceId) return null;
+  const row = db.raw
+    .query<AgentInstanceRow, [string]>(
+      "SELECT * FROM agent_instances WHERE instance_id = ?",
+    )
+    .get(instanceId);
+  return row ?? null;
+}
+
+/**
+ * Every open instance bound to a pane, newest first. Normally at most one; more
+ * than one means a previous occupation was never closed, which openInstance
+ * repairs by superseding all but the newcomer.
+ */
+export function activeInstancesForPane(db: Db, paneId: string): AgentInstanceRow[] {
+  return db.raw
+    .query<AgentInstanceRow, [string]>(
+      "SELECT * FROM agent_instances WHERE pane_id = ? AND ended_at_ms IS NULL ORDER BY started_at_ms DESC",
+    )
+    .all(paneId);
 }
 
 /**

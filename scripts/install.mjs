@@ -103,7 +103,8 @@ const managedSources = {
   },
   codexHooks: {
     "agent-state.sh": join(root, "scripts", "agent-state.sh"),
-    "codex-agent-turn-capture.mjs": join(root, "hooks", "codex", "codex-agent-turn-capture.mjs"),
+    ...Object.fromEntries(["codex-agent-turn-capture.mjs", "codex-inbox-reply-stop.mjs"]
+      .map((name) => [name, join(root, "hooks", "codex", name)])),
   },
 };
 
@@ -311,6 +312,7 @@ function codexEntry(matcher, command, statusMessage) {
 function canonicalCodexHooks() {
   const script = join(codexHooks, "agent-state.sh");
   const turnCapture = join(codexHooks, "codex-agent-turn-capture.mjs");
+  const inboxReply = join(codexHooks, "codex-inbox-reply-stop.mjs");
   return {
     // --new-instance on SessionStart ONLY (docs/xtmux-gaps.md 12.1): without it
     // a Codex pane never mints @agent_instance_id, never emits agent.ready, and
@@ -325,9 +327,16 @@ function canonicalCodexHooks() {
     // capture are separate entries, mirroring Claude's Stop wiring; the capture
     // reads last_assistant_message (required but nullable) directly from the
     // Codex payload and never scans transcripts.
+    // K4 (xtmux-s96.4) appends the inbound side. Ordered after the turn capture
+    // on purpose: the capture is what creates this turn's outbound FYI, and the
+    // inbox/obligation pass should see the state that turn just produced. All
+    // three entries are recorders — none writes to stdout, so Codex can read no
+    // decision from any of them and the order carries no correctness weight
+    // beyond that freshness.
     Stop: [
       codexEntry(undefined, `CODEX_HOOK_EVENT=Stop bash "${script}" done`, "marking pane done"),
       codexEntry(undefined, `node "${turnCapture}"`, "capturing Codex turn"),
+      codexEntry(undefined, `node "${inboxReply}"`, "checking Codex inbox and reply duties"),
     ],
     // SessionEnd is the lifecycle end marker: `off` ends the durable instance
     // through the shared transition store. Codex 0.146.0 delivers a single

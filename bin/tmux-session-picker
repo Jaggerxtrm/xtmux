@@ -883,7 +883,7 @@ json_requested() {
 json_command_state() {
   local command="$1" subcommand="${2:-}"
   case "$command:$subcommand" in
-    message-list:*|message-status:*|message-get:*|unread-count:*|obligations:list|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|monitors:*|safe-send-pointer:*|handoff:*|message-send:*|message-reply:*|message-cancel:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|log:follow|context:--current|pane:capture|bridge:--stdio|agent-last:*) REPLY='ready' ;;
+    message-list:*|message-status:*|message-get:*|unread-count:*|obligations:list|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|monitors:*|safe-send-pointer:*|handoff:*|message-send:*|message-reply:*|message-cancel:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|log:follow|context:--current|pane:capture|bridge:--stdio|agent-last:*|instance-get:*) REPLY='ready' ;;
     *) REPLY='unsupported' ;;
   esac
 }
@@ -1413,6 +1413,23 @@ message_get() {
   [ "$REPLY" = on ] || { printf 'message-get: requires XTMUX_OBS_V2=1\n' >&2; return 2; }
   obs_runtime_argv
   local args=(message-get "$target")
+  [ "$json" = 1 ] && args+=(--json)
+  exec "${OBS_ARGV[@]}" "${args[@]}"
+}
+
+instance_get() {
+  # K4 (xtmux-s96.4). agent-state.sh calls this through the `xtmux` name on
+  # PATH, which is THIS dispatcher — an unrouted subcommand would fall through
+  # to the interactive picker and the pane-metadata rehydration would silently
+  # no-op on every real install while passing every test that stubs `xtmux`.
+  local target="${1:-}" json=0
+  [ -n "$target" ] || { printf 'usage: instance-get <instance-id> [--json]\n' >&2; return 2; }
+  shift || true
+  [ "${1:-}" = '--json' ] && json=1
+  obs_v2_mode
+  [ "$REPLY" = on ] || { printf 'instance-get: requires XTMUX_OBS_V2=1\n' >&2; return 2; }
+  obs_runtime_argv
+  local args=(instance-get "$target")
   [ "$json" = 1 ] && args+=(--json)
   exec "${OBS_ARGV[@]}" "${args[@]}"
 }
@@ -4269,6 +4286,11 @@ case "${1:-}" in
   agent-last)
     shift
     agent_last "$@"
+    exit $?
+    ;;
+  instance-get)
+    shift
+    instance_get "$@"
     exit $?
     ;;
   unread-count)

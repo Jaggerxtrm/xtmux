@@ -21,4 +21,9 @@ export type EndReason =
   | "state_off"
   | "pane_gone"
   | "killed"
-  | "explicit_stop";
+  | "explicit_stop"
+  // K4 (xtmux-s96.4): a NEW occupation opened on a pane that still had an
+  // active one. The previous agent left without a lifecycle end event — a
+  // crash, a `kill-session`, or a harness restart that reused the pane — so
+  // its instance is closed by the successor rather than left open forever.
+  | "superseded";

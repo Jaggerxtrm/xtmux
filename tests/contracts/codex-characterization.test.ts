@@ -159,15 +159,18 @@ describe("Codex 0.146.0 characterization fixtures", () => {
     expect(owned("UserPromptSubmit")).toHaveLength(1);
     expect(commands(owned("UserPromptSubmit"))[0]).toMatch(/agent-state\.sh" running$/);
     // K3 (xtmux-s96.2) closed the Stop/SessionEnd gaps: the installer now owns
-    // done + turn capture on Stop and off on SessionEnd.
-    expect(owned("Stop")).toHaveLength(2);
+    // done + turn capture on Stop and off on SessionEnd. K4 (xtmux-s96.4)
+    // appended the inbox/obligation entry, so Stop carries three.
+    expect(owned("Stop")).toHaveLength(3);
     expect(commands(owned("Stop")).some((command) => /agent-state\.sh" done$/.test(command))).toBe(true);
     expect(commands(owned("Stop")).some((command) => /codex-agent-turn-capture\.mjs"$/.test(command))).toBe(true);
+    expect(commands(owned("Stop")).some((command) => /codex-inbox-reply-stop\.mjs"$/.test(command))).toBe(true);
     expect(owned("SessionEnd")).toHaveLength(1);
     expect(commands(owned("SessionEnd"))[0]).toMatch(/agent-state\.sh" off$/);
     expect(commands(installed.Stop)).toContain("foreign-stop");
     expect(existsSync(join(home, ".codex/hooks/xtmux/agent-state.sh"))).toBe(true);
     expect(existsSync(join(home, ".codex/hooks/xtmux/codex-agent-turn-capture.mjs"))).toBe(true);
+    expect(existsSync(join(home, ".codex/hooks/xtmux/codex-inbox-reply-stop.mjs"))).toBe(true);
     expect(existsSync(join(home, ".codex/hooks/xtmux/claude-agent-turn-capture.mjs"))).toBe(false);
   });
 });

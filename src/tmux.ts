@@ -29,6 +29,18 @@ export function paneAlive(paneId: string): boolean {
 }
 
 /**
+ * Is the tmux server answering at all?
+ *
+ * `paneAlive` returns false both for "that pane died" and for "there is no tmux
+ * server to ask", and K4's agent-instance reconciliation must treat those
+ * opposite: the first ends one occupation, the second must end none. This asks
+ * a question with no pane in it, so only the server's reachability decides.
+ */
+export function serverAlive(): boolean {
+  return tmux(["display-message", "-p", "#{pid}"]).ok;
+}
+
+/**
  * Canonicalize a raw @agent_state exactly as V1's normalize_agent_state does.
  *
  * This mapping is load-bearing for output compatibility: an operator writes
@@ -88,7 +100,7 @@ export function signal(pid: number): void {
   }
 }
 
-export const liveProbes = { pidAlive, paneAlive, observe, signal };
+export const liveProbes = { pidAlive, paneAlive, observe, signal, serverAlive };
 
 /**
  * window.pane for a pane id. The audit's V1 stdout carries only `%N`, which tmux

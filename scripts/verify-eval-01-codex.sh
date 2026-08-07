@@ -212,19 +212,30 @@ const matrix = [
   { criterion: "EVAL-01 S4 wake consumed exactly once; stale done never replayed on a working target", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S4", status: column },
   { criterion: "EVAL-01 S5 wait-for-transition rides a real running->done cycle; never-worked times out", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S5", status: column },
   { criterion: "EVAL-01 S6 inbound reply-required visible until acked; FYIs create no duty", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S6", status: column },
-  // Relabelled in K4 (xtmux-s96.4). S7 asserts OUTBOUND turn-FYI dedupe and
-  // nothing else. It was labelled "bounded reminders", which reads as inbox
-  // reminder coverage — a capability Codex does not yet have (no Codex hook
-  // emits an inbox reminder, unlike Claude's auto-monitor-drain-stop.mjs and
-  // Pi's pi-inbox-reply.ts). Citing this row as bounded-reminder parity
-  // evidence would have been false. The real capability is tracked as an open
-  // K4 item, not claimed here.
-  { criterion: "EVAL-01 S7 outbound turn-FYI dedupe: duplicate Stops dedupe, one FYI per turn", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S7", status: column },
-  { criterion: "EVAL-01 S8 restart reconstruction; resume re-mints; dedupe survives id rotation", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S8", status: column },
+  // K4 (xtmux-s96.4) UPGRADED this row, it did not rename it back.
+  //
+  // History: the row originally claimed "bounded reminders", which reads as
+  // inbox-reminder coverage. S7 only asserted OUTBOUND turn-FYI dedupe, and no
+  // Codex hook emitted an inbox reminder at all, so the claim was false and K4
+  // narrowed the label to the one true fact it tested.
+  //
+  // The capability now EXISTS (hooks/codex/codex-inbox-reply-stop.mjs) and S7
+  // asserts it directly: an inbound reply-required message is surfaced exactly
+  // once and is NOT re-surfaced on later Stops while it stays pending, with the
+  // emission count pinned by `agent.inbox.reminder` journal rows. S7b pins the
+  // ordering that makes the bound real — the already-reminded key is persisted
+  // BEFORE the reminder is emitted, and a failed write aborts the emission
+  // rather than leaving an unrecorded reminder to re-spin forever.
+  { criterion: "EVAL-01 S7 bounded reminders: outbound turn-FYI dedupe AND inbound reply-required reminded exactly once (write-first, abort on persist failure)", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S7 + S7b", status: column },
+  { criterion: "EVAL-01 S7c inbound obligation gate: a Codex Stop arms the missing wait and consumes delivered wakes (no unverified Stop-veto protocol)", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S7c", status: column },
+  { criterion: "EVAL-01 S8 restart reconstruction; resume re-mints and SUPERSEDES the unclosed occupation; dedupe survives id rotation", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S8", status: column },
+  { criterion: "restart recovery: a vanished pane's instance is closed (pane_gone) through the existing reconcile entry point, and its obligations and monitors are cancelled; another pane's are not", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S8b + tests/integration/agent-recovery.test.ts", status: column && ok("full-bun-test") },
+  { criterion: "recovery fail-safe: an unreachable tmux server ends no instance", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S8c + tests/integration/agent-recovery.test.ts", status: column && ok("full-bun-test") },
+  { criterion: "restart rehydration: a bare relaunch recovers the pane's task binding from @agent_instance_id, and invents nothing when that key is gone", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S8d + S8e", status: column },
   { criterion: "EVAL-01 S9 hostile payloads are data: no turn, no message, no execution", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S9", status: column },
   { criterion: "EVAL-01 S10 duplicate lifecycle events idempotent (one instance, debounced transitions)", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S10", status: column },
   { criterion: "EVAL-01 S11 steering is an ordinary reply-required inbound (no harness auto-action)", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: S11", status: column },
-  { criterion: "terminal cleanup: SessionEnd closes instance, clears lineage, preserves instance id", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: terminal cleanup", status: column },
+  { criterion: "terminal cleanup: SessionEnd closes instance, clears lineage, preserves instance id, and cancels the ending pane's own obligations and monitors only", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: terminal cleanup", status: column },
   { criterion: "turn capture correlates to the minted instance via installed Stop hook", evidence: "tests/contracts/eval-01-codex-matrix.test.ts :: turn capture", status: column },
   { criterion: "installer ownership: idempotent install, non-destructive uninstall, unowned config preserved", evidence: "eval-01-codex-matrix.test.ts :: terminal cleanup + tests/installer/install.test.mjs", status: column && ok("installer") },
   { criterion: "lifecycle start/running/done/off/degraded over the existing authority", evidence: "tests/contracts/codex-adapter.test.ts :: installed Codex lifecycle wiring", status: green("codex-adapter") },
