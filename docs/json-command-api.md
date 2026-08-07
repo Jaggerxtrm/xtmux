@@ -246,6 +246,7 @@ Compiled plumbing remains documented even when it is not exposed as a picker or 
 | `obs:unread-count` | agent-json | existing object retained | .2 |
 | `obs:wait-agent` | agent-json | requester-owned durable wait and wake object; timeout remains rc 124 | 3ua.4 |
 | `obs:monitor-agent` | agent-json | monitor plus requester-owned wait registration object | 3ua.4 |
+| `obs:monitor-run` | guarded-admin | background poller implementation detail; forked by `monitor-agent` | xtmux-dvs |
 | `obs:monitor-list` | agent-json | durable monitor and wake state array | 3ua.4 |
 | `obs:log-emit` | guarded-admin | internal event write | .4 |
 | `obs:log-tail` | agent-json | NDJSON → array in JSON mode | .4 |

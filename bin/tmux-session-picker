@@ -85,7 +85,9 @@ normalize_agent_state() {
   case "$opt" in
     needs-input|permission|waiting|input) REPLY='needs-input'; return 0 ;;
     done|finished|stop|complete)          REPLY='done';        return 0 ;;
-    running|working|thinking|busy|tool)   REPLY='running';     return 0 ;;
+    running|working|thinking|busy|tool)
+      if agent_state_is_stale "${4:-}"; then REPLY='stale'; else REPLY='running'; fi
+      return 0 ;;
     idle)                                  REPLY='idle';        return 0 ;;
     ''|-|off|none) ;;
     *) REPLY="$opt"; return 0 ;;
@@ -110,12 +112,63 @@ normalize_agent_state() {
   fi
 }
 
+# xtmux-dvs defect 2: @agent_state is a last-write-wins pane option, so a pane
+# that died mid-turn keeps advertising `running` forever. On 2026-08-05 five
+# panes reported running with @agent_last_transition frozen for over eight hours
+# after a usage limit killed them mid-request, and every consumer that read the
+# state alone concluded the lanes were healthy.
+#
+# Only `running` is falsifiable by age. `needs-input`, `done` and `idle` are
+# legitimately durable — a pane can sit at a permission prompt for a day and the
+# state is still true.
+#
+# Fails OPEN: a pane with no @agent_last_transition, or an unparseable value, is
+# never called stale. The option is genuinely unset on some panes, and an
+# aggressive default there would be the mirror image of the bug.
+#
+# Threshold: XTMUX_AGENT_STALE_AFTER (`45m`, `90s`, `2h`), default 45m, 0 disables.
+# The same default and variable are honoured by src/tmux.ts.
+agent_stale_after_s() {
+  if [ -z "${_XTMUX_STALE_AFTER_S:-}" ]; then
+    if [ -n "${XTMUX_AGENT_STALE_AFTER:-}" ] && parse_wait_duration "${XTMUX_AGENT_STALE_AFTER}"; then
+      _XTMUX_STALE_AFTER_S="$REPLY"
+    else
+      _XTMUX_STALE_AFTER_S=2700
+    fi
+  fi
+  REPLY="$_XTMUX_STALE_AFTER_S"
+}
+
+# agent_state_is_stale <last_transition> -> 0 when stale
+#
+# The timestamp is supplied by the caller, never fetched here. Every bulk caller
+# already enumerates panes with `tmux list-panes -F`, so carrying
+# @agent_last_transition in that same format costs no extra tmux call. An earlier
+# revision fell back to one `show-options` per running pane; that read is
+# invisible in normal use but is counted by the monitor_run poll-tick contracts
+# in test/contract.sh, which stub `tmux` and assert an exact call count. Reading
+# only what the caller already has keeps the probe count untouched and the hot
+# list path free.
+#
+# Callers with no timestamp to hand pass nothing and get the fail-open answer.
+agent_state_is_stale() {
+  local lt="${1:-}" after ts now
+  [ -n "$lt" ] && [ "$lt" != '-' ] || return 1
+  agent_stale_after_s; after="$REPLY"
+  [ "$after" -gt 0 ] || return 1
+  ts="$(date -d "$lt" +%s 2>/dev/null)" || return 1
+  [ -n "$ts" ] || return 1
+  now="$(date +%s)"
+  [ "$(( now - ts ))" -gt "$after" ]
+}
+
 agent_rank() {
   case "$1" in
-    needs-input) REPLY=0 ;;
-    done)        REPLY=1 ;;
-    running)     REPLY=2 ;;
-    *)           REPLY=3 ;;
+    stale)       REPLY=0 ;;
+    needs-input) REPLY=1 ;;
+    done)        REPLY=2 ;;
+    running)     REPLY=3 ;;
+    *)           REPLY=4 ;;
   esac
 }
 
@@ -128,6 +181,7 @@ agent_state_is_working() {
 
 state_badge() {
   case "$1" in
+    stale)       REPLY=$'\033[38;5;203m[stale]'"$c_reset" ;;
     needs-input) REPLY=$'\033[38;5;214m[wait]'"$c_reset" ;;
     done)        REPLY=$'\033[38;5;78m[done]'"$c_reset" ;;
     running)     REPLY=$'\033[38;5;81m[run]'"$c_reset" ;;
@@ -431,7 +485,7 @@ session_meta() {
 }
 
 pane_meta() {
-  tmux list-panes -a -F $'#{session_id}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}'
+  tmux list-panes -a -F $'#{session_id}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}'
 }
 
 agent_meta_value() {
@@ -1762,13 +1816,17 @@ idle_label_plain() {
   else REPLY="$(( age / 86400 ))d"; fi
 }
 
+# `stale` outranks everything: it is the one state that means the tooling has
+# lost sight of a lane. A session rollup that let a healthy sibling pane hide a
+# stale one would reproduce exactly the blindness of xtmux-dvs.
 dashboard_state_rank() {
   case "${1:-}" in
-    needs-input) REPLY=0 ;;
-    running) REPLY=1 ;;
-    done) REPLY=2 ;;
-    idle) REPLY=3 ;;
-    *) REPLY=4 ;;
+    stale) REPLY=0 ;;
+    needs-input) REPLY=1 ;;
+    running) REPLY=2 ;;
+    done) REPLY=3 ;;
+    idle) REPLY=4 ;;
+    *) REPLY=5 ;;
   esac
 }
 
@@ -1812,9 +1870,9 @@ _dashboard_tsv() {
     fi
   done < <(session_meta)
 
-  while IFS=$'\t' read -r pane_sid pane_sname pane_id pane_cmd pane_path pane_state pane_pid pane_bead pane_task pane_parent; do
+  while IFS=$'\t' read -r pane_sid pane_sname pane_id pane_cmd pane_path pane_state pane_pid pane_bead pane_task pane_parent pane_transition; do
     [ -n "$pane_sid" ] || continue
-    normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd"; pane_state_norm="$REPLY"
+    normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd" "$pane_transition"; pane_state_norm="$REPLY"
     dashboard_choose_state "${sess_state[$pane_sid]:-}" "$pane_state_norm"; sess_state["$pane_sid"]="$REPLY"
     agent_meta_value "$pane_bead"; pane_bead="$REPLY"
     agent_meta_value "$pane_task"; pane_task="$REPLY"
@@ -1824,7 +1882,7 @@ _dashboard_tsv() {
       printf 'pane\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$pane_sid" "$(tsv_clean "$pane_sname")" "$pane_id" "${pane_state_norm:-}" "$(tsv_clean "$pane_bead")" "$(tsv_clean "$pane_task")" "$(tsv_clean "$pane_cmd")" "$(tsv_clean "$pane_path")" >> "$tmp_panes"
     fi
-  done < <(tmux list-panes -a -F $'#{session_id}\t#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}' 2>/dev/null || true)
+  done < <(tmux list-panes -a -F $'#{session_id}\t#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}' 2>/dev/null || true)
 
   for root in "${!root_sids[@]}"; do
     _sid_list="${root_sids[$root]}"; set -- $_sid_list
@@ -2664,7 +2722,7 @@ build_list() {
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$section" "$sort_key" "$stale_bucket" "$sid" "$sname" "$display" >> "$tmp_sessions"
   done < <(session_meta)
 
-  while IFS=$'\t' read -r sid window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_state pane_pid pane_bead pane_task pane_parent; do
+  while IFS=$'\t' read -r sid window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_state pane_pid pane_bead pane_task pane_parent pane_transition; do
     [ -n "$sid" ] || continue
     pane_row_path="${pane_row_path:-$HOME}"
 
@@ -2679,7 +2737,7 @@ build_list() {
       case " ${root_sids[$root]:-} " in *" $sid "*) ;; *) root_sids[$root]+=" $sid" ;; esac
     fi
 
-    normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd"; pane_state="$REPLY"
+    normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd" "$pane_transition"; pane_state="$REPLY"
     # specialist state takes precedence when tracked: a waiting specialist should
     # rank for attention like a waiting agent pane (xtmux-rib.4).
     # fast specialist detection for list hot path: session name + live pane pid.
@@ -2788,18 +2846,21 @@ build_list() {
 }
 
 attn_list() {
-  local sid sname pane_id pane_cmd activity pane_state pane_pid rank
-  while IFS=$'	' read -r sid sname pane_id pane_cmd activity pane_state pane_pid; do
+  local sid sname pane_id pane_cmd activity pane_state pane_pid pane_transition rank
+  while IFS=$'	' read -r sid sname pane_id pane_cmd activity pane_state pane_pid pane_transition; do
     [ -n "$pane_id" ] || continue
-    normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd"; pane_state="$REPLY"
+    normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd" "$pane_transition"; pane_state="$REPLY"
     sp_is_specialist "$sname" "$pane_pid"; sp_role="$REPLY"
     # no synthetic specialist state here: attn-jump/waiting use explicit
     # @agent_state only for sp panes, keeping the hot path truthful.
     agent_rank "$pane_state"; rank="$REPLY"
-    [ "$rank" -le 1 ] || continue
+    # stale/needs-input/done. The bound tracks agent_rank: inserting `stale` at 0
+    # shifted done from 1 to 2, and leaving the bound at 1 would have silently
+    # dropped finished panes out of attn-jump.
+    [ "$rank" -le 2 ] || continue
     printf '%s	%s	%s	%s
 ' "$rank" "${activity:-0}" "$sid" "$pane_id"
-  done < <(tmux list-panes -a -F $'#{session_id}	#{session_name}	#{pane_id}	#{pane_current_command}	#{window_activity}	#{?@agent_state,#{@agent_state},-}	#{pane_pid}') |
+  done < <(tmux list-panes -a -F $'#{session_id}	#{session_name}	#{pane_id}	#{pane_current_command}	#{window_activity}	#{?@agent_state,#{@agent_state},-}	#{pane_pid}	#{?@agent_last_transition,#{@agent_last_transition},-}') |
     sort -t $'	' -k1,1n -k2,2nr
 }
 
@@ -3806,7 +3867,7 @@ preview_pane_row() {
   git_root_for_path "$pane_path"; root="$REPLY"
   root_name="${root:+${root##*/}}"
   attached="$(tmux display-message -p -t "$sid" '#{session_attached}' 2>/dev/null || true)"
-  normalize_agent_state "$target_pane" "$pane_state" "$pane_cmd"; pane_state="$REPLY"
+  normalize_agent_state "$target_pane" "$pane_state" "$pane_cmd" "$meta_last"; pane_state="$REPLY"
 
   if [ -n "$root" ] && [ "$pane_path" != "$root" ]; then
     relative_hint "$pane_path" "$root"; rel="$REPLY"

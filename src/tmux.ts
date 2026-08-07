@@ -25,7 +25,15 @@ export function pidAlive(pid: number): boolean {
 }
 
 export function paneAlive(paneId: string): boolean {
-  return tmux(["display-message", "-p", "-t", paneId, "#{pane_id}"]).ok;
+  const r = tmux(["display-message", "-p", "-t", paneId, "#{pane_id}"]);
+  // The status alone is not the answer: asked about a pane that no longer
+  // exists, tmux exits 0 and prints an EMPTY line (verified against tmux 3.x
+  // with $TMUX set — it resolves the server, finds no such pane, and formats
+  // nothing). Reading `ok` only, this reported every destroyed pane as alive, so
+  // reconcile's `target_gone` branch could never fire and a monitor on a killed
+  // pane stayed active until its lease or timeout invented some other reason.
+  // A live pane always formats its own id, so a non-empty answer is the test.
+  return r.ok && r.out !== "";
 }
 
 /**
@@ -81,15 +89,70 @@ export function normalizeAgentState(raw: string): string {
 }
 
 /**
+ * Liveness threshold for @agent_state (xtmux-dvs defect 2).
+ *
+ * @agent_state is a last-write-wins pane option: when a pane dies mid-turn the
+ * last value written persists forever, so a corpse keeps advertising `running`.
+ * On 2026-08-05 five panes reported `running` with @agent_last_transition frozen
+ * for over eight hours after a usage limit killed them mid-request, and every
+ * consumer that read state alone concluded the lanes were healthy.
+ *
+ * Only `running` is falsifiable by age. `needs-input`, `done` and `idle` are
+ * legitimately durable — a pane can sit at a permission prompt for a day and the
+ * state is still true. `running` is the only value that asserts ongoing activity,
+ * so it is the only one an old transition timestamp contradicts.
+ *
+ * 45 minutes, chosen against the two bounds that matter:
+ *   - lower: it must exceed the longest legitimately silent working stretch. The
+ *     default monitor/wait timeout is 30m (src/cli-monitors.ts), so a genuinely
+ *     long-running monitored turn reaches its own `timeout` first and is reported
+ *     as a timeout rather than mislabelled stale.
+ *   - upper: it must catch a corpse inside the first hour. The incident ran eight.
+ * Tune with XTMUX_AGENT_STALE_AFTER (e.g. `20m`, `90s`, or raw ms); 0 disables.
+ */
+export const AGENT_STALE_AFTER_MS = staleAfterMs();
+
+function staleAfterMs(): number {
+  const raw = process.env.XTMUX_AGENT_STALE_AFTER;
+  if (raw === undefined || raw === "") return 45 * 60_000;
+  const m = /^(\d+(?:\.\d+)?)(ms|s|m|h)?$/.exec(raw.trim());
+  if (!m) return 45 * 60_000;
+  const mult = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 }[m[2] ?? "ms"] ?? 1;
+  return Math.max(0, Math.floor(Number(m[1]) * mult));
+}
+
+/**
+ * Overlay the liveness rule on a normalized state.
+ *
+ * Fails OPEN: a pane with no @agent_last_transition, or one whose value does not
+ * parse, is never called stale. The option is genuinely unset on some panes and
+ * an aggressive default there would flip every such pane to stale — the mirror
+ * image of the bug, and just as untrue.
+ *
+ * Pure, so the rule is testable without tmux.
+ */
+export function applyStaleness(state: string, lastTransition: string | undefined, nowMs: number): string {
+  if (state !== "running" || AGENT_STALE_AFTER_MS <= 0) return state;
+  if (!lastTransition || lastTransition === "-") return state;
+  const atMs = Date.parse(lastTransition);
+  if (Number.isNaN(atMs)) return state;
+  return nowMs - atMs > AGENT_STALE_AFTER_MS ? "stale" : state;
+}
+
+/**
  * The pane's observed state, normalized. `unknown` when the pane advertises no
  * @agent_state at all — V1's answer when its opt-in pane-content inference
- * (TMUX_PICKER_AGENT) is disabled, which is the default.
+ * (TMUX_PICKER_AGENT) is disabled, which is the default. `stale` when the pane
+ * claims `running` but has not transitioned inside AGENT_STALE_AFTER_MS.
  */
 export function observe(paneId: string): string {
   const r = tmux(["show-options", "-p", "-t", paneId, "-qv", "@agent_state"]);
   const raw = r.ok ? r.out : "";
   if (raw === "") return "unknown";
-  return normalizeAgentState(raw);
+  const state = normalizeAgentState(raw);
+  if (state !== "running") return state;
+  const t = tmux(["show-options", "-p", "-t", paneId, "-qv", "@agent_last_transition"]);
+  return applyStaleness(state, t.ok ? t.out : undefined, Date.now());
 }
 
 export function signal(pid: number): void {
