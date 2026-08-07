@@ -2144,11 +2144,11 @@ DELEGATION — hand work to another pane without fragmenting its prompt.
 
 IDENTITY & LAST TURN — who a pane is, and what it last said.
   context --current [--json]   the runtime origin of the INVOKING pane, as
-                               xtrm.runtime-origin.v1. Read-only. Outside tmux,
-                               or when the pane cannot be verified against the
-                               live server, exits non-zero with a structured
-                               error and prints nothing — never a guessed binding.
+                               xtrm.runtime-origin.v1. Read-only. Outside tmux, or when
+                               the pane cannot be verified against the live server, exits
+                               non-zero with a structured error — never a guessed binding.
   agent-last <pane-id|session-id> [--json]   full text of the target's most recent agent turn (pi+claude); plain falls back to summary; exit 5 XTMUX_NOT_FOUND.
+  instance-get <instance-id> [--json]        one durable agent occupation by id; plain output is field<TAB>value so a hook can read one field without a JSON parser; exit 5 XTMUX_NOT_FOUND.
 
   json output:
     context        schema_version, kind, host_id, tmux_session_id/window_id/
