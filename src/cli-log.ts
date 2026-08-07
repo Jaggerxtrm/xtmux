@@ -11,6 +11,7 @@ import { emitEvent, query as journalQuery, tail as journalTail } from "./domains
 import { journalPage, type JournalPageItemV1 } from "./domains/events/page.ts";
 import type { JournalRow } from "./domains/events/query.ts";
 import { closeInstance, openInstance } from "./domains/agents/instance.ts";
+import { cancelMonitorsOwnedByPane } from "./domains/monitors/store.ts";
 import { insertEnvelope } from "./db/journal.ts";
 import { isUniqueViolation } from "./db/errors.ts";
 import { recordTransition } from "./domains/agents/transition.ts";
@@ -275,9 +276,10 @@ export function cliLogEmit(db: Db, argv: string[]): number {
         sourceEvent: "agent.role.launched",
       });
       return 0;
-    case "agent.state":
-      recordTransition(db, {
-        paneId: fields["pane"] ?? fields["pane_id"] ?? "",
+    case "agent.state": {
+      const paneId = fields["pane"] ?? fields["pane_id"] ?? "";
+      const transition = recordTransition(db, {
+        paneId,
         sessionId: fields["session"] ?? fields["session_id"],
         // Without this the transition is attributed by pane lookup alone, so a
         // pane whose occupant just rotated would hang its first transitions off
@@ -291,7 +293,18 @@ export function cliLogEmit(db: Db, argv: string[]): number {
         promptFile: fields["prompt_file"],
         parentSessionId: fields["parent"] ?? fields["parent_session"],
       });
+      // K4 terminal cleanup (xtmux-s96.4): `off` ended the occupation, so the
+      // watches it armed can never be consumed. closeInstance already cancelled
+      // the pane's outbound reply obligations; the monitor side is the monitors
+      // domain's to cancel, and this composition layer is where the two meet.
+      // Best-effort: a lifecycle hook must never fail on cleanup.
+      if (transition.endedInstance) {
+        try {
+          cancelMonitorsOwnedByPane(db, paneId, Date.now(), "instance_state_off");
+        } catch { /* the reconcile pass on the next monitor-list converges anyway */ }
+      }
       return 0;
+    }
     case "agent.instance.started":
       openInstance(db, {
         instanceId: fields["instance_id"] ?? fields["instance"] ?? "",
@@ -338,14 +351,21 @@ export function cliLogEmit(db: Db, argv: string[]): number {
       }
       return 0;
     }
-    case "agent.instance.ended":
-      closeInstance(db, {
+    case "agent.instance.ended": {
+      const ended = closeInstance(db, {
         instanceId: fields["instance_id"] ?? fields["instance"] ?? "",
         // `off` is the lifecycle end marker the hooks send; the other EndReasons
         // belong to callers that observed the pane die, not the agent exit.
         reason: "state_off",
       });
+      const paneId = fields["pane"] ?? fields["pane_id"] ?? "";
+      if (ended && paneId) {
+        try {
+          cancelMonitorsOwnedByPane(db, paneId, Date.now(), "instance_state_off");
+        } catch { /* the reconcile pass on the next monitor-list converges anyway */ }
+      }
       return 0;
+    }
     case "agent.turn.done":
       completeTurn(db, {
         paneId: fields["pane"] ?? fields["pane_id"] ?? "",

@@ -1,6 +1,19 @@
 # Codex K1 characterization packet
 
-Status: read-only characterization for `xtmux-s96.1`.
+Status: read-only characterization for `xtmux-s96.1`. **HISTORICAL.** Every
+"current" statement in this document is frozen at the K1 capture boundary below
+(xtmux `v0.2.3`, commit `12d6709e`) and several are now false: K3
+(`xtmux-s96.2`) and K4 (`xtmux-s96.4`) closed most of the gaps this packet
+records. The document is kept unedited-in-substance because it is the evidence
+that those gaps were real and observed, not inferred.
+
+**For the wiring that is actually installed, read
+[`docs/agent-state-hooks.md` § codex](agent-state-hooks.md#codex).** The
+sections marked "superseded" below say exactly what changed.
+
+The parts of this packet that remain authoritative are the observations, not the
+inventory: the Codex 0.146.0 payload shapes, their provenance and redaction, and
+the fixtures under `tests/fixtures/codex/0.146.0/`.
 
 ## Capture boundary
 
@@ -26,10 +39,28 @@ Fixtures are versioned under `tests/fixtures/codex/0.146.0/`:
 | `session-end.json` | live Codex capture after request failure | `session_id`, `transcript_path`, `cwd`, `hook_event_name`, `reason` |
 | `stop-reference.json` | `openai/codex` `rust-v0.146.0` schema at commit `e363b08c` | common fields plus `turn_id`, `stop_hook_active`, `last_assistant_message` |
 
-## Current installed xtmux wiring
+## Installed xtmux wiring at K1 — SUPERSEDED
+
+> **Superseded by K3 (`xtmux-s96.2`) and K4 (`xtmux-s96.4`).** The two-entry
+> table below was the complete wiring when this packet was captured. It is no
+> longer. Since K3 the installer also owns `Stop` (`done` + Codex turn capture)
+> and `SessionEnd` (`off`), and since K4 a third `Stop` entry
+> (`codex-inbox-reply-stop.mjs`) carries the inbound inbox reminder, the
+> obligation gate and wake consumption. The managed Codex directory now holds
+> `agent-state.sh`, `codex-agent-turn-capture.mjs` and
+> `codex-inbox-reply-stop.mjs` — the sentence "contains only `agent-state.sh`"
+> is false as of K3. Entries are also APPENDED behind unowned ones now, because
+> Codex keys hook trust positionally. The current table lives in
+> `docs/agent-state-hooks.md` § codex.
+>
+> Still true and still load-bearing: ownership is tag-based (`_source: "xtmux"`)
+> with byte-exact adoption of pre-tag entries; untagged foreign entries survive
+> install and uninstall; the `SessionStart` matcher excludes `compact`;
+> `agent-state.sh` takes its state from argv and never parses Codex JSON on
+> stdin; and it exits 0 without changing state outside a live tmux client.
 
 `scripts/install.mjs` updates an existing `~/.codex/hooks.json`; it does not install
-Codex. It writes two `_source: "xtmux"` entries:
+Codex. At K1 it wrote two `_source: "xtmux"` entries:
 
 | Codex event | Matcher | Command | Current effect |
 |---|---|---|---|
@@ -75,7 +106,22 @@ until the Core package is consumable. K3 must define an explicit mapping from th
 boundary to these existing xtmux authorities instead of adding a Codex message,
 obligation, monitor, wake, identity, lifecycle, or turn store.
 
-## Observed gaps blocking K3
+## Observed gaps blocking K3 — mostly CLOSED
+
+> **Status of each gap as of K4 (`xtmux-s96.4`):**
+>
+> 1. CLOSED by K3 — `Stop` (`done`) and `SessionEnd` (`off`) are installed.
+> 2. CLOSED by K3 — `codex-agent-turn-capture.mjs` reads `last_assistant_message`
+>    directly from the Stop payload and emits `agent.turn.done`.
+> 3. OPEN by design — `PermissionRequest`, `PreToolUse`, `PostToolUse`,
+>    compact-aware `SessionStart` and subagent events are still unwired for
+>    Codex, and `Notification` is still unverified.
+> 4. CLOSED by K3/K4 — Codex now has turn capture (K3) and the inbound
+>    inbox/obligation/wake surface (K4, `codex-inbox-reply-stop.mjs`).
+> 5. CLOSED by K4, still shared-domain — recovery is `reconcileAgentInstances`
+>    hung off the existing `reconcileAll` entry point plus supersession in
+>    `openInstance`. No Codex-specific state machine was added, exactly as this
+>    packet argued.
 
 1. Codex has verified `Stop` and `SessionEnd` payloads, but xtmux installs neither;
    Codex panes cannot report `done` or `off` through the current installer.

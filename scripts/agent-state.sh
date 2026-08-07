@@ -140,6 +140,62 @@ clear_optional_meta() {
   set_pane_option @agent_parent_pane ""
 }
 
+# K4 restart recovery (xtmux-s96.4). `off` clears @agent_bead, @agent_task,
+# @agent_role, @agent_prompt_file and @agent_parent_session, so an agent
+# restarted in the SAME pane without its launcher environment — `codex resume`,
+# a crashed harness relaunched by hand, a reattached terminal — used to come
+# back with no task binding and no way to recover one.
+#
+# @agent_instance_id is the recovery key, and the only sound one available:
+# it deliberately survives `off`, it lives in the tmux server (so it is gone
+# after a real server restart, exactly when the recycled `%N` would otherwise
+# hand a fresh agent someone else's bead), and it names the durable row that
+# still holds the metadata. Restoration is strictly conservative:
+#
+#   * a variable the CALLER supplied always wins — a relaunch with a new bead
+#     is a new binding, not a recovery;
+#   * a pane option that still has a value is never overwritten;
+#   * anything the durable row does not hold stays empty. Nothing is inferred.
+#
+# Best-effort and bounded like every other durable write here: no xtmux on
+# PATH, no row, or a slow database all leave the pane exactly as it was.
+restore_pane_meta() {
+  local prev out key value pair env opt field rest
+  prev="$(tmux show-options -p -t "$target" -qv @agent_instance_id 2>/dev/null || true)"
+  [ -n "$prev" ] || return 0
+  command -v xtmux >/dev/null 2>&1 || return 0
+  case "${XTMUX_OBS_V2:-}" in
+    '' | 1 | shadow) ;;
+    *) return 0 ;;
+  esac
+
+  local wanted=()
+  for pair in \
+    "XTMUX_AGENT_BEAD:@agent_bead:beadId" \
+    "XTMUX_AGENT_TASK:@agent_task:task" \
+    "XTMUX_AGENT_ROLE:@agent_role:role" \
+    "XTMUX_AGENT_PROMPT_FILE:@agent_prompt_file:promptFile" \
+    "XTMUX_AGENT_PARENT_SESSION:@agent_parent_session:parentSessionId"
+  do
+    env="${pair%%:*}"; rest="${pair#*:}"; opt="${rest%%:*}"; field="${rest##*:}"
+    if [ "${!env+x}" = x ]; then continue; fi
+    if [ -n "$(tmux show-options -p -t "$target" -qv "$opt" 2>/dev/null || true)" ]; then continue; fi
+    wanted+=("$opt:$field")
+  done
+  [ "${#wanted[@]}" -gt 0 ] || return 0
+
+  out="$(XTMUX_OBS_V2=1 timeout 2s xtmux instance-get "$prev" 2>/dev/null || true)"
+  [ -n "$out" ] || return 0
+  while IFS=$'\t' read -r key value; do
+    [ -n "${value:-}" ] || continue
+    for pair in "${wanted[@]}"; do
+      [ "${pair##*:}" = "$key" ] || continue
+      set_pane_option "${pair%%:*}" "$(sanitize_meta_value "$value")"
+    done
+  done <<< "$out"
+  return 0
+}
+
 prev_state="$(tmux show-options -p -t "$target" -qv @agent_state 2>/dev/null || true)"
 
 # a new agent occupation of the pane gets a fresh identity, written before the
@@ -147,6 +203,9 @@ prev_state="$(tmux show-options -p -t "$target" -qv @agent_state 2>/dev/null || 
 # id: rotating it per-idle would make every turn look like a new agent, and a
 # pane's Specialists jobs would scatter across phantom instances.
 if [ "$new_instance" = 1 ]; then
+  # BEFORE the id rotates: the outgoing @agent_instance_id is the key to the
+  # metadata the previous occupation left behind, and the next line overwrites it.
+  restore_pane_meta
   xtmux_gen_uuid
   set_pane_option @agent_instance_id "$REPLY"
 fi

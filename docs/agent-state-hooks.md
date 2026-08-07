@@ -466,11 +466,82 @@ lifecycle through the SAME lifecycle authority as Claude and Pi
 |---|---|---|
 | `SessionStart` | `startup\|resume\|clear` | `idle --new-instance` (mints `@agent_instance_id`, emits `agent.ready`); tagged `XTMUX_AGENT_RUNTIME=codex` |
 | `UserPromptSubmit` | none | `running` |
-| `Stop` | none | `done` plus `codex-agent-turn-capture.mjs` |
-| `SessionEnd` | none | `off` (ends the durable instance) |
+| `Stop` | none | `done`, then `codex-agent-turn-capture.mjs`, then `codex-inbox-reply-stop.mjs` |
+| `SessionEnd` | none | `off` (ends the durable instance, cancels the pane's own obligations and monitors) |
 
 Every state command carries `CODEX_HOOK_EVENT=<event>`, so durable transitions
 record their source event exactly like the Claude wiring.
+
+### K4 (xtmux-s96.4): the inbound half, recovery, and terminal cleanup
+
+`hooks/codex/codex-inbox-reply-stop.mjs` is the Codex counterpart of Claude's
+`auto-monitor-drain-stop.mjs` and Pi's `pi-inbox-reply.ts`. It has three duties
+and writes nothing to stdout, so Codex can never read it as a decision:
+
+1. **Bounded inbox reminder.** Inbound reply-required messages addressed to this
+   pane are surfaced on stderr once each, as `message-key` pointers, capped at
+   `MAX_INBOX_KEYS` (20 — the same cap as the Claude hook). The already-reminded
+   set is persisted to `$XDG_STATE_HOME/xtmux/codex-inbox/<pane>.json` **before**
+   the reminder is emitted, and a failed write ABORTS the emission. The natural
+   order (remind, then record) silently voids the bound: an unrecorded reminder
+   re-surfaces the same message on every later Stop, forever. A missed reminder
+   is bounded, visible in `xtmux message-list --expects-reply`, and recovered on
+   the next Stop. Each emission also writes one `agent.inbox.reminder` journal
+   row, which is the durable evidence the tests count.
+2. **Obligation gate.** Reply-required messages this pane SENT need a durable
+   wait or their replies wake nobody. Claude blocks the Stop and tells the model
+   to arm a native Monitor; whether a Codex command hook can veto a Stop is not
+   part of the verified 0.146.0 surface, so the Codex hook arms the wait itself
+   via `xtmux monitor-agent` (the Pi model) rather than depending on an
+   unverified decision protocol. Bounded at 5 arms per Stop.
+3. **Wake consumption.** A delivered-but-unconsumed wake this pane owns is
+   consumed here. Claude does this from `PostToolUse`; Codex has no equivalent
+   tool seam, so Stop carries it.
+
+Everything fails open: an unreadable payload, a missing tmux context, an
+unavailable CLI or malformed JSON all exit 0 silently. `XTMUX_CODEX_INBOX_DISABLE=1`
+turns the hook off entirely.
+
+**Restart recovery.** `agent_instances` rows used to be closed by exactly one
+caller — `state=off` — so a pane killed without a `SessionEnd` (kill-pane, a
+crashed harness, a closed terminal) left a row open for the life of the
+database. Two repairs, both through the existing authorities:
+
+- A pane that no longer exists closes its instance as `pane_gone`. This runs
+  inside `reconcileAll()` — the same convergence pass every `monitor-list`
+  already performs for monitors — so there is no new entry point to remember.
+  It is fail-safe against a tmux server that is merely unreachable: `paneAlive`
+  cannot tell "this pane died" from "tmux is not answering", so a negative pane
+  probe is re-checked against `serverAlive()` and an unreachable server ends
+  NOTHING.
+- A pane that still exists but has been re-occupied closes the predecessor as
+  `superseded`, eagerly in `openInstance()`. Waiting for a reconciliation read
+  would attribute the successor's first transitions to the predecessor.
+
+**Metadata rehydration.** `off` clears `@agent_bead`, `@agent_task`,
+`@agent_role`, `@agent_prompt_file` and `@agent_parent_session`, so a relaunch in
+the same pane without the launcher environment came back unbound.
+`agent-state.sh --new-instance` now restores those options from the durable row
+named by the OUTGOING `@agent_instance_id` (read via `xtmux instance-get`, whose
+plain output is `field<TAB>value` so the hook needs no JSON parser). The rules
+are strictly conservative: a value the caller supplied always wins, a pane option
+that still holds a value is never overwritten, and anything the durable row does
+not hold stays empty. `@agent_instance_id` is the only sound key available — it
+lives in the tmux server, so after a real server restart it is gone, which is
+exactly when the recycled `%N` would otherwise hand a fresh agent the previous
+occupant's bead. No instance id, no rehydration. Metadata a pane held *only* in
+tmux options and never wrote to a durable row (an operator's manual
+`tmux set-option -p @agent_task`) is NOT recoverable, and nothing invents it.
+
+**Terminal cleanup.** Closing an instance — gracefully via `SessionEnd`, or
+non-gracefully via the reconciliation pass — cancels the reply obligations that
+occupation still owed (`cancel_reason` = `instance_state_off` /
+`instance_pane_gone`) and cancels the waits and monitors it ARMED. Scoping is
+strict in both directions: obligations match `sender_pane_id` exactly and never
+NULL, so another pane's duty and a pane-less sender's duty are untouched; and
+monitor ownership is the requester side (`outbound_waits.requester_pane_id`), so
+a monitor TARGETING the ending pane belongs to somebody else and is left to the
+existing `target_gone` reconciliation.
 
 Codex turn capture reads `last_assistant_message` DIRECTLY from the Stop
 payload. Codex 0.146.0 types the field as required-but-nullable

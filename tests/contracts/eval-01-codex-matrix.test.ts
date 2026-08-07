@@ -51,6 +51,8 @@ interface World {
   getOption(pane: string, option: string): string;
   /** Simulate a tmux server restart: rotate session ids, drop pane options/state. */
   restartTmux(): void;
+  /** Simulate a non-graceful pane death: the pane stops resolving entirely. */
+  killPane(pane: string): void;
 }
 
 /**
@@ -84,6 +86,14 @@ while [ "$i" -lt "\${#args[@]}" ]; do
   i=$((i + 1))
 done
 resolve() {
+  # An EMPTY target is tmux's "current client" form. Real tmux answers it as
+  # long as the SERVER is up, which is exactly the distinction K4's
+  # serverAlive() probe depends on: \`display-message -p '#{pid}'\` with no -t
+  # must succeed while any pane exists, and fail once the whole table is gone.
+  if [ -z "\${1:-}" ]; then
+    head -n1 "$sim/panes.tsv" | awk -F'\\t' 'NF > 1 && $2 != "" { print $2 "\\t" $3 "\\t" $4 }'
+    return
+  fi
   awk -F'\\t' -v t="$1" '$1 == t || $2 == t { print $2 "\\t" $3 "\\t" $4; exit }' "$sim/panes.tsv"
 }
 case "\${args[0]}" in
@@ -221,6 +231,13 @@ function readOptionsFile(file: string): Record<string, unknown> {
         rmSync(join(simDir, "options", `${pane}.json`), { force: true });
       }
     },
+    killPane(pane) {
+      const rows = readFileSync(join(simDir, "panes.tsv"), "utf8")
+        .split("\n").filter((line) => line.trim() && line.split("\t")[1] !== pane);
+      writeFileSync(join(simDir, "panes.tsv"), rows.join("\n") + "\n");
+      rmSync(join(simDir, "states", pane), { force: true });
+      rmSync(join(simDir, "options", `${pane}.json`), { force: true });
+    },
   };
 }
 
@@ -260,16 +277,39 @@ function installCodexHooks(world: World): Record<string, any[]> {
   return JSON.parse(readFileSync(join(world.home, ".codex", "hooks.json"), "utf8")).hooks;
 }
 
-/** Fire every xtmux-owned hook command of one Codex event, as Codex would. */
-function fireEvent(world: World, hooks: Record<string, any[]>, event: string, payload: Record<string, unknown>): void {
+interface HookRun { command: string; stdout: string; stderr: string; }
+
+/**
+ * Fire every xtmux-owned hook command of one Codex event, as Codex would.
+ *
+ * Returns each hook's captured streams: K4's inbox reminder is emitted on
+ * stderr, and "was it emitted, and exactly how many times" is the whole
+ * bounded-reminder contract. `over.env` simulates a relaunch whose launcher
+ * environment is gone — the restart case the rehydration path exists for.
+ */
+function fireEvent(
+  world: World,
+  hooks: Record<string, any[]>,
+  event: string,
+  payload: Record<string, unknown>,
+  over: { env?: NodeJS.ProcessEnv } = {},
+): HookRun[] {
+  const runs: HookRun[] = [];
   for (const entry of (hooks[event] ?? []).filter((e) => e._source === "xtmux")) {
     for (const hook of entry.hooks ?? []) {
       const result = spawnSync("bash", ["-c", hook.command], {
-        cwd: root, encoding: "utf8", input: `${JSON.stringify(payload)}\n`, env: world.env,
+        cwd: root, encoding: "utf8", input: `${JSON.stringify(payload)}\n`, env: over.env ?? world.env,
       });
       expect(result.status, `hook failed: ${hook.command}\n${result.stderr}`).toBe(0);
+      runs.push({ command: hook.command, stdout: result.stdout ?? "", stderr: result.stderr ?? "" });
     }
   }
+  return runs;
+}
+
+/** Everything the xtmux-owned hooks of one event wrote to stderr, joined. */
+function stderrOf(runs: HookRun[]): string {
+  return runs.map((run) => run.stderr).join("");
 }
 
 function dbRows(world: World, query: string): any[] {
@@ -503,7 +543,7 @@ describe("EVAL-01 Codex column", () => {
     expect(remaining.json.map((row: any) => row.messageKey).sort()).toEqual(["in-fyi-0", "in-fyi-1", "in-fyi-2"]);
   }, 120_000);
 
-  test("S7 turn-capture FYIs are bounded: duplicate Stops dedupe, distinct turns land once each", () => {
+  test("S7 bounded reminders: outbound turn FYIs dedupe, and each inbound reply-required message reminds exactly once", () => {
     const world = setupWorld();
     const hooks = installCodexHooks(world);
     fireEvent(world, hooks, "SessionStart", fixturePayload("session-start.json"));
@@ -512,6 +552,7 @@ describe("EVAL-01 Codex column", () => {
       last_assistant_message: text, turn_id: turnId,
     }));
 
+    // --- Outbound half: duplicate Stops dedupe, distinct turns land once each.
     stopTurn("turn-0001", "first turn");
     stopTurn("turn-0001", "first turn"); // duplicate delivery of the same Stop
     let messages = dbRows(world, "SELECT message_key, recipient_id, expects_reply FROM messages");
@@ -524,6 +565,117 @@ describe("EVAL-01 Codex column", () => {
     expect(messages).toHaveLength(2);
     // FYIs never become obligations for the Codex pane.
     expect(obligations(world)).toEqual([]);
+
+    // --- Inbound half (K4, xtmux-s96.4). Before K4 there was no Codex surface
+    // for an inbound reply-required message at all; this is the capability the
+    // S7 row of scripts/verify-eval-01-codex.sh now cites.
+    const inbound = (key: string) => runCli(world, [
+      "message-send", "--from", PEER_SESSION, "--from-pane", PEER_PANE,
+      "--to", CODEX_SESSION, "--to-pane", CODEX_PANE,
+      "--bead", BEAD, "--expects-reply", "true", "--text", `please answer ${key}`,
+      "--message-key", key, "--json",
+    ]);
+    expect(inbound("in-ask-1").status).toBe(0);
+
+    const first = stderrOf(stopTurn("turn-0003", "third turn"));
+    expect(first).toContain("[xtmux-inbox] reply required: in-ask-1");
+
+    // BOUNDED: the same pending duty is not re-surfaced on every later Stop.
+    // The message is still pending — visibility lives in the durable inbox, the
+    // reminder is a one-shot pointer.
+    const second = stderrOf(stopTurn("turn-0004", "fourth turn"));
+    expect(second).not.toContain("in-ask-1");
+    const third = stderrOf(stopTurn("turn-0005", "fifth turn"));
+    expect(third).not.toContain("in-ask-1");
+    const inboxRows = runCli(world, ["message-list", "--for", CODEX_SESSION, "--pane", CODEX_PANE, "--expects-reply", "--json"]);
+    expect(inboxRows.json.filter((row: any) => row.messageKey === "in-ask-1" && row.replyStatus === "pending")).toHaveLength(1);
+
+    // Durable evidence of the emission: exactly one reminder event, ever.
+    const reminders = dbRows(world, "SELECT payload_json FROM event_journal WHERE type = 'agent.inbox.reminder'");
+    expect(reminders).toHaveLength(1);
+    expect(String(reminders[0].payload_json)).toContain("in-ask-1");
+
+    // A NEW duty is a new fact and does remind — and only the new one.
+    expect(inbound("in-ask-2").status).toBe(0);
+    const fourth = stderrOf(stopTurn("turn-0006", "sixth turn"));
+    expect(fourth).toContain("in-ask-2");
+    expect(fourth).not.toContain("in-ask-1");
+    expect(dbRows(world, "SELECT id FROM event_journal WHERE type = 'agent.inbox.reminder'")).toHaveLength(2);
+  }, 120_000);
+
+  test("S7b bounded reminders abort when the already-reminded key cannot be persisted", () => {
+    // The anti-spin ordering, asserted directly: the reminder set is written
+    // BEFORE the reminder is emitted, and a failed write cancels the emission.
+    // Reminder-then-write is the natural order and it voids the bounded-work
+    // guarantee — an unrecorded emission re-surfaces the same message on every
+    // later Stop, forever. A missed reminder is bounded and recoverable; an
+    // unbounded one is not.
+    const world = setupWorld();
+    const hooks = installCodexHooks(world);
+    fireEvent(world, hooks, "SessionStart", fixturePayload("session-start.json"));
+    runCli(world, [
+      "message-send", "--from", PEER_SESSION, "--from-pane", PEER_PANE,
+      "--to", CODEX_SESSION, "--to-pane", CODEX_PANE,
+      "--bead", BEAD, "--expects-reply", "true", "--text", "answer me",
+      "--message-key", "unwritable-ask", "--json",
+    ]);
+
+    // A regular FILE where the reminder state directory must go: mkdir fails
+    // with ENOTDIR, so the key can never be recorded.
+    const blocked = join(world.home, "blocked-state");
+    writeFileSync(blocked, "not a directory\n");
+    const stop = fixturePayload("stop-reference.json", { last_assistant_message: "t", turn_id: "turn-9001" });
+    const broken = fireEvent(world, hooks, "Stop", stop, {
+      env: { ...world.env, XDG_STATE_HOME: blocked },
+    });
+    expect(stderrOf(broken)).not.toContain("unwritable-ask");
+    expect(dbRows(world, "SELECT id FROM event_journal WHERE type = 'agent.inbox.reminder'")).toHaveLength(0);
+
+    // The duty was not consumed by the failed attempt: once the state directory
+    // is writable again, the next Stop reminds exactly once.
+    const repaired = fireEvent(world, hooks, "Stop", fixturePayload("stop-reference.json", {
+      last_assistant_message: "t2", turn_id: "turn-9002",
+    }));
+    expect(stderrOf(repaired)).toContain("[xtmux-inbox] reply required: unwritable-ask");
+    expect(dbRows(world, "SELECT id FROM event_journal WHERE type = 'agent.inbox.reminder'")).toHaveLength(1);
+  }, 120_000);
+
+  test("S7c inbound reply-required arms a durable wait for the SENDER and the reply discharges it", () => {
+    // The obligation gate, Codex-side. Claude BLOCKS the Stop and instructs the
+    // model to arm a native Monitor; whether a Codex command hook can veto a
+    // Stop is not part of the verified 0.146.0 surface, so the Codex hook arms
+    // the wait itself through the same `monitor-agent` authority instead of
+    // relying on an unverified decision protocol.
+    const world = setupWorld();
+    const hooks = installCodexHooks(world);
+    fireEvent(world, hooks, "SessionStart", fixturePayload("session-start.json"));
+    world.setState(PEER_PANE, "running");
+
+    const sent = runCli(world, [
+      "message-send", "--from", CODEX_SESSION, "--from-pane", CODEX_PANE,
+      "--to", PEER_SESSION, "--to-pane", PEER_PANE,
+      "--bead", BEAD, "--expects-reply", "true", "--text", "please review",
+      "--message-key", "codex-owes-a-wait", "--json",
+    ]);
+    expect(sent.status, sent.stderr).toBe(0);
+    expect(dbRows(world, "SELECT COUNT(*) AS n FROM monitors")[0]?.n ?? 0).toBe(0);
+
+    fireEvent(world, hooks, "Stop", fixturePayload("stop-reference.json", {
+      last_assistant_message: "asked the peer", turn_id: "turn-7001",
+    }));
+
+    const monitors = runCli(world, ["monitor-list", "--json"]);
+    expect(monitors.status, monitors.stderr).toBe(0);
+    const armed = monitors.json.filter((row: any) => row.requesterPaneId === CODEX_PANE
+      && row.paneId === PEER_PANE && row.terminalStatus === null);
+    expect(armed).toHaveLength(1);
+
+    // Idempotent: a second Stop with the duty still covered arms nothing new.
+    fireEvent(world, hooks, "Stop", fixturePayload("stop-reference.json", {
+      last_assistant_message: "still waiting", turn_id: "turn-7002",
+    }));
+    expect(dbRows(world, "SELECT COUNT(*) AS n FROM monitors")[0].n).toBe(1);
+    expect(dbRows(world, "SELECT COUNT(*) AS n FROM outbound_waits")[0].n).toBe(1);
   }, 120_000);
 
   test("S8 restart reconstruction: durable state survives id rotation; resume re-mints", () => {
@@ -563,10 +715,162 @@ describe("EVAL-01 Codex column", () => {
     fireEvent(world, hooks, "SessionStart", fixturePayload("session-start.json", { source: "resume" }));
     expect(world.getState(CODEX_PANE)).toBe("idle");
     expect(world.getOption(CODEX_PANE, "@agent_bead")).toBe(BEAD);
-    const instances = dbRows(world, "SELECT instance_id, ended_at_ms FROM agent_instances ORDER BY started_at_ms");
+    const instances = dbRows(world, "SELECT instance_id, ended_at_ms, end_reason FROM agent_instances ORDER BY started_at_ms");
     expect(instances).toHaveLength(2);
-    expect(instances[0].ended_at_ms).toBeNull(); // first occupation ended by nothing but id rotation...
     expect(instances[1].instance_id).not.toBe(instances[0].instance_id);
+
+    // K4 (xtmux-s96.4) CONTRACT CHANGE. This assertion used to read
+    // `expect(instances[0].ended_at_ms).toBeNull()` — it documented the bug
+    // rather than the contract. The pre-restart occupation is provably over:
+    // its harness died and a NEW occupation now holds the same pane. Leaving
+    // its row open was not conservatism, it was unrepairable — only `off`
+    // closed a row, `off` never fired, and no later event carries the dead
+    // instance's id, so the row stayed open for the life of the database and
+    // every "which agents are live" answer counted a ghost.
+    //
+    // The successor's open is the moment the fact becomes true, so the close is
+    // written there (reason `superseded`) rather than waiting for a
+    // reconciliation read: a later pass would have attributed the successor's
+    // first transitions to the predecessor.
+    expect(instances[0].ended_at_ms).not.toBeNull();
+    expect(instances[0].end_reason).toBe("superseded");
+    expect(instances[1].ended_at_ms).toBeNull();
+    const post = runCli(world, ["log-query", "--json", "--limit", "500"]);
+    expect(post.json.some((row: any) => row.type === "agents.instance.end.superseded")).toBe(true);
+  }, 120_000);
+
+  test("S8b non-graceful death: a pane that vanishes is reconciled, and its obligations and monitors are cancelled", () => {
+    // The other half of restart recovery. S8 covers the pane that survives and
+    // is re-occupied; this covers the pane that simply disappears — killed,
+    // crashed, or closed with the terminal. Nothing in the Codex lifecycle can
+    // report that: SessionEnd never fires, so the durable row had no path to
+    // closure at all before K4.
+    const world = setupWorld();
+    const hooks = installCodexHooks(world);
+    fireEvent(world, hooks, "SessionStart", fixturePayload("session-start.json"));
+    world.setState(PEER_PANE, "running");
+
+    // The dying pane owes a reply-required send and owns the wait watching for it.
+    runCli(world, [
+      "message-send", "--from", CODEX_SESSION, "--from-pane", CODEX_PANE,
+      "--to", PEER_SESSION, "--to-pane", PEER_PANE,
+      "--bead", BEAD, "--expects-reply", "true", "--text", "will die mid-flight",
+      "--message-key", "doomed-ask", "--json",
+    ]);
+    const armed = runCli(world, ["monitor-agent", "peer", "--timeout", "30m", "--interval", "60s", "--json"]);
+    expect(armed.status, armed.stderr).toBe(0);
+
+    // A DIFFERENT pane's obligation, which the cleanup must not touch.
+    runCli(world, [
+      "message-send", "--from", PEER_SESSION, "--from-pane", PEER_PANE,
+      "--to", CODEX_SESSION, "--to-pane", CODEX_PANE,
+      "--bead", BEAD, "--expects-reply", "true", "--text", "peer's own duty",
+      "--message-key", "peer-owned-ask", "--json",
+    ], { pane: PEER_PANE });
+
+    world.killPane(CODEX_PANE);
+
+    // No new entry point: the existing convergence read does it.
+    const list = runCli(world, ["monitor-list", "--json"], { pane: PEER_PANE });
+    expect(list.status, list.stderr).toBe(0);
+
+    const instances = dbRows(world, "SELECT ended_at_ms, end_reason FROM agent_instances");
+    expect(instances).toHaveLength(1);
+    expect(instances[0].ended_at_ms).not.toBeNull();
+    expect(instances[0].end_reason).toBe("pane_gone");
+
+    const messages = dbRows(world, "SELECT message_key, cancelled_at_ms, cancel_reason FROM messages ORDER BY message_key");
+    const doomed = messages.find((row: any) => row.message_key === "doomed-ask");
+    expect(doomed.cancelled_at_ms).not.toBeNull();
+    expect(doomed.cancel_reason).toBe("instance_pane_gone");
+    // Scope guard: the peer's duty is untouched.
+    const peerOwned = messages.find((row: any) => row.message_key === "peer-owned-ask");
+    expect(peerOwned.cancelled_at_ms).toBeNull();
+
+    const monitors = dbRows(world, "SELECT terminal_status FROM monitors");
+    expect(monitors).toHaveLength(1);
+    expect(monitors[0].terminal_status).not.toBeNull();
+    const waits = dbRows(world, "SELECT state FROM outbound_waits");
+    expect(waits[0].state).toBe("cancelled");
+
+    // Idempotent: a second convergence read changes nothing.
+    expect(runCli(world, ["monitor-list", "--json"], { pane: PEER_PANE }).status).toBe(0);
+    expect(dbRows(world, "SELECT COUNT(*) AS n FROM agent_instances WHERE ended_at_ms IS NOT NULL")[0].n).toBe(1);
+    expect(dbRows(world, `SELECT COUNT(*) AS n FROM event_journal WHERE type = 'agents.instance.end.pane_gone'`)[0].n).toBe(1);
+  }, 120_000);
+
+  test("S8c a tmux server that stops answering ends no instance at all", () => {
+    // The fail-safe. `paneAlive` cannot tell "this pane died" from "tmux is
+    // unreachable", and the second must close NOTHING: a transient probe outage
+    // that ended every occupation in the database would be a far worse fact
+    // than the ghost rows it was meant to repair.
+    const world = setupWorld();
+    const hooks = installCodexHooks(world);
+    fireEvent(world, hooks, "SessionStart", fixturePayload("session-start.json"));
+    expect(dbRows(world, "SELECT COUNT(*) AS n FROM agent_instances WHERE ended_at_ms IS NULL")[0].n).toBe(1);
+
+    world.killPane(CODEX_PANE);
+    world.killPane(PEER_PANE); // no panes resolve at all: the server is "down"
+
+    const list = runCli(world, ["monitor-list", "--json"]);
+    expect(list.status, list.stderr).toBe(0);
+    expect(dbRows(world, "SELECT COUNT(*) AS n FROM agent_instances WHERE ended_at_ms IS NULL")[0].n).toBe(1);
+  }, 120_000);
+
+  test("S8d restart rehydration: a relaunch with no launcher environment recovers the pane's task binding", () => {
+    const world = setupWorld();
+    const hooks = installCodexHooks(world);
+    fireEvent(world, hooks, "SessionStart", fixturePayload("session-start.json"));
+    fireEvent(world, hooks, "SessionEnd", fixturePayload("session-end.json"));
+
+    // `off` cleared the lineage; the instance id deliberately survived.
+    expect(world.getOption(CODEX_PANE, "@agent_bead")).toBe("");
+    expect(world.getOption(CODEX_PANE, "@agent_parent_session")).toBe("");
+    const survivingInstanceId = world.getOption(CODEX_PANE, "@agent_instance_id");
+    expect(survivingInstanceId).not.toBe("");
+
+    // The operator reruns `codex` by hand: no XTMUX_AGENT_* in the environment.
+    const bare = { ...world.env };
+    delete bare.XTMUX_AGENT_BEAD;
+    delete bare.XTMUX_AGENT_PARENT_SESSION;
+    fireEvent(world, hooks, "SessionStart", fixturePayload("session-start.json", { source: "resume" }), { env: bare });
+
+    expect(world.getOption(CODEX_PANE, "@agent_bead")).toBe(BEAD);
+    expect(world.getOption(CODEX_PANE, "@agent_parent_session")).toBe(PARENT);
+    // The rehydrated binding reaches the DURABLE row too, not just the pane:
+    // openInstance is idempotent, so a row opened without a bead is unrepairable.
+    const instances = dbRows(world, "SELECT bead_id, parent_session_id FROM agent_instances ORDER BY started_at_ms");
+    expect(instances).toHaveLength(2);
+    expect(instances[1].bead_id).toBe(BEAD);
+    expect(instances[1].parent_session_id).toBe(PARENT);
+  }, 120_000);
+
+  test("S8e rehydration invents nothing: with no surviving instance id, a bare relaunch restores no binding", () => {
+    // @agent_instance_id is the ONLY sound recovery key, and it lives in the
+    // tmux server. After a real server restart it is gone — which is exactly
+    // when the recycled `%N` would otherwise hand a fresh agent the previous
+    // occupant's bead. No key, no rehydration, no invented source.
+    const world = setupWorld();
+    const hooks = installCodexHooks(world);
+    fireEvent(world, hooks, "SessionStart", fixturePayload("session-start.json"));
+    fireEvent(world, hooks, "SessionEnd", fixturePayload("session-end.json"));
+
+    world.restartTmux();
+    expect(world.getOption(CODEX_PANE, "@agent_instance_id")).toBe("");
+
+    const bare = { ...world.env };
+    delete bare.XTMUX_AGENT_BEAD;
+    delete bare.XTMUX_AGENT_PARENT_SESSION;
+    fireEvent(world, hooks, "SessionStart", fixturePayload("session-start.json", { source: "startup" }), { env: bare });
+
+    expect(world.getOption(CODEX_PANE, "@agent_bead")).toBe("");
+    expect(world.getOption(CODEX_PANE, "@agent_parent_session")).toBe("");
+    const instances = dbRows(world, "SELECT bead_id, parent_session_id FROM agent_instances ORDER BY started_at_ms");
+    const latest = instances[instances.length - 1];
+    // agent-state.sh passes absent pane options through as empty strings, so an
+    // unbound instance stores "" rather than NULL; either way, no binding.
+    expect(latest.bead_id ?? "").toBe("");
+    expect(latest.parent_session_id ?? "").toBe("");
   }, 120_000);
 
   test("S9 hostile payloads are data: lifecycle transitions, no turn row, no message, no execution", () => {
@@ -651,6 +955,27 @@ describe("EVAL-01 Codex column", () => {
     const hooks = installCodexHooks(world);
     fireEvent(world, hooks, "SessionStart", fixturePayload("session-start.json"));
     fireEvent(world, hooks, "UserPromptSubmit", fixturePayload("user-prompt-submit.json"));
+
+    // K4 (xtmux-s96.4): the ending pane owns a reply duty and the wait watching
+    // for it. Both must be cancelled by the graceful end — the agent that owed
+    // and awaited them is gone, so neither can ever be discharged.
+    world.setState(PEER_PANE, "running");
+    runCli(world, [
+      "message-send", "--from", CODEX_SESSION, "--from-pane", CODEX_PANE,
+      "--to", PEER_SESSION, "--to-pane", PEER_PANE,
+      "--bead", BEAD, "--expects-reply", "true", "--text", "answer before I exit",
+      "--message-key", "ending-ask", "--json",
+    ]);
+    expect(runCli(world, ["monitor-agent", "peer", "--timeout", "30m", "--interval", "60s", "--json"]).status).toBe(0);
+    // A duty owned by a DIFFERENT pane, which this cleanup must not touch.
+    runCli(world, [
+      "message-send", "--from", PEER_SESSION, "--from-pane", PEER_PANE,
+      "--to", CODEX_SESSION, "--to-pane", CODEX_PANE,
+      "--bead", BEAD, "--expects-reply", "true", "--text", "peer keeps this duty",
+      "--message-key", "peer-keeps", "--json",
+    ], { pane: PEER_PANE });
+    expect(obligations(world).map((row: any) => row.messageKey)).toEqual(["ending-ask"]);
+
     fireEvent(world, hooks, "SessionEnd", fixturePayload("session-end.json"));
 
     // Pane state ends `off`; task lineage is cleared so a reused pane never
@@ -669,6 +994,20 @@ describe("EVAL-01 Codex column", () => {
     const journal = runCli(world, ["log-query", "--json", "--limit", "500"]);
     expect(journal.json.some((row: any) => row.type === "agents.instance.end.state_off")).toBe(true);
 
+    // Terminal cleanup, K4. The ending pane's own duty is cancelled with the
+    // reason that explains it; the peer's duty survives untouched.
+    expect(obligations(world)).toEqual([]);
+    const cleaned = dbRows(world, "SELECT message_key, cancelled_at_ms, cancel_reason FROM messages ORDER BY message_key");
+    const ending = cleaned.find((row: any) => row.message_key === "ending-ask");
+    expect(ending.cancelled_at_ms).not.toBeNull();
+    expect(ending.cancel_reason).toBe("instance_state_off");
+    expect(cleaned.find((row: any) => row.message_key === "peer-keeps").cancelled_at_ms).toBeNull();
+    expect(obligations(world, { pane: PEER_PANE }).map((row: any) => row.messageKey)).toEqual(["peer-keeps"]);
+    // The wait this pane armed is cancelled and its monitor is terminal, so the
+    // poll loop stops instead of running to its 30m timeout with no consumer.
+    expect(dbRows(world, "SELECT state FROM outbound_waits")[0].state).toBe("cancelled");
+    expect(dbRows(world, "SELECT terminal_status FROM monitors")[0].terminal_status).toBe("killed");
+
     // Installer idempotence: a rerun neither duplicates owned entries nor
     // touches unowned content; uninstall still removes only tagged entries.
     expect(runInstallerAt(world.home).status).toBe(0);
@@ -676,7 +1015,8 @@ describe("EVAL-01 Codex column", () => {
     const owned = (event: string) => (after[event] ?? []).filter((e: any) => e._source === "xtmux");
     expect(owned("SessionStart")).toHaveLength(1);
     expect(owned("UserPromptSubmit")).toHaveLength(1);
-    expect(owned("Stop")).toHaveLength(2);
+    // K4 appends the inbox/obligation hook to Stop: state, turn capture, inbox.
+    expect(owned("Stop")).toHaveLength(3);
     expect(owned("SessionEnd")).toHaveLength(1);
     expect(readFileSync(join(world.home, ".codex", "config.toml"), "utf8")).toBe(configBefore);
 
