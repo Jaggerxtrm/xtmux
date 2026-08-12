@@ -7,6 +7,8 @@ export interface RetentionConfig {
   messageDays: number;
   replyRetentionDays?: number;
   waitDays: number;
+  /** How many terminal monitor rows to keep; the rest are pure history. */
+  monitorKeep: number;
   agentStateDays: number;
   turnDays: number;
   telemetryDays: number;
@@ -19,6 +21,7 @@ const DEFAULTS: RetentionConfig = {
   messageDays: 30,
   replyRetentionDays: 30,
   waitDays: 30,
+  monitorKeep: 200,
   agentStateDays: 14,
   turnDays: 60,
   telemetryDays: 30,
@@ -46,6 +49,7 @@ export function loadRetentionConfig(): RetentionConfig {
     messageDays:     parseIntEnv("XTMUX_OBS_MESSAGE_RETENTION_DAYS", DEFAULTS.messageDays),
     replyRetentionDays: parseIntEnv("XTMUX_OBS_REPLY_RETENTION_DAYS", DEFAULTS.replyRetentionDays ?? DEFAULTS.messageDays),
     waitDays:        parseIntEnv("XTMUX_OBS_WAIT_RETENTION_DAYS", DEFAULTS.waitDays),
+    monitorKeep:     parseIntEnv("XTMUX_OBS_MONITOR_KEEP", DEFAULTS.monitorKeep),
     agentStateDays:  parseIntEnv("XTMUX_OBS_AGENT_STATE_RETENTION_DAYS", DEFAULTS.agentStateDays),
     turnDays:        parseIntEnv("XTMUX_OBS_TURN_RETENTION_DAYS", DEFAULTS.turnDays),
     telemetryDays:   parseIntEnv("XTMUX_OBS_TELEMETRY_RETENTION_DAYS", DEFAULTS.telemetryDays),
@@ -59,6 +63,7 @@ export interface RetentionReport {
   messagesDeleted: number;
   replyMessagesDeleted: number;
   waitsDeleted: number;
+  monitorsDeleted: number;
   agentStatesCompacted: number;
   turnsDeleted: number;
   commandRunsDeleted: number;
@@ -83,6 +88,7 @@ export function applyRetention(
     messagesDeleted: 0,
     replyMessagesDeleted: 0,
     waitsDeleted: 0,
+    monitorsDeleted: 0,
     agentStatesCompacted: 0,
     turnsDeleted: 0,
     commandRunsDeleted: 0,
@@ -177,6 +183,41 @@ export function applyRetention(
       });
     });
     remove.immediate();
+  }
+
+  // Terminal monitors are pure history: after a wait is consumed nothing joins on
+  // the row, and monitor-list returns every row, so unbounded growth is not
+  // harmless — consumers that bound their view trip (the Pi inbox extension
+  // refuses monitor-list above 500 rows, which disables wake consumption). Keep
+  // the newest monitorKeep terminal rows; never delete a monitor still referenced
+  // by a non-consumed outbound wait (armed and terminal-unconsumed wakes stay
+  // durable regardless of age).
+  {
+    const keep = db.raw.prepare<unknown, []>(
+      `DELETE FROM monitors
+        WHERE terminal_status IS NOT NULL
+          AND id NOT IN (
+            SELECT id FROM monitors
+             WHERE terminal_status IS NOT NULL
+             ORDER BY updated_at_ms DESC
+             LIMIT ${cfg.monitorKeep}
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM outbound_waits w
+             WHERE w.monitor_id = monitors.id
+               AND w.state IN ('unarmed', 'armed', 'terminal-unconsumed')
+          )`,
+    );
+    const result = keep.run();
+    report.monitorsDeleted = Number((result as { changes?: number }).changes ?? 0);
+    if (report.monitorsDeleted > 0) {
+      insertEnvelope(db, {
+        type: "monitors.pruned",
+        domain: "monitors",
+        payload: { outcome: "pruned", count: report.monitorsDeleted },
+        createdAtMs: t,
+      });
+    }
   }
 
   // Agent state: compact by preserving only the latest transition per instance
