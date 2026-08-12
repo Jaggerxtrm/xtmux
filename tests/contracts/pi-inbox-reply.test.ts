@@ -25,17 +25,25 @@ function harness(store: Store) {
   let failPane = false;
   let failSendUserMessage = false;
   let pendingMessages = false;
+  let stale = false;
+  let gateArmed = false;
+  let releaseGate: (() => void) | undefined;
+  const gatePromise = new Promise<void>((resolve) => { releaseGate = resolve; });
   const ok = (stdout: string) => ({ stdout, stderr: "", code: 0, killed: false });
+  const ui = {
+    setWidget(key: string, lines: string[] | undefined) {
+      if (lines) widgets.set(key, lines);
+      else widgets.delete(key);
+    },
+    notify(message: string) { notifications.push(message); },
+  };
   const ctx = {
     hasUI: true,
     hasPendingMessages: () => pendingMessages,
     isIdle: () => !pendingMessages,
-    ui: {
-      setWidget(key: string, lines: string[] | undefined) {
-        if (lines) widgets.set(key, lines);
-        else widgets.delete(key);
-      },
-      notify(message: string) { notifications.push(message); },
+    get ui() {
+      if (stale) throw new Error("This extension ctx is stale after session replacement or reload.");
+      return ui;
     },
   };
   const pi = {
@@ -49,6 +57,7 @@ function harness(store: Store) {
         return ok("$me\n");
       }
       pickerCalls.push(args);
+      if (gateArmed && args[0] === "message-list") await gatePromise;
       if (store.failures.has(args[0]!)) return { ...ok(""), code: 75, stderr: "private backend detail" };
       const pane = args.includes("--pane") ? args[args.indexOf("--pane") + 1] : undefined;
       if (args[0] === "obligations") return ok(JSON.stringify(store.obligations.filter((row) => !pane || row.senderPaneId === pane)));
@@ -87,6 +96,9 @@ function harness(store: Store) {
     setPaneFailure(value: boolean) { failPane = value; },
     setSendFailure(value: boolean) { failSendUserMessage = value; },
     setPendingMessages(value: boolean) { pendingMessages = value; },
+    setStale(value: boolean) { stale = value; },
+    armGate() { gateArmed = true; },
+    releaseGate() { releaseGate?.(); },
     async emit(name: string, event: any = {}) {
       let result: unknown;
       for (const handler of handlers.get(name) ?? []) result = await handler(event, ctx);
@@ -485,5 +497,37 @@ describe("Pi SQLite reply obligations", () => {
     })).resolves.toBeUndefined();
     expect(h.widgets.get("xtmux-inbox")?.at(-1)).toContain("malformed xtmux coordination output; inspect manually");
     await h.emit("session_shutdown");
+  });
+
+  test("never touches ctx once session_shutdown made it stale (reload/switch footgun)", async () => {
+    isolate();
+    const state = store();
+    const h = harness(state);
+    await h.emit("session_start");
+    await h.emit("session_shutdown");
+    h.setStale(true);
+    await expect(h.emit("agent_settled")).resolves.toBeUndefined();
+    await expect(h.emit("agent_start")).resolves.toBeUndefined();
+    await expect(h.emit("tool_result", {
+      toolName: "bash", isError: false, content: jsonResult({
+        messageKey: "task-1", duplicate: false, senderId: "$me", recipientId: "$peer", expectsReply: true,
+      }),
+    })).resolves.toBeUndefined();
+    expect(h.widgets.has("xtmux-inbox")).toBe(false);
+  });
+
+  test("in-flight cycle that crosses session_shutdown never renders to the stale ctx", async () => {
+    isolate();
+    const state = store();
+    const h = harness(state);
+    await h.emit("session_start");
+    h.armGate();
+    const settling = h.emit("agent_settled");
+    await Bun.sleep(0);
+    await h.emit("session_shutdown");
+    h.setStale(true);
+    h.releaseGate();
+    await expect(settling).resolves.toBeUndefined();
+    expect(h.widgets.has("xtmux-inbox")).toBe(false);
   });
 });
