@@ -51,3 +51,10 @@ dist/
 # is intentionally tracked, so git descends into the directory regardless.
 .agents/skills/*
 !.agents/skills/beads/
+
+# Post-migration residue: per-repo copies of skills/hooks now owned by the
+# global ~/.xtrm tree. Kept on disk as a safety net, never committed.
+.xtrm/skills/local-legacy/
+.xtrm/hooks/inbox-reminder-stop.mjs
+.xtrm/hooks/project-memory.mjs
+.xtrm/hooks/worktree-reap-sweep.mjs
