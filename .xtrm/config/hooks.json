@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/using-xtrm-reminder.mjs"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/project-memory.mjs"
           },
           {
             "type": "command",
@@ -20,19 +20,20 @@
           },
           {
             "type": "command",
-            "command": "sh -c 'p=\"$HOME/.xtrm/skills/default/service-skills/scripts/cataloger.py\"; [ -f \"$p\" ] && python3 \"$p\"; exit 0'"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/xtrm-session-logger.mjs",
+            "timeout": 3000
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/xtrm-session-logger.mjs",
-            "timeout": 3000
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/worktree-reap-sweep.mjs",
+            "timeout": 5000
           }
         ]
       }
     ],
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit|NotebookEdit|mcp__serena__rename_symbol|mcp__serena__replace_symbol_body|mcp__serena__insert_after_symbol|mcp__serena__insert_before_symbol",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [
           {
             "type": "command",
@@ -65,15 +66,6 @@
             "timeout": 5000
           }
         ]
-      },
-      {
-        "matcher": "Read|Write|Edit|Glob|Grep|Bash|mcp__serena__rename_symbol|mcp__serena__replace_symbol_body|mcp__serena__insert_after_symbol|mcp__serena__insert_before_symbol",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh -c 'p=\"$HOME/.xtrm/skills/default/service-skills/scripts/skill_activator.py\"; [ -f \"$p\" ] && python3 \"$p\"; exit 0'"
-          }
-        ]
       }
     ],
     "PostToolUse": [
@@ -88,7 +80,7 @@
         ]
       },
       {
-        "matcher": "Edit|Write|MultiEdit|NotebookEdit|mcp__serena__rename_symbol|mcp__serena__replace_symbol_body|mcp__serena__insert_after_symbol|mcp__serena__insert_before_symbol",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [
           {
             "type": "command",
@@ -103,21 +95,11 @@
         ]
       },
       {
-        "matcher": "Bash|Grep|Read|Glob|mcp__serena__find_symbol|mcp__serena__get_symbols_overview|mcp__serena__search_for_pattern|mcp__serena__find_referencing_symbols|mcp__serena__replace_symbol_body|mcp__serena__insert_after_symbol|mcp__serena__insert_before_symbol|mcp__serena__rename_symbol",
+        "matcher": "Bash|Grep|Read|Glob",
         "hooks": [
           {
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/gitnexus/gitnexus-hook.cjs",
-            "timeout": 10000
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit|mcp__serena__rename_symbol|mcp__serena__replace_symbol_body|mcp__serena__insert_after_symbol|mcp__serena__insert_before_symbol",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh -c 'p=\"$HOME/.xtrm/skills/default/service-skills/scripts/drift_detector.py\"; [ -f \"$p\" ] && python3 \"$p\" check-hook; exit 0'",
             "timeout": 10000
           }
         ]
@@ -144,6 +126,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/beads-memory-gate.mjs",
             "timeout": 8000
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/inbox-reminder-stop.mjs",
+            "timeout": 5000
           }
         ]
       }

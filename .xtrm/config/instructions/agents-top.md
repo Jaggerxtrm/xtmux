@@ -3,6 +3,12 @@
 > Full reference: `XTRM-GUIDE.md` | Session manual: `/using-xtrm` skill.
 > This is a compact managed block. Use CLI `--help` and skills for details; do not paste full manuals here.
 
+## Canonical Sources
+- **CLI `--help` is canonical.** Run `<tool> --help` or `<tool> <subcmd> --help` when unsure; skills own **when**, help owns **how**.
+- Managed blocks (this file, `claude-top.md`, `/using-xtrm`) are compact routers, not replacements for `--help`.
+- Managed blocks and installed skills update via `xt update --apply`; consumers see changes on the next run.
+- Check runtime versions with `xt version --check-updates` (`npm outdated -g` fallback) for `xtrm-tools`, `@jaggerxtrm/xtmux`, and `@jaggerxtrm/specialists`.
+
 ## Session start
 
 1. `bd prime` — load workflow context and active claims.
@@ -22,6 +28,17 @@
 - Ask before destructive, irreversible, production-impacting, or history-rewriting actions.
 - Do not ask repetitive “Proceed?” confirmations for normal implementation once scope is clear.
 - For reply-required xtmux messages, preserve `messageKey` and use a correlated reply (`message-reply` or successful `safe-send-pointer --reply-to`); ack and target-only sends do not fulfil the request.
+
+## XTMUX COMMUNICATION INVARIANTS
+- Coordination mutations are standalone `--json` commands.
+- FYI/status/PASS use `--expects-reply=false`.
+- Decision/blocker requests preserve `messageKey` and require a fresh requester-owned monitor.
+- Read exact inbound content with `message-get`; ack only according to the declared receipt contract.
+- Fulfil through `message-reply` or successful correlated safe-send.
+- Use `agent-last` for a completed interactive turn.
+- Use `sp result` / `sp resume` for managed Specialist jobs.
+- Pane capture is live-state diagnosis only.
+- Before waiting or closing, inspect inbox, obligations, and monitors.
 
 ## Code restraint (when implementing directly)
 
@@ -49,22 +66,13 @@ Use these as the minimal operational surface; use `--help` for full syntax.
 | Need | Use |
 |---|---|
 | xtrm/beads workflow | `/using-xtrm`; `bd --help`; `xt --help` |
-| Specialist orchestration | latest `/using-specialists-*`, prefer `/using-specialists`; check `sp --help` + `sp list` first |
-| Multi-pane coordination | `/multiplexing`; delegated panes use `/multiplexing-team` |
+| Specialist orchestration | **WHEN:** work is substantial enough to delegate (implementation, review, debug, test, or merge chains); use latest `/using-specialists-*`, prefer `/using-specialists`; check `sp --help` + `sp list` first |
+| Multi-pane coordination | **WHEN:** coordinating ≥2 tmux sessions or dispatching to a delegated pane; use `/multiplexing`; delegated panes use `/multiplexing-team` |
 | xtmux CLI (messaging, handoff, agent-state) | `xtmux --help`, `xtmux <cmd> --help` first |
 | Service/docs/project context | canonical service-skills skill set: `/scope`, `/using-service-skills` |
 | Planning/tests/docs | `/planning`, `/test-planning`, `/sync-docs` |
 | Board unclear/backlog messy | `/issue-triage`; `bv --robot-triage --format toon`; `bv --robot-plan` |
 | Release/session close | `/releasing`, `/xt-end`, `/session-close-report`, `/xt-merge` |
-
-## Session start reflex
-
-```bash
-bd prime                    # workflow context + active claims
-bd memories <topic>         # retrieve prior context before answering
-bv --robot-triage           # ranked picks (never bare `bv` — it's a TUI)
-bd update <id> --claim      # claim before any edit
-```
 
 ## Trigger patterns
 
@@ -105,7 +113,6 @@ xtrm-loader no longer embeds project bodies in every request. Read them when the
 - For unfamiliar code, inspect execution flows before broad grep-heavy reads.
 - Before commit or handoff, verify affected scope.
 - Prefer targeted symbol/file reads and precise edits over whole-tree dumps.
-- When Serena is available, prefer symbolic tools (`find_symbol` → `get_symbols_overview` → `replace_symbol_body`; `find_referencing_symbols`/`rename_symbol` for LSP-accurate references) over grep-read-sed for code reads and edits.
 
 ## Context and output management
 

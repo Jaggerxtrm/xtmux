@@ -9,15 +9,15 @@
 //   import { logEvent } from './xtrm-logger.mjs';
 //   logEvent({ cwd, sessionId, kind: 'gate.edit.allow', outcome: 'allow', toolName, issueId });
 
-import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 // ── Schema ────────────────────────────────────────────────────────────────────
 
 const INIT_SQL = `
-PRAGMA journal_mode=WAL;
 PRAGMA busy_timeout=5000;
+PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS events (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   ts          INTEGER NOT NULL,
@@ -51,22 +51,11 @@ function findDbPath(cwd) {
   return null; // No beads project found — silently skip logging
 }
 
-function sqlExec(dbPath, sql) {
-  return spawnSync('sqlite3', [dbPath, sql], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    encoding: 'utf8',
-    timeout: 3000,
-  });
-}
-
-function ensureDb(dbPath) {
+function openDb(dbPath) {
   mkdirSync(dirname(dbPath), { recursive: true });
-  sqlExec(dbPath, INIT_SQL);
-}
-
-function sqlEsc(val) {
-  if (val === null || val === undefined) return 'NULL';
-  return `'${String(val).replace(/'/g, "''")}'`;
+  const db = new DatabaseSync(dbPath);
+  db.exec(INIT_SQL);
+  return db;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -88,6 +77,7 @@ function sqlEsc(val) {
  * @param {object}  [params.extra]     Legacy: extra object (merged into data)
  */
 export function logEvent(params) {
+  let db;
   try {
     const { cwd, sessionId, kind } = params;
     if (!cwd || !sessionId || !kind) return;
@@ -109,15 +99,18 @@ export function logEvent(params) {
       if (Object.keys(merged).length > 0) dataStr = JSON.stringify(merged);
     }
 
-    const ts = Date.now();
-    const sql = `INSERT INTO events (ts,session_id,runtime,worktree,kind,tool_name,outcome,issue_id,duration_ms,data) VALUES (${ts},${sqlEsc(sessionId)},${sqlEsc(runtime)},${sqlEsc(worktree)},${sqlEsc(kind)},${sqlEsc(toolName ?? null)},${sqlEsc(outcome ?? null)},${sqlEsc(issueId ?? null)},${durationMs ?? 'NULL'},${sqlEsc(dataStr)})`;
-
-    let result = sqlExec(dbPath, sql);
-    if (result.status !== 0) {
-      ensureDb(dbPath);
-      result = sqlExec(dbPath, sql);
-    }
+    db = openDb(dbPath);
+    db.prepare(`
+      INSERT INTO events
+        (ts, session_id, runtime, worktree, kind, tool_name, outcome, issue_id, duration_ms, data)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      Date.now(), sessionId, runtime, worktree, kind, toolName ?? null,
+      outcome ?? null, issueId ?? null, durationMs ?? null, dataStr,
+    );
   } catch {
     // Silently swallow all errors — logging never affects hook behavior
+  } finally {
+    try { db?.close(); } catch { /* fail-open */ }
   }
 }

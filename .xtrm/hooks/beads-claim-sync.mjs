@@ -7,7 +7,6 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, existsSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { join, dirname, isAbsolute } from 'node:path';
 import { resolveSessionId } from './beads-gate-utils.mjs';
-import { logEvent } from './xtrm-logger.mjs';
 
 function readInput() {
   try {
@@ -96,16 +95,6 @@ function main() {
         writeFileSync(join(xtrmDir, resolveClaimFileName(cwd)), issueId);
       } catch { /* non-fatal */ }
 
-      logEvent({
-        cwd,
-        runtime: 'claude',
-        sessionId,
-        layer: 'bd',
-        kind: 'bd.claimed',
-        outcome: 'allow',
-        issueId,
-      });
-
       process.stdout.write(JSON.stringify({
         additionalContext: `\n✅ **Beads**: Session \`${sessionId}\` claimed issue \`${issueId}\`.`,
       }));
@@ -128,16 +117,6 @@ function main() {
         cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 5000,
-      });
-
-      logEvent({
-        cwd,
-        runtime: 'claude',
-        sessionId,
-        layer: 'bd',
-        kind: 'bd.closed',
-        outcome: 'allow',
-        issueId: closedIssueId,
       });
     }
 
