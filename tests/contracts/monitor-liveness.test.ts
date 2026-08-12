@@ -26,6 +26,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { openDb } from "../../src/db/connection.ts";
 import { migrate } from "../../src/db/schema.ts";
 import { applyStaleness, AGENT_STALE_AFTER_MS } from "../../src/tmux.ts";
+import { register, terminate } from "../../src/domains/monitors/store.ts";
+import { armOutboundWait, registerOutboundWait } from "../../src/domains/monitors/outbound-wake.ts";
 
 const ROOT = join(import.meta.dir, "../..");
 const CLI = join(ROOT, "src/cli.ts");
@@ -307,6 +309,49 @@ describe("xtmux-dvs defect 2: @agent_state liveness", () => {
       const sessionLine = lines.find((l) => l.startsWith("session\t") && l.includes(`\t${ctx.targetSession}\t`));
       expect(sessionLine).toBeDefined();
       expect(sessionLine).toContain("stale");
+    } finally { ctx.cleanup(); }
+  }, 60_000);
+});
+
+describe("xtmux-dw5: monitor-list prunes terminal rows on every read", () => {
+  test("terminal rows beyond keep are deleted; a wait-pinned row survives", () => {
+    const ctx = scratch();
+    try {
+      const db = openDb({ dbPath: ctx.dbPath, mode: "on", busyTimeoutMs: 3000 });
+      const now = Date.now();
+      for (let i = 0; i < 12; i++) {
+        register(db, {
+          id: `mon-${i}`, target: ctx.target, paneId: ctx.target, sessionId: ctx.targetSession,
+          state: "running", intervalMs: 1000, nowMs: now - (12 - i) * 1000,
+        });
+        terminate(db, `mon-${i}`, "done", now - (12 - i) * 1000 + 1);
+      }
+      // mon-6 sits outside the keep window; its armed wait pins it.
+      registerOutboundWait(db, {
+        waitId: "wait-pin", requesterSessionId: "$req", requesterPaneId: ctx.target,
+        targetSessionId: ctx.targetSession, targetPaneId: ctx.target, nowMs: now,
+      });
+      armOutboundWait(db, {
+        waitId: "wait-pin", monitorId: "mon-6", requesterSessionId: "$req", requesterPaneId: ctx.target, nowMs: now,
+      });
+      db.close();
+
+      const res = cli({ ...ctx.env, XTMUX_OBS_MONITOR_KEEP: "5" }, ["monitor-list", "--json"]);
+      expect(res.status).toBe(0);
+      const rows = JSON.parse(res.stdout) as Array<{ monitorId: string }>;
+      expect(rows.length).toBe(6);
+      expect(rows.map((row) => row.monitorId)).toEqual(expect.arrayContaining(["mon-6", "mon-11"]));
+      expect(rows.map((row) => row.monitorId)).not.toContain("mon-0");
+
+      const raw = new Database(ctx.dbPath, { readonly: true });
+      try {
+        const n = raw.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM monitors").get();
+        expect(n?.n).toBe(6);
+        const pruned = raw.query<{ n: number }, []>(
+          "SELECT COUNT(*) AS n FROM event_journal WHERE type = 'monitors.pruned'",
+        ).get();
+        expect(pruned?.n).toBe(1);
+      } finally { raw.close(); }
     } finally { ctx.cleanup(); }
   }, 60_000);
 });

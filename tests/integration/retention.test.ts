@@ -7,7 +7,7 @@ import type { Db } from "../../src/db/connection.ts";
 import { migrate } from "../../src/db/schema.ts";
 import { sendMessage } from "../../src/domains/messages/send.ts";
 import { ackMessage } from "../../src/domains/messages/ack.ts";
-import { applyRetention, loadRetentionConfig } from "../../src/db/retention.ts";
+import { applyRetention, loadRetentionConfig, pruneTerminalMonitors } from "../../src/db/retention.ts";
 import { register, terminate } from "../../src/domains/monitors/store.ts";
 import { armOutboundWait, consumeOutboundWake, deliverOutboundWake, registerOutboundWait, terminalizeOutboundWait } from "../../src/domains/monitors/outbound-wake.ts";
 import type { Config } from "../../src/config.ts";
@@ -209,6 +209,47 @@ describe("retention preservation rules (PRD §17)", () => {
         .all()
         .map((row) => row.id);
       expect(after).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("pruneTerminalMonitors keeps the newest monitorKeep rows and honors the wait pin", () => {
+    const { db, cleanup } = setup();
+    try {
+      const NOW = 1_000_000_000_000;
+      const OLD = NOW - 90 * DAY_MS;
+      const mkMonitor = (id: string, at: number): void => {
+        register(db, { id, target: "$target", paneId: "%pane", sessionId: "$sess", state: "running", intervalMs: 1000, nowMs: at });
+        terminate(db, id, "done", at + 1);
+      };
+      mkMonitor("mon-a", OLD);
+      mkMonitor("mon-b", OLD + DAY_MS);
+      mkMonitor("mon-c", OLD + 2 * DAY_MS);
+      // Armed wait pins its monitor row regardless of rank.
+      mkMonitor("mon-w", OLD + 3 * DAY_MS);
+      registerOutboundWait(db, {
+        waitId: "wait-w", requesterSessionId: "$sess", requesterPaneId: "%pane",
+        targetSessionId: "$sess", targetPaneId: "%pane", nowMs: OLD + 3 * DAY_MS,
+      });
+      armOutboundWait(db, {
+        waitId: "wait-w", monitorId: "mon-w", requesterSessionId: "$sess", requesterPaneId: "%pane", nowMs: OLD + 3 * DAY_MS,
+      });
+
+      const deleted = pruneTerminalMonitors(db, { ...loadRetentionConfig(), monitorKeep: 2 }, NOW);
+      expect(deleted).toBe(2);
+      const remaining = db.raw
+        .query<{ id: string }, []>("SELECT id FROM monitors ORDER BY id")
+        .all()
+        .map((row) => row.id);
+      expect(remaining.sort()).toEqual(["mon-c", "mon-w"]);
+      const prunedEnv = db.raw
+        .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM event_journal WHERE type = 'monitors.pruned'")
+        .get();
+      expect(prunedEnv?.n).toBe(1);
+
+      // Nothing beyond the keep window: deletes nothing and emits no envelope.
+      expect(pruneTerminalMonitors(db, { ...loadRetentionConfig(), monitorKeep: 2 }, NOW + 1)).toBe(0);
     } finally {
       cleanup();
     }

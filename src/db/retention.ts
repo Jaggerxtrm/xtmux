@@ -73,6 +73,49 @@ export interface RetentionReport {
 }
 
 /**
+ * Cheap terminal-monitor prune for "mutate on read" paths such as monitor-list.
+ * Terminal monitors are pure history: after a wait is consumed nothing joins on
+ * the row, and monitor-list returns every row, so unbounded growth is not
+ * harmless — consumers that bound their view trip (the Pi inbox extension
+ * refuses monitor-list above 500 rows, which disables wake consumption). Keep
+ * the newest monitorKeep terminal rows; never delete a monitor still referenced
+ * by a non-consumed outbound wait (armed and terminal-unconsumed wakes stay
+ * durable regardless of age). Emits a monitors.pruned envelope only when rows
+ * were deleted. Returns the number of rows deleted.
+ */
+export function pruneTerminalMonitors(
+  db: Db,
+  cfg: RetentionConfig = loadRetentionConfig(),
+  nowMs: number = Date.now(),
+): number {
+  const result = db.raw.prepare<unknown, []>(
+    `DELETE FROM monitors
+      WHERE terminal_status IS NOT NULL
+        AND id NOT IN (
+          SELECT id FROM monitors
+           WHERE terminal_status IS NOT NULL
+           ORDER BY updated_at_ms DESC
+           LIMIT ${cfg.monitorKeep}
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM outbound_waits w
+           WHERE w.monitor_id = monitors.id
+             AND w.state IN ('unarmed', 'armed', 'terminal-unconsumed')
+        )`,
+  ).run();
+  const deleted = Number((result as { changes?: number }).changes ?? 0);
+  if (deleted > 0) {
+    insertEnvelope(db, {
+      type: "monitors.pruned",
+      domain: "monitors",
+      payload: { outcome: "pruned", count: deleted },
+      createdAtMs: nowMs,
+    });
+  }
+  return deleted;
+}
+
+/**
  * Per-domain retention. Preservation rules per PRD §17 / design doc §6:
  * - unacked messages never deleted
  * - active agent instances / monitors / handoffs / incomplete command_runs / unresolved findings preserved
@@ -185,40 +228,11 @@ export function applyRetention(
     remove.immediate();
   }
 
-  // Terminal monitors are pure history: after a wait is consumed nothing joins on
-  // the row, and monitor-list returns every row, so unbounded growth is not
-  // harmless — consumers that bound their view trip (the Pi inbox extension
-  // refuses monitor-list above 500 rows, which disables wake consumption). Keep
-  // the newest monitorKeep terminal rows; never delete a monitor still referenced
-  // by a non-consumed outbound wait (armed and terminal-unconsumed wakes stay
-  // durable regardless of age).
-  {
-    const keep = db.raw.prepare<unknown, []>(
-      `DELETE FROM monitors
-        WHERE terminal_status IS NOT NULL
-          AND id NOT IN (
-            SELECT id FROM monitors
-             WHERE terminal_status IS NOT NULL
-             ORDER BY updated_at_ms DESC
-             LIMIT ${cfg.monitorKeep}
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM outbound_waits w
-             WHERE w.monitor_id = monitors.id
-               AND w.state IN ('unarmed', 'armed', 'terminal-unconsumed')
-          )`,
-    );
-    const result = keep.run();
-    report.monitorsDeleted = Number((result as { changes?: number }).changes ?? 0);
-    if (report.monitorsDeleted > 0) {
-      insertEnvelope(db, {
-        type: "monitors.pruned",
-        domain: "monitors",
-        payload: { outcome: "pruned", count: report.monitorsDeleted },
-        createdAtMs: t,
-      });
-    }
-  }
+  // Terminal monitors are pure history: keep the newest monitorKeep terminal
+  // rows and prune the rest (see pruneTerminalMonitors). This explicit path and
+  // every monitor-list read share the same prune so hosts never accumulate
+  // terminal rows until a bounded consumer trips.
+  report.monitorsDeleted = pruneTerminalMonitors(db, cfg, t);
 
   // Agent state: compact by preserving only the latest transition per instance
   // once older than window. Instances themselves stay untouched.
