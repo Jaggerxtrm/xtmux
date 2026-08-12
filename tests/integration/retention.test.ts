@@ -8,6 +8,8 @@ import { migrate } from "../../src/db/schema.ts";
 import { sendMessage } from "../../src/domains/messages/send.ts";
 import { ackMessage } from "../../src/domains/messages/ack.ts";
 import { applyRetention, loadRetentionConfig } from "../../src/db/retention.ts";
+import { register, terminate } from "../../src/domains/monitors/store.ts";
+import { armOutboundWait, consumeOutboundWake, deliverOutboundWake, registerOutboundWait, terminalizeOutboundWait } from "../../src/domains/monitors/outbound-wake.ts";
 import type { Config } from "../../src/config.ts";
 
 function setup(): { db: Db; cleanup: () => void } {
@@ -156,6 +158,57 @@ describe("retention preservation rules (PRD §17)", () => {
         )
         .get();
       expect(env?.n).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("terminal monitors pruned to monitorKeep, armed-wait monitor preserved", () => {
+    const { db, cleanup } = setup();
+    try {
+      const NOW = 1_000_000_000_000;
+      const OLD = NOW - 90 * DAY_MS;
+      const mkMonitor = (id: string, at: number): void => {
+        register(db, { id, target: "$target", paneId: "%pane", sessionId: "$sess", state: "running", intervalMs: 1000, nowMs: at });
+        terminate(db, id, "done", at + 1);
+      };
+      mkMonitor("mon-a", OLD);
+      mkMonitor("mon-b", OLD + DAY_MS);
+      mkMonitor("mon-c", OLD + 2 * DAY_MS);
+      // Armed wait pins its monitor row regardless of age/rank.
+      mkMonitor("mon-w", OLD + 3 * DAY_MS);
+      registerOutboundWait(db, {
+        waitId: "wait-w", requesterSessionId: "$sess", requesterPaneId: "%pane",
+        targetSessionId: "$sess", targetPaneId: "%pane", nowMs: OLD + 3 * DAY_MS,
+      });
+      armOutboundWait(db, {
+        waitId: "wait-w", monitorId: "mon-w", requesterSessionId: "$sess", requesterPaneId: "%pane", nowMs: OLD + 3 * DAY_MS,
+      });
+      // The wait reaches the consumed state only via terminal-unconsumed + delivered.
+      terminalizeOutboundWait(db, "mon-w", "done", OLD + 3 * DAY_MS);
+      deliverOutboundWake(db, {
+        waitId: "wait-w", requesterSessionId: "$sess", requesterPaneId: "%pane", nowMs: OLD + 3 * DAY_MS,
+      });
+
+      const cfg = { ...loadRetentionConfig(), monitorKeep: 2 };
+      applyRetention(db, cfg, () => NOW);
+
+      const remaining = db.raw
+        .query<{ id: string }, []>("SELECT id FROM monitors ORDER BY id")
+        .all()
+        .map((row) => row.id);
+      expect(remaining.sort()).toEqual(["mon-c", "mon-w"]);
+
+      // Once the wake is consumed the pin releases and the next run prunes it.
+      consumeOutboundWake(db, {
+        waitId: "wait-w", requesterSessionId: "$sess", requesterPaneId: "%pane", nowMs: NOW,
+      });
+      applyRetention(db, { ...loadRetentionConfig(), monitorKeep: 0 }, () => NOW + 1);
+      const after = db.raw
+        .query<{ id: string }, []>("SELECT id FROM monitors ORDER BY id")
+        .all()
+        .map((row) => row.id);
+      expect(after).toEqual([]);
     } finally {
       cleanup();
     }
