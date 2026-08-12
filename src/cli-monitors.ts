@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { Db } from "./db/connection.ts";
+import { pruneTerminalMonitors } from "./db/retention.ts";
 import {
   armOutboundWait,
   deliverOutboundWake,
@@ -480,6 +481,13 @@ export function cliMonitorList(db: Db, argv: string[], nowMs: number): number {
   try {
     reconcileAll(db, liveProbes, nowMs);
     replayOutboundWakes(db, nowMs);
+    // Keep terminal rows bounded on every read (xtmux-dw5): the explicit
+    // `xtmux retention` command alone let hosts accumulate terminal monitors
+    // until a bounded consumer (the Pi inbox monitor-list cap) tripped. Runs
+    // after reconcile/replay so freshly-terminal rows are eligible and wakes
+    // delivered this pass release their pin; armed/terminal-unconsumed wakes
+    // still pin their monitor row regardless of age.
+    pruneTerminalMonitors(db);
     for (const wait of listAllWaits(db)) {
       if (wait.state === "terminal-unconsumed" && !wait.wakeDelivered) {
         deliverOutboundWake(db, { waitId: wait.waitId, requesterSessionId: wait.requesterSessionId, requesterPaneId: wait.requesterPaneId, nowMs });

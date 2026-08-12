@@ -80,10 +80,6 @@ function stdoutOf(value: unknown): string {
   return typeof result.stdout === "string" ? result.stdout : "";
 }
 
-function setWidget(ctx: ExtensionContext, lines: string[] | undefined): void {
-  ctx.ui.setWidget?.(WIDGET, lines, { placement: "belowEditor" });
-}
-
 export default function xtmuxInboxReply(pi: ExtensionAPI, reconcileSenderMonitors?: SenderMonitorReconciler): void {
   let ownPaneId = "";
   let ownSessionId = "";
@@ -91,6 +87,13 @@ export default function xtmuxInboxReply(pi: ExtensionAPI, reconcileSenderMonitor
   let refreshPromise: Promise<boolean> | undefined;
   let continuationQueued = false;
   let stopped = false;
+  let activeCtx: ExtensionContext | null = null;
+
+  function setWidget(lines: string[] | undefined): void {
+    const ctx = activeCtx;
+    if (!ctx) return;
+    ctx.ui.setWidget?.(WIDGET, lines, { placement: "belowEditor" });
+  }
   let replies: PendingReply[] = [];
   let awaiting: PendingReply[] = [];
   let senderObligations: SenderObligation[] = [];
@@ -206,7 +209,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI, reconcileSenderMonitor
     unread = count;
   }
 
-  function render(ctx: ExtensionContext): void {
+  function render(): void {
     const lines: string[] = [];
     if (unread > 0) addWidgetLine(lines, `Inbox: ${Math.min(unread, 9999)}${unread > 9999 ? "+" : ""} unread`);
     let shownReplies = 0;
@@ -225,10 +228,10 @@ export default function xtmuxInboxReply(pi: ExtensionAPI, reconcileSenderMonitor
     }
     if (awaiting.some((item) => item.blocked)) addWidgetLine(lines, "Awaiting reply: unsafe coordination metadata hidden");
     if (degradation) addWidgetLine(lines, `xtmux unavailable: ${degradation}`);
-    setWidget(ctx, lines.length ? lines : undefined);
+    setWidget(lines.length ? lines : undefined);
   }
 
-  async function refresh(ctx: ExtensionContext): Promise<boolean> {
+  async function refresh(): Promise<boolean> {
     if (refreshPromise) return refreshPromise;
     refreshPromise = (async () => {
       try {
@@ -239,7 +242,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI, reconcileSenderMonitor
         degradation = "coordination backend error; inspect manually";
         return false;
       } finally {
-        render(ctx);
+        render();
       }
     })();
     try {
@@ -249,7 +252,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI, reconcileSenderMonitor
     }
   }
 
-  async function consumeWakes(ctx: ExtensionContext, budget: OperationBudget): Promise<number> {
+  async function consumeWakes(budget: OperationBudget): Promise<number> {
     if (!ownPaneId) return 0;
     try {
       const value = await execJson(["monitor-list", "--json"], "monitor-list");
@@ -277,7 +280,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI, reconcileSenderMonitor
       return consumed;
     } catch {
       degradation = "coordination wake error; inspect manually";
-      render(ctx);
+      render();
       return 0;
     }
   }
@@ -302,27 +305,30 @@ export default function xtmuxInboxReply(pi: ExtensionAPI, reconcileSenderMonitor
     }
   }
 
-  function scheduleContinuation(ctx: ExtensionContext, hasWake: boolean): void {
-    if (continuationQueued || stopped || ctx.hasPendingMessages() || (!hasWake && replies.length === 0)) return;
+  function scheduleContinuation(hasWake: boolean): void {
+    const current = activeCtx;
+    if (continuationQueued || stopped || !current || current.hasPendingMessages() || (!hasWake && replies.length === 0)) return;
     continuationQueued = true;
     const budget = cycleBudget;
     queueMicrotask(async () => {
       try {
-        if (!await refresh(ctx)) return;
-        if (stopped || ctx.hasPendingMessages() || (!hasWake && replies.length === 0)) return;
+        if (!activeCtx) return;
+        if (!await refresh()) return;
+        const after = activeCtx;
+        if (stopped || !after || after.hasPendingMessages() || (!hasWake && replies.length === 0)) return;
         pi.sendUserMessage(continuationText(hasWake), { deliverAs: "followUp" });
         await ackQueuedReplies(budget);
       } catch {
         degradation = "coordination continuation error; inspect manually";
-        render(ctx);
+        render();
       } finally {
         continuationQueued = false;
       }
     });
   }
 
-  async function runCycle(ctx: ExtensionContext): Promise<void> {
-    if (!await refresh(ctx)) return;
+  async function runCycle(): Promise<void> {
+    if (!await refresh()) return;
     if (reconcileSenderMonitors && cycleBudget.remaining > 0) {
       try {
         const used = await reconcileSenderMonitors(senderObligations, cycleBudget.remaining);
@@ -330,29 +336,31 @@ export default function xtmuxInboxReply(pi: ExtensionAPI, reconcileSenderMonitor
         cycleBudget.remaining -= used;
       } catch {
         degradation = "coordination monitor error; inspect manually";
-        render(ctx);
+        render();
       }
     }
-    if (ctx.hasPendingMessages()) return;
+    const current = activeCtx;
+    if (!current || current.hasPendingMessages()) return;
     if (replies.length > 0) {
       const wakeBudget = { remaining: Math.min(1, cycleBudget.remaining) };
-      const completed = await consumeWakes(ctx, wakeBudget);
+      const completed = await consumeWakes(wakeBudget);
       cycleBudget.remaining -= completed;
-      scheduleContinuation(ctx, completed > 0);
+      scheduleContinuation(completed > 0);
       return;
     }
-    const completed = await consumeWakes(ctx, cycleBudget);
-    scheduleContinuation(ctx, completed > 0);
+    const completed = await consumeWakes(cycleBudget);
+    scheduleContinuation(completed > 0);
   }
 
   pi.on("session_start", async (_event, ctx) => {
     stopped = false;
     cycleBudget = { remaining: MAX_CYCLE_OPERATIONS };
+    activeCtx = ctx;
     ownPaneId = await tmuxValue("#{pane_id}", process.env.TMUX_PANE || "");
     ownSessionId = ownPaneId ? await tmuxValue("#{session_id}", ownPaneId) : "";
-    await runCycle(ctx);
+    await runCycle();
     if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(() => void runCycle(ctx), pollIntervalMs());
+    pollTimer = setInterval(() => void runCycle(), pollIntervalMs());
     pollTimer.unref?.();
   });
 
@@ -368,37 +376,39 @@ export default function xtmuxInboxReply(pi: ExtensionAPI, reconcileSenderMonitor
     return { systemPrompt: event.systemPrompt + addition };
   });
 
-  pi.on("agent_start", async (_event, ctx) => { await refresh(ctx); });
+  pi.on("agent_start", async () => { await refresh(); });
 
-  pi.on("agent_settled", async (_event, ctx) => {
+  pi.on("agent_settled", async () => {
     try {
-      await runCycle(ctx);
+      await runCycle();
     } finally {
       cycleBudget = { remaining: MAX_CYCLE_OPERATIONS };
     }
   });
 
-  pi.on("tool_result", async (event, ctx) => {
+  pi.on("tool_result", async (event, _ctx) => {
     if (event.toolName !== "bash" || event.isError) return;
     try {
       if (!coordinationResult(event.content)) return;
-      await refresh(ctx);
+      await refresh();
     } catch {
       degradation = "malformed xtmux coordination output; inspect manually";
-      render(ctx);
+      render();
     }
   });
 
-  pi.on("agent_end", async (_event, ctx) => {
-    await refresh(ctx);
-    if (replies.length && ctx.hasUI) ctx.ui.notify("Reply obligations remain; inspect the xtmux inbox.", "warning");
+  pi.on("agent_end", async () => {
+    await refresh();
+    const ctx = activeCtx;
+    if (replies.length && ctx?.hasUI) ctx.ui.notify("Reply obligations remain; inspect the xtmux inbox.", "warning");
   });
 
-  pi.on("session_shutdown", (_event, ctx) => {
+  pi.on("session_shutdown", () => {
     stopped = true;
     continuationQueued = false;
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = undefined;
-    setWidget(ctx, undefined);
+    setWidget(undefined);
+    activeCtx = null;
   });
 }

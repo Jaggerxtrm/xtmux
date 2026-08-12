@@ -639,6 +639,7 @@ Envs (defaults set by Phase 10 based on benchmark results):
 - `XTMUX_OBS_TELEMETRY_RETENTION_DAYS`
 - `XTMUX_OBS_AUDIT_RETENTION_DAYS`
 - `XTMUX_OBS_DELIVERY_RETENTION_DAYS`
+- `XTMUX_OBS_MONITOR_KEEP`
 
 Preservation rules:
 
@@ -658,6 +659,17 @@ Cleanup runs transactionally per domain, independent. WAL checkpoint after clean
 
 Retention is intentionally NOT auto-run on picker invocation (no in-process
 scheduler — PRD §25 forbids mandatory daemons). Operators wire it externally.
+
+One exception: the terminal-monitor prune runs on every `monitor-list` read,
+sharing the "mutate on read" boundary where monitor reconciliation already runs.
+`monitor-list` is the pass every consumer runs, so hosts never accumulate
+terminal rows until a bounded consumer trips (observed 2026-08-12: 575 terminal
+rows disabled the Pi inbox wake consumer, which refuses `monitor-list` above
+500 rows). The prune keeps the newest `XTMUX_OBS_MONITOR_KEEP` terminal rows and
+never deletes a monitor pinned by an `unarmed`, `armed`, or
+`terminal-unconsumed` wait. Full per-domain retention stays operator-scheduled
+below.
+
 The CLI exposes:
 
 ```bash
