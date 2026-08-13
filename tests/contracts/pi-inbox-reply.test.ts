@@ -530,4 +530,32 @@ describe("Pi SQLite reply obligations", () => {
     await expect(settling).resolves.toBeUndefined();
     expect(h.widgets.has("xtmux-inbox")).toBe(false);
   });
+
+  test("a stale ctx without session_shutdown cannot crash the extension", async () => {
+    isolate();
+    const state = store();
+    state.unread = 1;
+    state.inbound = [{
+      messageKey: "task-1", senderId: "$sender", recipientId: "$me", targetPaneId: "%me", beadId: "work",
+      summary: "private", expectsReply: true, acked: true, replyStatus: "pending",
+    }];
+    const h = harness(state);
+    await h.emit("session_start");
+    await Bun.sleep(0);
+    const before = h.widgets.get("xtmux-inbox");
+    // Observed crash path: the runner invalidated the ctx without (or before)
+    // session_shutdown reached the extension. The fake ui now throws stale while
+    // activeCtx is still set — the extension must degrade, never throw.
+    h.setStale(true);
+    await expect(h.emit("agent_settled")).resolves.toBeUndefined();
+    await expect(h.emit("agent_start")).resolves.toBeUndefined();
+    await expect(h.emit("tool_result", {
+      toolName: "bash", isError: false, content: jsonResult({
+        messageKey: "task-1", duplicate: false, senderId: "$me", recipientId: "$peer", expectsReply: true,
+      }),
+    })).resolves.toBeUndefined();
+    await expect(h.emit("agent_end")).resolves.toBeUndefined();
+    expect(h.widgets.get("xtmux-inbox")).toEqual(before);
+    expect(h.notifications).toEqual([]);
+  });
 });
