@@ -89,10 +89,32 @@ export default function xtmuxInboxReply(pi: ExtensionAPI, reconcileSenderMonitor
   let stopped = false;
   let activeCtx: ExtensionContext | null = null;
 
+  function isStaleCtx(error: unknown): boolean {
+    return error instanceof Error && /stale/i.test(error.message);
+  }
+
   function setWidget(lines: string[] | undefined): void {
     const ctx = activeCtx;
     if (!ctx) return;
-    ctx.ui.setWidget?.(WIDGET, lines, { placement: "belowEditor" });
+    try {
+      ctx.ui.setWidget?.(WIDGET, lines, { placement: "belowEditor" });
+    } catch (error) {
+      // The runner may invalidate the ctx without (or before) our
+      // session_shutdown handler running. A stale ctx must never be fatal:
+      // swallow the error and stop using the ctx when it is stale.
+      if (isStaleCtx(error)) activeCtx = null;
+    }
+  }
+
+  function hasPendingMessages(): boolean {
+    const ctx = activeCtx;
+    if (!ctx) return true;
+    try {
+      return ctx.hasPendingMessages();
+    } catch (error) {
+      if (isStaleCtx(error)) activeCtx = null;
+      return true;
+    }
   }
   let replies: PendingReply[] = [];
   let awaiting: PendingReply[] = [];
@@ -306,16 +328,14 @@ export default function xtmuxInboxReply(pi: ExtensionAPI, reconcileSenderMonitor
   }
 
   function scheduleContinuation(hasWake: boolean): void {
-    const current = activeCtx;
-    if (continuationQueued || stopped || !current || current.hasPendingMessages() || (!hasWake && replies.length === 0)) return;
+    if (continuationQueued || stopped || hasPendingMessages() || (!hasWake && replies.length === 0)) return;
     continuationQueued = true;
     const budget = cycleBudget;
     queueMicrotask(async () => {
       try {
         if (!activeCtx) return;
         if (!await refresh()) return;
-        const after = activeCtx;
-        if (stopped || !after || after.hasPendingMessages() || (!hasWake && replies.length === 0)) return;
+        if (stopped || hasPendingMessages() || (!hasWake && replies.length === 0)) return;
         pi.sendUserMessage(continuationText(hasWake), { deliverAs: "followUp" });
         await ackQueuedReplies(budget);
       } catch {
@@ -339,8 +359,7 @@ export default function xtmuxInboxReply(pi: ExtensionAPI, reconcileSenderMonitor
         render();
       }
     }
-    const current = activeCtx;
-    if (!current || current.hasPendingMessages()) return;
+    if (hasPendingMessages()) return;
     if (replies.length > 0) {
       const wakeBudget = { remaining: Math.min(1, cycleBudget.remaining) };
       const completed = await consumeWakes(wakeBudget);
@@ -399,16 +418,28 @@ export default function xtmuxInboxReply(pi: ExtensionAPI, reconcileSenderMonitor
 
   pi.on("agent_end", async () => {
     await refresh();
+    if (!replies.length) return;
     const ctx = activeCtx;
-    if (replies.length && ctx?.hasUI) ctx.ui.notify("Reply obligations remain; inspect the xtmux inbox.", "warning");
+    if (!ctx) return;
+    try {
+      if (ctx.hasUI) ctx.ui.notify("Reply obligations remain; inspect the xtmux inbox.", "warning");
+    } catch (error) {
+      if (isStaleCtx(error)) activeCtx = null;
+    }
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (_event, ctx) => {
     stopped = true;
     continuationQueued = false;
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = undefined;
-    setWidget(undefined);
+    // Null the active ctx first: anything still in flight after this bails
+    // without touching the stale ctx, no matter what happens below.
     activeCtx = null;
+    try {
+      ctx.ui.setWidget?.(WIDGET, undefined, { placement: "belowEditor" });
+    } catch {
+      // The runtime is already tearing down; the widget clear is best-effort.
+    }
   });
 }
