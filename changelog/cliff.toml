@@ -29,6 +29,8 @@ commit_parsers = [
   # Meta-refresh commits stay out of the changelog they just regenerated,
   # otherwise every regen triggers another regen (chase-tail).
   { message = "^chore\\(changelog\\)", skip = true },
+  # beads metadata-sync commits are DB housekeeping, not user-facing changes.
+  { message = "^bd:", skip = true },
   { message = "^feat\\(obs\\)", group = "Observability runtime" },
   { message = "^(feat|fix)\\(coordination\\)", group = "Coordination and hooks" },
   { message = "^(feat|fix)\\(messages\\)", group = "Messages and delivery" },

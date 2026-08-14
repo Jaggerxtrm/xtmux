@@ -34,6 +34,46 @@ No major bumps by default. To roll the pending block without cutting a tag,
 | clean install/update/uninstall | installer contract tests plus packed-artifact smoke before publication |
 | actual npm publish | blocked by the explicit goal constraint until packed install, contents, idempotency, coexistence, and changelog consumption pass |
 
+## Pending v0.3.0 release notes
+
+Author-side notes to fold into the CHANGELOG `[v0.3.0]` section when the
+operator cuts the tag. The generator (`npm run changelog`) rebuilds
+`[Unreleased]` from git commits and does not preserve prose blocks, so this
+lives here until tag time.
+
+### Upgrade note (v0.3.0)
+
+- Semver target: `v0.3.0`. Minor bump. Additive over `v0.2.3`: K3 Codex runtime
+  adapter, K4 Codex lifecycle/recovery/managed distribution, monitor liveness
+  and retention, stale Pi-context defenses, byte-identical compatibility links.
+- Operators should re-run install after upgrade. Rationale: the K4 batch
+  changes installer distribution surface (`scripts/install.mjs` compatibility
+  links, packaged Codex hook trust, hook entry repair for pre-tag installs)
+  and the Pi extension surface (grouped extension package internals). A rerun
+  of `npm i -g @jaggerxtrm/xtmux` (or the project-local `install:global`
+  script) rewrites Claude/Codex hook wrappers with the current `_source`-tagged
+  payload and picks up the compatibility-link fix.
+- xtmux never installs the Codex CLI; the Codex hook payload only installs
+  when a `~/.codex` directory already exists. Restated per the phase-2 gate
+  above.
+
+### Pi dev-dependency pin rationale
+
+- `@earendil-works/pi-ai@0.80.6` and `@earendil-works/pi-coding-agent@0.80.6`
+  are pinned as `devDependencies`, exact (no `^` / `~`). They are the
+  characterization baseline for the Pi ExtensionAPI surface that the
+  `packages/pi-extensions` sources compile and typecheck against.
+- Consumer runtime Pi is whatever version the operator installs globally
+  (typically 0.84.1 at time of writing); xtmux does not depend on that
+  version at runtime beyond the ExtensionAPI shape captured by the pin.
+- Do not bump the pin on this release. Bump only when the Pi ExtensionAPI
+  surface changes materially for xtmux extensions and the change requires
+  refreshing our type-checked characterization. When bumping, re-run the K1
+  characterization gate and update this note.
+- Dependabot PRs that bump this pin (for example PR #97) are intentionally
+  deferred until the next characterization refresh, so the baseline moves in
+  one operator-owned step rather than drifting per Dependabot update.
+
 ## Phase 2 coordination release gates
 
 - [ ] Build the runtime before help/smoke checks: `bun run build`.
