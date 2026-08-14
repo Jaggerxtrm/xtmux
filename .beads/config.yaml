@@ -1,5 +1,6 @@
 dolt:
-  shared-server: true
-
+    shared-server: true
 # sync.remote: git+ssh://git@github.com/Jaggerxtrm/xtmux.git
 export.git-add: false
+sync:
+    remote: "git+ssh://git@github.com/Jaggerxtrm/xtmux.git"
