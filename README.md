@@ -24,6 +24,24 @@ in previews and multiplexing workflows.
 - bulk multi-select kill with `Space` + `Alt-X`
 - root-level attention jumps `Alt-1`..`Alt-5` and jump-back
 
+### Sidebar navigator (`xtmux nav`)
+
+`xtmux nav` is the canonical compact operator view. It remains a thin fzf
+projection over the same tmux/xtmux inventory; it creates no daemon, database,
+or runtime authority.
+
+- bounded two-line session and pane cards, with long task text kept out of identity
+- `▶` marks the invoking tmux target; fzf's `>` marks the highlighted target
+- `Tab` keeps the existing expanded / sessions-only state
+- bottom inspector (`Ctrl-/`) with structured session, agent, worktree, and git fields
+- short persistent footer; `?` shows the complete nav key reference
+- private NUL-delimited records with strict machine action tokens; display is never parsed
+- semantic fzf capability gate: multiline, bounded one-line, then classic fallback
+- direct `nav next|prev|attention-next|attention-prev|back` traversal without building the picker
+
+Set `XTMUX_NAV_LAYOUT=classic` to use the classic renderer without reverting code.
+Public `xtmux list` remains the unchanged five-field newline TSV surface.
+
 ### Agent awareness
 
 - pane-scoped `@agent_state` written by hooks:
@@ -188,9 +206,13 @@ set-hook -g 'window-unlinked[90]' "run-shell '~/.local/bin/tmux-session-picker c
 Suggested tmux bindings:
 
 ```tmux
-bind s display-popup -E -w 99% -h 97% "$HOME/.local/bin/tmux-session-picker"
+# recommended left drawer (tmux 3.5a syntax)
+bind s display-popup -E -x 0 -y 0 -w 52% -h 100% "XTMUX_NAV_WIDTH=#{e|-:#{e|*|f|0:#{client_width},0.52},4} $HOME/.local/bin/xtmux nav"
 
-# optional compact modes
+# classic/full-size rollback
+bind S display-popup -E -w 99% -h 97% "$HOME/.local/bin/tmux-session-picker"
+
+# optional classic compact modes
 bind g display-popup -E -w 99% -h 97% "TMUX_PICKER_MODE=compact-wrap $HOME/.local/bin/tmux-session-picker"
 bind G display-popup -E -w 99% -h 97% "TMUX_PICKER_MODE=compact-nowrap $HOME/.local/bin/tmux-session-picker"
 
@@ -203,14 +225,20 @@ bind -n M-5 run-shell '~/.local/bin/tmux-session-picker attn-jump 5'
 bind -n M-` run-shell '~/.local/bin/tmux-session-picker jump-back'
 ```
 
+Choose popup width in tmux configuration: about 40% on wide desktops, 50–55%
+for normal terminals, and 60–65% on smaller laptops. Keep the `0.52` arithmetic
+factor aligned with the chosen percentage; the subtraction reserves popup/fzf
+borders. xtmux does not install or rewrite these global bindings automatically.
+
 See [`docs/keys.md`](docs/keys.md) for copy-paste snippets and collision notes.
 
 ## Tmux keys
 
 | key | action |
 |---|---|
-| `prefix s` | open picker, default mode |
-| `prefix g` | open picker, compact-wrap mode |
+| `prefix s` | open sidebar-style `xtmux nav` |
+| `prefix S` | open classic/full-size picker |
+| `prefix g` | open classic picker, compact-wrap mode |
 | `prefix G` | open picker, compact-nowrap mode |
 | `Alt-1`..`Alt-5` | jump to the 1st..5th waiting/attention pane |
 | `` Alt-` `` | jump back to pane active before the last attention jump |
@@ -240,7 +268,10 @@ from `docs/keys.md`.
 | `Ctrl-f` | filter submenu: repo / branch / command / grep |
 | `Ctrl-r` | refresh list; keeps active filter and nesting mode |
 | `Ctrl-/` | toggle preview pane |
-| `?` | show multiplexing-safe delegation cheatsheet in preview |
+| `?` | nav: full key help; classic picker: multiplexing cheatsheet |
+
+The nav drawer uses a bottom inspector and the short footer `Enter go · Tab
+compact/expand · ^/ inspect · ? help`. All actions above remain available.
 
 ## CLI reference
 
@@ -254,6 +285,10 @@ tmux-session-picker popup   <type> <sid> <target>
 tmux-session-picker jump    <type> <sid> <target>
 tmux-session-picker attn-jump <n>
 tmux-session-picker jump-back
+xtmux nav
+xtmux nav next|prev
+xtmux nav attention-next|attention-prev
+xtmux nav back
 ```
 
 Filter grammar:
@@ -531,6 +566,7 @@ actions.
 | `${TMPDIR:-/tmp}/tmux-picker-cache-$UID/git-table` | path->git-root and root->status cache |
 | `${TMPDIR:-/tmp}/tmux-picker-state-$UID/filter` | active `Ctrl-f` content filter |
 | `${TMPDIR:-/tmp}/tmux-picker-state-$UID/list-mode` | `expanded` / `sessions-only` nesting mode |
+| `${TMPDIR:-/tmp}/tmux-picker-state-$UID/fzf-multiline` | fzf semantic capability result, keyed by binary/version |
 | `${XDG_STATE_HOME:-$HOME/.local/state}/xtmux/observability.db` | authoritative messages, receipts, reply links, waits, monitors, and event journal |
 
 The list output itself is never cached. Agent state and attention ranking are
@@ -544,7 +580,9 @@ always read fresh.
 | `TMUX_PICKER_STALE_MINS` | `60` | idle threshold for stale session styling |
 | `TMUX_PICKER_NO_CACHE` | `0` | `1` bypasses git cache; used by refresh |
 | `TMUX_PICKER_AGENT` | `0` | `1` enables capture-pane agent-state inference fallback |
-| `TMUX_PICKER_MODE` | `default` | `default`, `compact-wrap`, `compact-nowrap` |
+| `TMUX_PICKER_MODE` | `default` | classic picker: `default`, `compact-wrap`, `compact-nowrap` |
+| `XTMUX_NAV_LAYOUT` | nav | `classic` forces the classic rollback renderer |
+| `XTMUX_NAV_WIDTH` | terminal columns or `52` | nav card width; mainly a deterministic fixture/operator override |
 | `TMUX_ASCII_ICONS` | `0` | `1` uses ASCII `br`/`path` instead of nerd font glyphs |
 | `TMUX_GIT_TOPLEVEL` | — | caller-supplied repo root for `git-pane-status.sh` fast path |
 | `XTMUX_AGENT_STATE_LOG` | `0` | `1` logs agent-state transitions for hook debugging |
@@ -588,7 +626,9 @@ make test-regen
 Current validation at the time of this README update:
 
 ```text
-116 pass, 0 fail
+bash test/contract.sh       289 pass, 0 fail
+bash test/nav-contract.sh    91 pass, 0 fail
+bun test                    409 pass, 0 fail
 ```
 
 `test/contract.sh` covers:
@@ -614,9 +654,10 @@ the source of truth.
 See [`docs/perf-audit.md`](docs/perf-audit.md). Current measured headline from
 that audit:
 
-- warm list: ~122 ms
-- cold build: ~484 ms
-- preview: ~95 ms
+- paired warm `origin/main` list: 170.2 ms trimmed mean
+- paired warm feature classic list: 169.4 ms
+- paired warm sidebar nav list: 179.3 ms (+5.3%, bounded rendering; no process fan-out)
+- warm subprocess structure: 2 tmux, 0 git, 0 process-tree probes
 
 Only the expensive git half is cached. Agent state, attention sort, badges,
 filters, and dashboard/audit views are rendered from live tmux state.
@@ -641,6 +682,7 @@ Completed major epics/work:
   - performance/cache split work
   - attention jump bindings
   - specialist section grouping
+  - sidebar-style `xtmux nav`, strict action tokens, classic rollback, and direct traversal
 - `xtmux-mux` multiplexing-safe orchestration primitives:
   - `@agent_*` metadata
   - `wait-agent`
@@ -670,5 +712,7 @@ Remaining open roadmap in Beads:
 - `xtmux-team.6` pi runtime turn-done publishing via `agent.turn.done` + parent message
 - `xtmux-team.7` opt-in `git`/`bd`/`gh pr` telemetry wrappers
 - deeper Claude last-message hook integration remains future work if needed
+- nav token-layout presets, seen/unseen completion, favorites/pins, collapsible
+  groups, and a native TUI remain explicitly deferred
 
 Beads are the source of truth for current planning/status.

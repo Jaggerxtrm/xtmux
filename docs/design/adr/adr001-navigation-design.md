@@ -506,6 +506,33 @@ Do not approximate this with a visual-only smoke test.
 
 The action payload must be verified.
 
+### Verified local capability surface
+
+Characterization on 2026-08-14 used tmux 3.5a and fzf package 0.60.3 (`fzf --version` reports `0.60 (devel)`). An ephemeral PTY probe verified:
+
+```text
+two NUL-separated records remain distinct when display fields contain newlines
+{5} resolves the hidden action token
+{+5} passes two selected tokens as separate arguments
+become and execute invoke the expected payload
+reload-sync plus track-current retains the machine record boundary
+```
+
+`--filter` did not apply `--accept-nth` on this build, so filter mode is not a valid token-output capability probe. The implementation gate must use explicit action payloads.
+
+Fallback order:
+
+```text
+full multiline nav
+  all semantic probes pass
+
+bounded one-line nav
+  machine-field actions pass but multiline behavior does not
+
+classic picker
+  machine-field action safety cannot be proven
+```
+
 ## 15. Inspector
 
 Target structure:
@@ -562,10 +589,11 @@ Recommended examples may include:
 ```text
 40%  very wide terminals
 50-55% normal desktop use
-65%  compact laptop terminals
+60-65% compact laptop terminals
 ```
 
-No automatic terminal rewriting is required in v1.
+The binding syntax was verified with tmux 3.5a. No automatic terminal rewriting
+or global key installation is required in v1.
 
 ## 17. Footer
 
@@ -587,29 +615,40 @@ Do not use the footer as a complete keybinding manual.
 
 ## 18. Herdr adoption boundary
 
+The current reference was inspected at `herdrdev/herdr@d76657f2c7fc18dcce3b9af43842c8afaba1646b` on 2026-08-14. Herdr has separate persistent-sidebar and modal-navigator behaviors. xtmux adopts selected UX mechanisms, not a one-to-one command model.
+
 Adopt:
 
-| Herdr idea                 | xtmux interpretation                   |
-| -------------------------- | -------------------------------------- |
-| multi-row sidebar entries  | session/context lines                  |
-| collapsed/expanded sidebar | compact/expanded nav                   |
-| active-row treatment       | current tmux marker                    |
-| workspace hierarchy        | repo/worktree/session grouping         |
-| next/previous workspace    | nav next/prev                          |
-| next/previous agent        | attention next/prev                    |
-| configurable metadata rows | future token-layout system             |
-| keep active item visible   | fzf selection/current marker stability |
+| Herdr mechanism | xtmux interpretation |
+| --- | --- |
+| bounded multi-row cards | session/context and pane/task lines |
+| active row distinct from navigation selection | independent `▶` current marker and fzf pointer |
+| explicit worktree membership | group from normalized repository/worktree identity, never rendered names |
+| priority projection | use xtmux's existing attention rank and tie-breakers, not Herdr state authority |
+| minimal scroll adjustment | reveal current target on open; thereafter retain the operator selection/viewport |
+| bounded metadata-row tokens | deferred constrained presets, not a general theming DSL |
+| collapsed group retains active child | deferred with group collapse, so location remains visible |
+
+Do not map directly:
+
+| Herdr behavior | Reason |
+| --- | --- |
+| compact icon rail | tmux popup plus sessions-only mode already supplies the v1 narrow surface |
+| hierarchy-aware workspace next/previous | `nav next/prev` intentionally preserves native tmux order |
+| current-view agent cycling | attention navigation must follow xtmux's authoritative attention projection |
+| done/unseen priority | requires seen-state semantics explicitly deferred from v1 |
+| per-workspace subtree collapse | useful later, but distinct from existing compact/expanded list mode |
 
 Do not adopt in this workstream:
 
-| Herdr feature                   | Reason                                   |
-| ------------------------------- | ---------------------------------------- |
-| persistent terminal server      | conflicts with scope/authority           |
-| separate session runtime        | tmux remains authority                   |
-| plugin runtime                  | unrelated                                |
-| drag reorder                    | unnecessary for first nav slice          |
-| workspace creation/deletion     | nav is initially read/navigation focused |
-| Herdr agent detection authority | xtmux already has agent-state contracts  |
+| Herdr feature | Reason |
+| --- | --- |
+| persistent terminal server | conflicts with scope/authority |
+| separate session runtime | tmux remains authority |
+| plugin runtime | unrelated |
+| drag reorder | unnecessary for first nav slice |
+| workspace creation/deletion | nav is initially read/navigation focused |
+| Herdr agent detection authority | xtmux already has agent-state contracts |
 
 ## 19. Worktree grouping
 
@@ -749,7 +788,25 @@ preview selected row
 
 Never move preview-only work into the hot list for visual convenience.
 
-## 25. Compatibility
+## 25. Current performance characterization
+
+A 2026-08-14 live-host baseline used 13 sessions, 16 panes and 13 distinct pane paths. The checkout code matched `origin/main`; the only local commit added these design documents.
+
+| path | repeated observed range |
+|---|---:|
+| cold `list all` | 796–1285 ms |
+| warm `list all` | 143–294 ms |
+| forced no-cache refresh | 776–1335 ms |
+| warm sessions-only list | 125–183 ms |
+| session preview sample | 352–461 ms |
+
+Warm structural command tracing observed two tmux calls, zero git calls, zero process-tree probes and 18 wrapped external commands total. A parent-process RSS sample measured approximately 6.9 MiB; short-lived child RSS was not captured reliably and must be treated as a measurement limitation.
+
+These measurements are a local baseline, not a permanent acceptance threshold.
+The completed same-fixture comparison and subprocess evidence are recorded in
+`docs/perf-audit.md`.
+
+## 26. Compatibility
 
 These remain valid:
 
@@ -768,7 +825,7 @@ existing multiplexing workflows
 
 A user must be able to revert presentation without reverting the runtime.
 
-## 26. Initial implementation phases
+## 27. Initial implementation phases
 
 ### NAV-0 — Decision and characterization
 
@@ -839,7 +896,7 @@ classic fallback proof
 review-ready PR
 ```
 
-## 27. Deferred roadmap
+## 28. Deferred roadmap
 
 Explicitly deferred:
 
@@ -857,7 +914,7 @@ worktree mutation
 
 These ideas belong to later Beads, not hidden scope expansion of the first implementation PR.
 
-## 28. Acceptance scenarios
+## 29. Acceptance scenarios
 
 ### Many sessions
 
@@ -895,7 +952,7 @@ At approximately 40–55 columns, the navigator remains useful rather than becom
 
 If nav/multiline behavior proves defective, classic presentation can be selected without rolling back runtime changes.
 
-## 29. Final invariant
+## 30. Final invariant
 
 The target UX is:
 

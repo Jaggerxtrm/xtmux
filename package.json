@@ -69,7 +69,7 @@
     "install:global": "node scripts/install.mjs",
     "uninstall:global": "node scripts/install.mjs --uninstall",
     "postinstall": "node scripts/install.mjs --from-npm",
-    "test": "bun test && bash test/contract.sh && node --test tests/installer/*.test.mjs && bash scripts/verify-codex-distribution.sh",
+    "test": "bun test && bash test/nav-contract.sh && bash test/contract.sh && node --test tests/installer/*.test.mjs && bash scripts/verify-codex-distribution.sh",
     "test:installer": "node --test tests/installer/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "test:codex-distribution": "bash scripts/verify-codex-distribution.sh"

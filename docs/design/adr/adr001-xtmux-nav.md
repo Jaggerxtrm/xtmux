@@ -1,6 +1,6 @@
 # ADR-0001 — Retain FZF and Introduce Sidebar-Style `xtmux nav`
 
-**Status:** Accepted for implementation
+**Status:** Accepted
 **Date:** 2026-08-14
 **Repository:** `Jaggerxtrm/xtmux`
 **Decision scope:** local tmux session/pane navigation and picker presentation
@@ -182,6 +182,7 @@ xtmux nav prev
 xtmux nav attention-next
 xtmux nav attention-prev
 xtmux nav back
+xtmux nav help
 ```
 
 `xtmux nav` opens the interactive navigator.
@@ -203,12 +204,14 @@ Sidebar/drawer appearance is achieved through tmux popup geometry.
 Conceptual binding:
 
 ```tmux
-bind s display-popup -E -x 0 -y 0 -w 52% -h 100% "$HOME/.local/bin/xtmux nav"
+bind s display-popup -E -x 0 -y 0 -w 52% -h 100% "XTMUX_NAV_WIDTH=#{e|-:#{e|*|f|0:#{client_width},0.52},4} $HOME/.local/bin/xtmux nav"
 ```
 
-The exact syntax must be verified on the supported tmux version.
+This syntax was verified with tmux 3.5a. Practical widths are about 40% on a
+wide desktop, 50–55% normally, and 60–65% on a smaller laptop.
 
-A classic/full-width binding remains available.
+A classic/full-width binding remains available, and `XTMUX_NAV_LAYOUT=classic`
+selects it without changing runtime behavior.
 
 ## Decision 8 — Drawer information hierarchy is intentionally sparse
 
@@ -346,6 +349,30 @@ attentionCycle(direction)
   jump to target
 ```
 
+## Characterization evidence
+
+Local characterization on 2026-08-14 used tmux 3.5a and fzf package 0.60.3 (`fzf --version` reports `0.60 (devel)`). The probe verified all of these behaviors by action payload, not appearance:
+
+```text
+--read0 preserves two NUL-delimited records with embedded display newlines
+{5} resolves the hidden action-token field
+{+5} passes selected action tokens as separate quoted arguments
+become and execute dispatch supported commands
+reload-sync and track-current preserve the machine record boundary
+```
+
+The installed build does not apply `--accept-nth` in `--filter` mode. The capability gate must therefore use an ephemeral PTY and explicit action payloads. It must not use `--filter` as acceptance proof.
+
+The supported fallback order is:
+
+```text
+multiline nav  when all semantic probes pass
+one-line nav   when machine-field actions pass but multiline behavior does not
+classic picker when machine-field actions cannot be proven safe
+```
+
+Installed tmux syntax also establishes that ordinary session traversal uses `switch-client -n`, `switch-client -p`, and `switch-client -l`. tmux 3.5a has no separate `next-session` or `previous-session` commands.
+
 ## Consequences
 
 Positive consequences:
@@ -369,6 +396,7 @@ multi-select actions need machine-token refactoring
 rendering needs narrow-width tests
 docs and help must distinguish nav from classic presentation
 supported fzf capabilities must be characterized
+Bash truncation counts characters, not terminal cells; wide/combining Unicode may wrap
 ```
 
 These are acceptable costs because they remove implicit coupling that already exists between display strings and actions.

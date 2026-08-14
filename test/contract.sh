@@ -610,7 +610,7 @@ else
     target_sid="$(tmux display-message -p -t "$target" '#{session_id}' 2>/dev/null || true)"
     target_name="$(tmux display-message -p -t "$target" '#S' 2>/dev/null || true)"
     preview_meta="$($PICKER preview pane "$target_sid" "$target_name" "$target" 2>/dev/null)"
-    case "$preview_meta" in *"agent-meta bead=xtmux-mux.1"*"bead-context xtmux-mux.1"*) ok "picker: pane preview shows bead context" ;; *) nok "picker: pane preview shows bead context" ;; esac
+    case "$preview_meta" in *"AGENT"*"bead      xtmux-mux.1"*"bead-context xtmux-mux.1"*) ok "picker: pane preview shows bead context" ;; *) nok "picker: pane preview shows bead context" ;; esac
     # The launcher-written lineage options: topology --json publishes them, so a
     # reused pane must not keep projecting the dead agent's worktree/branch/parent.
     tmux set-option -p -t "$target" @agent_worktree /srv/wt/gone 2>/dev/null || true
@@ -2074,7 +2074,9 @@ else
 
       tmux split-window -t xtmux-kill-pane 'sleep 100' 2>/dev/null
       bulk_pane="$(tmux list-panes -t xtmux-kill-pane -F '#{pane_id}' | tail -1)"
-      bulk_kill $'pane\txtmux-kill-pane\txtmux-kill-pane\t'"$bulk_pane"$'\trow' >/dev/null 2>&1
+      # NAV-1: bulk-kill consumes strict machine tokens (p:<sid>:<pane> or
+      # p:<pane>), never rendered rows. Pane kills stay immediate.
+      bulk_kill "p:$bulk_pane" >/dev/null 2>&1
       if tmux list-panes -t xtmux-kill-pane -F '#{pane_id}' | grep -Fx "$bulk_pane" >/dev/null; then
         nok "bulk-kill: pane rows immediate"
       else
@@ -2359,22 +2361,20 @@ else
     nok "specialist: sp-* sessions grouped under bottom header"
   fi
 
-  sp_prev="$("$PICKER" preview pane "$sp_sid" "$sp_sess" "$sp_pane" 2>/dev/null | head -5)"
-  if printf '%s' "$sp_prev" | grep -q 'specialist job=deadbe bead=? role=executor state=stale'; then
-    ok "specialist: pane preview header"
+  sp_prev="$("$PICKER" preview pane "$sp_sid" "$sp_sess" "$sp_pane" 2>/dev/null)"
+  if printf '%s' "$sp_prev" | grep -q 'specialist executor' && printf '%s' "$sp_prev" | grep -q 'sp-state  stale'; then
+    ok "specialist: pane preview fields"
   else
-    nok "specialist: pane preview header"
-    printf '      preview: %s
-' "$sp_prev"
+    nok "specialist: pane preview fields"
+    printf '      preview: %s\n' "$(printf '%s\n' "$sp_prev" | head -12)"
   fi
 
-  sp_sess_prev="$("$PICKER" preview session "$sp_sid" "$sp_sess" 2>/dev/null | head -5)"
-  if printf '%s' "$sp_sess_prev" | grep -q 'specialist job=deadbe bead=? role=executor state=stale'; then
-    ok "specialist: session preview header"
+  sp_sess_prev="$("$PICKER" preview session "$sp_sid" "$sp_sess" 2>/dev/null)"
+  if printf '%s' "$sp_sess_prev" | grep -q 'specialist executor' && printf '%s' "$sp_sess_prev" | grep -q 'sp-state  stale'; then
+    ok "specialist: session preview fields"
   else
-    nok "specialist: session preview header"
-    printf '      preview: %s
-' "$sp_sess_prev"
+    nok "specialist: session preview fields"
+    printf '      preview: %s\n' "$(printf '%s\n' "$sp_sess_prev" | head -12)"
   fi
 
   TMUX_PANE="$sp_pane" "$AGENT_STATE" needs-input >/dev/null 2>&1

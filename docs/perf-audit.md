@@ -33,7 +33,10 @@ baseline measured on 11 sessions / 21 panes / 9 distinct paths / ~7 repos.
 - `rev-parse` itself (~4 ms each).
 - locale / sort / per-row `>>`.
 
-## fixes applied
+## historical fixes applied (2026-06-29)
+
+The rendered-output cache figures below are historical. That cache was removed
+by the live-state correctness fix documented later in this file.
 
 | # | fix | effect |
 |---|---|---|
@@ -44,7 +47,7 @@ baseline measured on 11 sessions / 21 panes / 9 distinct paths / ~7 repos.
 | 5 | local git-root cache in the preview pane loop | preview −(P × ~4 ms) |
 | 6 | agent-state inference benefits from the warm cache (#1) | warm path cached |
 
-## results
+## historical results
 
 | path | before | after |
 |---|---|---|
@@ -130,3 +133,67 @@ filters. the correct invariant is: cache git/static data only; read and render
 agent state live. with the REPLY refactor the correct warm path is already below
 the usual perception threshold (~200 ms), so a staleness-prone rendered cache is
 not worth it.
+
+## nav feature comparison — 2026-08-14
+
+Fixture: the same live topology for both revisions, approximately 13 sessions,
+16 panes, and 13 distinct paths. Baseline revision:
+`99d457e7033c4bd898fdde240c0cc22d8840302a` (`origin/main`). Feature measurements
+used `6ff1b840cfb2c2f1579f3a49a42db80843884b1d` plus the documented working-tree
+nav diff. Commands were repeated; warm measurements were interleaved to reduce
+host-load bias.
+
+Reproduction shape (use two executable paths against the same tmux server; set
+`TMUX_PICKER_NO_CACHE=1` for forced refresh):
+
+```sh
+git worktree add --detach /tmp/xtmux-main 99d457e7033c4bd898fdde240c0cc22d8840302a
+MAIN=/tmp/xtmux-main/bin/tmux-session-picker
+FEATURE=$PWD/bin/tmux-session-picker
+for i in $(seq 1 30); do
+  /usr/bin/time -f 'main %e' "$MAIN" list all >/dev/null
+  /usr/bin/time -f 'feature-classic %e' "$FEATURE" list all >/dev/null
+  /usr/bin/time -f 'feature-nav %e' "$FEATURE" list-nav all >/dev/null
+done 2>paired.samples
+XTMUX_NAV_WIDTH=44 /usr/bin/time -f '%e' "$FEATURE" list-active-nav-single >/dev/null
+/usr/bin/time -f '%e' "$FEATURE" preview session '$SID' "$NAME" '$SID' >/dev/null
+strace -f -e trace=process -o /tmp/xtmux.exec "$FEATURE" list-nav all >/dev/null
+```
+
+The table uses the median of each 30-value series. The trimmed mean removes the
+lowest and highest three values from each sorted series before averaging.
+
+Observed baseline ranges before paired sampling were 796–1285 ms cold, 143–294
+ms warm, 776–1335 ms forced refresh, 125–183 ms sessions-only, and 352–461 ms
+preview. The table reports medians/trimmed means from the final paired run.
+
+| metric | origin/main | feature classic | feature nav |
+|---|---:|---:|---:|
+| cold list construction, median | 970.8 ms | 861.1 ms | 954.9 ms |
+| warm, 30-pair median | 171.7 ms | 168.4 ms | 176.3 ms |
+| warm, trimmed mean | 170.2 ms | 169.4 ms | 179.3 ms |
+| forced refresh, median | 1080.7 ms | 1076.5 ms | 1093.7 ms |
+| sessions-only / one-line, median | 188.9 ms | 187.5 ms | 195.6 ms |
+| inspector/preview first render, median | 470.6 ms | 473.3 ms | 473.3 ms |
+
+The nav trimmed-mean delta is +5.3%. Investigation found bounded card formatting,
+not subprocess fan-out. The implementation skips classic rendering work on the
+nav path and keeps the classic path neutral. No sustained primary regression over
+10% remains.
+
+Warm structural counts from the process trace are unchanged:
+
+| command class | origin/main | feature nav |
+|---|---:|---:|
+| tmux | 2 | 2 |
+| git | 0 | 0 |
+| `pgrep` / `ps` / `jq` | 0 | 0 |
+
+Direct verbs have bounded command shapes asserted in `test/nav-contract.sh`:
+`next`/`prev` call native `switch-client`; `attention-*` performs one live
+`list-panes` traversal before switching; `back` reads saved target state and
+switches. None invokes git, `pgrep`, `ps`, `jq`, or preview enrichment.
+
+A parent-process sample measured approximately 6.9 MiB RSS. Short-lived child RSS
+could not be captured reliably; this is a measurement limitation, not a claim of
+zero child memory. Records remain bounded and temporary probe state is cleaned.
