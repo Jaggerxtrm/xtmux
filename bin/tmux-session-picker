@@ -481,11 +481,13 @@ pane_location_hint() {
 }
 
 session_meta() {
-  tmux list-sessions -F $'#{session_id}\t#{session_name}\t#{pane_id}\t#{pane_current_path}\t#{session_activity}'
+  # Replace record delimiters before tmux emits TSV. Sanitizing after read is
+  # too late because an embedded newline has already become another record.
+  tmux list-sessions -F $'#{session_id}\t#{s/\n/ /:#{s/\t/ /:session_name}}\t#{pane_id}\t#{s/\n/ /:#{s/\t/ /:pane_current_path}}\t#{session_activity}'
 }
 
 pane_meta() {
-  tmux list-panes -a -F $'#{session_id}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}'
+  tmux list-panes -a -F $'#{session_id}\t#{window_index}\t#{s/\n/ /:#{s/\t/ /:window_name}}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{s/\n/ /:#{s/\t/ /:pane_current_command}}\t#{s/\n/ /:#{s/\t/ /:pane_current_path}}\t#{?@agent_state,#{s/\n/ /:#{s/\t/ /:@agent_state}},-}\t#{pane_pid}\t#{?@agent_bead,#{s/\n/ /:#{s/\t/ /:@agent_bead}},-}\t#{?@agent_task,#{s/\n/ /:#{s/\t/ /:@agent_task}},-}\t#{?@agent_parent_session,#{s/\n/ /:#{s/\t/ /:@agent_parent_session}},-}\t#{?@agent_last_transition,#{s/\n/ /:#{s/\t/ /:@agent_last_transition}},-}'
 }
 
 agent_meta_value() {
@@ -938,6 +940,9 @@ json_command_state() {
   local command="$1" subcommand="${2:-}"
   case "$command:$subcommand" in
     message-list:*|message-status:*|message-get:*|unread-count:*|obligations:list|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|monitors:*|safe-send-pointer:*|handoff:*|message-send:*|message-reply:*|message-cancel:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|log:follow|context:--current|pane:capture|bridge:--stdio|agent-last:*|instance-get:*) REPLY='ready' ;;
+    # Everything else, including the interactive-only nav family and picker
+    # internals, is refused with XTMUX_JSON_UNSUPPORTED by
+    # json_request_preflight — never classified as JSON-ready.
     *) REPLY='unsupported' ;;
   esac
 }
@@ -1805,11 +1810,14 @@ git_dirty_count() {
 }
 
 idle_label_plain() {
-  local activity="${1:-}" now="${2:-}" age mins
+  local activity="${1:-}" now="${2:-}" age mins threshold_mins="${TMUX_PICKER_STALE_MINS:-60}"
+  IDLE_STALE=0
   [[ "$activity" =~ ^[0-9]+$ ]] || { REPLY=''; return 0; }
   [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
+  [[ "$threshold_mins" =~ ^[0-9]+$ ]] || threshold_mins=60
   age=$(( now - activity )); [ "$age" -lt 0 ] && age=0
   mins=$(( age / 60 ))
+  [ "$mins" -ge "$threshold_mins" ] && IDLE_STALE=1
   if [ "$age" -lt 60 ]; then REPLY='<1m'
   elif [ "$age" -lt 3600 ]; then REPLY="${mins}m"
   elif [ "$age" -lt 86400 ]; then REPLY="$(( age / 3600 ))h"
@@ -2081,7 +2089,7 @@ picker keys
   Space    mark row for Alt-X bulk kill
   Ctrl-f   filters: repo / branch / cmd:agent / grep
   Ctrl-r   refresh active filter/mode
-  Alt-I    interrupt pane micro-action
+  Alt-i    interrupt pane micro-action
   Ctrl-Y   approve/waiting-agent micro-action
   Ctrl-O   one-line message micro-action
   ?        show this cheatsheet
@@ -2121,7 +2129,7 @@ Durable task content belongs in beads (`bd`), not here.
   message-list   [--for <target>] [--pane <%id>] [--from <id>] [--message-key <key>]
                  [--unacked] [--expects-reply] [--limit <n>] [--since <dur>] [json]
                  --expects-reply adds correlated reply fields; --for is REQUIRED
-                 outside tmux, else defaults to the live session.
+                 outside tmux, else it defaults to the live session.
   message-get   <messageKey|messageId> [json]   read one message; never acks it
   message-reply  --in-reply-to <messageKey> --text <text> [--message-key <key>] [json]
   message-cancel --message-key <messageKey> [json]
@@ -2149,18 +2157,16 @@ Durable task content belongs in beads (`bd`), not here.
     obligations    messageKey, messageId, senderId, senderPaneId, recipientId,
                    targetPaneId, summary, createdAtMs, acked, ackedAtMs, replyStatus
 
-    TRAP: the message body is `summary` and its id is `messageKey`.
-    There is no `text` field and no `id` field — reading those yields null.
+    TRAP: the message body is `summary` and its id is `messageKey`. There is
+    no `text` field and no `id` field — reading those yields null.
 
-  A target is a session id ($1732), a pane id (%2635), or a session name.
-  Quote pane/session ids in shells: '$1732' unquoted expands to nothing,
-    which silently sends or reads under the WRONG identity.
+  A target is a session id ($1732), a pane id (%2635), or a session name. Quote
+    Pane/session ids in shells: '$1732' unquoted expands to nothing and acts under the WRONG identity.
 
 MONITORS — never prompt a pane that is working; wait for it instead.
   wait-agent    <target> [--wait-for-transition] [--consume] [--timeout <dur>]
                 [--interval <dur>] [json]        blocks until the pane leaves
-                                                 working/running/busy/thinking;
-                                                 --consume claims its wake once
+                                                 working/running/busy/thinking (--consume claims its wake once)
   monitor-agent <target> [--wait-for-transition] [--timeout <dur>]
                 [--interval <dur>] [json]        same, but registered + background
   monitor-list  [json]                             monitors [--all] [json] pretty view
@@ -2186,15 +2192,14 @@ DELEGATION — hand work to another pane without fragmenting its prompt.
                                     the contract, prints the exact send command
   handoff          --target <t> --prompt-file <path> [--wait-ready <dur>] [--monitor]
                    [--handoff-key <k>] [--yes] [json]   durable, readiness-aware
-                                    path over an existing file; send-keys success is
-                                    an ATTEMPT, never acceptance
+                                    path over an existing file; send-keys success
+                                    is an ATTEMPT, never acceptance
   safe-send-pointer [--yes] [--double-enter|--no-double-enter]
                    [--force-freeform] [--reply-to <messageKey>]
                    <target> <slash-command | /tmp pointer> [json]
                    --reply-to fulfils only after successful tmux injection; injection failure never fulfils.
-                   Refuses working targets, multiline payloads and $(...).
-                   Dry-runs unless --yes. Adds the second Enter that Claude Code
-                   panes eat via paste-detection; pi/Codex panes do not get it.
+                   Refuses working targets, multiline payloads and $(...); dry-runs
+                   unless --yes; adds the second Enter Claude panes eat (pi/Codex do not).
 
   json output:
     handoff        target, paneId, beadId, promptFile, handoffKey, monitorId, sent,
@@ -2202,9 +2207,8 @@ DELEGATION — hand work to another pane without fragmenting its prompt.
 
 IDENTITY & LAST TURN — who a pane is, and what it last said.
   context --current [--json]   the runtime origin of the INVOKING pane, as
-                               xtrm.runtime-origin.v1. Read-only. Outside tmux, or when
-                               the pane cannot be verified against the live server, exits
-                               non-zero with a structured error — never a guessed binding.
+                               xtrm.runtime-origin.v1. Read-only; outside tmux, or
+                               unverifiable, exits non-zero — never a guessed binding.
   agent-last <pane-id|session-id> [--json]   full text of the target's most recent agent turn (pi+claude); plain falls back to summary; exit 5 XTMUX_NOT_FOUND.
   instance-get <instance-id> [--json]        one durable agent occupation by id; plain output is field<TAB>value so a hook can read one field without a JSON parser; exit 5 XTMUX_NOT_FOUND.
 
@@ -2221,6 +2225,11 @@ SESSIONS & DASHBOARD — inventory for orchestrators.
   topology --json                            complete host/session/window/pane snapshot
   list [all|waiting|running|repo:<x>|branch:<x>|cmd:<x>|grep:<x>]
   list-active                                 list under the active filter
+
+NAVIGATION — operator traversal over sessions and attention targets.
+  nav [next|prev|attention-next|attention-prev|back|help]
+                   `nav` opens the navigator; next/prev follow tmux session order,
+                   attention-* cycle the attention ordering, back returns.
 
   json output:
     dashboard      mode, sessions, panes
@@ -2248,19 +2257,18 @@ PANE CONTENT — bounded, on-demand terminal preview.
                    returned_lines, max_lines, truncated, content
 
     --lines above max_lines is CLAMPED, never silently honored. truncated means
-    only "there is more above what you were given". Never journalled.
+    only "there is more above what you were given"; never journalled.
 
 REMOTE — read-only observation of another host, over your own ssh.
-  bridge --stdio   NDJSON request/response on stdin/stdout. Meant to be run as
+  bridge --stdio   NDJSON request/response on stdin/stdout, meant to be run as
                    `ssh <host> xtmux bridge --stdio`: OpenSSH owns transport and
-                   auth, this stores no keys and listens on no socket.
+                   auth; this stores no keys and listens on no socket.
 
     methods:       bridge.hello, bridge.cancel, topology.snapshot, journal.query,
                    journal.follow, pane.capture, health.get
     read-only:     anything that would MUTATE is refused (XTMUX_BRIDGE_READ_ONLY),
-                   and anything not on that list is refused too — there is no
-                   fallthrough to the local CLI. Frames are size-capped; malformed
-                   input is answered and the stream keeps serving.
+                   and anything not on that list is refused too. Frames are
+                   size-capped; malformed input is answered and the stream keeps serving.
 
 OBSERVABILITY — the local event log and command telemetry (see also the standalone `xtmux-events` live tail).
   log emit  <type> [key=value ...]
@@ -2279,9 +2287,9 @@ OBSERVABILITY — the local event log and command telemetry (see also the standa
     --after-id <n> cursor-paged envelope (xtrm.xtmux.journal-page.v1): journal_id
                    per item, plus next_after_id / oldest_available_id /
                    latest_available_id / has_more. Cursor = committed SQLite
-                   journal id; EXCLUSIVE, ascending; never page by timestamp. A
-                   cursor older than retained history returns a structured
-                   XTMUX_CURSOR_EXPIRED with oldest_available_id to re-anchor on.
+                   journal id; EXCLUSIVE, ascending; never page by timestamp; a
+                   cursor older than retained history returns XTMUX_CURSOR_EXPIRED
+                   (oldest_available_id re-anchors the next page).
 
 HYGIENE — end-of-session cleanup.
   audit                [json]   read-only report: `warning` rows need judgment,
@@ -2296,9 +2304,9 @@ HYGIENE — end-of-session cleanup.
     worktree-collisions  path, sessionCount, paneCount, sessionNames
 
 PICKER INTERNALS — invoked by the fzf UI. Agents do not normally call these.
-  preview, popup, jump, kill, act, attn-jump, jump-back, kill-confirm,
-  bulk-kill, bulk-kill-confirm, rename, rename-apply, mode-toggle,
-  filter-menu, filter-clear, prompt-label, border-label
+  preview, popup, jump, kill, act, attn-jump, jump-back, kill-confirm, bulk-kill, bulk-kill-targets
+  bulk-kill-confirm, rename, rename-apply, mode-toggle, filter-menu, filter-clear, filter-preset, prompt-label, border-label, nav-go, nav-act
+  nav-border-label, nav-key-help, list-nav, list-nav-single, list-active-nav, list-active-nav-single
 
 Errors are `exit 2` with a usage line; under --json they are
 {"code":"XTMUX_...","message":...}. See docs/json-command-api.md.
@@ -2482,32 +2490,52 @@ render_pane_line() {
 # one active filter at a time, carried in a state file so the ctrl-f submenu
 # can hand the chosen spec to the main fzf's reload. ctrl-a/w/e reset the slot
 # (they stay pure attention filters); ctrl-f sets a content filter.
-filter_state_file() {
-  # UI state, NOT a cache: kept outside the cache dir so clear-cache (fired by
-  # session lifecycle hooks) does not reset the active content filter.
-  REPLY="${TMPDIR:-/tmp}/tmux-picker-state-${UID:-$(id -u)}/filter"
+picker_state_dir() {
+  local dir="${TMPDIR:-/tmp}/tmux-picker-state-${UID:-$(id -u)}"
+  REPLY=''
+  [ ! -L "$dir" ] || return 1
+  if [ ! -e "$dir" ]; then
+    (umask 077; mkdir -p "$dir") 2>/dev/null || return 1
+    chmod 700 "$dir" 2>/dev/null || return 1
+  fi
+  [ -d "$dir" ] && [ -O "$dir" ] || return 1
+  REPLY="$dir"
 }
 
-list_mode_file() {
-  REPLY="${TMPDIR:-/tmp}/tmux-picker-state-${UID:-$(id -u)}/list-mode"
+picker_state_file() {
+  local name="$1" dir file
+  picker_state_dir || { REPLY=''; return 1; }; dir="$REPLY"; file="$dir/$name"
+  if [ -e "$file" ] || [ -L "$file" ]; then
+    [ -f "$file" ] && [ ! -L "$file" ] && [ -O "$file" ] \
+      || { REPLY=''; return 1; }
+  fi
+  REPLY="$file"
 }
+
+picker_state_read() {
+  local file
+  picker_state_file "$1" || { REPLY=''; return 1; }; file="$REPLY"
+  REPLY="$(<"$file")"
+}
+
+picker_state_write() {
+  local name="$1" value="${2:-}" file dir tmp
+  picker_state_file "$name" || return 1; file="$REPLY"; dir="${file%/*}"
+  tmp="$(mktemp "$dir/.${name}.XXXXXX")" || return 1
+  if printf '%s' "$value" > "$tmp" && mv -f -- "$tmp" "$file"; then return 0; fi
+  rm -f -- "$tmp"; return 1
+}
+
+filter_state_file() { picker_state_file filter; }
+list_mode_file() { picker_state_file list-mode; }
 
 read_list_mode() {
-  local f
-  list_mode_file; f="$REPLY"
-  if [ -f "$f" ]; then
-    REPLY="$(cat "$f" 2>/dev/null || true)"
-    case "$REPLY" in sessions-only) ;; *) REPLY='expanded' ;; esac
-  else
-    REPLY='expanded'
-  fi
+  picker_state_read list-mode || true
+  case "$REPLY" in sessions-only) ;; *) REPLY='expanded' ;; esac
 }
 
 write_list_mode() {
-  local mode="${1:-expanded}"
-  list_mode_file
-  mkdir -p "$(dirname "$REPLY")" 2>/dev/null || true
-  printf '%s' "$mode" > "$REPLY"
+  picker_state_write list-mode "${1:-expanded}"
 }
 
 toggle_list_mode() {
@@ -2516,6 +2544,631 @@ toggle_list_mode() {
     sessions-only) write_list_mode 'expanded' ;;
     *) write_list_mode 'sessions-only' ;;
   esac
+}
+
+# ── nav record + renderer helpers (xtmux-rib.23/.27) ───────────────────
+# NAV-1 record: type<TAB>sid<TAB>name<TAB>target<TAB>token<TAB>display<NUL>.
+# Field 6 is presentation-only and may contain anything (spaces, newlines,
+# shell metacharacters); only the first five fields are machine identity.
+#
+# nav_row_fields <row> -> REPLY='type\tsid\ttarget\ttoken'. The display
+# text is never parsed. A NUL-delimited read (`read -r -d ''`) returns 1 at
+# EOF with no NUL; the parser tolerates that so the CLI does not abort
+# mid-row under set -euo pipefail.
+nav_row_fields() {
+  local row="$1" type sid target token
+  IFS=$'\t' read -r -d '' type sid _ target token _ <<< "$row" || true
+  REPLY="$type"$'\t'"$sid"$'\t'"$target"$'\t'"$token"
+}
+
+# display_fallback <text> -> REPLY: newlines collapsed to one line. Used when
+# the installed fzf cannot safely render multi-line records.
+display_fallback() {
+  REPLY="${1//$'\n'/ }"
+}
+
+# fit_width <text> <width> -> REPLY: unchanged when it fits, otherwise
+# truncated to exactly <width> characters ending in a single ellipsis.
+# Character-safe: bash substring indexing counts characters, so a multi-byte
+# UTF-8 char is never split.
+fit_width() {
+  local text="$1" width="$2"
+  if [ "$width" -le 0 ]; then
+    REPLY=''
+  elif [ "${#text}" -le "$width" ]; then
+    REPLY="$text"
+  else
+    REPLY="${text:0:$((width - 1))}…"
+  fi
+}
+
+# current_marker <row-id> <current-id> -> REPLY='▶' when the row IS the
+# current session/pane, else a single space (keeps columns aligned).
+current_marker() {
+  if [ "$1" = "$2" ]; then REPLY='▶'; else REPLY=' '; fi
+}
+
+# _fzf_multiline_probe_run <fzf-bin> -> on|off|classic
+# Runs in command substitution, so its EXIT trap cannot affect caller traps.
+# Machine-field action safety is verified FIRST (single {5}, multi {+5},
+# reload-sync+track-current {5}) against single-line records; any failure is
+# `classic` because a token architecture that cannot be proven must not be
+# used. Only then is multi-line display integrity checked: `on` when two NUL
+# records with newline displays stay distinct and round-trip, `off` when they
+# do not (bounded one-line nav keeps the same proven token architecture).
+_fzf_multiline_probe_run() {
+  local bin="$1" work capture records expected runner actual rc
+  command -v timeout >/dev/null 2>&1 || { printf 'classic\n'; return; }
+  work="$(mktemp -d "${TMPDIR:-/tmp}/xtmux-fzf-probe.XXXXXX" 2>/dev/null)" || { printf 'classic\n'; return; }
+  trap "rm -rf -- '$work'" EXIT INT TERM
+  capture="$work/capture"
+  records="$work/records"
+  cat > "$capture" <<'CAPEOF'
+#!/bin/sh
+printf '%s\0' "$@" > "$CAPTURE"
+CAPEOF
+  chmod +x "$capture"
+  # Machine-field records use single-line displays so token resolution is
+  # tested independently of multi-line rendering.
+  printf 'pane\t$42\talpha\t%%17\tp:$42:%%17\tline one\0session\t$43\tbeta\t$43\ts:$43\tsecond\0' > "$records"
+
+  # Single highlight: {5} must resolve the hidden action token and {} must be
+  # the complete machine record, never a parsed display fragment.
+  runner="$work/single"
+  cat > "$runner" <<EOF
+#!/bin/sh
+exec env -u FZF_DEFAULT_OPTS -u FZF_DEFAULT_OPTS_FILE -u FZF_DEFAULT_COMMAND \
+  '$bin' --read0 --sync --no-sort --delimiter='$(printf '\t')' --with-nth=6 \
+  --bind='load:become($capture {5} {})' < '$records'
+EOF
+  chmod +x "$runner"
+  actual="$work/single.actual"
+  CAPTURE="$actual" timeout --foreground --kill-after=1s 3s script -qfec "$runner" /dev/null >/dev/null 2>&1 || { printf 'classic\n'; return; }
+  expected="$work/single.expected"
+  printf 'p:$42:%%17\0pane\t$42\talpha\t%%17\tp:$42:%%17\tline one\0' > "$expected"
+  cmp -s "$actual" "$expected" || { printf 'classic\n'; return; }
+
+  # Multi-select must pass only field-5 machine tokens as separate arguments.
+  runner="$work/multi"
+  cat > "$runner" <<EOF
+#!/bin/sh
+exec env -u FZF_DEFAULT_OPTS -u FZF_DEFAULT_OPTS_FILE -u FZF_DEFAULT_COMMAND \
+  '$bin' --read0 --sync --no-sort --multi --delimiter='$(printf '\t')' --with-nth=6 \
+  --bind='load:select-all+become($capture {+5})' < '$records'
+EOF
+  chmod +x "$runner"
+  actual="$work/multi.actual"
+  CAPTURE="$actual" timeout --foreground --kill-after=1s 3s script -qfec "$runner" /dev/null >/dev/null 2>&1 || { printf 'classic\n'; return; }
+  expected="$work/multi.expected"
+  printf 'p:$42:%%17\0s:$43\0' > "$expected"
+  cmp -s "$actual" "$expected" || { printf 'classic\n'; return; }
+
+  # The exact reload/track/execute-silent actions used by nav must resolve the token.
+  runner="$work/reload"
+  cat > "$runner" <<EOF
+#!/bin/sh
+exec env -u FZF_DEFAULT_OPTS -u FZF_DEFAULT_OPTS_FILE -u FZF_DEFAULT_COMMAND \
+  '$bin' --read0 --sync --track --delimiter='$(printf '\t')' --with-nth=6 \
+  --bind='load:reload-sync(cat $records)+track-current+execute-silent($capture {5})+abort' < '$records'
+EOF
+  chmod +x "$runner"
+  actual="$work/reload.actual"
+  set +e
+  CAPTURE="$actual" timeout --foreground --kill-after=1s 3s script -qfec "$runner" /dev/null >/dev/null 2>&1
+  rc=$?
+  set -e
+  [ "$rc" -eq 130 ] || { printf 'classic\n'; return; }
+  expected="$work/reload.expected"
+  printf 'p:$42:%%17\0' > "$expected"
+  cmp -s "$actual" "$expected" || { printf 'classic\n'; return; }
+
+  # Multi-line integrity: two NUL records whose displays contain newlines must
+  # remain exactly two selectable records with intact field-5 tokens, and the
+  # complete record must round-trip through {} byte-for-byte.
+  records="$work/multi-records"
+  printf 'pane\t$42\talpha\t%%17\tp:$42:%%17\tline one\nline two\0session\t$43\tbeta\t$43\ts:$43\tsecond\0' > "$records"
+  runner="$work/multiline"
+  cat > "$runner" <<EOF
+#!/bin/sh
+exec env -u FZF_DEFAULT_OPTS -u FZF_DEFAULT_OPTS_FILE -u FZF_DEFAULT_COMMAND \
+  '$bin' --read0 --sync --no-sort --multi --delimiter='$(printf '\t')' --with-nth=6 \
+  --bind='load:select-all+become($capture {+5})' < '$records'
+EOF
+  chmod +x "$runner"
+  actual="$work/multiline.actual"
+  CAPTURE="$actual" timeout --foreground --kill-after=1s 3s script -qfec "$runner" /dev/null >/dev/null 2>&1 || { printf 'off\n'; return; }
+  expected="$work/multiline.expected"
+  printf 'p:$42:%%17\0s:$43\0' > "$expected"
+  cmp -s "$actual" "$expected" || { printf 'off\n'; return; }
+  runner="$work/multiline-full"
+  cat > "$runner" <<EOF
+#!/bin/sh
+exec env -u FZF_DEFAULT_OPTS -u FZF_DEFAULT_OPTS_FILE -u FZF_DEFAULT_COMMAND \
+  '$bin' --read0 --sync --no-sort --delimiter='$(printf '\t')' --with-nth=6 \
+  --bind='load:become($capture {5} {})' < '$records'
+EOF
+  chmod +x "$runner"
+  actual="$work/multiline-full.actual"
+  CAPTURE="$actual" timeout --foreground --kill-after=1s 3s script -qfec "$runner" /dev/null >/dev/null 2>&1 || { printf 'off\n'; return; }
+  expected="$work/multiline-full.expected"
+  printf 'p:$42:%%17\0pane\t$42\talpha\t%%17\tp:$42:%%17\tline one\nline two\0' > "$expected"
+  cmp -s "$actual" "$expected" || { printf 'off\n'; return; }
+  printf 'on\n'
+}
+
+# fzf_multiline_probe -> REPLY=on|off|classic. on = NUL multi-line nav is
+# proven; off = machine-field actions are proven but multi-line display is not
+# (bounded one-line nav); classic = machine-field action safety cannot be
+# proven, so nav must route to the classic launcher. Cached by fzf path+version
+# in UI state (not the lifecycle-cleared git cache); the probe itself never
+# runs fzf's search engine (--filter) — it verifies explicit action payloads.
+fzf_multiline_probe() {
+  REPLY='classic'
+  command -v fzf >/dev/null 2>&1 || return 0
+  command -v script >/dev/null 2>&1 || return 0
+  command -v cmp >/dev/null 2>&1 || return 0
+  command -v timeout >/dev/null 2>&1 || return 0
+  local bin ver identity key cache cached_key cached_value verdict cache_ok=0
+  bin="$(command -v fzf)"
+  ver="$(fzf --version 2>/dev/null | head -1)"
+  identity="$(stat -Lc '%d:%i:%s:%Y' "$bin" 2>/dev/null || printf unknown)"
+  key="probe-v2 $bin $ver $identity"
+  if picker_state_file fzf-multiline; then cache="$REPLY"; cache_ok=1; else cache=''; fi
+  if [ "$cache_ok" = 1 ] && [ "${TMUX_PICKER_NO_CACHE:-0}" != '1' ] && [ -f "$cache" ]; then
+    { IFS= read -r cached_key || true; IFS= read -r cached_value || true; } < "$cache"
+    if [ "$cached_key" = "$key" ]; then
+      case "$cached_value" in on|off|classic) REPLY="$cached_value"; return 0 ;; esac
+    fi
+  fi
+  verdict="$(_fzf_multiline_probe_run "$bin")"
+  case "$verdict" in on|off|classic) REPLY="$verdict" ;; *) REPLY='classic' ;; esac
+  if [ "$cache_ok" = 1 ] && [ "${TMUX_PICKER_NO_CACHE:-0}" != '1' ]; then
+    picker_state_write fzf-multiline "$(printf '%s\n%s\n' "$key" "$REPLY")" || true
+  fi
+}
+
+# ── NAV-2: bounded two-line cards + launcher routing (xtmux-rib.24) ───────
+# Cards are built from the SAME inventory build_list already collected: no new
+# git/tmux/process queries. Free-text fields are sanitized at tmux emission, so
+# the only newline a display can contain is the structural card break below.
+
+# nav_card_width -> REPLY: bounded card width. XTMUX_NAV_WIDTH pins it for
+# tests (32/44/60); otherwise the invoking client's columns (52 default).
+nav_card_width() {
+  local w="${XTMUX_NAV_WIDTH:-${COLUMNS:-52}}"
+  case "$w" in ''|*[!0-9]*) w=52 ;; esac
+  [ "$w" -gt 0 ] || w=52
+  REPLY="$w"
+}
+
+# nav_text_clean removes control bytes that could alter record framing or ANSI
+# presentation. Structural newlines are added only by the card renderers.
+nav_text_clean() {
+  local text="${1:-}"
+  while [[ "$text" == *[[:cntrl:]]* ]]; do text="${text/[[:cntrl:]]/ }"; done
+  REPLY="$text"
+}
+
+# nav_state_tag <normalized-state> -> REPLY=plain badge text ('' if none).
+nav_state_tag() {
+  case "$1" in
+    stale) REPLY='stale' ;;
+    needs-input) REPLY='wait' ;;
+    done) REPLY='done' ;;
+    running) REPLY='run' ;;
+    idle) REPLY='idle' ;;
+    *) REPLY='' ;;
+  esac
+}
+
+# attn_state_name <rank> -> REPLY=stale|needs-input|done|running|idle
+attn_state_name() {
+  case "$1" in
+    0) REPLY='stale' ;;
+    1) REPLY='needs-input' ;;
+    2) REPLY='done' ;;
+    3) REPLY='running' ;;
+    *) REPLY='idle' ;;
+  esac
+}
+
+# nav_session_context <root> <root_status> <age-plain> <shared-wt> -> REPLY
+# repo · branch · dirty-flags · age (each token only when known; no ANSI).
+# The status format is "REPO icon BRANCH [flags] icon path" from the cached
+# git-status script; flags are the +N ~N ?N tokens between branch and path.
+nav_session_context() {
+  local root="${1:-}" root_status="${2:-}" age="${3:-}" shared="${4:-}"
+  local repo branch flags rest out
+  repo=''
+  if [ -n "$root" ]; then
+    repo="${root##*/}"
+    branch_from_root_status "$root_status"; branch="$REPLY"
+    rest="${root_status#* }"; rest="${rest#* }"; rest="${rest#* }"
+    flags=''
+    case "$rest" in
+      *'  '*) flags="${rest%%  *}" ;;
+    esac
+    out="$repo"
+    [ -n "$branch" ] && out+=" · $branch"
+    [ -n "$flags" ] && out+=" · $flags"
+  else
+    out=''
+  fi
+  if [ -n "$age" ]; then
+    [ -n "$out" ] && out+=" · "
+    out+="$age"
+  fi
+  [ "$shared" = 1 ] && out+=" · shared-wt"
+  REPLY="$out"
+}
+
+# nav_pane_context <bead> <task> <pane-path> <root> -> REPLY
+# bead · task when present; otherwise a bounded path hint (never a query).
+nav_pane_context() {
+  local bead="${1:-}" task="${2:-}" pane_path="${3:-}" root="${4:-}" rel out
+  agent_meta_value "$bead"; bead="$REPLY"
+  agent_meta_value "$task"; task="$REPLY"
+  out=''
+  [ -n "$bead" ] && out="$bead"
+  if [ -n "$task" ]; then
+    [ -n "$out" ] && out+=" · "
+    out+="$task"
+  fi
+  if [ -z "$out" ]; then
+    relative_hint "$pane_path" "$root"; rel="$REPLY"
+    if [ -n "$rel" ]; then
+      out="$rel"
+    else
+      short_path "$pane_path"; out="$REPLY"
+    fi
+  fi
+  REPLY="$out"
+}
+
+# nav_session_card <marker> <name> <state> <context> <lines> [preamble] -> REPLY
+# Multi-line: line 1 = marker + name + right-aligned [state] at the card width;
+# line 2 = bounded context (indented). Single-line: one bounded line that keeps
+# marker/name/state first and appends as much context as fits. Preamble (the
+# specialists section label) becomes its own top line in multi-line mode.
+nav_session_card() {
+  local marker="${1:- }" name="$2" state="$3" context="$4" lines="${5:-multi}" preamble="${6:-}" w
+  local state_tag='' head name_budget l2
+  nav_text_clean "$name"; name="$REPLY"
+  nav_text_clean "$context"; context="$REPLY"
+  nav_text_clean "$preamble"; preamble="$REPLY"
+  nav_card_width; w="$REPLY"
+  [ -n "$state" ] && state_tag="[$state]"
+  name_budget=$(( w - ${#marker} - 1 - ${#state_tag} - 1 ))
+  [ "$name_budget" -lt 1 ] && name_budget=1
+  fit_width "$name" "$name_budget"; name="$REPLY"
+  if [ "$lines" = single ]; then
+    head="$marker $name"
+    [ -n "$state_tag" ] && head+=" $state_tag"
+    local rest=$(( w - ${#head} - 3 ))
+    if [ -n "$context" ] && [ "$rest" -ge 4 ]; then
+      fit_width "$context" "$rest"; context="$REPLY"
+      REPLY="$head · $context"
+    else
+      REPLY="$head"
+    fi
+    return 0
+  fi
+  printf -v head '%s %-*s%s' "$marker" "$name_budget" "$name" "$state_tag"
+  l2=''
+  if [ -n "$context" ]; then
+    fit_width "$context" $(( w - 2 )); context="$REPLY"
+    l2="  $context"
+  fi
+  if [ -n "$preamble" ]; then
+    fit_width "$preamble" "$w"; preamble="$REPLY"
+    REPLY="$preamble"$'\n'"$head"$'\n'"$l2"
+  else
+    REPLY="$head"$'\n'"$l2"
+  fi
+}
+
+# nav_pane_card <pane-id> <runtime> <state> <context> <lines> -> REPLY
+# Multi-line: `├─ pane runtime [state]` with state right-aligned; second line
+# `│  context`. Single-line: one bounded line, pane/runtime/state first.
+nav_pane_card() {
+  local pane="$1" runtime="$2" state="$3" context="$4" lines="${5:-multi}" w
+  local state_tag='' prefix runtime_budget l1 l2
+  nav_text_clean "$runtime"; runtime="$REPLY"
+  nav_text_clean "$context"; context="$REPLY"
+  nav_card_width; w="$REPLY"
+  [ -n "$state" ] && state_tag="[$state]"
+  prefix="├─ $pane "
+  runtime_budget=$(( w - ${#prefix} - ${#state_tag} - 1 ))
+  [ "$runtime_budget" -lt 1 ] && runtime_budget=1
+  fit_width "$runtime" "$runtime_budget"; runtime="$REPLY"
+  if [ "$lines" = single ]; then
+    local head rest
+    head="$prefix$runtime"
+    [ -n "$state_tag" ] && head+=" $state_tag"
+    rest=$(( w - ${#head} - 3 ))
+    if [ -n "$context" ] && [ "$rest" -ge 4 ]; then
+      fit_width "$context" "$rest"; context="$REPLY"
+      REPLY="$head · $context"
+    else
+      REPLY="$head"
+    fi
+    return 0
+  fi
+  printf -v l1 '%s%-*s%s' "$prefix" "$runtime_budget" "$runtime" "$state_tag"
+  l2=''
+  if [ -n "$context" ]; then
+    fit_width "$context" $(( w - 2 )); context="$REPLY"
+    l2="│  $context"
+  fi
+  REPLY="$l1"$'\n'"$l2"
+}
+
+# nav_route -> REPLY=classic|multiline|oneline. Maps the capability probe onto
+# the three ADR fallback levels (NAV-2): on -> multiline, off -> one-line nav
+# (same token architecture), classic -> classic launcher.
+nav_route() {
+  fzf_multiline_probe
+  case "$REPLY" in
+    on) REPLY='multiline' ;;
+    off) REPLY='oneline' ;;
+    *) REPLY='classic' ;;
+  esac
+}
+
+# nav_act <token> <action> — the single strict dispatcher for every nav
+# single-row action (Enter uses nav_go; popup/kill/rename/approve/interrupt/
+# message use nav_act). The hidden action token is the ONLY input; display text
+# never reaches any tmux command. The nav renderer never emits header records,
+# and an empty/malformed token is rejected here, so no fzf row is a dead,
+# closable selection.
+nav_act() {
+  local token="${1:-}" action="${2:-}" parsed type sid pane
+  if [ -z "$token" ] || ! parse_nav_token "$token"; then
+    tmux display-message 'tmux-picker: riga non azionabile' 2>/dev/null || true
+    return 1
+  fi
+  parsed="$REPLY"
+  IFS=$'\t' read -r type sid pane <<< "$parsed"
+  [ "$sid" = - ] && sid=''
+  case "$type" in
+    session)
+      case "$action" in
+        popup)  open_popup_client session "$sid" "$sid" ;;
+        kill)   kill_target session "$sid" "$sid" ;;
+        rename) rename_target session "$sid" "$sid" ;;
+        *)
+          tmux display-message "tmux-picker: azione non valida su riga sessione: $action" 2>/dev/null || true
+          return 1
+          ;;
+      esac
+      ;;
+    pane)
+      resolve_nav_pane_session "$sid" "$pane" || return 1
+      sid="$REPLY"
+      case "$action" in
+        popup)  open_popup_client pane "$sid" "$pane" ;;
+        kill)   kill_target pane "$sid" "$pane" ;;
+        rename) rename_target pane "$sid" "$pane" ;;
+        approve|interrupt|message) act_on_target pane "$sid" "$pane" "$action" ;;
+        *)
+          tmux display-message "tmux-picker: azione sconosciuta: $action" 2>/dev/null || true
+          return 1
+          ;;
+      esac
+      ;;
+  esac
+}
+
+# nav_border_label — fzf transform-border-label source for the nav launcher.
+nav_border_label() {
+  read_list_mode
+  case "$REPLY" in
+    sessions-only) printf '%s' ' nav compact · Enter go · Tab expand · ^/ inspect · ? help ' ;;
+    *) printf '%s' ' nav expanded · Enter go · Tab compact · ^/ inspect · ? help ' ;;
+  esac
+}
+
+# nav_key_help — the `?` panel for nav: the full action list stays here, never
+# in the persistent footer (ADR Decision 8 / section 17).
+nav_key_help() {
+  cat <<'EOF'
+xtmux nav — keys
+
+  Enter          go to the highlighted session/pane
+  Alt-Enter      open it in a popup (detached client)
+  Tab            compact <-> expanded list
+  Space          mark rows (multi-select)
+  Alt-X          bulk-kill marked rows (multi-select only)
+  Alt-x          kill the highlighted row
+  Alt-r          rename the highlighted row
+  ^Y             approve a waiting agent pane
+  Alt-i          interrupt the highlighted agent pane
+  ^O             message the highlighted agent pane
+  ^A all · ^W wait · ^E run     attention presets
+  ^F             structured filter (repo:/branch:/cmd:/grep:)
+  Ctrl-r         refresh list (bypasses the git cache)
+  ^/             toggle the bottom inspector
+  Alt-p          inspector compact <-> large
+  ?              this help
+
+Every action resolves the hidden action token; displayed text is never parsed.
+EOF
+}
+
+# pick_classic — the original newline-TSV launcher, byte-compatible with the
+# legacy picker. Used by bare `xtmux`/`tmux-session-picker`, by
+# XTMUX_NAV_LAYOUT=classic, and as the nav fallback when machine-field action
+# safety cannot be proven. fzf receives five-field TSV rows; every action reads
+# machine fields {1} {2} {4} and the Enter flow parses the row like the
+# original picker.
+pick_classic() {
+  if ! command -v fzf >/dev/null 2>&1; then
+    tmux display-message 'fzf non trovato'
+    exit 1
+  fi
+  local preview_window='right,62%,border-left,wrap,follow'
+  local preview_window_max='right,94%,border-left,wrap,follow'
+  local border_label=' Enter switch · Tab mark · Alt-R rename · Alt-X bulk kill · Alt-x kill · ^Y ok · Alt-I int · ^O msg · ^A all ^W wait ^E run · ^F filter · Ctrl-r refresh · ? help · Ctrl-/ preview '
+  local choice type sid name target _
+  case "$mode" in
+    compact-wrap)
+      preview_window='right,68%,border-left,wrap,follow'
+      preview_window_max='right,94%,border-left,wrap,follow'
+      border_label=' compact wrap · Enter switch · Alt-Enter popup · Alt-x kill · ^Y approve · Alt-I interrupt · ^O msg · ^A/^W/^E filtri · ^F filter · Ctrl-r refresh · ? help '
+      ;;
+    compact-nowrap)
+      preview_window='right,68%,border-left,follow'
+      preview_window_max='right,94%,border-left,follow'
+      border_label=' compact no-wrap · Enter switch · Alt-Enter popup · Alt-x kill · ^Y approve · Alt-I interrupt · ^O msg · ^A/^W/^E filtri · ^F filter · Ctrl-r refresh · ? help '
+      ;;
+  esac
+  choice="$({
+    "$self" list all
+  } | fzf \
+    --ansi \
+    --delimiter=$'\t' \
+    --with-nth=5 \
+    --layout=reverse-list \
+    --height=100% \
+    --border=sharp \
+    --border-label "$border_label" \
+    --border-label-pos='3:bottom' \
+    --no-scrollbar \
+    --cycle \
+    --no-bold \
+    --multi \
+    --prompt='all> ' \
+    --pointer='>' \
+    --marker='✓ ' \
+    --info=inline-right \
+    --color='fg:#b8bcc0,bg:-1,hl:#ffffff,fg+:#ffffff,bg+:#222222,hl+:#ffffff,info:#8a8f94,prompt:#8a8f94,pointer:#c6cacf,marker:#c6cacf,label:#8a8f94,border:#303030,gutter:-1' \
+    --preview-window="$preview_window" \
+    --bind="load:transform-prompt($self prompt-label)+transform-border-label($self border-label)" \
+    --bind="ctrl-/:toggle-preview" \
+    --bind="?:change-preview($self mux-help)" \
+    --bind="ctrl-r:reload(TMUX_PICKER_NO_CACHE=1 $self list-active)" \
+    --bind="ctrl-a:execute-silent($self filter-preset all)+change-prompt(all> )+reload($self list all)" \
+    --bind="ctrl-w:execute-silent($self filter-preset waiting)+change-prompt(wait> )+reload($self list waiting)" \
+    --bind="ctrl-e:execute-silent($self filter-preset running)+change-prompt(run> )+reload($self list running)" \
+    --bind="ctrl-f:execute($self filter-menu)+reload($self list-active)+transform-prompt($self prompt-label)" \
+    --bind="tab:execute($self mode-toggle)+reload($self list-active)+transform-prompt($self prompt-label)+transform-border-label($self border-label)" \
+    --bind="space:toggle+down" \
+    --bind="alt-p:change-preview-window($preview_window_max|$preview_window)" \
+    --bind="alt-x:execute-silent($self kill {1} {2} {4})+reload($self list-active)" \
+    --bind="alt-X:execute-silent($self bulk-kill-targets {+4})+reload($self list-active)" \
+    --bind="alt-r:execute($self rename {1} {2} {4})+reload($self list-active)" \
+    --bind="ctrl-y:execute-silent($self act {1} {2} {4} approve)+reload($self list-active)" \
+    --bind="alt-i:execute-silent($self act {1} {2} {4} interrupt)+reload($self list-active)" \
+    --bind="ctrl-o:execute($self act {1} {2} {4} message)+reload($self list-active)" \
+    --bind="alt-enter:become($self popup {1} {2} {4})" \
+    --preview "$self preview {1} {2} {3} {4}"
+  )" || true
+  [ -n "${choice:-}" ] || exit 0
+  IFS=$'\t' read -r type sid name target _ <<< "$choice"
+  jump_to_target "$type" "$sid" "$target"
+}
+
+# pick_nav — the drawer launcher for bare `xtmux nav`. Routes on the capability
+# probe: multiline -> NUL two-line cards; oneline -> NUL one-line cards (same
+# hidden token architecture); classic -> the classic launcher.
+# XTMUX_NAV_LAYOUT=classic forces the classic launcher. fzf runs --track with
+# reload-sync+track-current binds (probe-proven); the footer is the short ADR
+# string only; the inspector sits at the bottom, initially compact, ^/ toggles.
+pick_nav() {
+  if ! command -v fzf >/dev/null 2>&1; then
+    tmux display-message 'fzf non trovato'
+    exit 1
+  fi
+  local layout navmode
+  layout="${XTMUX_NAV_LAYOUT:-}"
+  if [ "$layout" = classic ]; then
+    pick_classic
+    return $?
+  fi
+  nav_route; navmode="$REPLY"
+  case "$navmode" in
+    classic)
+      pick_classic
+      return $?
+      ;;
+  esac
+  local footer=' Enter go · Tab compact/expand · ^/ inspect · ? help '
+  local inspector='bottom,7,border-top,wrap,follow'
+  local inspector_max='bottom,50%,border-top,wrap,follow'
+  local lall lwait lrun lactive self_q
+  printf -v self_q '%q' "$self"
+  if [ "$navmode" = oneline ]; then
+    lall="$self_q list-nav-single all"
+    lwait="$self_q list-nav-single waiting"
+    lrun="$self_q list-nav-single running"
+    lactive="$self_q list-active-nav-single"
+  else
+    lall="$self_q list-nav all"
+    lwait="$self_q list-nav waiting"
+    lrun="$self_q list-nav running"
+    lactive="$self_q list-active-nav"
+  fi
+  local -a initial_list
+  if [ "$navmode" = oneline ]; then
+    initial_list=("$self" list-active-nav-single)
+  else
+    initial_list=("$self" list-active-nav)
+  fi
+  (
+    local initial_file record type sid name target token display prefix pos=1 index=0
+    initial_file="$(mktemp "${TMPDIR:-/tmp}/xtmux-nav.XXXXXX")" || exit 1
+    trap 'rm -f "$initial_file"' EXIT INT TERM
+    "${initial_list[@]}" > "$initial_file"
+    while IFS= read -r -d '' record; do
+      index=$((index + 1))
+      IFS=$'\t' read -r type sid name target token _ <<< "$record"
+      prefix="$type"$'\t'"$sid"$'\t'"$name"$'\t'"$target"$'\t'"$token"$'\t'
+      display="${record#"$prefix"}"
+      case "$display" in '▶ '*|*$'\n''▶ '*) pos="$index"; break ;; esac
+    done < "$initial_file"
+    fzf \
+    --ansi \
+    --read0 \
+    --track \
+    --delimiter=$'\t' \
+    --with-nth=6 \
+    --layout=reverse-list \
+    --height=100% \
+    --border=sharp \
+    --border-label "$footer" \
+    --border-label-pos='3:bottom' \
+    --no-scrollbar \
+    --cycle \
+    --no-bold \
+    --multi \
+    --prompt='all> ' \
+    --pointer='>' \
+    --marker='✓ ' \
+    --info=inline-right \
+    --color='fg:#b8bcc0,bg:-1,hl:#ffffff,fg+:#ffffff,bg+:#222222,hl+:#ffffff,info:#8a8f94,prompt:#8a8f94,pointer:#c6cacf,marker:#c6cacf,label:#8a8f94,border:#303030,gutter:-1' \
+    --preview-window="$inspector" \
+    --bind="load:pos($pos)+transform-prompt($self_q prompt-label)+transform-border-label($self_q nav-border-label)" \
+    --bind="ctrl-/:toggle-preview" \
+    --bind="?:change-preview($self_q nav-key-help)" \
+    --bind="ctrl-r:reload-sync(TMUX_PICKER_NO_CACHE=1 $lactive)+track-current" \
+    --bind="ctrl-a:execute-silent($self_q filter-preset all)+change-prompt(all> )+reload-sync($lall)+track-current" \
+    --bind="ctrl-w:execute-silent($self_q filter-preset waiting)+change-prompt(wait> )+reload-sync($lwait)+track-current" \
+    --bind="ctrl-e:execute-silent($self_q filter-preset running)+change-prompt(run> )+reload-sync($lrun)+track-current" \
+    --bind="ctrl-f:execute($self_q filter-menu)+reload-sync($lactive)+track-current+transform-prompt($self_q prompt-label)" \
+    --bind="tab:execute($self_q mode-toggle)+reload-sync($lactive)+track-current+transform-prompt($self_q prompt-label)+transform-border-label($self_q nav-border-label)" \
+    --bind="space:toggle+down" \
+    --bind="alt-p:change-preview-window($inspector_max|$inspector)" \
+    --bind="enter:become($self_q nav-go {5})" \
+    --bind="alt-enter:become($self_q nav-act {5} popup)" \
+    --bind="alt-x:execute-silent($self_q nav-act {5} kill)+reload-sync($lactive)+track-current" \
+    --bind="alt-X:execute-silent($self_q bulk-kill {+5})+reload-sync($lactive)+track-current" \
+    --bind="alt-r:execute($self_q nav-act {5} rename)+reload-sync($lactive)+track-current" \
+    --bind="ctrl-y:execute-silent($self_q nav-act {5} approve)+reload-sync($lactive)+track-current" \
+    --bind="alt-i:execute-silent($self_q nav-act {5} interrupt)+reload-sync($lactive)+track-current" \
+    --bind="ctrl-o:execute($self_q nav-act {5} message)+reload-sync($lactive)+track-current" \
+    --preview "$self_q preview {1} {2} {3} {4}" < "$initial_file" || true
+  )
+  return 0
 }
 
 # parse_filter <spec> -> sets FF_ATTN FF_REPO FF_BRANCH FF_CMD FF_GREP
@@ -2607,7 +3260,6 @@ __filter_distinct() {
 # free text for grep.
 cmd_filter_menu() {
   command -v fzf >/dev/null 2>&1 || return 0
-  filter_state_file; local ffile="$REPLY"
   local dim spec=''
   dim="$(printf '%s\n' 'repo' 'branch' 'cmd' 'grep' '' 'clear' \
     | fzf --prompt='filter by> ' --height=40% --no-sort --tiebreak=index --cycle 2>/dev/null)" || return 0
@@ -2632,18 +3284,25 @@ cmd_filter_menu() {
     clear) spec='' ;;
     *) spec='' ;;
   esac
-  mkdir -p "$(dirname "$ffile")"
-  printf '%s' "$spec" > "$ffile"
+  picker_state_write filter "$spec" || true
 }
 
-# build_list <spec> [<mode>]
+# build_list <spec> [<mode>] [<emit>] [<lines>]
 # spec: all|waiting|running, or comma clauses repo:/branch:/cmd:/grep:
 # mode: expanded (default) | sessions-only (suppress pane rows)
-build_list() {
-  local filter="${1:-all}" list_mode="${2:-expanded}"
+# emit: tsv (default, public five-field newline TSV) | nav (private
+# six-field NUL-delimited records: type<TAB>sid<TAB>name<TAB>target
+# <TAB>token<TAB>display<NUL>; token is s:$N / p:$N:%N)
+# lines: multi (default, two-line cards) | single (bounded one-line cards,
+# the fzf-multiline off fallback; same token architecture)
+build_list() (
+  local filter="${1:-all}" list_mode="${2:-expanded}" emit="${3:-tsv}" lines="${4:-multi}"
   local tmp_sessions tmp_panes sid sname pane_id pane_path session_activity root sort_key group_key display root_status name_width=12 session_col
   local window_index window_name pane_index pane_active pane_cmd pane_row_path pane_col pane_state pane_pid pane_bead pane_task pane_parent pane_rank cur_rank _cls
   local psid pwi ppi ppid pcol attn idle stale_bucket section last_section=0 header_label now
+  local cur_pane='' cur_sid='' nav_preamble='' _sstate _stag _marker _sctx _scard _pblock _pline
+  local pcmd pstate pbead ptask ppath proot pctx pstate_tag pdisp
+  local -a _prow=()
   declare -A root_cache=()
   declare -A root_status_cache=()
   declare -A sess_name=()
@@ -2657,6 +3316,7 @@ build_list() {
   declare -A sess_grep_hit=()
   declare -A root_sids=()
   declare -A sess_shared_wt=()
+  declare -A sess_idle_plain=()
   parse_filter "$filter"
 
   # Persistent git cache (path -> root, root -> status). The expensive, near-static
@@ -2681,7 +3341,7 @@ build_list() {
   tmp_sessions="$(mktemp)"
   tmp_panes="$(mktemp)"
   now="$(date +%s)"
-  trap 'rm -f "${tmp_sessions:-}" "${tmp_panes:-}"' RETURN EXIT INT TERM
+  trap 'rm -f "${tmp_sessions:-}" "${tmp_panes:-}" "${_gtmp:-}"' EXIT INT TERM
 
   while IFS=$'\t' read -r sid sname pane_id pane_path session_activity; do
     [ -n "$sid" ] || continue
@@ -2707,11 +3367,17 @@ build_list() {
 
     group_root_for_path "$pane_path" "$root"; group_key="$REPLY"
     sort_key="$group_key"
-    render_list_status "$pane_path" "$root" "$root_status"; display="$REPLY"
-    idle_badge "$session_activity" "$now"; idle="$REPLY"; stale_bucket="$IDLE_STALE"
-    [ -n "$idle" ] && display+=" $idle"
+    if [ "$emit" = nav ]; then
+      display=''
+      idle_label_plain "$session_activity" "$now"; sess_idle_plain["$sid"]="$REPLY"; stale_bucket="$IDLE_STALE"
+    else
+      render_list_status "$pane_path" "$root" "$root_status"; display="$REPLY"
+      idle_badge "$session_activity" "$now"; idle="$REPLY"; stale_bucket="$IDLE_STALE"
+      [ -n "$idle" ] && display+=" $idle"
+    fi
     section=0
     [[ "$sname" == sp-* ]] && section=1
+    if [ "$emit" = nav ]; then nav_text_clean "$sname"; sname="$REPLY"; fi
     sess_name["$sid"]="$sname"
     sess_stale["$sid"]="$stale_bucket"
     sess_section["$sid"]="$section"
@@ -2725,6 +3391,13 @@ build_list() {
   while IFS=$'\t' read -r sid window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_state pane_pid pane_bead pane_task pane_parent pane_transition; do
     [ -n "$sid" ] || continue
     pane_row_path="${pane_row_path:-$HOME}"
+
+    # NAV-2 current target: TMUX_PANE is honoured ONLY when it exactly matches an
+    # enumerated pane; the current session is derived from that same inventory.
+    # No extra tmux query (ADR Decision 9).
+    if [ "$emit" = nav ] && [ -n "${TMUX_PANE:-}" ] && [ "$pane_id" = "$TMUX_PANE" ]; then
+      cur_pane="$pane_id"; cur_sid="$sid"
+    fi
 
     if [[ -v root_cache["$pane_row_path"] ]]; then
       root="${root_cache[$pane_row_path]}"
@@ -2746,7 +3419,7 @@ build_list() {
     # @agent_state is the only state source in the hot list path.
     sp_is_specialist "${sess_name[$sid]:-}" "$pane_pid"; sp_role="$REPLY"
     agent_rank "$pane_state"; pane_rank="$REPLY"
-    cur_rank="${sess_attn[$sid]:-3}"
+    cur_rank="${sess_attn[$sid]:-4}"
     [ "$pane_rank" -lt "$cur_rank" ] && sess_attn["$sid"]="$pane_rank"
 
     # richer filters (xtmux-rib.11): collect per-session cmd classes + grep hits.
@@ -2761,15 +3434,32 @@ build_list() {
       fi
     fi
 
-    render_pane_line "$window_index" "$window_name" "$pane_id" "$pane_active" "$pane_cmd" "$pane_row_path" "$root" "$pane_state" "${sess_name[$sid]:-}" "$pane_pid" "$pane_bead" "$pane_task" "$pane_parent"; pane_col="$REPLY"
-    printf '%s\t%s\t%s\t%s\t%s\n' "$sid" "$window_index" "$pane_index" "$pane_id" "$pane_col" >> "$tmp_panes"
+    if [ "$emit" = nav ]; then
+      # NAV-2 card inputs ride in the temp row (never used by the tsv path).
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$sid" "$window_index" "$pane_index" "$pane_id" "$pane_cmd" "$pane_state" "$pane_bead" "$pane_task" "$pane_row_path" "$root" >> "$tmp_panes"
+    else
+      render_pane_line "$window_index" "$window_name" "$pane_id" "$pane_active" "$pane_cmd" "$pane_row_path" "$root" "$pane_state" "${sess_name[$sid]:-}" "$pane_pid" "$pane_bead" "$pane_task" "$pane_parent"; pane_col="$REPLY"
+      printf '%s\t%s\t%s\t%s\t%s\n' "$sid" "$window_index" "$pane_index" "$pane_id" "$pane_col" >> "$tmp_panes"
+    fi
   done < <(pane_meta)
 
   if [ -s "$tmp_panes" ]; then
-    while IFS=$'\t' read -r psid pwi ppi ppid pcol; do
-      [ -n "$psid" ] || continue
-      pane_block["$psid"]+="$(printf 'pane\t%s\t%s\t%s\t%s' "$psid" "${sess_name[$psid]:-}" "$ppid" "$pcol")"$'\n'
-    done < <(sort -t $'\t' -k1,1 -k2,2n -k3,3n "$tmp_panes")
+    if [ "$emit" = nav ]; then
+      while IFS=$'\t' read -r -a _prow; do
+        [ -n "${_prow[0]:-}" ] || continue
+        psid="${_prow[0]}"; ppid="${_prow[3]}"
+        pcmd="${_prow[4]:-}"; pstate="${_prow[5]:-}"; pbead="${_prow[6]:-}"; ptask="${_prow[7]:-}"; ppath="${_prow[8]:-}"; proot="${_prow[9]:-}"
+        nav_pane_context "$pbead" "$ptask" "$ppath" "$proot"; pctx="$REPLY"
+        nav_state_tag "$pstate"; pstate_tag="$REPLY"
+        nav_pane_card "$ppid" "${pcmd:-shell}" "$pstate_tag" "$pctx" "$lines"; pdisp="$REPLY"
+        pane_block["$psid"]+="$(printf 'pane\t%s\t%s\t%s\tp:%s:%s\t%s' "$psid" "${sess_name[$psid]:-}" "$ppid" "$psid" "$ppid" "$pdisp")"$'\x1f'
+      done < <(sort -t $'\t' -k1,1 -k2,2n -k3,3n "$tmp_panes")
+    else
+      while IFS=$'\t' read -r psid pwi ppi ppid pcol; do
+        [ -n "$psid" ] || continue
+        pane_block["$psid"]+="$(printf 'pane\t%s\t%s\t%s\t%s' "$psid" "${sess_name[$psid]:-}" "$ppid" "$pcol")"$'\n'
+      done < <(sort -t $'\t' -k1,1 -k2,2n -k3,3n "$tmp_panes")
+    fi
   fi
 
   for root in "${!root_sids[@]}"; do
@@ -2787,27 +3477,34 @@ build_list() {
   if [ "$_ghit" = '0' ] && [ "${TMUX_PICKER_NO_CACHE:-0}" != '1' ]; then
     mkdir -p "$_gcd"
     local _gtmp="$_gcf.tmp.$$"
-    {
+    if {
       for _gp in "${!root_cache[@]}"; do
         _gr="${root_cache[$_gp]}"
         _gs=""
         [ -n "$_gr" ] && _gs="${root_status_cache[$_gr]:-}"
         printf '%s\t%s\t%s\n' "$_gp" "$_gr" "$_gs"
       done
-    } > "$_gtmp" 2>/dev/null && mv -f "$_gtmp" "$_gcf"
+    } > "$_gtmp" 2>/dev/null; then
+      mv -f "$_gtmp" "$_gcf" || rm -f "$_gtmp"
+    else
+      rm -f "$_gtmp"
+    fi
   fi
 
   [ "$name_width" -gt 22 ] && name_width=22
 
   while IFS=$'\t' read -r section sort_key stale_bucket sid sname display; do
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${sess_section[$sid]:-$section}" "${sess_attn[$sid]:-3}" "${sess_stale[$sid]:-$stale_bucket}" "$sort_key" "$sid" "$sname" "$display"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${sess_section[$sid]:-$section}" "${sess_attn[$sid]:-4}" "${sess_stale[$sid]:-$stale_bucket}" "$sort_key" "$sid" "$sname" "$display"
   done < "$tmp_sessions" |
     sort -t $'\t' -k1,1n -k2,2n -k3,3n -k4,4 -k6,6 |
     while IFS=$'\t' read -r section attn stale_bucket _ sid sname display; do
-      # attention preset (unchanged semantics for all|waiting|running)
+      # attention preset (xtmux-rib.23/.25): waiting = stale + needs-input
+      # (rank<=1), running = any actually-running pane (rank<=3). The old
+      # guards (rank==0 / rank<=2) silently dropped needs-input panes from
+      # waiting and running panes from running.
       case "$FF_ATTN" in
-        waiting) [ "$attn" -eq 0 ] || continue ;;
-        running) [ "$attn" -le 2 ] || continue ;;
+        waiting) [ "$attn" -le 1 ] || continue ;;
+        running) [ "$attn" -le 3 ] || continue ;;
       esac
       # content filters (xtmux-rib.11): AND of repo/branch/cmd/grep clauses
       if [ -n "$FF_REPO" ]; then
@@ -2824,8 +3521,14 @@ build_list() {
         [ "${sess_grep_hit[$sid]:-0}" = 1 ] || continue
       fi
       if [ "${section:-0}" = 1 ] && [ "$last_section" != 1 ]; then
-        paint "$c_sp" "── specialists (sp-*) ──"; header_label="$REPLY"
-        printf 'header\t\tspecialists\t\t  %s\n' "$header_label"
+        if [ "$emit" = nav ]; then
+          # NAV-2: no selectable header record. The section text is integrated
+          # into the first specialist session card (display-only, never parsed).
+          nav_preamble='── specialists (sp-*) ──'
+        else
+          paint "$c_sp" "── specialists (sp-*) ──"; header_label="$REPLY"
+          printf 'header\t\tspecialists\t\t  %s\n' "$header_label"
+        fi
         last_section=1
       fi
       printf -v session_col '%-*s' "$name_width" "$sname"
@@ -2835,19 +3538,45 @@ build_list() {
         paint "$c_session" "$session_col"
       fi
       session_col="$REPLY"
-      if [ "${sess_shared_wt[$sid]:-0}" = 1 ]; then
-        paint "$c_stale" "[shared-wt]"; display+=" $REPLY"
+      if [ "$emit" = nav ]; then
+        # NAV-2 transport: field 5 is the session action token (s:$sid); field 6
+        # is the bounded card (presentation-only). The ▶ marker comes from
+        # TMUX_PANE and is independent of fzf's > pointer.
+        attn_state_name "$attn"; _sstate="$REPLY"
+        nav_state_tag "$_sstate"; _stag="$REPLY"
+        _marker=' '
+        [ -n "$cur_sid" ] && [ "$sid" = "$cur_sid" ] && _marker='▶'
+        nav_session_context "${sess_root[$sid]:-}" "${sess_root_status[$sid]:-}" "${sess_idle_plain[$sid]:-}" "${sess_shared_wt[$sid]:-0}"; _sctx="$REPLY"
+        nav_session_card "$_marker" "$sname" "$_stag" "$_sctx" "$lines" "$nav_preamble"; _scard="$REPLY"
+        nav_preamble=''  # one card carries the section label, then it is cleared
+        printf 'session\t%s\t%s\t%s\ts:%s\t%s\0' "$sid" "$sname" "$sid" "$sid" "$_scard"
+      else
+        if [ "${sess_shared_wt[$sid]:-0}" = 1 ]; then
+          paint "$c_stale" "[shared-wt]"; display+=" $REPLY"
+        fi
+        printf 'session\t%s\t%s\t%s\t  %s  %s\n' "$sid" "$sname" "$sid" "$session_col" "$display"
       fi
-      printf 'session\t%s\t%s\t%s\t  %s  %s\n' "$sid" "$sname" "$sid" "$session_col" "$display"
       if [ "$list_mode" != 'sessions-only' ]; then
-        printf '%s' "${pane_block[$sid]:-}"
+        if [ "$emit" = nav ]; then
+          # bash strings cannot hold NUL, so the block is \x1f-separated
+          # internally and each row is re-terminated with NUL at emit time.
+          _pblock="${pane_block[$sid]:-}"
+          if [ -n "$_pblock" ]; then
+            while IFS= read -r -d $'\x1f' _pline; do
+              [ -n "$_pline" ] || continue
+              printf '%s\0' "$_pline"
+            done <<< "$_pblock"
+          fi
+        else
+          printf '%s' "${pane_block[$sid]:-}"
+        fi
       fi
     done
-}
+)
 
 attn_list() {
   local sid sname pane_id pane_cmd activity pane_state pane_pid pane_transition rank
-  while IFS=$'	' read -r sid sname pane_id pane_cmd activity pane_state pane_pid pane_transition; do
+  while IFS=$'\t' read -r sid sname pane_id pane_cmd activity pane_state pane_pid pane_transition; do
     [ -n "$pane_id" ] || continue
     normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd" "$pane_transition"; pane_state="$REPLY"
     sp_is_specialist "$sname" "$pane_pid"; sp_role="$REPLY"
@@ -2858,17 +3587,54 @@ attn_list() {
     # shifted done from 1 to 2, and leaving the bound at 1 would have silently
     # dropped finished panes out of attn-jump.
     [ "$rank" -le 2 ] || continue
-    printf '%s	%s	%s	%s
+    printf '%s\t%s\t%s\t%s
 ' "$rank" "${activity:-0}" "$sid" "$pane_id"
-  done < <(tmux list-panes -a -F $'#{session_id}	#{session_name}	#{pane_id}	#{pane_current_command}	#{window_activity}	#{?@agent_state,#{@agent_state},-}	#{pane_pid}	#{?@agent_last_transition,#{@agent_last_transition},-}') |
-    sort -t $'	' -k1,1n -k2,2nr
+  done < <(tmux list-panes -a -F $'#{session_id}\t#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_last_transition,#{@agent_last_transition},-}') |
+    sort -t $'\t' -k1,1n -k2,2nr
+}
+
+# attn_cycle_target <next|prev> <current_pane>
+# Prints 'sid<TAB>pane' of the attention-cycle target in attn_list order
+# (rank asc, activity desc), wrapping at the boundaries. When the current
+# pane is not in the list, next picks the first row and prev the last. An
+# empty attention list prints nothing and exits 0 (non-error). Reuses
+# attn_list; never enriches git/preview (xtmux-rib.25).
+attn_cycle_target() {
+  local dir="${1:-next}" current="${2:-}"
+  local line n=0 i idx=-1 sid pane
+  local -a rows=()
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    rows+=("$line")
+  done < <(attn_list)
+  n="${#rows[@]}"
+  [ "$n" -gt 0 ] || return 0
+  for ((i = 0; i < n; i++)); do
+    IFS=$'\t' read -r _ _ _ pane <<< "${rows[$i]}"
+    if [ "$pane" = "$current" ]; then idx=$i; break; fi
+  done
+  if [ "$idx" -ge 0 ]; then
+    if [ "$dir" = prev ]; then
+      idx=$(( (idx - 1 + n) % n ))
+    else
+      idx=$(( (idx + 1) % n ))
+    fi
+  elif [ "$dir" = prev ]; then
+    idx=$(( n - 1 ))
+  else
+    idx=0
+  fi
+  IFS=$'\t' read -r _ _ sid pane <<< "${rows[$idx]}"
+  printf '%s\t%s\n' "$sid" "$pane"
 }
 
 record_prev() {
-  local cur_pane cur_sid
-  cur_pane="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
-  cur_sid="$(tmux display-message -p '#{session_id}' 2>/dev/null || true)"
-  [ -n "$cur_pane" ] && tmux set -g @picker_prev "$cur_sid:$cur_pane" 2>/dev/null || true
+  local cur_sid="${1:-}" cur_pane="${2:-}" current
+  if [ -z "$cur_sid" ] || [ -z "$cur_pane" ]; then
+    current="$(tmux display-message -p $'#{session_id}\t#{pane_id}' 2>/dev/null || true)"
+    IFS=$'\t' read -r cur_sid cur_pane <<< "$current"
+  fi
+  [ -n "$cur_sid" ] && [ -n "$cur_pane" ] && tmux set -g @picker_prev "$cur_sid:$cur_pane" 2>/dev/null || true
 }
 
 attn_jump() {
@@ -2892,6 +3658,107 @@ jump_back() {
   sid="${prev%%:*}"
   pane="${prev#*:}"
   jump_to_target pane "$sid" "$pane"
+}
+
+# ── nav verb family (xtmux-rib.25) ────────────────────────────────────────
+# Direct commands: never build inventory, never call git/fzf. Session cycling
+# uses tmux's OWN session order (switch-client -n/-p); attention cycling
+# reuses attn_list; back reuses the previous-target mechanism.
+
+# nav_session_cycle <next|prev> — record the current target, then switch to
+# the next/previous tmux session in tmux's own order.
+nav_session_cycle() {
+  local dir="${1:-next}"
+  record_prev
+  case "$dir" in
+    next) tmux switch-client -n ;;
+    prev) tmux switch-client -p ;;
+  esac
+}
+
+# nav_attention_cycle <next|prev> — record the current target, then jump to
+# the adjacent row in the authoritative attention ordering (wrap, current
+# pane absent, and empty list are all non-errors).
+nav_attention_cycle() {
+  local dir="${1:-next}"
+  local current cur_sid cur target sid pane
+  current="$(tmux display-message -p $'#{session_id}\t#{pane_id}' 2>/dev/null || true)"
+  IFS=$'\t' read -r cur_sid cur <<< "$current"
+  target="$(attn_cycle_target "$dir" "$cur")"
+  if [ -z "$target" ]; then
+    tmux display-message 'tmux-picker: nessun target di attenzione' 2>/dev/null || true
+    return 0
+  fi
+  record_prev "$cur_sid" "$cur"
+  IFS=$'\t' read -r sid pane <<< "$target"
+  jump_to_target pane "$sid" "$pane"
+}
+
+# parse_nav_token <token> -> REPLY='type<TAB>sid<TAB>pane'. IDs use tmux's
+# immutable machine forms only; names and general tmux target syntax are rejected.
+parse_nav_token() {
+  local tok="${1:-}"
+  REPLY=''
+  if [[ "$tok" =~ ^s:(\$[0-9]+)$ ]]; then
+    REPLY="session"$'\t'"${BASH_REMATCH[1]}"$'\t'
+  elif [[ "$tok" =~ ^p:(\$[0-9]+):(%[0-9]+)$ ]]; then
+    REPLY="pane"$'\t'"${BASH_REMATCH[1]}"$'\t'"${BASH_REMATCH[2]}"
+  elif [[ "$tok" =~ ^p:(%[0-9]+)$ ]]; then
+    REPLY="pane"$'\t-\t'"${BASH_REMATCH[1]}"
+  else
+    return 1
+  fi
+}
+
+# resolve_nav_pane_session <encoded-sid-or-empty> <pane> -> REPLY=live sid.
+# A paired token is rejected if the pane no longer belongs to that session.
+resolve_nav_pane_session() {
+  local encoded="${1:-}" pane="$2" live
+  live="$(tmux display-message -p -t "$pane" '#{session_id}' 2>/dev/null || true)"
+  [ -n "$live" ] || return 1
+  [ -z "$encoded" ] || [ "$encoded" = "$live" ] || return 1
+  REPLY="$live"
+}
+
+# nav_go <token> acts on hidden machine identity and records the previous target.
+nav_go() {
+  local parsed type sid pane
+  parse_nav_token "${1:-}" || return 1
+  parsed="$REPLY"
+  IFS=$'\t' read -r type sid pane <<< "$parsed"
+  [ "$sid" = - ] && sid=''
+  case "$type" in
+    session)
+      record_prev
+      jump_to_target session "$sid" "$sid"
+      ;;
+    pane)
+      resolve_nav_pane_session "$sid" "$pane" || return 1
+      sid="$REPLY"
+      record_prev
+      jump_to_target pane "$sid" "$pane"
+      ;;
+  esac
+}
+
+nav_help() {
+  cat <<'EOF'
+xtmux nav — operator navigation over tmux sessions and attention targets.
+
+usage:  xtmux nav                      open the interactive navigator (fzf)
+        xtmux nav next                 switch to the next tmux session
+        xtmux nav prev                 switch to the previous tmux session
+        xtmux nav attention-next       cycle to the next attention target
+        xtmux nav attention-prev       cycle to the previous attention target
+        xtmux nav back                 return to the target recorded before the last jump
+        xtmux nav help                 this reference
+
+next/prev follow tmux's own session order (switch-client -n / -p) and
+record the previous target so `back` can return. attention-next/prev cycle
+the authoritative attention ordering (stale, needs-input, done); an empty
+attention list is a non-error. back reuses the existing @picker_prev
+mechanism. The nav family is interactive-only: --json is refused.
+EOF
 }
 
 parse_wait_duration() {
@@ -3758,169 +4625,135 @@ safe_send_pointer() {
   fi
 }
 
-preview_session_row() {
-  local sid="$1"
-  local name="$2"
-  local pane_path root root_name rel attached window_count pane_count
-  local window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state pane_pid
-  local meta_bead meta_task meta_prompt_file meta_parent meta_last first_meta_line session_bead session_task session_prompt session_parent session_last
-  local pane_root pane_loc active_mark hdr panes_raw first_pane_pid sp_hash sp_view_state bd_line
-  declare -A root_cache=()
+preview_field() {
+  local label="$1" value="${2:-}"
+  [ -n "$value" ] || return 0
+  printf '  %-9s %s\n' "$label" "$value"
+}
 
+preview_session_row() {
+  local sid="$1" name="$2" pane_path root root_name hdr attached window_count panes_raw pane_count
+  local line window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state pane_pid
+  local meta_bead meta_task meta_prompt meta_parent meta_last rank best=4 best_line='' session_state bead sp_view_state
   pane_path="$(tmux display-message -p -t "$sid" '#{pane_current_path}' 2>/dev/null || true)"
   pane_path="${pane_path:-$HOME}"
   hdr="$(tmux display-message -p -t "$sid" $'#{session_attached}\t#{session_windows}' 2>/dev/null || true)"
-  attached="${hdr%%$'\t'*}"
-  window_count="${hdr#*$'\t'}"
-  [ "$attached" = "$hdr" ] && attached='0'
-  [ "$window_count" = "$hdr" ] && window_count='?'
-
-  git_root_for_path "$pane_path"; root="$REPLY"
-  root_name="${root:+${root##*/}}"
-
-  if [ -n "$root" ] && [ "$pane_path" != "$root" ]; then
-    relative_hint "$pane_path" "$root"; rel="$REPLY"
-  else
-    rel=''
-  fi
-
-  # Single scoped call: only this session's panes (was list-panes -a | awk, twice).
+  IFS=$'\t' read -r attached window_count <<< "$hdr"
   panes_raw="$(tmux list-panes -s -t "$sid" -F $'#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_prompt_file,#{@agent_prompt_file},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}' 2>/dev/null || true)"
-  if [ -n "$panes_raw" ]; then
-    pane_count="$(printf '%s\n' "$panes_raw" | grep -c .)"
-  else
-    pane_count=0
-  fi
+  pane_count=0
+  while IFS= read -r line; do
+    IFS=$'\t' read -r window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state pane_pid meta_bead meta_task meta_prompt meta_parent meta_last <<< "$line"
+    [ -n "$pane_id" ] || continue
+    pane_count=$((pane_count + 1))
+    normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd" "$meta_last"; pane_state="$REPLY"
+    agent_rank "$pane_state"; rank="$REPLY"
+    if [ -z "$best_line" ] || [ "$rank" -lt "$best" ]; then best="$rank"; best_line="$line"; fi
+  done <<< "$panes_raw"
+  attn_state_name "$best"; session_state="$REPLY"
+  git_root_for_path "$pane_path"; root="$REPLY"; root_name="${root:+${root##*/}}"
 
-  if [ -n "$root_name" ]; then
-    printf 'session=%s  root=%s\n' "$name" "$root_name"
-  else
-    printf 'session=%s\n' "$name"
-  fi
-  [ -n "$rel" ] && printf 'cwd=%s\n' "$rel"
-  first_pane_pid="$(printf '%s\n' "$panes_raw" | awk -F'\t' 'NF{print $13; exit}')"
-  first_meta_line="$(printf '%s\n' "$panes_raw" | awk -F'\t' 'NF && $14 != "" && $14 != "-" {print $14 "\t" $15 "\t" $16 "\t" $17 "\t" $18; exit}')"
-  if [ -n "$first_meta_line" ]; then
-    IFS=$'\t' read -r session_bead session_task session_prompt session_parent session_last <<< "$first_meta_line"
-    agent_meta_value "$session_bead"; session_bead="$REPLY"
-    agent_meta_value "$session_task"; session_task="$REPLY"
-    agent_meta_value "$session_prompt"; session_prompt="$REPLY"
-    agent_meta_value "$session_parent"; session_parent="$REPLY"
-    agent_meta_value "$session_last"; session_last="$REPLY"
-    printf 'agent-meta'
-    [ -n "$session_bead" ] && printf ' bead=%s' "$session_bead"
-    [ -n "$session_task" ] && printf ' task=%s' "$session_task"
-    [ -n "$session_parent" ] && printf ' parent=%s' "$session_parent"
-    [ -n "$session_prompt" ] && printf ' prompt=%s' "$session_prompt"
-    [ -n "$session_last" ] && printf ' last=%s' "$session_last"
-    printf '\n'
-  fi
-  sp_meta "$name" "$first_pane_pid"
-  if [ -n "$sp_role" ]; then
-    sp_hash_from_name "$name"; sp_hash="$REPLY"
-    sp_view_state="${sp_state:-}"
-    [ -z "$sp_view_state" ] && [ "${sp_stale:-0}" = 1 ] && sp_view_state='stale'
-    [ -z "$sp_view_state" ] && sp_view_state='unknown'
-    printf 'specialist job=%s bead=%s role=%s state=%s\n' "${sp_hash:-?}" "${sp_bead:-?}" "$sp_role" "$sp_view_state"
-    if [ -n "$sp_bead" ] && command -v bd >/dev/null 2>&1; then
-      bd_line="$(cd "$pane_path" 2>/dev/null && bd show "$sp_bead" 2>/dev/null | head -1 || true)"
-      [ -n "$bd_line" ] && printf 'bead %s\n' "$bd_line"
+  line="$best_line"
+  IFS=$'\t' read -r window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state pane_pid meta_bead meta_task meta_prompt meta_parent meta_last <<< "$line"
+  agent_meta_value "$meta_bead"; meta_bead="$REPLY"
+  agent_meta_value "$meta_task"; meta_task="$REPLY"
+  agent_meta_value "$meta_prompt"; meta_prompt="$REPLY"
+  agent_meta_value "$meta_parent"; meta_parent="$REPLY"
+  agent_meta_value "$meta_last"; meta_last="$REPLY"
+  bead="$meta_bead"
+  if [ -z "$bead" ]; then derive_bead_id "$name" "$pane_path" "$root"; bead="$REPLY"; fi
+
+  printf 'SESSION\n'
+  preview_field name "$name"
+  preview_field state "$session_state"
+  preview_field repo "$root_name"
+  preview_field windows "${window_count:-?}"
+  preview_field panes "$pane_count"
+  preview_field attached "${attached:-0}"
+
+  if [ -n "$pane_id" ]; then
+    printf '\nAGENT\n'
+    preview_field pane "$pane_id"
+    preview_field window "$window_index:$window_name.$pane_index"
+    preview_field geometry "${pane_width}x${pane_height}+${pane_left}+${pane_top}"
+    preview_field runtime "${pane_cmd:-shell}"
+    preview_field bead "$bead"
+    preview_field task "$meta_task"
+    preview_field prompt "$meta_prompt"
+    preview_field parent "$meta_parent"
+    preview_field last "$meta_last"
+    sp_meta "$name" "$pane_pid"
+    if [ -n "$sp_role" ]; then
+      sp_view_state="${sp_state:-${sp_stale:+stale}}"
+      preview_field specialist "$sp_role"
+      preview_field sp-state "${sp_view_state:-unknown}"
     fi
+    bead_preview_summary "$pane_path" "$bead"
   fi
-  preview_enrichment "$pane_path" "$root" "$name" "$session_bead"
-  printf 'windows=%s  panes=%s  attached=%s\n\n' "${window_count:-?}" "${pane_count:-0}" "${attached:-0}"
 
-  while IFS=$'\t' read -r window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state pane_pid meta_bead meta_task meta_prompt_file meta_parent meta_last; do
-    pane_row_path="${pane_row_path:-$pane_path}"
-    if [[ -v root_cache["$pane_row_path"] ]]; then
-      pane_root="${root_cache[$pane_row_path]}"
-    else
-      git_root_for_path "$pane_row_path"; pane_root="$REPLY"
-      root_cache["$pane_row_path"]="$pane_root"
-    fi
-    pane_location_hint "$pane_row_path" "$pane_root"; pane_loc="$REPLY"
-    normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd"; pane_state="$REPLY"
-    active_mark=' '
-    [ "$pane_active" = '1' ] && active_mark='*'
+  printf '\nWORKTREE\n'
+  preview_field path "$pane_path"
+  if [ -n "$root" ]; then
+    printf '\nGIT\n'
+    git_worktree_preview "$root"
+  fi
 
-    printf '[%s:%s.%s%s] %s' "$window_index" "$window_name" "$pane_index" "$active_mark" "${pane_cmd:-shell}"
-    [ -n "$pane_state" ] && [ "$pane_state" != '-' ] && printf ' <%s>' "$pane_state"
-    printf '  %sx%s +%s+%s' "$pane_width" "$pane_height" "$pane_left" "$pane_top"
-    [ -n "$pane_loc" ] && printf '  %s' "$pane_loc"
-    printf '\n'
+  printf '\n──────────────────────────────────\n'
+  while IFS=$'\t' read -r window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state pane_pid meta_bead meta_task meta_prompt meta_parent meta_last; do
+    [ -n "$pane_id" ] || continue
+    printf 'PANE %s  %s:%s.%s\n' "$pane_id" "$window_index" "$window_name" "$pane_index"
     capture_pane_safe "$pane_id" -8
     printf '\n'
-  done < <(printf '%s\n' "$panes_raw")
+  done <<< "$panes_raw"
 }
 
 preview_pane_row() {
-  local sid="$1"
-  local name="$2"
-  local target_pane="$3"
-  local pane_path root root_name rel attached window_line pane_cmd pane_state pane_pid sp_hash sp_view_state bd_line
-  local meta_bead meta_task meta_prompt_file meta_parent meta_last
-
-  local pinfo
-  pinfo="$(tmux display-message -p -t "$target_pane" $'#{pane_current_path}	#{pane_current_command}	#I:#W	#{?@agent_state,#{@agent_state},-}	#{pane_pid}	#{?@agent_bead,#{@agent_bead},-}	#{?@agent_task,#{@agent_task},-}	#{?@agent_prompt_file,#{@agent_prompt_file},-}	#{?@agent_parent_session,#{@agent_parent_session},-}	#{?@agent_last_transition,#{@agent_last_transition},-}' 2>/dev/null || true)"
-  IFS=$'	' read -r pane_path pane_cmd window_line pane_state pane_pid meta_bead meta_task meta_prompt_file meta_parent meta_last <<< "$pinfo"
+  local sid="$1" name="$2" target_pane="$3" pinfo pane_path pane_cmd window_line pane_state pane_pid pane_width pane_height pane_left pane_top
+  local meta_bead meta_task meta_prompt meta_parent meta_last root root_name attached bead sp_view_state
+  pinfo="$(tmux display-message -p -t "$target_pane" $'#{pane_current_path}\t#{pane_current_command}\t#I:#W\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_prompt_file,#{@agent_prompt_file},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}' 2>/dev/null || true)"
+  IFS=$'\t' read -r pane_path pane_cmd window_line pane_width pane_height pane_left pane_top pane_state pane_pid meta_bead meta_task meta_prompt meta_parent meta_last <<< "$pinfo"
   pane_path="${pane_path:-$HOME}"
-  git_root_for_path "$pane_path"; root="$REPLY"
-  root_name="${root:+${root##*/}}"
-  attached="$(tmux display-message -p -t "$sid" '#{session_attached}' 2>/dev/null || true)"
   normalize_agent_state "$target_pane" "$pane_state" "$pane_cmd" "$meta_last"; pane_state="$REPLY"
-
-  if [ -n "$root" ] && [ "$pane_path" != "$root" ]; then
-    relative_hint "$pane_path" "$root"; rel="$REPLY"
-  else
-    rel=''
-  fi
-
-  if [ -n "$root_name" ]; then
-    printf 'session=%s  root=%s
-' "$name" "$root_name"
-  else
-    printf 'session=%s
-' "$name"
-  fi
-  [ -n "$rel" ] && printf 'cwd=%s
-' "$rel"
+  git_root_for_path "$pane_path"; root="$REPLY"; root_name="${root:+${root##*/}}"
+  attached="$(tmux display-message -p -t "$sid" '#{session_attached}' 2>/dev/null || true)"
   agent_meta_value "$meta_bead"; meta_bead="$REPLY"
   agent_meta_value "$meta_task"; meta_task="$REPLY"
-  agent_meta_value "$meta_prompt_file"; meta_prompt_file="$REPLY"
+  agent_meta_value "$meta_prompt"; meta_prompt="$REPLY"
   agent_meta_value "$meta_parent"; meta_parent="$REPLY"
   agent_meta_value "$meta_last"; meta_last="$REPLY"
-  if [ -n "$meta_bead$meta_task$meta_prompt_file$meta_parent$meta_last" ]; then
-    printf 'agent-meta'
-    [ -n "$meta_bead" ] && printf ' bead=%s' "$meta_bead"
-    [ -n "$meta_task" ] && printf ' task=%s' "$meta_task"
-    [ -n "$meta_parent" ] && printf ' parent=%s' "$meta_parent"
-    [ -n "$meta_prompt_file" ] && printf ' prompt=%s' "$meta_prompt_file"
-    [ -n "$meta_last" ] && printf ' last=%s' "$meta_last"
-    printf '\n'
-  fi
+  bead="$meta_bead"
+  if [ -z "$bead" ]; then derive_bead_id "$name" "$pane_path" "$root"; bead="$REPLY"; fi
 
+  printf 'SESSION\n'
+  preview_field name "$name"
+  preview_field repo "$root_name"
+  preview_field attached "${attached:-0}"
+
+  printf '\nAGENT\n'
+  preview_field pane "$target_pane"
+  preview_field window "$window_line"
+  preview_field geometry "${pane_width}x${pane_height}+${pane_left}+${pane_top}"
+  preview_field runtime "${pane_cmd:-shell}"
+  preview_field state "$pane_state"
+  preview_field bead "$bead"
+  preview_field task "$meta_task"
+  preview_field prompt "$meta_prompt"
+  preview_field parent "$meta_parent"
+  preview_field last "$meta_last"
   sp_meta "$name" "$pane_pid"
   if [ -n "$sp_role" ]; then
-    sp_hash_from_name "$name"; sp_hash="$REPLY"
-    sp_view_state="${sp_state:-}"
-    [ -z "$sp_view_state" ] && [ "${sp_stale:-0}" = 1 ] && sp_view_state='stale'
-    [ -z "$sp_view_state" ] && sp_view_state='unknown'
-    printf 'specialist job=%s bead=%s role=%s state=%s
-' "${sp_hash:-?}" "${sp_bead:-?}" "$sp_role" "$sp_view_state"
-    if [ -n "$sp_bead" ] && command -v bd >/dev/null 2>&1; then
-      bd_line="$(cd "$pane_path" 2>/dev/null && bd show "$sp_bead" 2>/dev/null | head -1 || true)"
-      [ -n "$bd_line" ] && printf 'bead %s
-' "$bd_line"
-    fi
+    sp_view_state="${sp_state:-${sp_stale:+stale}}"
+    preview_field specialist "$sp_role"
+    preview_field sp-state "${sp_view_state:-unknown}"
   fi
+  bead_preview_summary "$pane_path" "$bead"
 
-  preview_enrichment "$pane_path" "$root" "$name" "$meta_bead"
-  printf 'win=%s  pane=%s  cmd=%s' "${window_line:-?}" "$target_pane" "${pane_cmd:-shell}"
-  [ -n "$pane_state" ] && [ "$pane_state" != '-' ] && printf '  agent=%s' "$pane_state"
-  printf '  attached=%s
-
-' "${attached:-0}"
-
+  printf '\nWORKTREE\n'
+  preview_field path "$pane_path"
+  if [ -n "$root" ]; then
+    printf '\nGIT\n'
+    git_worktree_preview "$root"
+  fi
+  printf '\n──────────────────────────────────\n'
   capture_pane_safe "$target_pane" -48
 }
 
@@ -4006,26 +4839,60 @@ bulk_kill_confirm() {
 }
 
 bulk_kill() {
-  local row type sid name target rest sessions=() panes=0
+  local tok parsed type sid pane i panes=0
+  local -a sessions=() pane_targets=() confirm_cmd=()
 
-  for row in "$@"; do
-    [ -n "$row" ] || continue
-    IFS=$'\t' read -r type sid name target rest <<< "$row"
+  # Validate the complete selection before any mutation. One malformed or stale
+  # token rejects the request instead of producing a partial destructive action.
+  for tok in "$@"; do
+    parse_nav_token "$tok" || return 1
+    parsed="$REPLY"
+    IFS=$'\t' read -r type sid pane <<< "$parsed"
+    [ "$sid" = - ] && sid=''
     case "$type" in
-      pane)
-        [ -n "$target" ] && tmux kill-pane -t "$target" 2>/dev/null && panes=$((panes + 1))
-        ;;
       session)
-        [ -n "$sid" ] && sessions+=("$sid")
+        tmux has-session -t "$sid" 2>/dev/null || return 1
+        sessions+=("$sid")
+        ;;
+      pane)
+        resolve_nav_pane_session "$sid" "$pane" || return 1
+        pane_targets+=("$pane")
         ;;
     esac
   done
 
+  for pane in "${pane_targets[@]}"; do
+    tmux kill-pane -t "$pane" 2>/dev/null && panes=$((panes + 1))
+  done
   if [ "${#sessions[@]}" -gt 0 ]; then
-    tmux command-prompt -p "kill ${#sessions[@]} session(s)? [y/N]" "run-shell '$self bulk-kill-confirm "%1" ${sessions[*]}'"
+    # confirm-before executes tmux commands directly. Session IDs never cross a
+    # shell or command-prompt substitution boundary.
+    confirm_cmd=(confirm-before -p "kill ${#sessions[@]} session(s)? [y/N]")
+    for ((i = 0; i < ${#sessions[@]}; i++)); do
+      confirm_cmd+=(kill-session -t "${sessions[$i]}")
+      [ "$i" -eq $(( ${#sessions[@]} - 1 )) ] || confirm_cmd+=(';')
+    done
+    tmux "${confirm_cmd[@]}"
   elif [ "$panes" -gt 0 ]; then
     tmux display-message "tmux-picker: pane uccisi $panes" 2>/dev/null || true
   fi
+}
+
+# bulk_kill_targets adapts classic hidden target field 4 to strict tokens.
+# Rendered display text never enters this command.
+bulk_kill_targets() {
+  local target
+  local -a tokens=()
+  for target in "$@"; do
+    if [[ "$target" =~ ^\$[0-9]+$ ]]; then
+      tokens+=("s:$target")
+    elif [[ "$target" =~ ^%[0-9]+$ ]]; then
+      tokens+=("p:$target")
+    else
+      return 1
+    fi
+  done
+  bulk_kill "${tokens[@]}"
 }
 
 kill_target() {
@@ -4041,7 +4908,7 @@ kill_target() {
 
   [ -n "$sid" ] || return 1
   sname="$(tmux display-message -p -t "$sid" '#S' 2>/dev/null || printf '%s' "$sid")"
-  tmux command-prompt -p "kill session ${sname:-$sid}? [y/N]" "run-shell '$self kill-confirm $sid "%1"'"
+  tmux confirm-before -p "kill session ${sname:-$sid}? [y/N]" kill-session -t "$sid"
 }
 
 # rename_target / rename_apply were called by the dispatcher and by the Alt-R
@@ -4094,27 +4961,23 @@ rename_prompt_command() {
   esac
 }
 
-rename_target() {
-  local type="${1:-}" sid="${2:-}" target="${3:-}" handle current cmd
+prompt_line() {
+  local prompt="$1" initial="${2:-}" value
+  [ -r /dev/tty ] || return 1
+  IFS= read -e -i "$initial" -p "$prompt" value < /dev/tty > /dev/tty || return 1
+  REPLY="$value"
+}
 
+rename_target() {
+  local type="${1:-}" sid="${2:-}" target="${3:-}" handle current
   case "$type" in
-    pane)
-      handle="$target"
-      current="$(tmux display-message -p -t "$target" '#W' 2>/dev/null || true)"
-      ;;
-    session)
-      # the session ID, not its name: an id never needs quoting
-      handle="$sid"
-      current="$(tmux display-message -p -t "$sid" '#S' 2>/dev/null || true)"
-      ;;
+    pane) handle="$target"; current="$(tmux display-message -p -t "$target" '#W' 2>/dev/null || true)" ;;
+    session) handle="$sid"; current="$(tmux display-message -p -t "$sid" '#S' 2>/dev/null || true)" ;;
     *) return 1 ;;
   esac
   [ -n "$handle" ] || return 1
-
-  cmd="$(rename_prompt_command "$type" "$handle")" || return 1
-  # -I prefills the current name, so Enter on an unchanged prompt is a no-op.
-  # An emptied prompt renames nothing: tmux rejects an empty name.
-  tmux command-prompt -I "$current" -p "rename $type:" "$cmd"
+  prompt_line "rename $type: " "$current" || return 0
+  rename_apply "$type" "$handle" "$REPLY"
 }
 
 # act_on_target <type> <sid> <target> <action>
@@ -4148,9 +5011,9 @@ act_on_target() {
       toast="interrotto $target"
       ;;
     message)
-      # command-prompt runs in the picker client; the typed line is then sent
-      # to the target pane via send-keys. %1 is command-prompt substitution.
-      tmux command-prompt -p 'invia:' "run-shell 'tmux send-keys -t \"$target\" \"%1\" Enter'"
+      prompt_line 'invia: ' '' || return 0
+      tmux send-keys -t "$target" -l -- "$REPLY"
+      tmux send-keys -t "$target" Enter
       return 0
       ;;
     *)
@@ -4190,14 +5053,95 @@ case "${1:-}" in
     build_list "${1:-all}" "$_list_mode"
     exit 0
     ;;
+  list-nav)
+    # NAV-1 private transport: same inventory/filter/sort as `list`, emitted
+    # as six-field NUL-delimited records (type/sid/name/target/token/display)
+    # for the interactive fzf. Public `list` stays five-field newline TSV.
+    shift
+    if [ -n "${2:-}" ]; then
+      _list_mode="$2"
+    else
+      read_list_mode; _list_mode="$REPLY"
+    fi
+    build_list "${1:-all}" "$_list_mode" nav multi
+    exit 0
+    ;;
+  list-nav-single)
+    # NAV-2 one-line fallback: same records and tokens as list-nav, but every
+    # card is collapsed to one bounded line (fzf_multiline_probe=off).
+    shift
+    if [ -n "${2:-}" ]; then
+      _list_mode="$2"
+    else
+      read_list_mode; _list_mode="$REPLY"
+    fi
+    build_list "${1:-all}" "$_list_mode" nav single
+    exit 0
+    ;;
   list-active)
     # richer filters (xtmux-rib.11): rebuild the list applying the active
     # content filter and the current sessions-only/expanded mode (xtmux-rib.12).
     shift
-    filter_state_file; _spec="$(cat "$REPLY" 2>/dev/null || true)"
+    picker_state_read filter || true; _spec="$REPLY"
     read_list_mode
     build_list "$_spec" "$REPLY"
     exit 0
+    ;;
+  list-active-nav)
+    shift
+    picker_state_read filter || true; _spec="$REPLY"
+    read_list_mode
+    build_list "$_spec" "$REPLY" nav multi
+    exit 0
+    ;;
+  list-active-nav-single)
+    shift
+    picker_state_read filter || true; _spec="$REPLY"
+    read_list_mode
+    build_list "$_spec" "$REPLY" nav single
+    exit 0
+    ;;
+  nav-go)
+    # fzf Enter binding: act on the hidden action token {5} directly.
+    shift
+    nav_go "${1:-}"
+    exit $?
+    ;;
+  nav-act)
+    # NAV-2 single-row action dispatcher: the ONLY inputs are the hidden
+    # action token {5} and a fixed action literal from the bind. Display text
+    # never crosses the command line.
+    shift
+    nav_act "${1:-}" "${2:-}"
+    exit $?
+    ;;
+  nav-border-label)
+    shift
+    nav_border_label
+    exit 0
+    ;;
+  nav-key-help)
+    shift
+    nav_key_help
+    exit 0
+    ;;
+  nav)
+    # xtmux-rib.23/.25/.24: operator navigation family. Bare `nav` opens the
+    # nav launcher (drawer; XTMUX_NAV_LAYOUT=classic or an unprovable fzf
+    # routes it to the classic launcher). The verbs are direct tmux actions and
+    # never build inventory or call git/fzf. Interactive-only: --json is
+    # refused by the preflight above.
+    shift
+    case "${1:-}" in
+      "") pick_nav; exit $? ;;
+      help|-h|--help) [ "$#" -eq 1 ] || { printf 'usage: xtmux nav help\n' >&2; exit 2; }; nav_help; exit 0 ;;
+      next) [ "$#" -eq 1 ] || { printf 'usage: xtmux nav next\n' >&2; exit 2; }; nav_session_cycle next; exit 0 ;;
+      prev) [ "$#" -eq 1 ] || { printf 'usage: xtmux nav prev\n' >&2; exit 2; }; nav_session_cycle prev; exit 0 ;;
+      attention-next) [ "$#" -eq 1 ] || { printf 'usage: xtmux nav attention-next\n' >&2; exit 2; }; nav_attention_cycle next; exit 0 ;;
+      attention-prev) [ "$#" -eq 1 ] || { printf 'usage: xtmux nav attention-prev\n' >&2; exit 2; }; nav_attention_cycle prev; exit 0 ;;
+      back) [ "$#" -eq 1 ] || { printf 'usage: xtmux nav back\n' >&2; exit 2; }; jump_back; exit 0 ;;
+      *) printf 'xtmux nav: unknown subcommand: %s\n' "$1" >&2; exit 2 ;;
+    esac
     ;;
   mode-toggle)
     # xtmux-rib.12: flip sessions-only <-> expanded; the bind then reloads
@@ -4440,7 +5384,12 @@ case "${1:-}" in
   bulk-kill)
     shift
     bulk_kill "$@"
-    exit 0
+    exit $?
+    ;;
+  bulk-kill-targets)
+    shift
+    bulk_kill_targets "$@"
+    exit $?
     ;;
   bulk-kill-confirm)
     shift
@@ -4468,18 +5417,22 @@ case "${1:-}" in
     exit 0
     ;;
   filter-clear)
-    # reset the active content filter (ctrl-a/w/e reset to attention-only).
     shift
-    filter_state_file
-    mkdir -p "$(dirname "$REPLY")" 2>/dev/null || true
-    : > "$REPLY" 2>/dev/null || true
+    picker_state_write filter '' || true
+    exit 0
+    ;;
+  filter-preset)
+    shift
+    [ "$#" -eq 1 ] || die_usage "filter-preset requires all, waiting, or running"
+    case "$1" in all) _preset='' ;; waiting|running) _preset="$1" ;; *) die_usage "invalid filter preset: $1" ;; esac
+    picker_state_write filter "$_preset" || true
     exit 0
     ;;
   prompt-label)
     # fzf transform-prompt source: reflects the active filter in the prompt.
     shift
-    filter_state_file
-    _spec="$(cat "$REPLY" 2>/dev/null || true)"
+    picker_state_read filter || true
+    _spec="$REPLY"
     if [ -n "$_spec" ]; then printf '%s> ' "$_spec"; else printf 'all> '; fi
     exit 0
     ;;
@@ -4489,6 +5442,10 @@ case "${1:-}" in
     exit 0
     ;;
   "")
+    # Bare legacy picker: the original classic newline-TSV launcher and
+    # interaction semantics, byte-compatible (NAV-2 split-launch invariant).
+    pick_classic
+    exit $?
     ;;
   help|--help|-h)
     help_text
@@ -4504,69 +5461,6 @@ case "${1:-}" in
     ;;
 esac
 
-if ! command -v fzf >/dev/null 2>&1; then
-  tmux display-message 'fzf non trovato'
-  exit 1
-fi
-
-preview_window='right,62%,border-left,wrap,follow'
-preview_window_max='right,94%,border-left,wrap,follow'
-border_label=' Enter switch · Tab mark · Alt-R rename · Alt-X bulk kill · Alt-x kill · ^Y ok · Alt-I int · ^O msg · ^A all ^W wait ^E run · ^F filter · Ctrl-r refresh · ? help · Ctrl-/ preview '
-case "$mode" in
-  compact-wrap)
-    preview_window='right,68%,border-left,wrap,follow'
-    preview_window_max='right,94%,border-left,wrap,follow'
-    border_label=' compact wrap · Enter switch · Alt-Enter popup · Alt-x kill · ^Y approve · Alt-I interrupt · ^O msg · ^A/^W/^E filtri · ^F filter · Ctrl-r refresh · ? help '
-    ;;
-  compact-nowrap)
-    preview_window='right,68%,border-left,follow'
-    preview_window_max='right,94%,border-left,follow'
-    border_label=' compact no-wrap · Enter switch · Alt-Enter popup · Alt-x kill · ^Y approve · Alt-I interrupt · ^O msg · ^A/^W/^E filtri · ^F filter · Ctrl-r refresh · ? help '
-    ;;
-esac
-
-choice="$({
-  "$self" list all
-} | fzf \
-  --ansi \
-  --delimiter=$'\t' \
-  --with-nth=5 \
-  --layout=reverse-list \
-  --height=100% \
-  --border=sharp \
-  --border-label "$border_label" \
-  --border-label-pos='3:bottom' \
-  --no-scrollbar \
-  --cycle \
-  --no-bold \
-  --multi \
-  --prompt='all> ' \
-  --pointer='>' \
-  --marker='✓ ' \
-  --info=inline-right \
-  --color='fg:#b8bcc0,bg:-1,hl:#ffffff,fg+:#ffffff,bg+:#222222,hl+:#ffffff,info:#8a8f94,prompt:#8a8f94,pointer:#c6cacf,marker:#c6cacf,label:#8a8f94,border:#303030,gutter:-1' \
-  --preview-window="$preview_window" \
-  --bind="load:transform-prompt($self prompt-label)+transform-border-label($self border-label)" \
-  --bind="ctrl-/:toggle-preview" \
-  --bind="?:change-preview($self mux-help)" \
-  --bind="ctrl-r:reload(TMUX_PICKER_NO_CACHE=1 $self list-active)" \
-  --bind="ctrl-a:execute-silent($self filter-clear)+change-prompt(all> )+reload($self list all)" \
-  --bind="ctrl-w:execute-silent($self filter-clear)+change-prompt(wait> )+reload($self list waiting)" \
-  --bind="ctrl-e:execute-silent($self filter-clear)+change-prompt(run> )+reload($self list running)" \
-  --bind="ctrl-f:execute($self filter-menu)+reload($self list-active)+transform-prompt($self prompt-label)" \
-  --bind="tab:execute($self mode-toggle)+reload($self list-active)+transform-prompt($self prompt-label)+transform-border-label($self border-label)" \
-  --bind="space:toggle+down" \
-  --bind="alt-p:change-preview-window($preview_window_max|$preview_window)" \
-  --bind="alt-x:execute-silent($self kill {1} {2} {4})+reload($self list-active)" \
-  --bind="alt-X:execute-silent($self bulk-kill {+})+reload($self list-active)" \
-  --bind="alt-r:execute($self rename {1} {2} {4})+reload($self list-active)" \
-  --bind="ctrl-y:execute-silent($self act {1} {2} {4} approve)+reload($self list-active)" \
-  --bind="alt-i:execute-silent($self act {1} {2} {4} interrupt)+reload($self list-active)" \
-  --bind="ctrl-o:execute($self act {1} {2} {4} message)+reload($self list-active)" \
-  --bind="alt-enter:become($self popup {1} {2} {4})" \
-  --preview "$self preview {1} {2} {3} {4}"
-)" || true
-
-[ -n "${choice:-}" ] || exit 0
-IFS=$'\t' read -r type sid name target _ <<< "$choice"
-jump_to_target "$type" "$sid" "$target"
+# Every dispatch arm above exits. Bare `xtmux` routes to pick_classic and bare
+# `xtmux nav` to pick_nav; nothing falls through to a second launcher.
+exit 0

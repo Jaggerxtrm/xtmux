@@ -163,8 +163,17 @@ Categories are closed: **agent-json** gains/retains structured output for agents
 
 | Command | Category | Current format / decision | Owner |
 |---|---|---|---|
-| `picker:list` | interactive-only | fzf row wire format; use dashboard for agents | — |
-| `picker:list-active` | interactive-only | fzf reload using persisted filter | — |
+| `picker:list` | interactive-only | public five-field newline TSV, unchanged; use dashboard for agents | — |
+| `picker:list-active` | interactive-only | public TSV reload using persisted filter | — |
+| `picker:list-nav` | interactive-only | private six-field NUL records with multiline display; not a public API | rib.23 |
+| `picker:list-nav-single` | interactive-only | private NUL records with bounded one-line display fallback | rib.23 |
+| `picker:list-active-nav` | interactive-only | private multiline nav reload using persisted filter/mode | rib.24 |
+| `picker:list-active-nav-single` | interactive-only | private one-line nav reload using persisted filter/mode | rib.24 |
+| `picker:nav` | interactive-only | sidebar navigator and direct traversal family; `--json` returns `XTMUX_JSON_UNSUPPORTED` | rib.25 |
+| `picker:nav-go` | interactive-only | exact hidden-token navigation; never parses display | rib.23 |
+| `picker:nav-act` | guarded-admin | token-validated popup/kill/rename/approve/interrupt/message action | rib.24 |
+| `picker:nav-key-help` | interactive-only | complete nav key reference for fzf preview | rib.24 |
+| `picker:nav-border-label` | interactive-only | short expanded/compact nav footer | rib.24 |
 | `picker:mode-toggle` | interactive-only | persisted UI state, no useful result | — |
 | `picker:wait-agent` | agent-json | text completion → `Wait` object | .2 |
 | `picker:monitor-agent` | agent-json | text/monitor registration → monitor mutation object | .2 |
@@ -211,13 +220,15 @@ Categories are closed: **agent-json** gains/retains structured output for agents
 | `picker:attn-jump` | interactive-only | navigation | — |
 | `picker:jump-back` | interactive-only | navigation | — |
 | `picker:kill-confirm` | guarded-admin | internal confirmation continuation | — |
-| `picker:bulk-kill` | guarded-admin | destructive multi-target action | — |
-| `picker:bulk-kill-confirm` | guarded-admin | internal confirmation continuation | — |
+| `picker:bulk-kill` | guarded-admin | destructive action over strict machine tokens only | rib.23 |
+| `picker:bulk-kill-targets` | guarded-admin | adapts classic hidden `$N`/`%N` target fields to strict tokens | rib.23 |
+| `picker:bulk-kill-confirm` | guarded-admin | legacy internal confirmation continuation | — |
 | `picker:rename` | guarded-admin | mutates tmux names through prompt | — |
 | `picker:rename-apply` | guarded-admin | internal rename continuation | — |
 | `picker:clear-cache` | guarded-admin | maintenance mutation | — |
 | `picker:filter-menu` | interactive-only | fzf/prompt UI | — |
 | `picker:filter-clear` | interactive-only | persisted UI filter | — |
+| `picker:filter-preset` | interactive-only | persists all/waiting/running across nav reloads | rib.24 |
 | `picker:prompt-label` | interactive-only | fzf prompt text | — |
 | `picker:install-hooks` | guarded-admin | tmux installation mutation | — |
 

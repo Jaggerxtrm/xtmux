@@ -2,15 +2,56 @@
 
 Copy these snippets into `~/.tmux.conf` after running `./install.sh`.
 
-## picker popup
+## nav drawer and classic picker
+
+Recommended sidebar-style navigator (verified tmux 3.5a syntax):
 
 ```tmux
-bind s display-popup -E -w 99% -h 97% "$HOME/.local/bin/tmux-session-picker"
+bind s display-popup -E -x 0 -y 0 -w 52% -h 100% "XTMUX_NAV_WIDTH=#{e|-:#{e|*|f|0:#{client_width},0.52},4} $HOME/.local/bin/xtmux nav"
+```
+
+Set width in tmux configuration rather than application state:
+
+- 40% on a wide desktop
+- 50–55% for a normal terminal
+- 60–65% on a smaller laptop
+
+Change both `52%` and the `0.52` factor together. The final subtraction reserves
+popup and fzf borders, so card width follows the real drawer instead of a default.
+
+Keep a classic/full-screen rollback binding:
+
+```tmux
+bind S display-popup -E -w 99% -h 97% "$HOME/.local/bin/tmux-session-picker"
 bind g display-popup -E -w 99% -h 97% "TMUX_PICKER_MODE=compact-wrap $HOME/.local/bin/tmux-session-picker"
 bind G display-popup -E -w 99% -h 97% "TMUX_PICKER_MODE=compact-nowrap $HOME/.local/bin/tmux-session-picker"
 ```
 
-These are prefix-table binds (`prefix s`, `prefix g`, `prefix G`).
+`XTMUX_NAV_LAYOUT=classic xtmux nav` also selects the classic renderer. These
+are optional prefix-table examples; xtmux does not install global bindings.
+
+Inside nav, `▶` is the live tmux target and `>` is the fzf selection. `Tab`
+toggles expanded/sessions-only, `Ctrl-/` toggles the bottom inspector, and `?`
+shows all nav actions.
+
+## native and xtmux traversal
+
+```tmux
+# tmux built-ins: previous, next, and last session
+bind ( switch-client -p
+bind ) switch-client -n
+bind L switch-client -l
+
+# optional discoverable xtmux wrappers
+bind N run-shell '$HOME/.local/bin/xtmux nav next'
+bind P run-shell '$HOME/.local/bin/xtmux nav prev'
+bind A run-shell '$HOME/.local/bin/xtmux nav attention-next'
+bind B run-shell '$HOME/.local/bin/xtmux nav back'
+```
+
+`nav attention-next` and `nav attention-prev` wrap the authoritative attention
+order. `nav back` reuses `jump-back` state. Choose keys that do not collide with
+your existing prefix table.
 
 ## attention jumps
 

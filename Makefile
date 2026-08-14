@@ -4,6 +4,7 @@
 # under it can actually go red (xtmux-d0a.19).
 test:
 	./test/harness-selftest.sh
+	./test/nav-contract.sh
 	./test/contract.sh
 
 test-regen:
