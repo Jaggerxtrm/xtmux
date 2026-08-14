@@ -6,17 +6,25 @@ All notable changes to this project are documented here.
 
 ### Added
 - Add K3 Codex runtime adapter over existing authorities (xtmux-s96.2) ([d8edb1e](https://github.com/Jaggerxtrm/xtmux/commit/d8edb1ebaf8ce5f70f95d4696f37acb9af9ec712))
+- Add distribution smoke, dry-run plan, and correct false S7 label (xtmux-s96.4) ([c67bcde](https://github.com/Jaggerxtrm/xtmux/commit/c67bcde3dac44a966dc79033134c30411f7aff77))
+- Complete Codex lifecycle, recovery, and terminal cleanup (xtmux-s96.4) ([0aa2f6b](https://github.com/Jaggerxtrm/xtmux/commit/0aa2f6b97201d738bb424cbf4ec2ccc306f68edc))
 
 ### Fixed
 - K3 review-1 corrections — Core K3 fixtures, full v1 boundary, honest dedupe (xtmux-s96.2) ([45f039d](https://github.com/Jaggerxtrm/xtmux/commit/45f039da59686a6ccb68499bd4fcf8bd84384b75))
 - K3 review-2 corrections — Stop type guards, honest degraded-dedupe scope (xtmux-s96.2) ([599f01b](https://github.com/Jaggerxtrm/xtmux/commit/599f01b5632d097dacc45ff1ffa9ccb2468d69bb))
+- Strict per-identifier failure classifier for the EVAL-01 gate (xtmux-s96.3) ([08ab7ae](https://github.com/Jaggerxtrm/xtmux/commit/08ab7aee25a881834083e8f3ac3160f2157316e4))
+- Remove EVAL-01 options-file race (xtmux-s96.3) ([3f9a550](https://github.com/Jaggerxtrm/xtmux/commit/3f9a5502c7a41d2ef5a6d26f3c513bb49926edf8))
+- Adopt byte-identical compatibility links (xtmux-s96.2.1) ([06f203f](https://github.com/Jaggerxtrm/xtmux/commit/06f203f3a502d741b221cdf6d722e2ac4289ea55))
+- Preserve unowned hook trust and repair pre-tag entries (xtmux-s96.4) ([711254f](https://github.com/Jaggerxtrm/xtmux/commit/711254f2cba271791b4bd2dc7006cb5babf35da1))
+- Document instance-get and hold the help band (xtmux-s96.4) ([3103053](https://github.com/Jaggerxtrm/xtmux/commit/3103053fb8c4fe441fe21f0d6a46bcc5dc772730))
 - Arm a real monitor poller and give @agent_state liveness (xtmux-dvs) ([d2bb59a](https://github.com/Jaggerxtrm/xtmux/commit/d2bb59a1d0c83c22e5570f6eea1422d82b9059cd))
 - Respawn the poller via execPath, not Bun's baked argv (xtmux-dvs) ([17523fd](https://github.com/Jaggerxtrm/xtmux/commit/17523fda3aa40fdc51afd53a7e6c59d3813dab45))
 - Read @agent_last_transition from the caller's list-panes row (xtmux-dvs) ([d50c2e7](https://github.com/Jaggerxtrm/xtmux/commit/d50c2e7409f25eee082822fb3b78a19b9a0d1493))
 - Stand down when another writer concludes the monitor (xtmux-dvs) ([ee5350c](https://github.com/Jaggerxtrm/xtmux/commit/ee5350c9946b00dbd64a38a590cbf74a685f4266))
-- Strict per-identifier failure classifier for the EVAL-01 gate (xtmux-s96.3) ([08ab7ae](https://github.com/Jaggerxtrm/xtmux/commit/08ab7aee25a881834083e8f3ac3160f2157316e4))
-- Remove EVAL-01 options-file race (xtmux-s96.3) ([3f9a550](https://github.com/Jaggerxtrm/xtmux/commit/3f9a5502c7a41d2ef5a6d26f3c513bb49926edf8))
-- Adopt byte-identical compatibility links (xtmux-s96.2.1) ([06f203f](https://github.com/Jaggerxtrm/xtmux/commit/06f203f3a502d741b221cdf6d722e2ac4289ea55))
+- Prune terminal monitors in retention; bound monitor-list for Pi wake path ([c9e9483](https://github.com/Jaggerxtrm/xtmux/commit/c9e94833cf4e9f056c84091abe1f85b34899a9a6))
+- Never touch a stale ctx after session replacement or reload ([a176909](https://github.com/Jaggerxtrm/xtmux/commit/a176909f882e2c9797e08519f907e3bc648f6623))
+- Prune terminal monitors on every monitor-list read ([d635e6e](https://github.com/Jaggerxtrm/xtmux/commit/d635e6e41eff1f1544e6db317d7672ebc38c48b4))
+- Make stale ctx non-fatal even when session_shutdown never ran ([8c65780](https://github.com/Jaggerxtrm/xtmux/commit/8c65780cad3f0dd8d0c0a6434a1e31d48dd13d1b))
 
 ### Project maintenance
 - Characterize Codex 0.146.0 seams (xtmux-s96.1) ([50a95fa](https://github.com/Jaggerxtrm/xtmux/commit/50a95fa32fa0b029d6b096bd1ecec9b8102a913a))
@@ -24,10 +32,13 @@ All notable changes to this project are documented here.
 - Harden Codex K1 characterization boundaries ([64ec9cf](https://github.com/Jaggerxtrm/xtmux/commit/64ec9cfcb314fa4de77e462be4e3b0c49cf3db24))
 - Pin Codex Stop characterization provenance ([8dbc77d](https://github.com/Jaggerxtrm/xtmux/commit/8dbc77d4bf361734d40f8ad641cadea9a41e2549))
 - K3 review-3 correction — Codex turn-capture contract wording (xtmux-s96.2) ([041457c](https://github.com/Jaggerxtrm/xtmux/commit/041457ce9cf2b6794a3c7a3cf01969224087256f))
+- EVAL-01 Codex column and recovery evidence gate (xtmux-s96.3) ([9d69342](https://github.com/Jaggerxtrm/xtmux/commit/9d6934223d22d14f03667307187669d399029649))
 - Refresh CHANGELOG [Unreleased] for xtmux-dvs ([88791d0](https://github.com/Jaggerxtrm/xtmux/commit/88791d03225ffc1913a907f36b4e0a028c0a9113))
 - Refresh CHANGELOG [Unreleased] for the xtmux-dvs CI fixes ([e81ddae](https://github.com/Jaggerxtrm/xtmux/commit/e81ddaef12a720046072db8b0ec8b595e3d2abd1))
 - Refresh CHANGELOG [Unreleased] ([dab4999](https://github.com/Jaggerxtrm/xtmux/commit/dab4999d413f2822d56ffb6b94d10d50ede50a38))
-- EVAL-01 Codex column and recovery evidence gate (xtmux-s96.3) ([9d69342](https://github.com/Jaggerxtrm/xtmux/commit/9d6934223d22d14f03667307187669d399029649))
+- Refresh CHANGELOG [Unreleased] ([44d8e1b](https://github.com/Jaggerxtrm/xtmux/commit/44d8e1bc02a80be781e60dd9de939353e051c3c3))
+- Sync managed assets to xtrm-tools 0.11.4 and ignore runtime skill links ([65f5544](https://github.com/Jaggerxtrm/xtmux/commit/65f5544d49b6197a45d062a740bb5973d96def3c))
+- Ignore post-migration per-repo skill and hook residue ([6543e70](https://github.com/Jaggerxtrm/xtmux/commit/6543e70aa9992f0b1248088bd676256ad60c2794))
 <!-- generated by xtmux-changelog; edit commit messages or cliff.toml, not generated rows -->
 
 ## [0.2.3] - 2026-07-28
