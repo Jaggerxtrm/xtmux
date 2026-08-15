@@ -380,6 +380,10 @@ export function cliLogEmit(db: Db, argv: string[]): number {
         // every non-continuation stop (episode_open=1); continuations and the
         // pi/codex adapters omit it and attach to the open episode.
         episodeOpen: fields["episode_open"] === "1",
+        // xtmux-gdk review P2: sha256(session\0transcript_path\0size\0text)
+        // from the Stop hook — the durable source identity that makes an exact
+        // Stop replay one candidate row instead of two.
+        sourceKey: fields["source_key"] || undefined,
       });
       return 0;
     case "agent.episode.open": {

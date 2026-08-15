@@ -22,6 +22,12 @@ export interface TurnCompleteInput {
   // that is not a stop_hook_active continuation). False/absent attaches to the
   // pane's open episode, lazy-opening one when none exists.
   episodeOpen?: boolean | undefined;
+  // Durable source/event identity for replay dedupe (xtmux-gdk review P2):
+  // the Claude Stop hook emits sha256(session\0transcript_path\0size\0text).
+  // An exact replay reproduces the key and is absorbed (one candidate row, no
+  // fresh episode); identical text at a distinct source position differs in
+  // the transcript size and stays a legitimate second candidate.
+  sourceKey?: string | undefined;
 }
 
 export interface TurnCompleteResult {
@@ -56,16 +62,35 @@ export function completeTurn(
     }
 
     const completedAtMs = now();
+
+    // Replay dedupe runs BEFORE episode resolution: a replayed Stop must not
+    // open a fresh episode (episode_open=1) or attach again — the original
+    // delivery already did. The unique index is the atomic net for a raced
+    // double-delivery; the look-up keeps the replay fully side-effect free.
+    if (input.sourceKey) {
+      const existing = db.raw
+        .prepare<{ id: number }, [string]>(
+          "SELECT id FROM agent_turns WHERE source_key = ?",
+        )
+        .get(input.sourceKey);
+      if (existing) {
+        turnId = existing.id;
+        return;
+      }
+    }
+
     const episodeId = resolveEpisodeForTurn(db, input.paneId, input.sessionId, instanceId, input.episodeOpen === true, now);
     const turnRow = db.raw
       .prepare<{ id: number }, [
         string | null, string, string, string | null, string | null,
         number | null, string | null, string | null, number, number | null,
+        string | null,
       ]>(
-        `INSERT INTO agent_turns
+        `INSERT OR IGNORE INTO agent_turns
            (instance_id, session_id, pane_id, bead_id, parent_session_id,
-            turn_index, summary, last_message_text, completed_at_ms, episode_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            turn_index, summary, last_message_text, completed_at_ms, episode_id,
+            source_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          RETURNING id`,
       )
       .get(
@@ -79,8 +104,10 @@ export function completeTurn(
         input.lastMessageText ?? null,
         completedAtMs,
         episodeId,
+        input.sourceKey ?? null,
       );
     turnId = turnRow?.id ?? 0;
+    if (!turnId) return; // raced replay: the unique index won — no row, no message
 
     if (input.parentSessionId && input.parentMessageText) {
       const key = `turn:${instanceId ?? input.paneId}:${turnId}`;

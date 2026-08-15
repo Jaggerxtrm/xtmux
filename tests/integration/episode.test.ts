@@ -151,6 +151,73 @@ describe("response episodes", () => {
     }
   });
 
+  test("an exact Stop replay with the same source_key inserts one candidate and no fresh episode (review P2)", () => {
+    const { db, cleanup, now } = setup();
+    try {
+      openInstance(db, { instanceId: "inst-A", sessionId: "$1", paneId: "%9", sourceEvent: "launch" }, () => ++now.t);
+      const base = { paneId: "%9", sessionId: "$1", summary: "same", lastMessageText: "same text", sourceKey: "k-replay-1", episodeOpen: true };
+      const t1 = completeTurn(db, base, () => ++now.t);
+      const t2 = completeTurn(db, base, () => ++now.t);
+      expect(t2.turnId).toBe(t1.turnId);
+      const rows = db.raw
+        .prepare<{ id: number; episode_id: number | null; source_key: string | null }, []>(
+          "SELECT id, episode_id, source_key FROM agent_turns ORDER BY id",
+        )
+        .all();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.source_key).toBe("k-replay-1");
+      // The replay must not close/open a fresh episode: episode_open=1 on a
+      // replay is absorbed before episode resolution.
+      expect(openEpisodeState(db, "%9")?.id).toBe(rows[0]!.episode_id!);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("identical text at distinct source positions stays two legitimate candidates (review P2)", () => {
+    const { db, cleanup, now } = setup();
+    try {
+      openInstance(db, { instanceId: "inst-A", sessionId: "$1", paneId: "%9", sourceEvent: "launch" }, () => ++now.t);
+      // Distinct source positions = distinct settled transcript sizes = distinct
+      // source keys, even when the assistant text is byte-identical.
+      const t1 = completeTurn(db, { paneId: "%9", sessionId: "$1", summary: "same", lastMessageText: "identical text", sourceKey: "src-A" }, () => ++now.t);
+      const t2 = completeTurn(db, { paneId: "%9", sessionId: "$1", summary: "same", lastMessageText: "identical text", sourceKey: "src-B" }, () => ++now.t);
+      expect(t2.turnId).not.toBe(t1.turnId);
+      const rows = db.raw
+        .prepare<{ id: number; episode_id: number | null }, []>("SELECT id, episode_id FROM agent_turns ORDER BY id")
+        .all();
+      expect(rows).toHaveLength(2);
+      // Both land in the same episode (both attached, neither opened a fresh one).
+      expect(rows[0]!.episode_id).toBe(rows[1]!.episode_id);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("an UNDER-200-char Mermaid is substantive; a later ack is collapsed, never primary (review P1)", () => {
+    const { db, cleanup, now } = setup();
+    try {
+      openInstance(db, { instanceId: "inst-A", sessionId: "$1", paneId: "%9", sourceEvent: "launch" }, () => ++now.t);
+      // Short fenced Mermaid: shorter than the 200-char substantive bar, but
+      // structurally a real response. The reviewer's exact regression: a
+      // later "Acknowledged." must not displace it.
+      const mermaid = "```mermaid\ngraph TD\n  A-->B\n```";
+      expect(mermaid.length).toBeLessThan(200);
+      completeTurn(db, { paneId: "%9", sessionId: "$1", summary: "mermaid", lastMessageText: mermaid, episodeOpen: true }, () => ++now.t);
+      completeTurn(db, { paneId: "%9", sessionId: "$1", summary: "ack", lastMessageText: "Acknowledged." }, () => ++now.t);
+      const ep = findLatestEpisode(db, "%9");
+      expect(ep?.primary?.lastMessageText).toBe(mermaid);
+      expect(ep?.followUps).toEqual([]);
+      expect(ep?.collapsed.map((c) => c.lastMessageText)).toEqual(["Acknowledged."]);
+      // A short markdown table is substantive too; a plain short sentence is not.
+      completeTurn(db, { paneId: "%9", sessionId: "$1", summary: "t", lastMessageText: "| a | b |\n|---|---|\n| 1 | 2 |", episodeOpen: true }, () => ++now.t);
+      const ep2 = findLatestEpisode(db, "%9");
+      expect(ep2?.primary?.lastMessageText).toBe("| a | b |\n|---|---|\n| 1 | 2 |");
+    } finally {
+      cleanup();
+    }
+  });
+
   test("findLatestEpisode falls back to the last text-bearing candidate when nothing is substantive", () => {
     const { db, cleanup, now } = setup();
     try {

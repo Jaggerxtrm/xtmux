@@ -190,6 +190,9 @@ test("Stop payload last_assistant_message wins over a missing transcript", () =>
     expect(emit).toBeDefined();
     expect(emit).toContain("last_message=fresh answer");
     expect(emit).toContain("episode_open=1");
+    // Durable source identity for replay dedupe: sha256(session\0path\0size\0text),
+    // 24 hex chars. An exact Stop replay reproduces it -> one candidate row.
+    expect(emit).toMatch(/source_key=[0-9a-f]{24}/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

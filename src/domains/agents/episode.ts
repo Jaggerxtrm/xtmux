@@ -107,7 +107,23 @@ export function resolveEpisodeForTurn(
 // A candidate is "substantive" when its text clears this bar; shorter rows are
 // hook acknowledgements ("Acknowledged.", "I'll wait for the monitor.") and
 // are collapsed by the projection instead of replacing the primary response.
+// Length alone is not the rule: a short Mermaid/table/code block is still a
+// real response, and a later short acknowledgement must never displace it.
 export const SUBSTANTIVE_MIN = 200;
+
+/**
+ * Substantive iff: long enough, OR short but structurally a real response
+ * (fenced code/Mermaid block, or a multi-line markdown table). A hook
+ * acknowledgement is a plain short sentence — no fence, no table rows.
+ * Mirrored in packages/xtmux-view/src/core.mjs — keep in lockstep.
+ */
+export function isSubstantiveText(text: string): boolean {
+  const t = String(text ?? "");
+  if (t.length >= SUBSTANTIVE_MIN) return true;
+  if (t.includes("```") || t.includes("~~~")) return true;
+  if (t.includes("\n") && /^\s*\|/m.test(t)) return true;
+  return false;
+}
 
 export interface EpisodeCandidate {
   turnId: number;
@@ -196,7 +212,7 @@ export function findLatestEpisode(db: Db, target: string): EpisodeProjection | n
     summary: r.summary,
     lastMessageText: r.last_message_text,
     completedAtMs: r.completed_at_ms,
-    substantive: candidateText(r).length >= SUBSTANTIVE_MIN,
+    substantive: isSubstantiveText(candidateText(r)),
   }));
 
   const substantive = candidates.filter((c) => c.substantive);

@@ -17,6 +17,7 @@ import { migration as m0011 } from "./migrations/0011_outbound_wake_ownership.ts
 import { migration as m0012 } from "./migrations/0012_handoff_idempotency.ts";
 import { migration as m0013 } from "./migrations/0013_agent_turn_last_message.ts";
 import { migration as m0014 } from "./migrations/0014_agent_episodes.ts";
+import { migration as m0015 } from "./migrations/0015_agent_turns_source_key.ts";
 
 export interface Migration {
   readonly version: number;
@@ -24,7 +25,7 @@ export interface Migration {
   readonly up: string;
 }
 
-export const MIGRATIONS: readonly Migration[] = [m0001, m0002, m0003, m0004, m0007, m0008, m0009, m0010, m0011, m0012, m0013, m0014];
+export const MIGRATIONS: readonly Migration[] = [m0001, m0002, m0003, m0004, m0007, m0008, m0009, m0010, m0011, m0012, m0013, m0014, m0015];
 
 const SCHEMA_MIGRATIONS_DDL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (

@@ -203,6 +203,10 @@ function main() {
       `bead=${bead}`,
       `parent=${parent}`,
       `episode_open=${episodeOpen}`,
+      // Durable source identity (xtmux-gdk review P2): an exact replay of this
+      // Stop reproduces the identical key, so obs inserts one candidate row;
+      // a later Stop at a larger transcript size differs and stays distinct.
+      `source_key=${turnKey}`,
       `last_message=${compactSummary(fullText)}`,
       `last_message_file=${tmpFile}`,
     ];
