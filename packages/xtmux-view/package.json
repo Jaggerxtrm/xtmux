@@ -1,0 +1,41 @@
+{
+  "name": "@jaggerxtrm/xtmux-view",
+  "version": "0.1.0",
+  "description": "Rich Markdown overlay for xtmux-managed Claude, Pi, and Codex sessions",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "xtmux-view": "src/cli.mjs"
+  },
+  "files": [
+    "src/",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "peerDependencies": {
+    "@jaggerxtrm/xtmux": ">=0.3.0"
+  },
+  "peerDependenciesMeta": {
+    "@jaggerxtrm/xtmux": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "xtmux",
+    "tmux",
+    "claude-code",
+    "codex",
+    "pi",
+    "markdown",
+    "glow"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

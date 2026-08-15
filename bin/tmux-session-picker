@@ -772,6 +772,31 @@ resolve_to_session_id() {
   return 0
 }
 
+# Resolve a tmux target to a pane id. tmux does NOT accept a pane id (%N) as
+# the window specifier in the `session:%N` shorthand: `spfix:%875` is parsed as
+# session:window, the %875 window lookup fails, and tmux silently falls back to
+# the session's CURRENT window — so `#{pane_id}` returns the active pane, not
+# %875. Extract the %N suffix ourselves when the target carries one
+# (session:%N or session:window.%N) and verify it is a live pane; otherwise ask
+# tmux directly (a bare %N is server-global and resolves correctly). Sets REPLY
+# to the pane id, empty on failure.
+target_pane_id() {
+  local target="${1:-}"
+  REPLY=''
+  [ -n "$target" ] || return 1
+  case "$target" in
+    *:%[0-9]*) REPLY="${target##*:}" ;;   # session:%N
+    *.%[0-9]*) REPLY="${target##*.}" ;;   # session:window.%N
+  esac
+  if [ -n "$REPLY" ]; then
+    # The extracted id must be a live pane; a stale %N would route to nothing.
+    tmux display-message -p -t "$REPLY" '#{pane_id}' 2>/dev/null | grep -qx "$REPLY" || { REPLY=''; return 1; }
+  else
+    REPLY="$(tmux display-message -p -t "$target" '#{pane_id}' 2>/dev/null || true)"
+  fi
+  [ -n "$REPLY" ]
+}
+
 # human-friendly age from an epoch seconds value: 3s, 12m, 4h, 2d
 format_age_short() {
   local epoch="${1:-0}" now diff
@@ -839,16 +864,19 @@ obs_runtime_argv() {
   root="${self%/bin/*}"
   binary="$root/bin/xtmux-obs"
   if [ -x "$binary" ]; then
-    OBS_ARGV=("$binary")
+    # cd-then-exec wrapper: Bun (compiled or not) refuses to start from a
+    # deleted directory (xt end worktree teardown), and exec preserves the PID
+    # so monitor ownership/liveness (owner_pid) and signal delivery stay intact.
+    OBS_ARGV=("bash" "-c" 'cd "$1" || exit 1; shift; exec "$@"' "xtmux-obs" "$root" "$binary")
   elif command -v bun >/dev/null 2>&1; then
-    OBS_ARGV=("bun" "run" "$root/src/cli.ts")
+    OBS_ARGV=("bash" "-c" 'cd "$1" || exit 1; shift; exec "$@"' "xtmux-obs" "$root" "bun" "run" "$root/src/cli.ts")
   else
     # An npm install ships neither: bin/xtmux-obs is not in package.json `files:`
     # (a compiled 100MB binary per platform is not a tarball), and bun is not a
     # system dependency of a node user. scripts/xtmux-obs.mjs is the launcher for
-    # exactly that case — it resolves the VENDORED bun from the npm dependency.
-    # Without this rung the entire agent-JSON surface is unavailable on the one
-    # install path most users actually take.
+    # exactly that case — it resolves the VENDORED bun from the npm dependency
+    # and restores a valid cwd before spawning it. Without this rung the entire
+    # agent-JSON surface is unavailable on the one install path most users take.
     OBS_ARGV=("node" "$root/scripts/xtmux-obs.mjs")
   fi
 }
@@ -1305,10 +1333,13 @@ message_send() {
   # the UI signal is unchanged.
   obs_v2_mode; local _mode="$REPLY"
   if [ "$_mode" = 'on' ]; then
-    # pane-hint extraction — reproduce Phase 3's same-session ambiguity fix
+    # pane-hint extraction — reproduce Phase 3's same-session ambiguity fix.
+    # Uses target_pane_id (not a raw tmux #{pane_id} lookup): tmux misparses
+    # the `session:%N` shorthand and returns the session's active pane, which
+    # silently dropped the pane suffix on delivery.
     local to_pid='' from_pid=''
-    to_pid="$(tmux display-message -p -t "$to" '#{pane_id}' 2>/dev/null || true)"
-    [ -n "$from" ] && from_pid="$(tmux display-message -p -t "$from" '#{pane_id}' 2>/dev/null || true)"
+    target_pane_id "$to" && to_pid="$REPLY"
+    [ -n "$from" ] && target_pane_id "$from" && from_pid="$REPLY"
     obs_runtime_argv
     local cli_args=(message-send --to "$to_sid" --from "$from_sid" --id "$id" --text "$text")
     [ "$json" = 1 ]         && cli_args+=(--json)
@@ -1330,8 +1361,8 @@ message_send() {
   # $REPLY (event_log_file), so we snapshot mode up-front.
   if [ "$_mode" = 'shadow' ] && obs_available; then
     local to_pid_s='' from_pid_s=''
-    to_pid_s="$(tmux display-message -p -t "$to" '#{pane_id}' 2>/dev/null || true)"
-    [ -n "$from" ] && from_pid_s="$(tmux display-message -p -t "$from" '#{pane_id}' 2>/dev/null || true)"
+    target_pane_id "$to" && to_pid_s="$REPLY"
+    [ -n "$from" ] && target_pane_id "$from" && from_pid_s="$REPLY"
     local shadow_args=(message-send --to "$to_sid" --from "$from_sid" --id "$id" --text "$text")
     [ -n "$bead" ]          && shadow_args+=(--bead "$bead")
     [ -n "$expects_reply" ] && shadow_args+=(--expects-reply "$expects_reply")
