@@ -1501,12 +1501,23 @@ while [ "$i" -le 4 ]; do jf_obs log-emit follow.probe gap="$i" >/dev/null; i=$((
 resume="$(jf_obs log-follow --after-id "$last_id" --once --json)"
 resume_ids="$(printf '%s\n' "$resume" | python3 -c "
 import json,sys
-ids=[json.loads(l)['journal_id'] for l in sys.stdin if l.strip()]
-print(len(ids), ids==sorted(ids), len(ids)==len(set(ids)), min(ids) if ids else 0)" 2>/dev/null)"
+ids=[]; types={}
+for l in sys.stdin:
+    if not l.strip(): continue
+    item=json.loads(l)
+    types[item.get('event_type')]=types.get(item.get('event_type'),0)+1
+    p=item.get('payload')
+    if item.get('event_type')=='follow.probe' and isinstance(p,dict) and 'gap' in p:
+        ids.append(item['journal_id'])
+print(len(ids), ids==sorted(ids), len(ids)==len(set(ids)), min(ids) if ids else 0, ','.join(f'{k}={v}' for k,v in sorted(types.items())))" 2>/dev/null)"
 set -- $resume_ids
+# Filter to the four gap probes: a stray row committed by an unrelated writer
+# between the emit loop and the resume must not break the reconnect contract
+# (zero duplicates, zero gaps, contiguous from the last materialized id). The
+# last field carries the observed event types for diagnosis.
 { [ "$1" = 4 ] && [ "$2" = True ] && [ "$3" = True ] && [ "$4" = "$((last_id + 1))" ]; } \
   && ok "follow: reconnect at the last materialized id — zero duplicates, zero gaps" \
-  || nok "follow: reconnect at the last materialized id (got count=$1 asc=$2 uniq=$3 first=$4 want first=$((last_id + 1)))"
+  || nok "follow: reconnect at the last materialized id (gap probes=$1 asc=$2 uniq=$3 first=$4 want first=$((last_id + 1)) types=$5)"
 
 # A LIVE follower must see rows committed after it started, and must exit 0 on
 # SIGTERM — being killed is the normal way a follower ends, and a non-zero exit
