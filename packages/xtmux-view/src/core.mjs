@@ -114,22 +114,78 @@ export function sanitizeTerminalText(value) {
     .replace(/\r\n?/g, "\n");
 }
 
+// xtmux-it6: a candidate is "substantive" when its text clears this bar;
+// shorter rows are hook acknowledgements ("Acknowledged.") and are collapsed,
+// never used to replace the primary response. Mirrors SUBSTANTIVE_MIN in
+// src/domains/agents/episode.ts (xtmux core) — the two must stay in lockstep.
+export const SUBSTANTIVE_MIN = 200;
+
+function candidateText(candidate) {
+  return String(candidate.lastMessageText ?? candidate.summary ?? "");
+}
+
+/**
+ * Conservative episode projection (the viewer half of the contract): the
+ * first substantive candidate is the primary response, later substantive
+ * candidates are follow-ups, and short hook acknowledgements are collapsed.
+ * With no substantive candidate, the last text-bearing one becomes primary so
+ * a capture that only ever got short text is still visible.
+ */
+export function projectEpisode(episode) {
+  const candidates = episode.candidates ?? [];
+  const substantive = candidates.filter((c) => candidateText(c).length >= SUBSTANTIVE_MIN);
+  const primary = substantive[0]
+    ?? [...candidates].reverse().find((c) => candidateText(c).length > 0)
+    ?? null;
+  const followUps = substantive.slice(1);
+  const collapsed = candidates.filter((c) => c !== primary && !followUps.includes(c));
+  return { ...episode, primary, followUps, collapsed };
+}
+
 function markdownCode(value) {
   return `\`${String(value).replaceAll("`", "\\`")}\``;
 }
 
-export function buildDocument(turn) {
-  const bits = [markdownCode(turn.paneId)];
-  if (turn.runtime) bits.push(`**${String(turn.runtime).replace(/[\r\n]/g, " ")}**`);
-  if (turn.sessionId) bits.push(markdownCode(turn.sessionId));
-  if (turn.beadId) bits.push(`bead ${markdownCode(turn.beadId)}`);
-  const body = sanitizeTerminalText(turn.lastMessageText || turn.summary || "").trim();
-  return `${bits.join(" · ")}\n\n---\n\n${body || "_No assistant text was captured for this turn._"}\n`;
+// The rendered episode body: primary response, then each substantive follow-up
+// as its own section. Short hook acknowledgements appear only as a collapsed
+// footer — they never replace or displace the primary (the Mermaid case: a
+// response holding a diagram survives a later "acknowledged" Stop candidate).
+export function episodeBody(episode) {
+  const sections = [];
+  if (episode.primary) {
+    const body = sanitizeTerminalText(candidateText(episode.primary)).trim();
+    if (body) sections.push(body);
+  }
+  for (const followUp of episode.followUps ?? []) {
+    const body = sanitizeTerminalText(candidateText(followUp)).trim();
+    if (body) sections.push(`## Follow-up\n\n${body}`);
+  }
+  const collapsedCount = (episode.collapsed ?? []).length;
+  if (collapsedCount > 0) {
+    const hints = (episode.collapsed ?? [])
+      .map((c) => candidateText(c).replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .slice(0, 3)
+      .map((text) => `\"${text.slice(0, 80)}\"`);
+    const suffix = collapsedCount > hints.length ? ` (+${collapsedCount - hints.length} more)` : "";
+    sections.push(`_Collapsed: ${collapsedCount} short hook acknowledgement(s)${suffix}${hints.length ? ` — ${hints.join(" · ")}` : ""}_`);
+  }
+  return sections.join("\n\n---\n\n");
 }
 
-export function safeTitle(turn) {
-  const runtime = turn.runtime ? String(turn.runtime) : "agent";
-  return `xtmux · ${turn.paneId} · ${runtime}`
+export function buildDocument(episode) {
+  const bits = [markdownCode(episode.paneId)];
+  const runtime = episode.primary?.runtime || episode.candidates?.[0]?.runtime || null;
+  if (runtime) bits.push(`**${String(runtime).replace(/[\r\n]/g, " ")}**`);
+  if (episode.sessionId) bits.push(markdownCode(episode.sessionId));
+  if (episode.beadId) bits.push(`bead ${markdownCode(episode.beadId)}`);
+  const body = episodeBody(episode);
+  return `${bits.join(" · ")}\n\n---\n\n${body || "_No assistant text was captured for this episode._"}\n`;
+}
+
+export function safeTitle(episode) {
+  const runtime = episode.primary?.runtime || episode.candidates?.[0]?.runtime || "agent";
+  return `xtmux · ${episode.paneId} · ${runtime}`
     .replace(/[\x00-\x1f\x7f]/g, " ")
     .slice(0, 120);
 }

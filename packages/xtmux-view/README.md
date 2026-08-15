@@ -11,8 +11,8 @@ Claude / Pi / Codex
         │
         │ existing xtmux hooks/extensions
         ▼
-agent_turns.last_message_text
-        │
+agent_episodes + agent_turns.episode_id
+        │ (response episodes: one user prompt + all continuations)
         │ one read-only SQLite query
         ▼
 @jaggerxtrm/xtmux-view
@@ -28,7 +28,7 @@ The package does **not** use `capture-pane`, scrape ANSI output, mutate the xtmu
 
 ## Requirements
 
-- xtmux with full assistant-turn capture (`agent_turns.last_message_text`; targeted for xtmux v0.3.0)
+- xtmux with response-episode capture (`agent_episodes` + `agent_turns.episode_id`, migration 0014; targeted for xtmux v0.3.0). Against an older schema the viewer degrades to the previous single-row read.
 - Bun
 - tmux for popup mode
 - [Glow](https://github.com/charmbracelet/glow) >= 2.1.0 for rich Markdown rendering (`--tui`)
@@ -64,7 +64,7 @@ From an xtmux-managed Claude, Pi, or Codex pane:
 xtmux-view
 ```
 
-This opens the latest completed assistant turn in a tmux popup while the underlying TUI remains untouched.
+This opens the latest completed response episode in a tmux popup while the underlying TUI remains untouched.
 
 Target another pane or stable session explicitly:
 
@@ -103,11 +103,17 @@ XTMUX_VIEW_GLOW_STYLE=dark
 
 ## Runtime behavior
 
-`xtmux-view` always reads the latest completed turn for a canonical `%pane` or `$session` id. Pane ids remain visible in the rendered document because they are operational handles for multiplexing and inter-agent communication.
+`xtmux-view` always reads the **latest response episode** for a canonical `%pane` or `$session` id. An episode is one user prompt plus all Claude continuations caused before control returns to the operator (Stop-hook block follow-ups); its `agent_turns` rows are candidates. The rendered document is conservative by contract:
+
+- the first substantive candidate is the **primary response**;
+- later substantive candidates render as **follow-up** sections;
+- short hook acknowledgements ("Acknowledged.") are **collapsed** into a footer and never replace the primary — a response holding a Mermaid diagram survives a later short Stop candidate.
+
+Pane ids remain visible in the rendered document because they are operational handles for multiplexing and inter-agent communication.
 
 The package uses the existing unified xtmux turn capture:
 
-- Claude Code: Stop hook parses the structured transcript and stores the full assistant text.
+- Claude Code: UserPromptSubmit hook opens the episode; the Stop hook stores each turn's full assistant text as a candidate (`last_assistant_message` preferred, transcript fallback).
 - Pi: native extension publishes the full assistant turn at `agent_end`.
 - Codex: lifecycle hook publishes the full assistant turn.
 
@@ -121,4 +127,4 @@ The normal path performs one indexed SQLite read plus one Glow TUI process. It d
 
 ## Scope
 
-v0.1 intentionally provides only the last completed turn. Future work can add transcript navigation and follow mode while preserving the same read-only boundary. Mermaid blocks remain Markdown source unless the selected renderer gains a terminal-safe Mermaid backend; this package does not rasterize them in v0.1.
+v0.1 renders the latest response episode only. Future work can add transcript navigation and follow mode while preserving the same read-only boundary. Mermaid blocks remain Markdown source unless the selected renderer gains a terminal-safe Mermaid backend; this package does not rasterize them in v0.1.
