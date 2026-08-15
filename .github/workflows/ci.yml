@@ -17,6 +17,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun test
+      - run: node --test packages/xtmux-view/test/*.test.mjs
       - run: bun run test:installer
       - run: bun run typecheck
 
