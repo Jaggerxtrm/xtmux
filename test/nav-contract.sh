@@ -530,7 +530,7 @@ require_fn nav_session_card "renderer: session hierarchy card exists" && {
   _plain="$(_strip_nav_ansi "$REPLY")"
   _line1="$(printf '%s\n' "$_plain" | sed -n '1p')"
   _line2="$(printf '%s\n' "$_plain" | sed -n '2p')"
-  case "$_line1" in '▎ alpha  12m  ATTN WAIT') ok "renderer: age and state stay adjacent to session identity" ;; *) nok "renderer: age and state stay adjacent to session identity" ;; esac
+  case "$_line1" in '▎ alpha  12m  attn wait') ok "renderer: age and state stay adjacent to session identity" ;; *) nok "renderer: age and state stay adjacent to session identity" ;; esac
   assert_eq "renderer: repo and branch form the only default context line" '    core · nav sidebar redesign' "$_line2"
 }
 _nav_nows() { printf '%s' "$1" | tr -d '\n[:space:]'; }
@@ -538,19 +538,19 @@ require_fn nav_pane_card "renderer: pane hierarchy row exists" && {
   XTMUX_NAV_WIDTH=60 nav_pane_card '└' '%42' claude running 'session:nav-redesign' running multi
   _plain="$(_strip_nav_ansi "$REPLY")"
   case "$_plain" in *$'\n'*) nok "renderer: pane metadata stays on one bounded line" ;; *) ok "renderer: pane metadata stays on one bounded line" ;; esac
-  case "$_plain" in *'%42'*'claude  session:nav-redesign  ACTIVE  RUN') ok "renderer: pane metadata stays adjacent instead of at the clipped edge" ;; *) nok "renderer: pane metadata stays adjacent instead of at the clipped edge" ;; esac
+  case "$_plain" in *'%42'*'claude  session:nav-redesign  active  run') ok "renderer: pane metadata stays adjacent instead of at the clipped edge" ;; *) nok "renderer: pane metadata stays adjacent instead of at the clipped edge" ;; esac
   XTMUX_NAV_WIDTH=32 nav_pane_card '└' '%1234' prime-agent done '' done multi
   _plain="$(_strip_nav_ansi "$REPLY")"
   _over=0
   while IFS= read -r _vl; do [ "${#_vl}" -le 32 ] || _over=1; done <<< "$_plain"
   [ "$_over" -eq 0 ] && ok "renderer: every pane line fits the minimum drawer width" || nok "renderer: every pane line fits the minimum drawer width"
-  case "$(printf '%s' "$_plain" | tr -d '[:space:]')" in *'└%1234prime-agentOTHERDONE'*) ok "renderer: full runtime text survives at minimum width" ;; *) nok "renderer: full runtime text survives at minimum width" ;; esac
+  case "$(printf '%s' "$_plain" | tr -d '[:space:]')" in *'└%1234prime-agentotherdone'*) ok "renderer: full runtime text survives at minimum width" ;; *) nok "renderer: full runtime text survives at minimum width" ;; esac
   XTMUX_NAV_WIDTH=24 nav_pane_card '└' '%1234' prime-agent done 'a-very-long-task-name-here' done multi
   _plain="$(_strip_nav_ansi "$REPLY")"
   _over=0
   while IFS= read -r _vl; do [ "${#_vl}" -le 24 ] || _over=1; done <<< "$_plain"
   [ "$_over" -eq 0 ] && ok "renderer: narrow physical drawer wraps within usable width" || nok "renderer: narrow physical drawer wraps within usable width"
-  case "$(printf '%s' "$_plain" | tr -d '[:space:]')" in *'└%1234prime-agentO/DONEa-very-long-task-name-here'*) ok "renderer: narrow row keeps every character and compact state" ;; *) nok "renderer: narrow row keeps every character and compact state" ;; esac
+  case "$(printf '%s' "$_plain" | tr -d '[:space:]')" in *'└%1234prime-agento/donea-very-long-task-name-here'*) ok "renderer: narrow row keeps every character and compact state" ;; *) nok "renderer: narrow row keeps every character and compact state" ;; esac
 }
 require_fn nav_session_card "renderer: session wrap coverage exists" && {
   XTMUX_NAV_WIDTH=32 nav_session_card ' ' 'an-extremely-long-session-name-that-must-wrap' running '2m' 'a-long-repo-name · a very long humanized branch description' multi
@@ -693,7 +693,7 @@ while IFS= read -r -d '' _record; do
   _plain="$(_strip_nav_ansi "$_display")"
   if [ "$_type" = session ]; then _group_order+="${_group_order:+ }$_name"; _group_text+="$_plain"$'\n'; fi
   case "$_name:$_plain" in
-    stale-session:*ATTN*|wait-session:*ATTN*|run-session:*ACTIVE*|done-session:*OTHER*|idle-session:*OTHER*) ;;
+    stale-session:*attn*|wait-session:*attn*|run-session:*active*|done-session:*other*|idle-session:*other*) ;;
     *) _durable_groups=0 ;;
   esac
   case "$_plain" in *"$WORK"*|*'/secret'*|*'none'*) _path_leak=1 ;; esac

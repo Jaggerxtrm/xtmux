@@ -2869,11 +2869,11 @@ nav_pane_context() {
 
 nav_state_label() {
   case "$1" in
-    stale) REPLY='STALE' ;;
-    needs-input|wait) REPLY='WAIT' ;;
-    running|run) REPLY='RUN' ;;
-    done) REPLY='DONE' ;;
-    idle) REPLY='IDLE' ;;
+    stale) REPLY='stale' ;;
+    needs-input|wait) REPLY='wait' ;;
+    running|run) REPLY='run' ;;
+    done) REPLY='done' ;;
+    idle) REPLY='idle' ;;
     *) REPLY='' ;;
   esac
 }
@@ -2883,18 +2883,18 @@ nav_state_label() {
 nav_style() {
   local role="$1" text="${2:-}" code
   case "$role" in
-    session) code='1;38;2;240;242;243' ;;
-    pane-id) code='1;38;2;215;219;221' ;;
+    session) code='38;2;240;242;243' ;;
+    pane-id) code='38;2;215;219;221' ;;
     runtime) code='38;2;159;168;171' ;;
     context|task) code='38;2;133;141;145' ;;
     section) code='38;2;101;112;117' ;;
     age) code='38;2;133;141;145' ;;
     stale) code='38;2;216;141;141' ;;
-    needs-input|wait) code='1;38;2;232;200;120' ;;
-    running|run) code='1;38;2;143;205;160' ;;
+    needs-input|wait) code='38;2;232;200;120' ;;
+    running|run) code='38;2;143;205;160' ;;
     done) code='38;2;141;169;199' ;;
     idle) code='38;2;120;130;135' ;;
-    current) code='1;38;2;240;242;243' ;;
+    current) code='38;2;240;242;243' ;;
     *) REPLY="$text"; return 0 ;;
   esac
   REPLY=$'\033['"$code"'m'"$text"$'\033[0m'
@@ -2902,9 +2902,9 @@ nav_style() {
 
 nav_group_label() {
   case "$1" in
-    stale|needs-input|wait) REPLY='ATTN' ;;
-    running|run) REPLY='ACTIVE' ;;
-    *) REPLY='OTHER' ;;
+    stale|needs-input|wait) REPLY='attn' ;;
+    running|run) REPLY='active' ;;
+    *) REPLY='other' ;;
   esac
 }
 
@@ -2921,7 +2921,7 @@ nav_session_card() {
   nav_state_label "$state"; exact="$REPLY"
   nav_card_width; w="$REPLY"
   if [ "$w" -lt 32 ]; then
-    case "$group" in ATTN) group='A' ;; ACTIVE) group='R' ;; *) group='O' ;; esac
+    case "$group" in attn) group='a' ;; active) group='r' ;; *) group='o' ;; esac
     label="$group${exact:+/$exact}"
   else
     label="$group${exact:+ $exact}"
@@ -2990,7 +2990,7 @@ nav_pane_card() {
   nav_group_label "$session_state"; group="$REPLY"
   nav_card_width; w="$REPLY"
   if [ "$w" -lt 32 ]; then
-    case "$group" in ATTN) group='A' ;; ACTIVE) group='R' ;; *) group='O' ;; esac
+    case "$group" in attn) group='a' ;; active) group='r' ;; *) group='o' ;; esac
     group="$group${label:+/$label}"; label=''; indent=''; runtime_sep=' '; sep=' '
     suffix="$sep$group"
     base="$indent$branch $pane$runtime_sep"
@@ -3313,19 +3313,19 @@ pick_nav() {
     --multi \
     --header=' xtmux nav · state groups · type to filter ' \
     --header-first \
-    --prompt='all› ' \
-    --pointer='›' \
+    --prompt='all> ' \
+    --pointer='>' \
     --marker='✓ ' \
     --info=inline-right \
-    --color='fg:#d7dbdd,bg:#101213,hl:#f0f2f3,fg+:#f0f2f3,bg+:#202426,hl+:#ffffff,info:#858d91,prompt:#b6bec1,pointer:#f0f2f3,marker:#c7cdcf,header:#657075,label:#858d91,border:#34393c,gutter:#101213,preview-bg:#101213' \
+    --color='fg:#b8bcc0,bg:-1,hl:#ffffff,fg+:#ffffff,bg+:#222222,hl+:#ffffff,info:#8a8f94,prompt:#8a8f94,pointer:#c6cacf,marker:#c6cacf,label:#8a8f94,border:#303030,gutter:-1' \
     --preview-window="$inspector" \
     --bind="load:pos($pos)+transform-prompt($self_q prompt-label nav)+transform-border-label($self_q nav-border-label)" \
     --bind="ctrl-/:toggle-preview" \
     --bind="?:change-preview($self_q nav-key-help)+show-preview" \
     --bind="ctrl-r:reload-sync(TMUX_PICKER_NO_CACHE=1 $lactive)+track-current" \
-    --bind="ctrl-a:execute-silent($self_q filter-preset all)+change-prompt(all› )+reload-sync($lall)+track-current" \
-    --bind="ctrl-w:execute-silent($self_q filter-preset waiting)+change-prompt(wait› )+reload-sync($lwait)+track-current" \
-    --bind="ctrl-e:execute-silent($self_q filter-preset running)+change-prompt(run› )+reload-sync($lrun)+track-current" \
+    --bind="ctrl-a:execute-silent($self_q filter-preset all)+change-prompt(all> )+reload-sync($lall)+track-current" \
+    --bind="ctrl-w:execute-silent($self_q filter-preset waiting)+change-prompt(wait> )+reload-sync($lwait)+track-current" \
+    --bind="ctrl-e:execute-silent($self_q filter-preset running)+change-prompt(run> )+reload-sync($lrun)+track-current" \
     --bind="ctrl-f:execute($self_q filter-menu)+reload-sync($lactive)+track-current+transform-prompt($self_q prompt-label nav)" \
     --bind="tab:execute($self_q mode-toggle)+reload-sync($lactive)+track-current+transform-prompt($self_q prompt-label nav)+transform-border-label($self_q nav-border-label)" \
     --bind="space:toggle+down" \
@@ -5628,11 +5628,7 @@ case "${1:-}" in
     _style="${1:-classic}"
     picker_state_read filter || true
     _spec="$REPLY"
-    if [ "$_style" = nav ]; then
-      if [ -n "$_spec" ]; then printf '%s› ' "$_spec"; else printf 'all› '; fi
-    else
-      if [ -n "$_spec" ]; then printf '%s> ' "$_spec"; else printf 'all> '; fi
-    fi
+    if [ -n "$_spec" ]; then printf '%s> ' "$_spec"; else printf 'all> '; fi
     exit 0
     ;;
   install-hooks)

@@ -52,16 +52,16 @@ Expanded drawer:
  xtmux nav · state groups · type to filter
  all›
 
-   xtmux-ui                  2m  ATTN WAIT
+   xtmux-ui                  2m  attn wait
      xtmux · nav sidebar · +2
-     ├ %17  claude  picker UX  ATTN WAIT
-     └ %19  shell             ATTN
->▎ sp-reviewer-a91f         <1m  ACTIVE RUN
+     ├ %17  claude  picker UX  attn wait
+     └ %19  shell             attn
+>▎ sp-reviewer-a91f         <1m  active run
      specialists · nav review
-     └ %23  pi  reviewer     ACTIVE RUN
-   quant                    18m  OTHER IDLE
+     └ %23  pi  reviewer     active run
+   quant                    18m  other idle
      quant · main
-     └ %31  shell             OTHER IDLE
+     └ %31  shell             other idle
 
  ─ ↵ open · Tab panes · ^/ details · ? help
 ```
@@ -70,10 +70,10 @@ Compact view:
 
 ```text
 ╭─ xtmux ─ compact ───────────────────────╮
-│ > ▎ xtmux-ui              ATTN WAIT    │
-│     quant                 OTHER IDLE   │
-│     market-data           ACTIVE RUN  │
-│     sp-reviewer-a91f      ACTIVE RUN  │
+│ > ▎ xtmux-ui              attn wait    │
+│     quant                 other idle   │
+│     market-data           active run  │
+│     sp-reviewer-a91f      active run  │
 ╰──────────────────────────────────────────╯
 ```
 
@@ -141,7 +141,7 @@ Am I already there?
 Display:
 
 ```text
-▎ xtmux-ui                    ATTN WAIT
+▎ xtmux-ui                    attn wait
 ```
 
 Candidate tokens:
