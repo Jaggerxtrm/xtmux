@@ -204,7 +204,7 @@ Sidebar/drawer appearance is achieved through tmux popup geometry.
 Conceptual binding:
 
 ```tmux
-bind s display-popup -E -x 0 -y 0 -w 52% -h 100% "XTMUX_NAV_WIDTH=#{e|-:#{e|*|f|0:#{client_width},0.52},4} $HOME/.local/bin/xtmux nav"
+bind s display-popup -E -x 0 -y 0 -w 52% -h 100% 'XTMUX_NAV_WIDTH=$(tput cols) $HOME/.local/bin/xtmux nav'
 ```
 
 This syntax was verified with tmux 3.5a. Practical widths are about 40% on a
@@ -215,18 +215,19 @@ selects it without changing runtime behavior.
 
 ## Decision 8 — Drawer information hierarchy is intentionally sparse
 
-A session should normally render as:
+`../mockups/xtmux-nav-sidebar-target.html` is the visual-direction reference, not
+an implementation technology. Sessions are grouped as needs-attention, active,
+then other. A session normally renders as:
 
 ```text
-▶ xtmux-ui                         [wait]
-  xtmux · feat/nav-sidebar · +2 · 2m
+▎ xtmux-ui                         2m  WAIT
+    xtmux · feat/nav-sidebar · +2
 ```
 
-Expanded child panes may render as:
+Each expanded child pane uses one bounded line and keeps its operational id visible:
 
 ```text
-  ├─ %17 claude                    [wait]
-  │  xtmux-nav.2 · sidebar picker
+    └ %17  claude  sidebar picker      WAIT
 ```
 
 The primary list should not display every known metadata field.
@@ -238,8 +239,8 @@ Full paths, prompt files, parent identity, timestamps, pane geometry, long task 
 The navigator shows both:
 
 ```text
-▶ current tmux target
-> current fzf selection
+▎ current tmux target
+› current fzf selection
 ```
 
 The current target should be derived from live invocation identity, preferably `TMUX_PANE` plus the already-collected pane inventory.
@@ -259,9 +260,8 @@ terminal capture
 
 rather than concatenate all metadata onto one line.
 
-Drawer mode prefers a bottom inspector.
-
-Classic mode may retain the right-side inspector.
+Drawer mode provides a bottom inspector, hidden until the explicit `Ctrl-/`
+details toggle. Classic mode may retain the right-side inspector.
 
 ## Decision 11 — Live state freshness is non-negotiable
 

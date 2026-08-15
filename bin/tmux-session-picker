@@ -2727,7 +2727,7 @@ fzf_multiline_probe() {
   fi
 }
 
-# ── NAV-2: bounded two-line cards + launcher routing (xtmux-rib.24) ───────
+# ── NAV-2/5: bounded hierarchy cards + launcher routing ─────────────────
 # Cards are built from the SAME inventory build_list already collected: no new
 # git/tmux/process queries. Free-text fields are sanitized at tmux emission, so
 # the only newline a display can contain is the structural card break below.
@@ -2772,135 +2772,167 @@ attn_state_name() {
   esac
 }
 
-# nav_session_context <root> <root_status> <age-plain> <shared-wt> -> REPLY
-# repo · branch · dirty-flags · age (each token only when known; no ANSI).
-# The status format is "REPO icon BRANCH [flags] icon path" from the cached
-# git-status script; flags are the +N ~N ?N tokens between branch and path.
+# nav_session_context <group-root> <root-status> <age> <shared-wt> -> REPLY
+# The default row keeps only repo, branch, terse dirty flags, and shared status.
+# Age belongs on the primary line; paths and other debug metadata stay in details.
 nav_session_context() {
-  local root="${1:-}" root_status="${2:-}" age="${3:-}" shared="${4:-}"
-  local repo branch flags rest out
-  repo=''
+  local root="${1:-}" root_status="${2:-}" shared="${4:-}"
+  local repo branch flags rest out=''
   if [ -n "$root" ]; then
     repo="${root##*/}"
     branch_from_root_status "$root_status"; branch="$REPLY"
     rest="${root_status#* }"; rest="${rest#* }"; rest="${rest#* }"
     flags=''
-    case "$rest" in
-      *'  '*) flags="${rest%%  *}" ;;
-    esac
+    case "$rest" in *'  '*) flags="${rest%%  *}" ;; esac
     out="$repo"
     [ -n "$branch" ] && out+=" · $branch"
     [ -n "$flags" ] && out+=" · $flags"
-  else
-    out=''
   fi
-  if [ -n "$age" ]; then
+  if [ "$shared" = 1 ]; then
     [ -n "$out" ] && out+=" · "
-    out+="$age"
+    out+='shared'
   fi
-  [ "$shared" = 1 ] && out+=" · shared-wt"
   REPLY="$out"
 }
 
 # nav_pane_context <bead> <task> <pane-path> <root> -> REPLY
-# bead · task when present; otherwise a bounded path hint (never a query).
+# Prefer the human task, then the bead id. Paths are details-only.
 nav_pane_context() {
-  local bead="${1:-}" task="${2:-}" pane_path="${3:-}" root="${4:-}" rel out
+  local bead="${1:-}" task="${2:-}"
   agent_meta_value "$bead"; bead="$REPLY"
   agent_meta_value "$task"; task="$REPLY"
-  out=''
-  [ -n "$bead" ] && out="$bead"
-  if [ -n "$task" ]; then
-    [ -n "$out" ] && out+=" · "
-    out+="$task"
-  fi
-  if [ -z "$out" ]; then
-    relative_hint "$pane_path" "$root"; rel="$REPLY"
-    if [ -n "$rel" ]; then
-      out="$rel"
-    else
-      short_path "$pane_path"; out="$REPLY"
-    fi
-  fi
-  REPLY="$out"
+  REPLY="${task:-$bead}"
 }
 
-# nav_session_card <marker> <name> <state> <context> <lines> [preamble] -> REPLY
-# Multi-line: line 1 = marker + name + right-aligned [state] at the card width;
-# line 2 = bounded context (indented). Single-line: one bounded line that keeps
-# marker/name/state first and appends as much context as fits. Preamble (the
-# specialists section label) becomes its own top line in multi-line mode.
+nav_state_label() {
+  case "$1" in
+    stale) REPLY='STALE' ;;
+    needs-input|wait) REPLY='WAIT' ;;
+    running|run) REPLY='RUN' ;;
+    done) REPLY='DONE' ;;
+    idle) REPLY='IDLE' ;;
+    *) REPLY='' ;;
+  esac
+}
+
+# nav_style <role> <text> -> REPLY. Truecolor is presentation-only and is
+# applied after width calculation so ANSI bytes never affect truncation.
+nav_style() {
+  local role="$1" text="${2:-}" code
+  case "$role" in
+    session) code='1;38;2;240;242;243' ;;
+    pane-id) code='1;38;2;215;219;221' ;;
+    runtime) code='38;2;159;168;171' ;;
+    context|task) code='38;2;133;141;145' ;;
+    section) code='38;2;101;112;117' ;;
+    age) code='38;2;133;141;145' ;;
+    stale) code='38;2;216;141;141' ;;
+    needs-input|wait) code='1;38;2;232;200;120' ;;
+    running|run) code='1;38;2;143;205;160' ;;
+    done) code='38;2;141;169;199' ;;
+    idle) code='38;2;120;130;135' ;;
+    current) code='1;38;2;240;242;243' ;;
+    *) REPLY="$text"; return 0 ;;
+  esac
+  REPLY=$'\033['"$code"'m'"$text"$'\033[0m'
+}
+
+nav_section_line() {
+  local label="$1" width="$2" rule n
+  label="${label^^}"
+  n=$(( width - ${#label} - 1 )); [ "$n" -lt 0 ] && n=0
+  printf -v rule '%*s' "$n" ''
+  rule="${rule// /─}"
+  nav_style section "$label${rule:+ $rule}"
+}
+
+# nav_session_card <marker> <name> <state> <age> <context> <lines> [section]
+# Default hierarchy: identity + age + state, then one bounded repo/branch line.
 nav_session_card() {
-  local marker="${1:- }" name="$2" state="$3" context="$4" lines="${5:-multi}" preamble="${6:-}" w
-  local state_tag='' head name_budget l2
+  local marker="${1:- }" name="$2" state="$3" age="$4" context="$5" lines="${6:-multi}" section="${7:-}" w
+  local label suffix prefix name_budget gap head body marker_styled name_styled age_styled state_styled context_styled section_styled
   nav_text_clean "$name"; name="$REPLY"
+  nav_text_clean "$age"; age="$REPLY"
   nav_text_clean "$context"; context="$REPLY"
-  nav_text_clean "$preamble"; preamble="$REPLY"
+  nav_text_clean "$section"; section="$REPLY"
+  nav_state_label "$state"; label="$REPLY"
   nav_card_width; w="$REPLY"
-  [ -n "$state" ] && state_tag="[$state]"
-  name_budget=$(( w - ${#marker} - 1 - ${#state_tag} - 1 ))
+  suffix=''
+  [ -n "$age" ] && suffix="$age"
+  [ -n "$label" ] && suffix+="${suffix:+  }$label"
+  prefix="$marker "
+  name_budget=$(( w - ${#prefix} - ${#suffix} - 1 ))
   [ "$name_budget" -lt 1 ] && name_budget=1
   fit_width "$name" "$name_budget"; name="$REPLY"
+
   if [ "$lines" = single ]; then
-    head="$marker $name"
-    [ -n "$state_tag" ] && head+=" $state_tag"
+    head="$prefix$name${suffix:+  $suffix}"
     local rest=$(( w - ${#head} - 3 ))
     if [ -n "$context" ] && [ "$rest" -ge 4 ]; then
       fit_width "$context" "$rest"; context="$REPLY"
-      REPLY="$head · $context"
-    else
-      REPLY="$head"
+      head+=" · $context"
     fi
+    fit_width "$head" "$w"; REPLY="$REPLY"
     return 0
   fi
-  printf -v head '%s %-*s%s' "$marker" "$name_budget" "$name" "$state_tag"
-  l2=''
+
+  gap=$(( w - ${#prefix} - ${#name} - ${#suffix} ))
+  [ "$gap" -lt 1 ] && gap=1
+  printf -v gap '%*s' "$gap" ''
+  nav_style current "$marker"; marker_styled="$REPLY"
+  nav_style session "$name"; name_styled="$REPLY"
+  nav_style age "$age"; age_styled="$REPLY"
+  nav_style "$state" "$label"; state_styled="$REPLY"
+  head="$marker_styled $name_styled$gap"
+  [ -n "$age" ] && head+="$age_styled"
+  [ -n "$age" ] && [ -n "$label" ] && head+='  '
+  [ -n "$label" ] && head+="$state_styled"
+
+  body="$head"
   if [ -n "$context" ]; then
-    fit_width "$context" $(( w - 2 )); context="$REPLY"
-    l2="  $context"
+    fit_width "$context" $(( w - 4 )); context="$REPLY"
+    nav_style context "$context"; context_styled="$REPLY"
+    body+=$'\n'"    $context_styled"
   fi
-  if [ -n "$preamble" ]; then
-    fit_width "$preamble" "$w"; preamble="$REPLY"
-    REPLY="$preamble"$'\n'"$head"$'\n'"$l2"
-  else
-    REPLY="$head"$'\n'"$l2"
+  REPLY="$body"
+  if [ -n "$section" ]; then
+    body="$REPLY"
+    nav_section_line "$section" "$w"; section_styled="$REPLY"
+    REPLY="$section_styled"$'\n'"$body"
   fi
+  return 0
 }
 
-# nav_pane_card <pane-id> <runtime> <state> <context> <lines> -> REPLY
-# Multi-line: `├─ pane runtime [state]` with state right-aligned; second line
-# `│  context`. Single-line: one bounded line, pane/runtime/state first.
+# nav_pane_card <branch> <pane-id> <runtime> <state> <task> <lines> -> REPLY
+# Pane id, runtime, task and state share one bounded row in every nav mode.
 nav_pane_card() {
-  local pane="$1" runtime="$2" state="$3" context="$4" lines="${5:-multi}" w
-  local state_tag='' prefix runtime_budget l1 l2
+  local branch="$1" pane="$2" runtime="$3" state="$4" task="$5" w label prefix suffix task_budget gap
+  local branch_styled pane_styled runtime_styled task_styled state_styled
   nav_text_clean "$runtime"; runtime="$REPLY"
-  nav_text_clean "$context"; context="$REPLY"
+  nav_text_clean "$task"; task="$REPLY"
+  nav_state_label "$state"; label="$REPLY"
   nav_card_width; w="$REPLY"
-  [ -n "$state" ] && state_tag="[$state]"
-  prefix="├─ $pane "
-  runtime_budget=$(( w - ${#prefix} - ${#state_tag} - 1 ))
-  [ "$runtime_budget" -lt 1 ] && runtime_budget=1
-  fit_width "$runtime" "$runtime_budget"; runtime="$REPLY"
-  if [ "$lines" = single ]; then
-    local head rest
-    head="$prefix$runtime"
-    [ -n "$state_tag" ] && head+=" $state_tag"
-    rest=$(( w - ${#head} - 3 ))
-    if [ -n "$context" ] && [ "$rest" -ge 4 ]; then
-      fit_width "$context" "$rest"; context="$REPLY"
-      REPLY="$head · $context"
-    else
-      REPLY="$head"
-    fi
-    return 0
-  fi
-  printf -v l1 '%s%-*s%s' "$prefix" "$runtime_budget" "$runtime" "$state_tag"
-  l2=''
-  if [ -n "$context" ]; then
-    fit_width "$context" $(( w - 2 )); context="$REPLY"
-    l2="│  $context"
-  fi
-  REPLY="$l1"$'\n'"$l2"
+  fit_width "$runtime" 11; runtime="$REPLY"
+  prefix="    $branch $pane  $runtime"
+  suffix="${label:+  $label}"
+  task_budget=$(( w - ${#prefix} - ${#suffix} - 2 ))
+  [ "$task_budget" -lt 0 ] && task_budget=0
+  fit_width "$task" "$task_budget"; task="$REPLY"
+  gap=$(( w - ${#prefix} - ${#suffix} - ${#task} ))
+  [ -n "$task" ] && gap=$((gap - 2))
+  [ "$gap" -lt 0 ] && gap=0
+  printf -v gap '%*s' "$gap" ''
+
+  nav_style section "$branch"; branch_styled="$REPLY"
+  nav_style pane-id "$pane"; pane_styled="$REPLY"
+  nav_style runtime "$runtime"; runtime_styled="$REPLY"
+  nav_style task "$task"; task_styled="$REPLY"
+  nav_style "$state" "$label"; state_styled="$REPLY"
+  REPLY="    $branch_styled $pane_styled  $runtime_styled"
+  [ -n "$task" ] && REPLY+="  $task_styled"
+  REPLY+="$gap"
+  [ -n "$label" ] && REPLY+="  $state_styled"
+  return 0
 }
 
 # nav_route -> REPLY=classic|multiline|oneline. Maps the capability probe onto
@@ -2963,8 +2995,8 @@ nav_act() {
 nav_border_label() {
   read_list_mode
   case "$REPLY" in
-    sessions-only) printf '%s' ' nav compact · Enter go · Tab expand · ^/ inspect · ? help ' ;;
-    *) printf '%s' ' nav expanded · Enter go · Tab compact · ^/ inspect · ? help ' ;;
+    sessions-only) printf '%s' ' ↵ open · Tab panes · ^/ details · ? help · compact ' ;;
+    *) printf '%s' ' ↵ open · Tab panes · ^/ details · ? help · expanded ' ;;
   esac
 }
 
@@ -3069,7 +3101,7 @@ pick_classic() {
 }
 
 # pick_nav — the drawer launcher for bare `xtmux nav`. Routes on the capability
-# probe: multiline -> NUL two-line cards; oneline -> NUL one-line cards (same
+# probe: multiline -> NUL hierarchy cards; oneline -> NUL one-line cards (same
 # hidden token architecture); classic -> the classic launcher.
 # XTMUX_NAV_LAYOUT=classic forces the classic launcher. fzf runs --track with
 # reload-sync+track-current binds (probe-proven); the footer is the short ADR
@@ -3092,8 +3124,8 @@ pick_nav() {
       return $?
       ;;
   esac
-  local footer=' Enter go · Tab compact/expand · ^/ inspect · ? help '
-  local inspector='bottom,7,border-top,wrap,follow'
+  local footer=' ↵ open · Tab panes · ^/ details · ? help '
+  local inspector='hidden,bottom,7,border-top,wrap,follow'
   local inspector_max='bottom,50%,border-top,wrap,follow'
   local lall lwait lrun lactive self_q
   printf -v self_q '%q' "$self"
@@ -3124,7 +3156,7 @@ pick_nav() {
       IFS=$'\t' read -r type sid name target token _ <<< "$record"
       prefix="$type"$'\t'"$sid"$'\t'"$name"$'\t'"$target"$'\t'"$token"$'\t'
       display="${record#"$prefix"}"
-      case "$display" in '▶ '*|*$'\n''▶ '*) pos="$index"; break ;; esac
+      case "$display" in '▎ '*|*$'\n''▎ '*) pos="$index"; break ;; esac
     done < "$initial_file"
     fzf \
     --ansi \
@@ -3141,21 +3173,23 @@ pick_nav() {
     --cycle \
     --no-bold \
     --multi \
-    --prompt='all> ' \
-    --pointer='>' \
+    --header=' xtmux nav · state groups · type to filter ' \
+    --header-first \
+    --prompt='all› ' \
+    --pointer='›' \
     --marker='✓ ' \
     --info=inline-right \
-    --color='fg:#b8bcc0,bg:-1,hl:#ffffff,fg+:#ffffff,bg+:#222222,hl+:#ffffff,info:#8a8f94,prompt:#8a8f94,pointer:#c6cacf,marker:#c6cacf,label:#8a8f94,border:#303030,gutter:-1' \
+    --color='fg:#d7dbdd,bg:#101213,hl:#f0f2f3,fg+:#f0f2f3,bg+:#202426,hl+:#ffffff,info:#858d91,prompt:#b6bec1,pointer:#f0f2f3,marker:#c7cdcf,header:#657075,label:#858d91,border:#34393c,gutter:#101213,preview-bg:#101213' \
     --preview-window="$inspector" \
-    --bind="load:pos($pos)+transform-prompt($self_q prompt-label)+transform-border-label($self_q nav-border-label)" \
+    --bind="load:pos($pos)+transform-prompt($self_q prompt-label nav)+transform-border-label($self_q nav-border-label)" \
     --bind="ctrl-/:toggle-preview" \
-    --bind="?:change-preview($self_q nav-key-help)" \
+    --bind="?:change-preview($self_q nav-key-help)+show-preview" \
     --bind="ctrl-r:reload-sync(TMUX_PICKER_NO_CACHE=1 $lactive)+track-current" \
-    --bind="ctrl-a:execute-silent($self_q filter-preset all)+change-prompt(all> )+reload-sync($lall)+track-current" \
-    --bind="ctrl-w:execute-silent($self_q filter-preset waiting)+change-prompt(wait> )+reload-sync($lwait)+track-current" \
-    --bind="ctrl-e:execute-silent($self_q filter-preset running)+change-prompt(run> )+reload-sync($lrun)+track-current" \
-    --bind="ctrl-f:execute($self_q filter-menu)+reload-sync($lactive)+track-current+transform-prompt($self_q prompt-label)" \
-    --bind="tab:execute($self_q mode-toggle)+reload-sync($lactive)+track-current+transform-prompt($self_q prompt-label)+transform-border-label($self_q nav-border-label)" \
+    --bind="ctrl-a:execute-silent($self_q filter-preset all)+change-prompt(all› )+reload-sync($lall)+track-current" \
+    --bind="ctrl-w:execute-silent($self_q filter-preset waiting)+change-prompt(wait› )+reload-sync($lwait)+track-current" \
+    --bind="ctrl-e:execute-silent($self_q filter-preset running)+change-prompt(run› )+reload-sync($lrun)+track-current" \
+    --bind="ctrl-f:execute($self_q filter-menu)+reload-sync($lactive)+track-current+transform-prompt($self_q prompt-label nav)" \
+    --bind="tab:execute($self_q mode-toggle)+reload-sync($lactive)+track-current+transform-prompt($self_q prompt-label nav)+transform-border-label($self_q nav-border-label)" \
     --bind="space:toggle+down" \
     --bind="alt-p:change-preview-window($inspector_max|$inspector)" \
     --bind="enter:become($self_q nav-go {5})" \
@@ -3293,15 +3327,15 @@ cmd_filter_menu() {
 # emit: tsv (default, public five-field newline TSV) | nav (private
 # six-field NUL-delimited records: type<TAB>sid<TAB>name<TAB>target
 # <TAB>token<TAB>display<NUL>; token is s:$N / p:$N:%N)
-# lines: multi (default, two-line cards) | single (bounded one-line cards,
+# lines: multi (session primary/context plus one-line panes) | single (bounded one-line cards,
 # the fzf-multiline off fallback; same token architecture)
 build_list() (
   local filter="${1:-all}" list_mode="${2:-expanded}" emit="${3:-tsv}" lines="${4:-multi}"
   local tmp_sessions tmp_panes sid sname pane_id pane_path session_activity root sort_key group_key display root_status name_width=12 session_col
   local window_index window_name pane_index pane_active pane_cmd pane_row_path pane_col pane_state pane_pid pane_bead pane_task pane_parent pane_rank cur_rank _cls
-  local psid pwi ppi ppid pcol attn idle stale_bucket section last_section=0 header_label now
+  local psid pwi ppi ppid pcol attn idle stale_bucket section last_section=-1 header_label now
   local cur_pane='' cur_sid='' nav_preamble='' _sstate _stag _marker _sctx _scard _pblock _pline
-  local pcmd pstate pbead ptask ppath proot pctx pstate_tag pdisp
+  local pcmd pstate pbead ptask ppath proot pctx pstate_tag pdisp _nav_group _nav_state _branch _seen
   local -a _prow=()
   declare -A root_cache=()
   declare -A root_status_cache=()
@@ -3311,7 +3345,12 @@ build_list() (
   declare -A sess_section=()
   declare -A pane_block=()
   declare -A sess_root=()
+  declare -A sess_group_root=()
   declare -A sess_root_status=()
+  declare -A sess_nav_rank=()
+  declare -A sess_nav_state=()
+  declare -A sess_pane_count=()
+  declare -A sess_pane_seen=()
   declare -A sess_classes=()
   declare -A sess_grep_hit=()
   declare -A root_sids=()
@@ -3382,6 +3421,7 @@ build_list() (
     sess_stale["$sid"]="$stale_bucket"
     sess_section["$sid"]="$section"
     sess_root["$sid"]="$root"
+    sess_group_root["$sid"]="${root:+$group_key}"
     sess_root_status["$sid"]="$root_status"
     [ "${#sname}" -gt "$name_width" ] && name_width="${#sname}"
 
@@ -3411,6 +3451,20 @@ build_list() (
     fi
 
     normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd" "$pane_transition"; pane_state="$REPLY"
+    if [ "$emit" = nav ]; then
+      sess_pane_count["$sid"]=$(( ${sess_pane_count[$sid]:-0} + 1 ))
+      case "$pane_state" in
+        stale) _nav_group=0 ;;
+        needs-input) _nav_group=1 ;;
+        running) _nav_group=2 ;;
+        done) _nav_group=3 ;;
+        *) _nav_group=4 ;;
+      esac
+      if [ "$_nav_group" -lt "${sess_nav_rank[$sid]:-5}" ]; then
+        sess_nav_rank["$sid"]="$_nav_group"
+        sess_nav_state["$sid"]="$pane_state"
+      fi
+    fi
     # specialist state takes precedence when tracked: a waiting specialist should
     # rank for attention like a waiting agent pane (xtmux-rib.4).
     # fast specialist detection for list hot path: session name + live pane pid.
@@ -3436,7 +3490,7 @@ build_list() (
 
     if [ "$emit" = nav ]; then
       # NAV-2 card inputs ride in the temp row (never used by the tsv path).
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$sid" "$window_index" "$pane_index" "$pane_id" "$pane_cmd" "$pane_state" "$pane_bead" "$pane_task" "$pane_row_path" "$root" >> "$tmp_panes"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$sid" "$window_index" "$pane_index" "$pane_id" "$pane_cmd" "${pane_state:--}" "${pane_bead:--}" "${pane_task:--}" "$pane_row_path" "$root" >> "$tmp_panes"
     else
       render_pane_line "$window_index" "$window_name" "$pane_id" "$pane_active" "$pane_cmd" "$pane_row_path" "$root" "$pane_state" "${sess_name[$sid]:-}" "$pane_pid" "$pane_bead" "$pane_task" "$pane_parent"; pane_col="$REPLY"
       printf '%s\t%s\t%s\t%s\t%s\n' "$sid" "$window_index" "$pane_index" "$pane_id" "$pane_col" >> "$tmp_panes"
@@ -3451,7 +3505,9 @@ build_list() (
         pcmd="${_prow[4]:-}"; pstate="${_prow[5]:-}"; pbead="${_prow[6]:-}"; ptask="${_prow[7]:-}"; ppath="${_prow[8]:-}"; proot="${_prow[9]:-}"
         nav_pane_context "$pbead" "$ptask" "$ppath" "$proot"; pctx="$REPLY"
         nav_state_tag "$pstate"; pstate_tag="$REPLY"
-        nav_pane_card "$ppid" "${pcmd:-shell}" "$pstate_tag" "$pctx" "$lines"; pdisp="$REPLY"
+        _seen=$(( ${sess_pane_seen[$psid]:-0} + 1 )); sess_pane_seen["$psid"]="$_seen"
+        if [ "$_seen" -eq "${sess_pane_count[$psid]:-1}" ]; then _branch='└'; else _branch='├'; fi
+        nav_pane_card "$_branch" "$ppid" "${pcmd:-shell}" "$pstate_tag" "$pctx" "$lines"; pdisp="$REPLY"
         pane_block["$psid"]+="$(printf 'pane\t%s\t%s\t%s\tp:%s:%s\t%s' "$psid" "${sess_name[$psid]:-}" "$ppid" "$psid" "$ppid" "$pdisp")"$'\x1f'
       done < <(sort -t $'\t' -k1,1 -k2,2n -k3,3n "$tmp_panes")
     else
@@ -3494,7 +3550,14 @@ build_list() (
   [ "$name_width" -gt 22 ] && name_width=22
 
   while IFS=$'\t' read -r section sort_key stale_bucket sid sname display; do
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${sess_section[$sid]:-$section}" "${sess_attn[$sid]:-4}" "${sess_stale[$sid]:-$stale_bucket}" "$sort_key" "$sid" "$sname" "$display"
+    if [ "$emit" = nav ]; then
+      _nav_state="${sess_nav_state[$sid]:-idle}"
+      case "$_nav_state" in stale|needs-input) _nav_group=0 ;; running) _nav_group=1 ;; *) _nav_group=2 ;; esac
+      section="$_nav_group"
+    else
+      section="${sess_section[$sid]:-$section}"
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$section" "${sess_attn[$sid]:-4}" "${sess_stale[$sid]:-$stale_bucket}" "$sort_key" "$sid" "$sname" "$display"
   done < "$tmp_sessions" |
     sort -t $'\t' -k1,1n -k2,2n -k3,3n -k4,4 -k6,6 |
     while IFS=$'\t' read -r section attn stale_bucket _ sid sname display; do
@@ -3520,15 +3583,18 @@ build_list() (
       if [ -n "$FF_GREP" ]; then
         [ "${sess_grep_hit[$sid]:-0}" = 1 ] || continue
       fi
-      if [ "${section:-0}" = 1 ] && [ "$last_section" != 1 ]; then
-        if [ "$emit" = nav ]; then
-          # NAV-2: no selectable header record. The section text is integrated
-          # into the first specialist session card (display-only, never parsed).
-          nav_preamble='── specialists (sp-*) ──'
-        else
-          paint "$c_sp" "── specialists (sp-*) ──"; header_label="$REPLY"
-          printf 'header\t\tspecialists\t\t  %s\n' "$header_label"
+      if [ "$emit" = nav ]; then
+        if [ "$section" != "$last_section" ]; then
+          case "$section" in
+            0) nav_preamble='NEEDS ATTENTION' ;;
+            1) nav_preamble='ACTIVE' ;;
+            *) nav_preamble='OTHER SESSIONS' ;;
+          esac
+          last_section="$section"
         fi
+      elif [ "${section:-0}" = 1 ] && [ "$last_section" != 1 ]; then
+        paint "$c_sp" "── specialists (sp-*) ──"; header_label="$REPLY"
+        printf 'header\t\tspecialists\t\t  %s\n' "$header_label"
         last_section=1
       fi
       printf -v session_col '%-*s' "$name_width" "$sname"
@@ -3540,14 +3606,14 @@ build_list() (
       session_col="$REPLY"
       if [ "$emit" = nav ]; then
         # NAV-2 transport: field 5 is the session action token (s:$sid); field 6
-        # is the bounded card (presentation-only). The ▶ marker comes from
-        # TMUX_PANE and is independent of fzf's > pointer.
-        attn_state_name "$attn"; _sstate="$REPLY"
+        # is the bounded card (presentation-only). The ▎ marker comes from
+        # TMUX_PANE and is independent of fzf's › pointer.
+        _sstate="${sess_nav_state[$sid]:-idle}"
         nav_state_tag "$_sstate"; _stag="$REPLY"
         _marker=' '
-        [ -n "$cur_sid" ] && [ "$sid" = "$cur_sid" ] && _marker='▶'
-        nav_session_context "${sess_root[$sid]:-}" "${sess_root_status[$sid]:-}" "${sess_idle_plain[$sid]:-}" "${sess_shared_wt[$sid]:-0}"; _sctx="$REPLY"
-        nav_session_card "$_marker" "$sname" "$_stag" "$_sctx" "$lines" "$nav_preamble"; _scard="$REPLY"
+        [ -n "$cur_sid" ] && [ "$sid" = "$cur_sid" ] && _marker='▎'
+        nav_session_context "${sess_group_root[$sid]:-${sess_root[$sid]:-}}" "${sess_root_status[$sid]:-}" "${sess_idle_plain[$sid]:-}" "${sess_shared_wt[$sid]:-0}"; _sctx="$REPLY"
+        nav_session_card "$_marker" "$sname" "$_stag" "${sess_idle_plain[$sid]:-}" "$_sctx" "$lines" "$nav_preamble"; _scard="$REPLY"
         nav_preamble=''  # one card carries the section label, then it is cleared
         printf 'session\t%s\t%s\t%s\ts:%s\t%s\0' "$sid" "$sname" "$sid" "$sid" "$_scard"
       else
@@ -5431,9 +5497,14 @@ case "${1:-}" in
   prompt-label)
     # fzf transform-prompt source: reflects the active filter in the prompt.
     shift
+    _style="${1:-classic}"
     picker_state_read filter || true
     _spec="$REPLY"
-    if [ -n "$_spec" ]; then printf '%s> ' "$_spec"; else printf 'all> '; fi
+    if [ "$_style" = nav ]; then
+      if [ -n "$_spec" ]; then printf '%s› ' "$_spec"; else printf 'all› '; fi
+    else
+      if [ -n "$_spec" ]; then printf '%s> ' "$_spec"; else printf 'all> '; fi
+    fi
     exit 0
     ;;
   install-hooks)

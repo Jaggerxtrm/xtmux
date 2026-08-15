@@ -7,7 +7,7 @@ Copy these snippets into `~/.tmux.conf` after running `./install.sh`.
 Recommended sidebar-style navigator (verified tmux 3.5a syntax):
 
 ```tmux
-bind s display-popup -E -x 0 -y 0 -w 52% -h 100% "XTMUX_NAV_WIDTH=#{e|-:#{e|*|f|0:#{client_width},0.52},4} $HOME/.local/bin/xtmux nav"
+bind s display-popup -E -x 0 -y 0 -w 52% -h 100% 'XTMUX_NAV_WIDTH=$(tput cols) $HOME/.local/bin/xtmux nav'
 ```
 
 Set width in tmux configuration rather than application state:
@@ -16,8 +16,8 @@ Set width in tmux configuration rather than application state:
 - 50–55% for a normal terminal
 - 60–65% on a smaller laptop
 
-Change both `52%` and the `0.52` factor together. The final subtraction reserves
-popup and fzf borders, so card width follows the real drawer instead of a default.
+Change `52%` to tune the drawer. `tput cols` runs inside the popup, so bounded
+rows follow its actual terminal width without tmux-format text leaking into the shell.
 
 Keep a classic/full-screen rollback binding:
 
@@ -30,9 +30,9 @@ bind G display-popup -E -w 99% -h 97% "TMUX_PICKER_MODE=compact-nowrap $HOME/.lo
 `XTMUX_NAV_LAYOUT=classic xtmux nav` also selects the classic renderer. These
 are optional prefix-table examples; xtmux does not install global bindings.
 
-Inside nav, `▶` is the live tmux target and `>` is the fzf selection. `Tab`
-toggles expanded/sessions-only, `Ctrl-/` toggles the bottom inspector, and `?`
-shows all nav actions.
+Inside nav, `▎` is the live tmux target and `›` is the fzf selection. Sessions
+are grouped by attention, active, and other state. `Tab` toggles expanded/sessions-only,
+`Ctrl-/` opens the hidden details inspector, and `?` shows all nav actions.
 
 ## native and xtmux traversal
 

@@ -49,24 +49,26 @@ Which information deserves which visual level?
 Expanded drawer:
 
 ```text
-╭─ xtmux ─ all ────────────────────────────╮
-│ > ▶ xtmux-ui                    [wait]   │
-│     xtmux · feat/nav-sidebar · +2 · 2m  │
-│     ├─ %17 claude              [wait]   │
-│     │  xtmux-nav.2 · picker UX          │
-│     └─ %19 shell                        │
-│                                          │
-│     quant                       [idle]   │
-│     quant · main · clean · 18m           │
-│                                          │
-│   ── specialists ──────────────────────  │
-│                                          │
-│     sp-reviewer-a91f            [run]    │
-│     reviewer · xtmux-nav.4               │
-│                                          │
-├──────────────────────────────────────────┤
-│ Enter go · Tab compact · ^/ inspect · ? │
-╰──────────────────────────────────────────╯
+ xtmux nav · state groups · type to filter
+ all›
+
+ NEEDS ATTENTION ──────────────────────────
+   xtmux-ui                       2m  WAIT
+     xtmux · feat/nav-sidebar · +2
+     ├ %17  claude  picker UX         WAIT
+     └ %19  shell
+
+ ACTIVE ───────────────────────────────────
+>▎ sp-reviewer-a91f              <1m  RUN
+     specialists · xt/nav-review
+     └ %23  pi  reviewer · nav       RUN
+
+ OTHER SESSIONS ───────────────────────────
+   quant                         18m  IDLE
+     quant · main
+     └ %31  shell                    IDLE
+
+ ─ ↵ open · Tab panes · ^/ details · ? help
 ```
 
 Compact view:
@@ -152,8 +154,8 @@ Candidate tokens:
 ```text
 current marker
 session name
+idle age
 state badge
-shared-worktree warning when important
 ```
 
 ### Level 2 — useful context
@@ -161,15 +163,14 @@ shared-worktree warning when important
 A second line should answer:
 
 ```text
-Which code/worktree?
-What branch state?
-How stale/active is it?
+Which repository?
+What branch and terse worktree status?
 ```
 
 Display:
 
 ```text
-  xtmux · feat/nav-sidebar · +2 · 2m
+  xtmux · feat/nav-sidebar · +2
 ```
 
 Candidate tokens:
@@ -177,8 +178,7 @@ Candidate tokens:
 ```text
 repo
 branch
-dirty/clean
-idle age
+terse dirty/shared indicators
 ```
 
 ### Level 3 — expanded child pane
@@ -194,8 +194,7 @@ Which bounded work item?
 Display:
 
 ```text
-  ├─ %17 claude                    [wait]
-  │  xtmux-nav.2 · picker UX
+  └ %17  claude  picker UX            WAIT
 ```
 
 Candidate tokens:
@@ -249,7 +248,8 @@ sessionState(panes)
     unknown
 ```
 
-The implementation must use the repository's actual canonical ranking rather than duplicate this pseudocode if the precise ordering differs.
+This visual roll-up does not change canonical attention filters or direct-navigation
+ranking; it only places running sessions before completed sessions in the default view.
 
 ## 7. Navigation modes
 
@@ -278,7 +278,7 @@ hidden
 visible
 ```
 
-Drawer mode prefers a bottom inspector.
+Drawer mode uses a bottom inspector hidden by default until `Ctrl-/`.
 
 Classic mode can use a right inspector.
 
