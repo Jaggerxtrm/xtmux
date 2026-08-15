@@ -28,12 +28,14 @@ in previews and multiplexing workflows.
 
 `xtmux nav` is the canonical compact operator view. It remains a thin fzf
 projection over the same tmux/xtmux inventory; it creates no daemon, database,
-or runtime authority.
+or runtime authority. [`docs/design/mockups/xtmux-nav-sidebar-target.html`](docs/design/mockups/xtmux-nav-sidebar-target.html)
+records the visual direction only; the shipped UI is terminal-native.
 
-- bounded two-line session and pane cards, with long task text kept out of identity
-- `▶` marks the invoking tmux target; fzf's `>` marks the highlighted target
+- state-grouped session cards: identity + age + state, then bounded repo/branch context
+- one bounded line per pane with permanently visible `%pane-id`, runtime, task, and state
+- `▎` marks the invoking tmux target; fzf's `›` marks the highlighted target
 - `Tab` keeps the existing expanded / sessions-only state
-- bottom inspector (`Ctrl-/`) with structured session, agent, worktree, and git fields
+- details inspector (`Ctrl-/`) is hidden by default; paths and debug metadata stay there
 - short persistent footer; `?` shows the complete nav key reference
 - private NUL-delimited records with strict machine action tokens; display is never parsed
 - semantic fzf capability gate: multiline, bounded one-line, then classic fallback
@@ -207,7 +209,7 @@ Suggested tmux bindings:
 
 ```tmux
 # recommended left drawer (tmux 3.5a syntax)
-bind s display-popup -E -x 0 -y 0 -w 52% -h 100% "XTMUX_NAV_WIDTH=#{e|-:#{e|*|f|0:#{client_width},0.52},4} $HOME/.local/bin/xtmux nav"
+bind s display-popup -E -x 0 -y 0 -w 52% -h 100% 'XTMUX_NAV_WIDTH=$(tput cols) $HOME/.local/bin/xtmux nav'
 
 # classic/full-size rollback
 bind S display-popup -E -w 99% -h 97% "$HOME/.local/bin/tmux-session-picker"
@@ -226,9 +228,9 @@ bind -n M-` run-shell '~/.local/bin/tmux-session-picker jump-back'
 ```
 
 Choose popup width in tmux configuration: about 40% on wide desktops, 50–55%
-for normal terminals, and 60–65% on smaller laptops. Keep the `0.52` arithmetic
-factor aligned with the chosen percentage; the subtraction reserves popup/fzf
-borders. xtmux does not install or rewrite these global bindings automatically.
+for normal terminals, and 60–65% on smaller laptops. `tput cols` reads the actual
+popup width after tmux creates it. xtmux does not install or rewrite these global
+bindings automatically.
 
 See [`docs/keys.md`](docs/keys.md) for copy-paste snippets and collision notes.
 
@@ -270,8 +272,8 @@ from `docs/keys.md`.
 | `Ctrl-/` | toggle preview pane |
 | `?` | nav: full key help; classic picker: multiplexing cheatsheet |
 
-The nav drawer uses a bottom inspector and the short footer `Enter go · Tab
-compact/expand · ^/ inspect · ? help`. All actions above remain available.
+The nav drawer keeps details hidden until `Ctrl-/` and uses the short footer
+`↵ open · Tab panes · ^/ details · ? help`. All actions above remain available.
 
 ## CLI reference
 
@@ -627,7 +629,7 @@ Current validation at the time of this README update:
 
 ```text
 bash test/contract.sh       289 pass, 0 fail
-bash test/nav-contract.sh    91 pass, 0 fail
+bash test/nav-contract.sh   108 pass, 0 fail
 bun test                    409 pass, 0 fail
 ```
 

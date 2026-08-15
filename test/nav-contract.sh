@@ -502,7 +502,32 @@ require_fn fit_width "renderer: fit_width() exists" && {
 # session/pane, else a single space (keeps columns aligned).
 require_fn nav_pane_context "renderer: pane context helper exists" && {
   nav_pane_context - - /repo/sub /repo
-  assert_eq "renderer: absent metadata sentinel falls back to path" sub "$REPLY"
+  assert_eq "renderer: absent metadata never exposes a path" '' "$REPLY"
+  nav_pane_context bead.42 'session:nav-redesign' /repo/sub /repo
+  assert_eq "renderer: pane task is the default human context" 'session:nav-redesign' "$REPLY"
+  nav_pane_context bead.42 - /repo/sub /repo
+  assert_eq "renderer: bead is the bounded task fallback" 'bead.42' "$REPLY"
+}
+require_fn nav_session_context "renderer: session context helper exists" && {
+  nav_session_context /repo/core 'core  feature/nav +2   /repo/core' '12m' 1
+  assert_eq "renderer: default session context keeps only repo, branch, and terse status" 'core · feature/nav · +2 · shared' "$REPLY"
+}
+_strip_nav_ansi() { printf '%s' "$1" | sed -E $'s/\x1b\\[[0-9;]*m//g'; }
+require_fn nav_session_card "renderer: session hierarchy card exists" && {
+  XTMUX_NAV_WIDTH=60 nav_session_card '▎' alpha needs-input '12m' 'core · feature/nav' multi 'NEEDS ATTENTION'
+  _plain="$(_strip_nav_ansi "$REPLY")"
+  _line1="$(printf '%s\n' "$_plain" | sed -n '1p')"
+  _line2="$(printf '%s\n' "$_plain" | sed -n '2p')"
+  _line3="$(printf '%s\n' "$_plain" | sed -n '3p')"
+  case "$_line1" in 'NEEDS ATTENTION '*|'NEEDS ATTENTION') ok "renderer: state section precedes first session" ;; *) nok "renderer: state section precedes first session" ;; esac
+  case "$_line2" in '▎ alpha'*'12m  WAIT') ok "renderer: session identity, age, state share primary line" ;; *) nok "renderer: session identity, age, state share primary line" ;; esac
+  assert_eq "renderer: repo and branch form the only default context line" '    core · feature/nav' "$_line3"
+}
+require_fn nav_pane_card "renderer: pane hierarchy row exists" && {
+  XTMUX_NAV_WIDTH=60 nav_pane_card '└' '%42' claude running 'session:nav-redesign' multi
+  _plain="$(_strip_nav_ansi "$REPLY")"
+  case "$_plain" in *$'\n'*) nok "renderer: pane metadata stays on one bounded line" ;; *) ok "renderer: pane metadata stays on one bounded line" ;; esac
+  case "$_plain" in *'%42'*'claude'*'session:nav-redesign'*'RUN') ok "renderer: pane id, runtime, task, state stay visible" ;; *) nok "renderer: pane id, runtime, task, state stay visible" ;; esac
 }
 require_fn current_marker "renderer: current_marker() exists" && {
   current_marker '%1' '%1'; assert_eq "current marker: current pane" '▶' "$REPLY"
@@ -525,9 +550,9 @@ cat > "$WORK/nav-list-stub" <<'EOF'
 #!/usr/bin/env bash
 printf '%s' "$1" > "${NAV_STUB_LOG:-/dev/null}"
 if [ "${NAV_SPECIALIST:-0}" = 1 ]; then
-  printf 'session\t$1\tone\t$1\ts:$1\t  one\0session\t$2\ttwo\t$2\ts:$2\t── specialists ──\n▶ two\0'
+  printf 'session\t$1\tone\t$1\ts:$1\t  one\0session\t$2\ttwo\t$2\ts:$2\t── specialists ──\n▎ two\0'
 else
-  printf 'session\t$1\tone\t$1\ts:$1\t  one\0session\t$2\ttwo\t$2\ts:$2\t▶ two\0'
+  printf 'session\t$1\tone\t$1\ts:$1\t  one\0session\t$2\ttwo\t$2\ts:$2\t▎ two\0'
 fi
 EOF
 chmod +x "$WORK/nav-list-stub"
@@ -541,6 +566,21 @@ if grep -q 'load:pos(2)' "$WORK/nav-fzf-args"; then
   ok "nav reveal: initial selection positions on current marker"
 else
   nok "nav reveal: initial selection positions on current marker"
+fi
+if grep -q -- '--preview-window=hidden,bottom,7,border-top,wrap,follow' "$WORK/nav-fzf-args"; then
+  ok "nav details: inspector is hidden until explicit toggle"
+else
+  nok "nav details: inspector is hidden until explicit toggle"
+fi
+if grep -q -- '--header= xtmux nav · state groups · type to filter ' "$WORK/nav-fzf-args"; then
+  ok "nav chrome: compact title and search hint use fzf header"
+else
+  nok "nav chrome: compact title and search hint use fzf header"
+fi
+if grep -qF '?:change-preview(' "$WORK/nav-fzf-args" && grep -qF ')+show-preview' "$WORK/nav-fzf-args"; then
+  ok "nav help: ? explicitly reveals the hidden details pane"
+else
+  nok "nav help: ? explicitly reveals the hidden details pane"
 fi
 assert_eq "nav filter: initial list uses persisted filter state" list-active-nav "$(cat "$WORK/nav-stub-command")"
 (
@@ -567,16 +607,17 @@ while IFS= read -r -d '' _record; do
   IFS=$'\t' read -r _type _sid _name _target _token _first <<< "$_record"
   _prefix="$_type"$'\t'"$_sid"$'\t'"$_name"$'\t'"$_target"$'\t'"$_token"$'\t'
   _display="${_record#"$_prefix"}"
-  case "$_record" in *$'\x07'*|*$'\x08'*|*$'\x1f'*|*$'\x1e'*|*$'\x1b'*) _framing_clean=0 ;; esac
+  _plain_display="$(_strip_nav_ansi "$_display")"
+  case "$_plain_display" in *$'\x07'*|*$'\x08'*|*$'\x1f'*|*$'\x1e'*|*$'\x1b'*) _framing_clean=0 ;; esac
   case "$_type" in
     session)
       [ "$_token" = 's:$42' ] && _session_seen=1
-      case "$_display" in '▶ '*) ;; *) _session_seen=0 ;; esac
+      case "$_plain_display" in '▎ '*|*$'\n''▎ '*) ;; *) _session_seen=0 ;; esac
       ;;
     pane) [ "$_token" = 'p:$42:%17' ] && _pane_seen=1 ;;
     header) _header_seen=1 ;;
   esac
-  while IFS= read -r _visual; do [ "${#_visual}" -le 32 ] || _wide=1; done <<< "$_display"
+  while IFS= read -r _visual; do [ "${#_visual}" -le 32 ] || _wide=1; done <<< "$_plain_display"
 done < "$WORK/nav-records"
 [ "$_count" -eq 2 ] && ok "nav records: two NUL records remain distinct" || nok "nav records: two NUL records remain distinct"
 [ "$_session_seen" -eq 1 ] && ok "nav records: session token and current marker" || nok "nav records: session token and current marker"
@@ -584,6 +625,39 @@ done < "$WORK/nav-records"
 [ "$_header_seen" -eq 0 ] && ok "nav records: no selectable header" || nok "nav records: no selectable header"
 [ "$_wide" -eq 0 ] && ok "nav records: every visual line bounded at 32" || nok "nav records: every visual line bounded at 32"
 [ "$_framing_clean" -eq 1 ] && ok "nav records: internal control delimiters sanitized" || nok "nav records: internal control delimiters sanitized"
+
+# Visual grouping uses existing pane state only: attention, active, then other.
+(
+  session_meta() {
+    printf '%b\n' \
+      '$1\tstale-session\t%1\t'"$WORK"'/none\t1000' \
+      '$2\twait-session\t%2\t'"$WORK"'/none\t1000' \
+      '$3\tdone-session\t%3\t'"$WORK"'/none\t1000' \
+      '$4\trun-session\t%4\t'"$WORK"'/none\t1000' \
+      '$5\tidle-session\t%5\t'"$WORK"'/none\t1000'
+  }
+  pane_meta() {
+    printf '%b\n' \
+      '$1\t0\tw\t%1\t0\t1\tclaude\t'"$WORK"'/secret\tstale\t1\t-\t-\t-\t-' \
+      '$2\t0\tw\t%2\t0\t1\tclaude\t'"$WORK"'/secret\tneeds-input\t2\t-\t-\t-\t-' \
+      '$3\t0\tw\t%3\t0\t1\tclaude\t'"$WORK"'/secret\tdone\t3\t-\t-\t-\t-' \
+      '$4\t0\tw\t%4\t0\t1\tclaude\t'"$WORK"'/secret\trunning\t4\t-\t-\t-\t-' \
+      '$5\t0\tw\t%5\t0\t1\tbash\t'"$WORK"'/secret\t-\t5\t-\t-\t-\t-'
+  }
+  XTMUX_NAV_WIDTH=72 TMUX_PICKER_NO_CACHE=1 build_list all expanded nav multi
+) > "$WORK/nav-groups"
+_group_order=''; _group_text=''; _path_leak=0
+while IFS= read -r -d '' _record; do
+  IFS=$'\t' read -r _type _sid _name _target _token _first <<< "$_record"
+  _prefix="$_type"$'\t'"$_sid"$'\t'"$_name"$'\t'"$_target"$'\t'"$_token"$'\t'
+  _display="${_record#"$_prefix"}"
+  _plain="$(_strip_nav_ansi "$_display")"
+  if [ "$_type" = session ]; then _group_order+="${_group_order:+ }$_name"; _group_text+="$_plain"$'\n'; fi
+  case "$_plain" in *"$WORK"*|*'/secret'*|*'none'*) _path_leak=1 ;; esac
+done < "$WORK/nav-groups"
+assert_eq "nav grouping: attention then active then other" 'stale-session wait-session run-session done-session idle-session' "$_group_order"
+case "$_group_text" in *'NEEDS ATTENTION'*'ACTIVE'*'OTHER SESSIONS'*) ok "nav grouping: all visual section labels present" ;; *) nok "nav grouping: all visual section labels present" ;; esac
+[ "$_path_leak" -eq 0 ] && ok "nav default: pane paths stay behind details" || nok "nav default: pane paths stay behind details"
 
 (
   session_meta() { printf '%b\n' '$42\talpha\t%17\t'"$WORK"'/none\t1000'; }
@@ -596,7 +670,7 @@ while IFS= read -r -d '' _record; do
   _prefix="$_type"$'\t'"$_sid"$'\t'"$_name"$'\t'"$_target"$'\t'"$_token"$'\t'
   _display="${_record#"$_prefix"}"
   case "$_display" in *$'\n'*) _single_newline=1 ;; esac
-  case "$_display" in '▶ '*) _false_marker=1 ;; esac
+  case "$_display" in '▎ '*|*$'\n''▎ '*) _false_marker=1 ;; esac
 done < "$WORK/nav-single"
 [ "$_single_newline" -eq 0 ] && ok "nav fallback: one-line records contain no newline" || nok "nav fallback: one-line records contain no newline"
 [ "$_false_marker" -eq 0 ] && ok "nav marker: unverifiable TMUX_PANE omitted" || nok "nav marker: unverifiable TMUX_PANE omitted"

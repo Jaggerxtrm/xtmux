@@ -181,6 +181,13 @@ not subprocess fan-out. The implementation skips classic rendering work on the
 nav path and keeps the classic path neutral. No sustained primary regression over
 10% remains.
 
+The NAV-5 visual redesign was measured separately on the same live 13-session
+fixture with 12 warm iterations at 96 columns. The pre-change trimmed mean was
+154.3 ms and the redesigned renderer was 147.1 ms (-4.6%); medians were 152.1 ms
+and 147.0 ms. This short paired run establishes no renderer regression, not a
+general speedup claim. NAV-5 only reformats the existing inventory and adds no
+subprocess call sites.
+
 Warm structural counts from the process trace are unchanged:
 
 | command class | origin/main | feature nav |
