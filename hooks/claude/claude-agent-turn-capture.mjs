@@ -9,7 +9,7 @@
 // Fail-open by contract: unreadable/malformed transcripts emit a metadata-only
 // completed-turn row; missing tmux context or emit failures remain silent.
 
-import { closeSync, fstatSync, openSync, readFileSync, readSync, writeFileSync, unlinkSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readSync, writeFileSync, unlinkSync, mkdtempSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,24 +48,10 @@ function textOfMessage(message) {
     .join("\n");
 }
 
-// Scan the transcript tail-to-head for the last assistant turn with text.
+// Scan raw transcript text tail-to-head for the last assistant turn with text.
 // transcript lines are one JSON object each; the assistant turn we want is the
 // last top-level entry whose message.role === 'assistant' with non-empty text.
-function lastAssistantText(transcriptPath) {
-  if (!transcriptPath) return "";
-  let raw;
-  let fd;
-  try {
-    // Read only the tail — the full transcript can be large and only the most
-    // recent assistant turn matters. 1MB tail covers thousands of lines.
-    fd = openSync(transcriptPath, "r");
-    const size = fstatSync(fd).size;
-    const length = Math.min(size, 1024 * 1024);
-    const buf = Buffer.allocUnsafe(length);
-    const bytesRead = readSync(fd, buf, 0, length, size - length);
-    raw = buf.subarray(0, bytesRead).toString("utf8");
-  } catch { return ""; }
-  finally { if (fd !== undefined) { try { closeSync(fd); } catch { /* fail-open */ } } }
+function parseTail(raw) {
   const lines = raw.split("\n");
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const line = lines[i];
@@ -79,6 +65,47 @@ function lastAssistantText(transcriptPath) {
   return "";
 }
 
+// Read only the tail — the full transcript can be large and only the most
+// recent assistant turn matters. 1MB tail covers thousands of lines.
+function readTail(transcriptPath) {
+  if (!transcriptPath) return { size: 0, text: "" };
+  let fd;
+  try {
+    fd = openSync(transcriptPath, "r");
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, 1024 * 1024);
+    const buf = Buffer.allocUnsafe(length);
+    const bytesRead = readSync(fd, buf, 0, length, size - length);
+    return { size, text: parseTail(buf.subarray(0, bytesRead).toString("utf8")) };
+  } catch { return { size: 0, text: "" }; }
+  finally { if (fd !== undefined) { try { closeSync(fd); } catch { /* fail-open */ } } }
+}
+
+// Claude's transcript writer flushes asynchronously: a Stop fired mid-flush
+// can read a tail where the final assistant line has not landed yet, which
+// would store the previous turn's text. Poll until the file size settles or
+// the assistant text advances (the final line landed), bounded by SETTLE_MS.
+const SETTLE_MS = 1000;
+const POLL_MS = 25;
+const SLEEP_BUF = new Int32Array(new SharedArrayBuffer(4));
+function sleepSync(ms) { Atomics.wait(SLEEP_BUF, 0, 0, ms); }
+
+function settledTranscript(transcriptPath) {
+  const deadline = Date.now() + SETTLE_MS;
+  let prev = readTail(transcriptPath);
+  sleepSync(POLL_MS);
+  while (Date.now() < deadline) {
+    const cur = readTail(transcriptPath);
+    // Newer assistant text landing is the flush completing; a size unchanged
+    // across a full poll gap means the writer has settled. Either ends the
+    // retry with the freshest read.
+    if (cur.text !== prev.text || cur.size === prev.size) return cur;
+    prev = cur;
+    sleepSync(POLL_MS);
+  }
+  return prev;
+}
+
 function main() {
   const input = readJsonStdin();
   if (!input) return;
@@ -87,15 +114,13 @@ function main() {
   // agent-state.sh.
   if (!process.env.TMUX || !process.env.TMUX_PANE) return;
   const transcriptPath = input.transcript_path ?? input.transcriptPath;
-  const fullText = lastAssistantText(transcriptPath);
+  const { size: transcriptSize, text: fullText } = settledTranscript(transcriptPath);
 
   const pane = process.env.TMUX_PANE;
   const sessionId = tmuxValue(["display-message", "-p", "#{session_id}"], pane);
   const sessionName = tmuxValue(["display-message", "-p", "#S"], pane);
   const bead = tmuxValue(["show-options", "-p", "-qv", "@agent_bead"], pane);
   const parent = tmuxValue(["show-options", "-p", "-qv", "@agent_parent_session"], pane);
-  let transcriptSize = 0;
-  try { transcriptSize = statSync(transcriptPath).size; } catch { /* already read; size only improves dedup identity */ }
   const turnKey = createHash("sha256")
     .update(`${sessionId}\0${transcriptPath}\0${transcriptSize}\0${fullText}`)
     .digest("hex").slice(0, 24);
