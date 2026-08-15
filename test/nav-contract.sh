@@ -504,30 +504,36 @@ require_fn nav_pane_context "renderer: pane context helper exists" && {
   nav_pane_context - - /repo/sub /repo
   assert_eq "renderer: absent metadata never exposes a path" '' "$REPLY"
   nav_pane_context bead.42 'session:nav-redesign' /repo/sub /repo
-  assert_eq "renderer: pane task is the default human context" 'session:nav-redesign' "$REPLY"
+  assert_eq "renderer: pane task is the default human context" 'nav redesign' "$REPLY"
   nav_pane_context bead.42 - /repo/sub /repo
   assert_eq "renderer: bead is the bounded task fallback" 'bead.42' "$REPLY"
 }
+require_fn nav_branch_label "renderer: concise branch helper exists" && {
+  nav_branch_label 'feature/nav-sidebar_redesign-for-terminal-users'
+  assert_eq "renderer: branch context is humanized and bounded" 'nav sidebar redesign…' "$REPLY"
+}
 require_fn nav_session_context "renderer: session context helper exists" && {
-  nav_session_context /repo/core 'core  feature/nav +2   /repo/core' '12m' 1
-  assert_eq "renderer: default session context keeps only repo, branch, and terse status" 'core · feature/nav · +2 · shared' "$REPLY"
+  nav_session_context /repo/core 'core  feature/nav-sidebar-redesign +2   /repo/core' '12m' 1
+  assert_eq "renderer: default session context keeps concise branch and terse status" 'core · nav sidebar redesign · +2 · shared' "$REPLY"
 }
 _strip_nav_ansi() { printf '%s' "$1" | sed -E $'s/\x1b\\[[0-9;]*m//g'; }
 require_fn nav_session_card "renderer: session hierarchy card exists" && {
-  XTMUX_NAV_WIDTH=60 nav_session_card '▎' alpha needs-input '12m' 'core · feature/nav' multi 'NEEDS ATTENTION'
+  XTMUX_NAV_WIDTH=60 nav_session_card '▎' alpha needs-input '12m' 'core · nav sidebar redesign' multi
   _plain="$(_strip_nav_ansi "$REPLY")"
   _line1="$(printf '%s\n' "$_plain" | sed -n '1p')"
   _line2="$(printf '%s\n' "$_plain" | sed -n '2p')"
-  _line3="$(printf '%s\n' "$_plain" | sed -n '3p')"
-  case "$_line1" in 'NEEDS ATTENTION '*|'NEEDS ATTENTION') ok "renderer: state section precedes first session" ;; *) nok "renderer: state section precedes first session" ;; esac
-  case "$_line2" in '▎ alpha'*'12m  WAIT') ok "renderer: session identity, age, state share primary line" ;; *) nok "renderer: session identity, age, state share primary line" ;; esac
-  assert_eq "renderer: repo and branch form the only default context line" '    core · feature/nav' "$_line3"
+  case "$_line1" in '▎ alpha'*'12m  ATTN WAIT') ok "renderer: identity, age, group, and exact state share primary line" ;; *) nok "renderer: identity, age, group, and exact state share primary line" ;; esac
+  assert_eq "renderer: repo and branch form the only default context line" '    core · nav sidebar redesign' "$_line2"
 }
 require_fn nav_pane_card "renderer: pane hierarchy row exists" && {
-  XTMUX_NAV_WIDTH=60 nav_pane_card '└' '%42' claude running 'session:nav-redesign' multi
+  XTMUX_NAV_WIDTH=60 nav_pane_card '└' '%42' claude running 'session:nav-redesign' running multi
   _plain="$(_strip_nav_ansi "$REPLY")"
   case "$_plain" in *$'\n'*) nok "renderer: pane metadata stays on one bounded line" ;; *) ok "renderer: pane metadata stays on one bounded line" ;; esac
-  case "$_plain" in *'%42'*'claude'*'session:nav-redesign'*'RUN') ok "renderer: pane id, runtime, task, state stay visible" ;; *) nok "renderer: pane id, runtime, task, state stay visible" ;; esac
+  case "$_plain" in *'%42'*'claude'*'session:nav-redesign'*'ACTIVE  RUN') ok "renderer: pane id, runtime, task, group, and state stay visible" ;; *) nok "renderer: pane id, runtime, task, group, and state stay visible" ;; esac
+  XTMUX_NAV_WIDTH=32 nav_pane_card '└' '%1234' prime-agent done '' done multi
+  _plain="$(_strip_nav_ansi "$REPLY")"
+  [ "${#_plain}" -le 32 ] && ok "renderer: fixed pane metadata fits the minimum drawer width" || nok "renderer: fixed pane metadata fits the minimum drawer width"
+  case "$_plain" in *'%1234'*'OTHER'*'DONE') ok "renderer: minimum width retains pane id, group, and state" ;; *) nok "renderer: minimum width retains pane id, group, and state" ;; esac
 }
 require_fn current_marker "renderer: current_marker() exists" && {
   current_marker '%1' '%1'; assert_eq "current marker: current pane" '▶' "$REPLY"
@@ -646,17 +652,21 @@ done < "$WORK/nav-records"
   }
   XTMUX_NAV_WIDTH=72 TMUX_PICKER_NO_CACHE=1 build_list all expanded nav multi
 ) > "$WORK/nav-groups"
-_group_order=''; _group_text=''; _path_leak=0
+_group_order=''; _group_text=''; _path_leak=0; _durable_groups=1
 while IFS= read -r -d '' _record; do
   IFS=$'\t' read -r _type _sid _name _target _token _first <<< "$_record"
   _prefix="$_type"$'\t'"$_sid"$'\t'"$_name"$'\t'"$_target"$'\t'"$_token"$'\t'
   _display="${_record#"$_prefix"}"
   _plain="$(_strip_nav_ansi "$_display")"
   if [ "$_type" = session ]; then _group_order+="${_group_order:+ }$_name"; _group_text+="$_plain"$'\n'; fi
+  case "$_name:$_plain" in
+    stale-session:*ATTN*|wait-session:*ATTN*|run-session:*ACTIVE*|done-session:*OTHER*|idle-session:*OTHER*) ;;
+    *) _durable_groups=0 ;;
+  esac
   case "$_plain" in *"$WORK"*|*'/secret'*|*'none'*) _path_leak=1 ;; esac
 done < "$WORK/nav-groups"
 assert_eq "nav grouping: attention then active then other" 'stale-session wait-session run-session done-session idle-session' "$_group_order"
-case "$_group_text" in *'NEEDS ATTENTION'*'ACTIVE'*'OTHER SESSIONS'*) ok "nav grouping: all visual section labels present" ;; *) nok "nav grouping: all visual section labels present" ;; esac
+[ "$_durable_groups" -eq 1 ] && ok "nav grouping: every independently filtered record retains its group label" || nok "nav grouping: every independently filtered record retains its group label"
 [ "$_path_leak" -eq 0 ] && ok "nav default: pane paths stay behind details" || nok "nav default: pane paths stay behind details"
 
 (

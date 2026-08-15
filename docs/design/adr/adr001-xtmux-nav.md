@@ -204,11 +204,11 @@ Sidebar/drawer appearance is achieved through tmux popup geometry.
 Conceptual binding:
 
 ```tmux
-bind s display-popup -E -x 0 -y 0 -w 52% -h 100% 'XTMUX_NAV_WIDTH=$(tput cols) $HOME/.local/bin/xtmux nav'
+bind s display-popup -E -x 0 -y 0 -w 40% -h 100% 'XTMUX_NAV_WIDTH=$(tput cols) $HOME/.local/bin/xtmux nav'
 ```
 
-This syntax was verified with tmux 3.5a. Practical widths are about 40% on a
-wide desktop, 50–55% normally, and 60–65% on a smaller laptop.
+This syntax was verified with tmux 3.5a. The intended sidebar is 38–40%; widen
+to 44–50% for long session names or 55–60% on a small terminal.
 
 A classic/full-width binding remains available, and `XTMUX_NAV_LAYOUT=classic`
 selects it without changing runtime behavior.
@@ -216,18 +216,20 @@ selects it without changing runtime behavior.
 ## Decision 8 — Drawer information hierarchy is intentionally sparse
 
 `../mockups/xtmux-nav-sidebar-target.html` is the visual-direction reference, not
-an implementation technology. Sessions are grouped as needs-attention, active,
-then other. A session normally renders as:
+an implementation technology. Sessions sort as attention, active, then other.
+Every selectable record carries compact `ATTN`, `ACTIVE`, or `OTHER` group
+identity; no heading record can disappear under fuzzy filtering. Session and
+pane rows also retain the exact state. A session renders as:
 
 ```text
-▎ xtmux-ui                         2m  WAIT
-    xtmux · feat/nav-sidebar · +2
+▎ xtmux-ui                    2m  ATTN WAIT
+    xtmux · nav sidebar · +2
 ```
 
 Each expanded child pane uses one bounded line and keeps its operational id visible:
 
 ```text
-    └ %17  claude  sidebar picker      WAIT
+    └ %17  claude  sidebar picker  ATTN WAIT
 ```
 
 The primary list should not display every known metadata field.

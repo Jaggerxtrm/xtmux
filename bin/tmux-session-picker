@@ -2772,15 +2772,28 @@ attn_state_name() {
   esac
 }
 
+# nav_branch_label <branch> -> REPLY. Humanize common branch naming syntax and
+# cap it before the complete context line is fitted to the drawer width.
+nav_branch_label() {
+  local branch="${1:-}"
+  branch="${branch#refs/heads/}"
+  case "$branch" in
+    feature/*|feat/*|fix/*|bugfix/*|hotfix/*|chore/*|docs/*|refactor/*|test/*|release/*|xt/*) branch="${branch#*/}" ;;
+  esac
+  branch="${branch//\// }"; branch="${branch//_/ }"; branch="${branch//-/ }"
+  while [[ "$branch" == *'  '* ]]; do branch="${branch//  / }"; done
+  fit_width "$branch" 21
+}
+
 # nav_session_context <group-root> <root-status> <age> <shared-wt> -> REPLY
-# The default row keeps only repo, branch, terse dirty flags, and shared status.
-# Age belongs on the primary line; paths and other debug metadata stay in details.
+# The default row keeps only repo, concise branch, terse flags, and shared state.
 nav_session_context() {
   local root="${1:-}" root_status="${2:-}" shared="${4:-}"
   local repo branch flags rest out=''
   if [ -n "$root" ]; then
     repo="${root##*/}"
     branch_from_root_status "$root_status"; branch="$REPLY"
+    nav_branch_label "$branch"; branch="$REPLY"
     rest="${root_status#* }"; rest="${rest#* }"; rest="${rest#* }"
     flags=''
     case "$rest" in *'  '*) flags="${rest%%  *}" ;; esac
@@ -2801,6 +2814,9 @@ nav_pane_context() {
   local bead="${1:-}" task="${2:-}"
   agent_meta_value "$bead"; bead="$REPLY"
   agent_meta_value "$task"; task="$REPLY"
+  if [[ "$task" == session:* ]]; then
+    nav_branch_label "${task#session:}"; task="$REPLY"
+  fi
   REPLY="${task:-$bead}"
 }
 
@@ -2837,25 +2853,26 @@ nav_style() {
   REPLY=$'\033['"$code"'m'"$text"$'\033[0m'
 }
 
-nav_section_line() {
-  local label="$1" width="$2" rule n
-  label="${label^^}"
-  n=$(( width - ${#label} - 1 )); [ "$n" -lt 0 ] && n=0
-  printf -v rule '%*s' "$n" ''
-  rule="${rule// /─}"
-  nav_style section "$label${rule:+ $rule}"
+nav_group_label() {
+  case "$1" in
+    stale|needs-input|wait) REPLY='ATTN' ;;
+    running|run) REPLY='ACTIVE' ;;
+    *) REPLY='OTHER' ;;
+  esac
 }
 
-# nav_session_card <marker> <name> <state> <age> <context> <lines> [section]
-# Default hierarchy: identity + age + state, then one bounded repo/branch line.
+# nav_session_card <marker> <name> <state> <age> <context> <lines>
+# Every session carries its compact group label, so fuzzy filtering cannot remove
+# the only heading for retained rows. Pane rows retain the precise state label.
 nav_session_card() {
-  local marker="${1:- }" name="$2" state="$3" age="$4" context="$5" lines="${6:-multi}" section="${7:-}" w
-  local label suffix prefix name_budget gap head body marker_styled name_styled age_styled state_styled context_styled section_styled
+  local marker="${1:- }" name="$2" state="$3" age="$4" context="$5" lines="${6:-multi}" w
+  local label group exact suffix prefix name_budget gap head body marker_styled name_styled age_styled state_styled context_styled
   nav_text_clean "$name"; name="$REPLY"
   nav_text_clean "$age"; age="$REPLY"
   nav_text_clean "$context"; context="$REPLY"
-  nav_text_clean "$section"; section="$REPLY"
-  nav_state_label "$state"; label="$REPLY"
+  nav_group_label "$state"; group="$REPLY"
+  nav_state_label "$state"; exact="$REPLY"
+  label="$group${exact:+ $exact}"
   nav_card_width; w="$REPLY"
   suffix=''
   [ -n "$age" ] && suffix="$age"
@@ -2895,26 +2912,26 @@ nav_session_card() {
     body+=$'\n'"    $context_styled"
   fi
   REPLY="$body"
-  if [ -n "$section" ]; then
-    body="$REPLY"
-    nav_section_line "$section" "$w"; section_styled="$REPLY"
-    REPLY="$section_styled"$'\n'"$body"
-  fi
   return 0
 }
 
-# nav_pane_card <branch> <pane-id> <runtime> <state> <task> <lines> -> REPLY
-# Pane id, runtime, task and state share one bounded row in every nav mode.
+# nav_pane_card <branch> <pane-id> <runtime> <state> <task> <session-state> <lines>
+# Pane id, runtime, task, parent group and exact state share one bounded row.
 nav_pane_card() {
-  local branch="$1" pane="$2" runtime="$3" state="$4" task="$5" w label prefix suffix task_budget gap
-  local branch_styled pane_styled runtime_styled task_styled state_styled
+  local branch="$1" pane="$2" runtime="$3" state="$4" task="$5" session_state="$6" w label group base prefix suffix runtime_budget task_budget gap
+  local branch_styled pane_styled runtime_styled task_styled group_styled state_styled
   nav_text_clean "$runtime"; runtime="$REPLY"
   nav_text_clean "$task"; task="$REPLY"
   nav_state_label "$state"; label="$REPLY"
+  nav_group_label "$session_state"; group="$REPLY"
   nav_card_width; w="$REPLY"
-  fit_width "$runtime" 11; runtime="$REPLY"
-  prefix="    $branch $pane  $runtime"
-  suffix="${label:+  $label}"
+  suffix="  $group${label:+  $label}"
+  base="    $branch $pane  "
+  runtime_budget=$(( w - ${#base} - ${#suffix} ))
+  [ "$runtime_budget" -gt 11 ] && runtime_budget=11
+  [ "$runtime_budget" -lt 1 ] && runtime_budget=1
+  fit_width "$runtime" "$runtime_budget"; runtime="$REPLY"
+  prefix="$base$runtime"
   task_budget=$(( w - ${#prefix} - ${#suffix} - 2 ))
   [ "$task_budget" -lt 0 ] && task_budget=0
   fit_width "$task" "$task_budget"; task="$REPLY"
@@ -2927,10 +2944,11 @@ nav_pane_card() {
   nav_style pane-id "$pane"; pane_styled="$REPLY"
   nav_style runtime "$runtime"; runtime_styled="$REPLY"
   nav_style task "$task"; task_styled="$REPLY"
+  nav_style "$session_state" "$group"; group_styled="$REPLY"
   nav_style "$state" "$label"; state_styled="$REPLY"
   REPLY="    $branch_styled $pane_styled  $runtime_styled"
   [ -n "$task" ] && REPLY+="  $task_styled"
-  REPLY+="$gap"
+  REPLY+="$gap  $group_styled"
   [ -n "$label" ] && REPLY+="  $state_styled"
   return 0
 }
@@ -3334,7 +3352,7 @@ build_list() (
   local tmp_sessions tmp_panes sid sname pane_id pane_path session_activity root sort_key group_key display root_status name_width=12 session_col
   local window_index window_name pane_index pane_active pane_cmd pane_row_path pane_col pane_state pane_pid pane_bead pane_task pane_parent pane_rank cur_rank _cls
   local psid pwi ppi ppid pcol attn idle stale_bucket section last_section=-1 header_label now
-  local cur_pane='' cur_sid='' nav_preamble='' _sstate _stag _marker _sctx _scard _pblock _pline
+  local cur_pane='' cur_sid='' _sstate _stag _marker _sctx _scard _pblock _pline
   local pcmd pstate pbead ptask ppath proot pctx pstate_tag pdisp _nav_group _nav_state _branch _seen
   local -a _prow=()
   declare -A root_cache=()
@@ -3507,7 +3525,7 @@ build_list() (
         nav_state_tag "$pstate"; pstate_tag="$REPLY"
         _seen=$(( ${sess_pane_seen[$psid]:-0} + 1 )); sess_pane_seen["$psid"]="$_seen"
         if [ "$_seen" -eq "${sess_pane_count[$psid]:-1}" ]; then _branch='└'; else _branch='├'; fi
-        nav_pane_card "$_branch" "$ppid" "${pcmd:-shell}" "$pstate_tag" "$pctx" "$lines"; pdisp="$REPLY"
+        nav_pane_card "$_branch" "$ppid" "${pcmd:-shell}" "$pstate_tag" "$pctx" "${sess_nav_state[$psid]:-idle}" "$lines"; pdisp="$REPLY"
         pane_block["$psid"]+="$(printf 'pane\t%s\t%s\t%s\tp:%s:%s\t%s' "$psid" "${sess_name[$psid]:-}" "$ppid" "$psid" "$ppid" "$pdisp")"$'\x1f'
       done < <(sort -t $'\t' -k1,1 -k2,2n -k3,3n "$tmp_panes")
     else
@@ -3583,16 +3601,7 @@ build_list() (
       if [ -n "$FF_GREP" ]; then
         [ "${sess_grep_hit[$sid]:-0}" = 1 ] || continue
       fi
-      if [ "$emit" = nav ]; then
-        if [ "$section" != "$last_section" ]; then
-          case "$section" in
-            0) nav_preamble='NEEDS ATTENTION' ;;
-            1) nav_preamble='ACTIVE' ;;
-            *) nav_preamble='OTHER SESSIONS' ;;
-          esac
-          last_section="$section"
-        fi
-      elif [ "${section:-0}" = 1 ] && [ "$last_section" != 1 ]; then
+      if [ "$emit" != nav ] && [ "${section:-0}" = 1 ] && [ "$last_section" != 1 ]; then
         paint "$c_sp" "── specialists (sp-*) ──"; header_label="$REPLY"
         printf 'header\t\tspecialists\t\t  %s\n' "$header_label"
         last_section=1
@@ -3613,8 +3622,7 @@ build_list() (
         _marker=' '
         [ -n "$cur_sid" ] && [ "$sid" = "$cur_sid" ] && _marker='▎'
         nav_session_context "${sess_group_root[$sid]:-${sess_root[$sid]:-}}" "${sess_root_status[$sid]:-}" "${sess_idle_plain[$sid]:-}" "${sess_shared_wt[$sid]:-0}"; _sctx="$REPLY"
-        nav_session_card "$_marker" "$sname" "$_stag" "${sess_idle_plain[$sid]:-}" "$_sctx" "$lines" "$nav_preamble"; _scard="$REPLY"
-        nav_preamble=''  # one card carries the section label, then it is cleared
+        nav_session_card "$_marker" "$sname" "$_stag" "${sess_idle_plain[$sid]:-}" "$_sctx" "$lines"; _scard="$REPLY"
         printf 'session\t%s\t%s\t%s\ts:%s\t%s\0' "$sid" "$sname" "$sid" "$sid" "$_scard"
       else
         if [ "${sess_shared_wt[$sid]:-0}" = 1 ]; then

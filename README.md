@@ -31,7 +31,8 @@ projection over the same tmux/xtmux inventory; it creates no daemon, database,
 or runtime authority. [`docs/design/mockups/xtmux-nav-sidebar-target.html`](docs/design/mockups/xtmux-nav-sidebar-target.html)
 records the visual direction only; the shipped UI is terminal-native.
 
-- state-grouped session cards: identity + age + state, then bounded repo/branch context
+- state-sorted session cards with durable `ATTN` / `ACTIVE` / `OTHER` labels
+- identity + age + group + exact state, then bounded repo and humanized branch context
 - one bounded line per pane with permanently visible `%pane-id`, runtime, task, and state
 - `▎` marks the invoking tmux target; fzf's `›` marks the highlighted target
 - `Tab` keeps the existing expanded / sessions-only state
@@ -209,7 +210,7 @@ Suggested tmux bindings:
 
 ```tmux
 # recommended left drawer (tmux 3.5a syntax)
-bind s display-popup -E -x 0 -y 0 -w 52% -h 100% 'XTMUX_NAV_WIDTH=$(tput cols) $HOME/.local/bin/xtmux nav'
+bind s display-popup -E -x 0 -y 0 -w 40% -h 100% 'XTMUX_NAV_WIDTH=$(tput cols) $HOME/.local/bin/xtmux nav'
 
 # classic/full-size rollback
 bind S display-popup -E -w 99% -h 97% "$HOME/.local/bin/tmux-session-picker"
@@ -227,8 +228,8 @@ bind -n M-5 run-shell '~/.local/bin/tmux-session-picker attn-jump 5'
 bind -n M-` run-shell '~/.local/bin/tmux-session-picker jump-back'
 ```
 
-Choose popup width in tmux configuration: about 40% on wide desktops, 50–55%
-for normal terminals, and 60–65% on smaller laptops. `tput cols` reads the actual
+Choose popup width in tmux configuration: 38–40% for the intended sidebar,
+44–50% for long session names, or 55–60% on a small terminal. `tput cols` reads the actual
 popup width after tmux creates it. xtmux does not install or rewrite these global
 bindings automatically.
 
@@ -628,8 +629,8 @@ make test-regen
 Current validation at the time of this README update:
 
 ```text
-bash test/contract.sh       289 pass, 0 fail
-bash test/nav-contract.sh   108 pass, 0 fail
+bash test/contract.sh       290 pass, 0 fail
+bash test/nav-contract.sh   111 pass, 0 fail
 bun test                    409 pass, 0 fail
 ```
 

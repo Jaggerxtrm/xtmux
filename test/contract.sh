@@ -2791,6 +2791,10 @@ JSON
     || nok "monitors: unreadable input surfaces a nonzero exit"
 fi
 
+grep -Eq '^run_check nav-contracts bash test/nav-contract\.sh$' "$ROOT/scripts/verify-json-api.sh" \
+  && ok "CI gate: JSON smoke requires nav contracts" \
+  || nok "CI gate: JSON smoke requires nav contracts"
+
 # EVAL-01 Codex evidence gate (xtmux-s96.3): the failure classifier must pass
 # its deterministic contract tests before any gate run trusts it to classify a
 # red check. Mixed known+unknown or infra+assertion must land as `product`.

@@ -41,6 +41,7 @@ run_check typecheck bun run typecheck
 # harness underneath it can go red.
 run_check harness-selftest bash test/harness-selftest.sh
 run_check shell-contracts bash test/contract.sh
+run_check nav-contracts bash test/nav-contract.sh
 run_check v1-fixtures bash scripts/capture-v1-fixtures.sh --check
 run_check live-smoke bash scripts/smoke-json-api.sh
 
