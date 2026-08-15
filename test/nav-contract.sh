@@ -510,7 +510,15 @@ require_fn nav_pane_context "renderer: pane context helper exists" && {
 }
 require_fn nav_branch_label "renderer: concise branch helper exists" && {
   nav_branch_label 'feature/nav-sidebar_redesign-for-terminal-users'
-  assert_eq "renderer: branch context is humanized and bounded" 'nav sidebar redesign…' "$REPLY"
+  assert_eq "renderer: branch context is humanized and never cut" 'nav sidebar redesign for terminal users' "$REPLY"
+}
+require_fn nav_wrap_text "renderer: wrap helper exists" && {
+  nav_wrap_text 'alpha beta gamma delta epsilon' 10
+  assert_eq "renderer: wrap preserves every character" "$(printf 'alpha beta\ngamma\ndelta\nepsilon')" "$REPLY"
+  nav_wrap_text 'supercalifragilistic' 5
+  assert_eq "renderer: wrap hard-splits overlong words" "$(printf 'super\ncalif\nragil\nistic')" "$REPLY"
+  nav_wrap_text 'short' 32
+  assert_eq "renderer: wrap leaves short text alone" 'short' "$REPLY"
 }
 require_fn nav_session_context "renderer: session context helper exists" && {
   nav_session_context /repo/core 'core  feature/nav-sidebar-redesign +2   /repo/core' '12m' 1
@@ -522,18 +530,37 @@ require_fn nav_session_card "renderer: session hierarchy card exists" && {
   _plain="$(_strip_nav_ansi "$REPLY")"
   _line1="$(printf '%s\n' "$_plain" | sed -n '1p')"
   _line2="$(printf '%s\n' "$_plain" | sed -n '2p')"
-  case "$_line1" in '▎ alpha'*'12m  ATTN WAIT') ok "renderer: identity, age, group, and exact state share primary line" ;; *) nok "renderer: identity, age, group, and exact state share primary line" ;; esac
+  case "$_line1" in '▎ alpha  12m  ATTN WAIT') ok "renderer: age and state stay adjacent to session identity" ;; *) nok "renderer: age and state stay adjacent to session identity" ;; esac
   assert_eq "renderer: repo and branch form the only default context line" '    core · nav sidebar redesign' "$_line2"
 }
+_nav_nows() { printf '%s' "$1" | tr -d '\n[:space:]'; }
 require_fn nav_pane_card "renderer: pane hierarchy row exists" && {
   XTMUX_NAV_WIDTH=60 nav_pane_card '└' '%42' claude running 'session:nav-redesign' running multi
   _plain="$(_strip_nav_ansi "$REPLY")"
   case "$_plain" in *$'\n'*) nok "renderer: pane metadata stays on one bounded line" ;; *) ok "renderer: pane metadata stays on one bounded line" ;; esac
-  case "$_plain" in *'%42'*'claude'*'session:nav-redesign'*'ACTIVE  RUN') ok "renderer: pane id, runtime, task, group, and state stay visible" ;; *) nok "renderer: pane id, runtime, task, group, and state stay visible" ;; esac
+  case "$_plain" in *'%42'*'claude  session:nav-redesign  ACTIVE  RUN') ok "renderer: pane metadata stays adjacent instead of at the clipped edge" ;; *) nok "renderer: pane metadata stays adjacent instead of at the clipped edge" ;; esac
   XTMUX_NAV_WIDTH=32 nav_pane_card '└' '%1234' prime-agent done '' done multi
   _plain="$(_strip_nav_ansi "$REPLY")"
-  [ "${#_plain}" -le 32 ] && ok "renderer: fixed pane metadata fits the minimum drawer width" || nok "renderer: fixed pane metadata fits the minimum drawer width"
-  case "$_plain" in *'%1234'*'OTHER'*'DONE') ok "renderer: minimum width retains pane id, group, and state" ;; *) nok "renderer: minimum width retains pane id, group, and state" ;; esac
+  _over=0
+  while IFS= read -r _vl; do [ "${#_vl}" -le 32 ] || _over=1; done <<< "$_plain"
+  [ "$_over" -eq 0 ] && ok "renderer: every pane line fits the minimum drawer width" || nok "renderer: every pane line fits the minimum drawer width"
+  case "$(printf '%s' "$_plain" | tr -d '[:space:]')" in *'└%1234prime-agentOTHERDONE'*) ok "renderer: full runtime text survives at minimum width" ;; *) nok "renderer: full runtime text survives at minimum width" ;; esac
+  XTMUX_NAV_WIDTH=24 nav_pane_card '└' '%1234' prime-agent done 'a-very-long-task-name-here' done multi
+  _plain="$(_strip_nav_ansi "$REPLY")"
+  _over=0
+  while IFS= read -r _vl; do [ "${#_vl}" -le 24 ] || _over=1; done <<< "$_plain"
+  [ "$_over" -eq 0 ] && ok "renderer: narrow physical drawer wraps within usable width" || nok "renderer: narrow physical drawer wraps within usable width"
+  case "$(printf '%s' "$_plain" | tr -d '[:space:]')" in *'└%1234prime-agentO/DONEa-very-long-task-name-here'*) ok "renderer: narrow row keeps every character and compact state" ;; *) nok "renderer: narrow row keeps every character and compact state" ;; esac
+}
+require_fn nav_session_card "renderer: session wrap coverage exists" && {
+  XTMUX_NAV_WIDTH=32 nav_session_card ' ' 'an-extremely-long-session-name-that-must-wrap' running '2m' 'a-long-repo-name · a very long humanized branch description' multi
+  _plain="$(_strip_nav_ansi "$REPLY")"
+  case "$_plain" in *'…'*) nok "renderer: session card never emits an ellipsis" ;; *) ok "renderer: session card never emits an ellipsis" ;; esac
+  _nows="$(printf '%s' "$_plain" | tr -d '[:space:]')"
+  case "$_nows" in *'an-extremely-l'*'ong-session-name-that-must-wrap'*'averylonghumanizedbranchdescription'*) ok "renderer: session card preserves every character" ;; *) nok "renderer: session card preserves every character" ;; esac
+  _over=0
+  while IFS= read -r _vl; do [ "${#_vl}" -le 32 ] || _over=1; done <<< "$_plain"
+  [ "$_over" -eq 0 ] && ok "renderer: every session line fits the usable width" || nok "renderer: every session line fits the usable width"
 }
 require_fn current_marker "renderer: current_marker() exists" && {
   current_marker '%1' '%1'; assert_eq "current marker: current pane" '▶' "$REPLY"
@@ -555,6 +582,7 @@ assert_eq "nav route: classic fallback" classic "$(cat "$WORK/route-classic")"
 cat > "$WORK/nav-list-stub" <<'EOF'
 #!/usr/bin/env bash
 printf '%s' "$1" > "${NAV_STUB_LOG:-/dev/null}"
+printf '%s' "${XTMUX_NAV_WIDTH:-}" > "${NAV_STUB_WIDTH_LOG:-/dev/null}"
 if [ "${NAV_SPECIALIST:-0}" = 1 ]; then
   printf 'session\t$1\tone\t$1\ts:$1\t  one\0session\t$2\ttwo\t$2\ts:$2\t── specialists ──\n▎ two\0'
 else
@@ -566,7 +594,7 @@ chmod +x "$WORK/nav-list-stub"
   nav_route() { REPLY=multiline; }
   fzf() { printf '%s\n' "$*" > "$WORK/nav-fzf-args"; cat >/dev/null; }
   self="$WORK/nav-list-stub"
-  NAV_STUB_LOG="$WORK/nav-stub-command" pick_nav
+  XTMUX_NAV_WIDTH=40 NAV_STUB_LOG="$WORK/nav-stub-command" NAV_STUB_WIDTH_LOG="$WORK/nav-stub-width" pick_nav
 )
 if grep -q 'load:pos(2)' "$WORK/nav-fzf-args"; then
   ok "nav reveal: initial selection positions on current marker"
@@ -589,6 +617,11 @@ else
   nok "nav help: ? explicitly reveals the hidden details pane"
 fi
 assert_eq "nav filter: initial list uses persisted filter state" list-active-nav "$(cat "$WORK/nav-stub-command")"
+assert_eq "nav width: fzf border and selection chrome are reserved" 32 "$(cat "$WORK/nav-stub-width")"
+_width_narrow="$(XTMUX_NAV_WIDTH=32 nav_reserve_fzf_width; printf '%s' "$XTMUX_NAV_WIDTH")"
+assert_eq "nav width: narrow physical drawers reserve chrome without widening" 24 "$_width_narrow"
+_width_default="$(unset XTMUX_NAV_WIDTH; COLUMNS=52 nav_reserve_fzf_width; printf '%s' "$XTMUX_NAV_WIDTH")"
+assert_eq "nav width: unset override reserves chrome from terminal columns" 44 "$_width_default"
 (
   nav_route() { REPLY=multiline; }
   fzf() { printf '%s\n' "$*" > "$WORK/nav-specialist-fzf-args"; cat >/dev/null; }

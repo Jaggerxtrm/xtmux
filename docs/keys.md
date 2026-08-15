@@ -16,8 +16,10 @@ Set width in tmux configuration rather than application state:
 - 44–50% when session names need more room
 - 55–60% on a small terminal
 
-Change `40%` to tune the drawer. `tput cols` runs inside the popup, so bounded
-rows follow its actual terminal width without tmux-format text leaking into the shell.
+Change `40%` to tune the drawer. `tput cols` runs inside the popup. The nav
+launcher reserves eight cells for fzf's border and selection gutter before it
+bounds rows; long names, branches, and tasks wrap onto continuation lines
+instead of being cut.
 
 Keep a classic/full-screen rollback binding:
 

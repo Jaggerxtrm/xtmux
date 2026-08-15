@@ -194,6 +194,19 @@ on the same live server. Baseline/current medians were 151.0/153.2 ms and trimme
 means were 152.8/154.2 ms (+0.9%). This is evidence of no material regression,
 not a speed claim.
 
+The right-edge hardening was interleaved against `c4d7585b` for 12 warm runs at
+72 usable columns. Baseline/current medians were 174.6/157.7 ms and trimmed
+means were 173.1/162.4 ms (-6.2%). This confirms no regression; the apparent
+improvement is not a general speed claim. The width reserve and responsive
+labels add no subprocess calls.
+
+The no-truncation wrapping was interleaved against `c4d7585b` (40 warm pairs,
+72 usable columns, host with large baseline outliers). Medians were 202.9/202.8 ms
+and trimmed means 210.0/202.0 ms (-3.8%); baseline standard deviation was
+128 ms versus 32 ms for the current renderer. Wrapping is pure bash word-wrap
+over the same inventory with zero new subprocesses, so the change is
+established as no-regression, not a speed claim.
+
 Warm structural counts from the process trace are unchanged:
 
 | command class | origin/main | feature nav |

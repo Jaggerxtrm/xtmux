@@ -32,7 +32,9 @@ or runtime authority. [`docs/design/mockups/xtmux-nav-sidebar-target.html`](docs
 records the visual direction only; the shipped UI is terminal-native.
 
 - state-sorted session cards with durable `ATTN` / `ACTIVE` / `OTHER` labels
-- identity + age + group + exact state, then bounded repo and humanized branch context
+- identity + age + group + exact state stay adjacent; fzf chrome gets an explicit width reserve
+- rows wrap onto continuation lines instead of being cut; no ellipsis in the default drawer
+- bounded repo and humanized branch context follow without pushing state off-screen
 - one bounded line per pane with permanently visible `%pane-id`, runtime, task, and state
 - `▎` marks the invoking tmux target; fzf's `›` marks the highlighted target
 - `Tab` keeps the existing expanded / sessions-only state
@@ -630,7 +632,7 @@ Current validation at the time of this README update:
 
 ```text
 bash test/contract.sh       290 pass, 0 fail
-bash test/nav-contract.sh   111 pass, 0 fail
+bash test/nav-contract.sh   124 pass, 0 fail
 bun test                    409 pass, 0 fail
 ```
 

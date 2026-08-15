@@ -2582,6 +2582,53 @@ fit_width() {
   fi
 }
 
+# nav_wrap_text <text> <width> -> REPLY: newline-joined lines, each <= width.
+# Greedy word wrap; words longer than width are hard-split (bash substring is
+# character-safe). Every character of <text> is preserved, none is cut.
+nav_wrap_text() {
+  local text="$1" width="$2" line='' word out=''
+  local -a words=() lines=()
+  if [ "$width" -le 0 ]; then REPLY="$text"; return 0; fi
+  # Fast path: text already fits and needs no splitting.
+  if [ "${#text}" -le "$width" ] && [[ "$text" != *$'\n'* ]]; then REPLY="$text"; return 0; fi
+  read -r -a words <<< "$text"
+  for word in "${words[@]}"; do
+    while [ "${#word}" -gt "$width" ]; do
+      [ -n "$line" ] && { lines+=("$line"); line=''; }
+      lines+=("${word:0:$width}")
+      word="${word:$width}"
+    done
+    if [ -z "$line" ]; then line="$word"
+    elif [ $(( ${#line} + 1 + ${#word} )) -le "$width" ]; then line+=" $word"
+    else lines+=("$line"); line="$word"; fi
+  done
+  [ -n "$line" ] && lines+=("$line")
+  [ "${#lines[@]}" -eq 0 ] && { REPLY=''; return 0; }
+  printf -v out '%s
+' "${lines[@]}"
+  REPLY="${out%$'
+'}"
+}
+
+# nav_wrap_styled <text> <width> <role> <indent> -> REPLY: wrapped, then styled
+# per line with the indent prepended. Styling stays after all width math.
+nav_wrap_styled() {
+  local text="$1" width="$2" role="$3" indent="$4" line out=''
+  nav_wrap_text "$text" "$width"
+  if [[ "$REPLY" != *$'
+'* ]]; then
+    nav_style "$role" "$REPLY"
+    REPLY="$indent$REPLY"
+    return 0
+  fi
+  while IFS= read -r line; do
+    nav_style "$role" "$line"
+    out+="${out:+$'
+'}$indent$REPLY"
+  done <<< "$REPLY"
+  REPLY="$out"
+}
+
 # current_marker <row-id> <current-id> -> REPLY='▶' when the row IS the
 # current session/pane, else a single space (keeps columns aligned).
 current_marker() {
@@ -2782,7 +2829,7 @@ nav_branch_label() {
   esac
   branch="${branch//\// }"; branch="${branch//_/ }"; branch="${branch//-/ }"
   while [[ "$branch" == *'  '* ]]; do branch="${branch//  / }"; done
-  fit_width "$branch" 21
+  REPLY="$branch"
 }
 
 # nav_session_context <group-root> <root-status> <age> <shared-wt> -> REPLY
@@ -2866,23 +2913,28 @@ nav_group_label() {
 # the only heading for retained rows. Pane rows retain the precise state label.
 nav_session_card() {
   local marker="${1:- }" name="$2" state="$3" age="$4" context="$5" lines="${6:-multi}" w
-  local label group exact suffix prefix name_budget gap head body marker_styled name_styled age_styled state_styled context_styled
+  local label group exact suffix prefix name_budget head body marker_styled name_styled age_styled state_styled context_styled
   nav_text_clean "$name"; name="$REPLY"
   nav_text_clean "$age"; age="$REPLY"
   nav_text_clean "$context"; context="$REPLY"
   nav_group_label "$state"; group="$REPLY"
   nav_state_label "$state"; exact="$REPLY"
-  label="$group${exact:+ $exact}"
   nav_card_width; w="$REPLY"
+  if [ "$w" -lt 32 ]; then
+    case "$group" in ATTN) group='A' ;; ACTIVE) group='R' ;; *) group='O' ;; esac
+    label="$group${exact:+/$exact}"
+  else
+    label="$group${exact:+ $exact}"
+  fi
   suffix=''
   [ -n "$age" ] && suffix="$age"
   [ -n "$label" ] && suffix+="${suffix:+  }$label"
   prefix="$marker "
-  name_budget=$(( w - ${#prefix} - ${#suffix} - 1 ))
+  name_budget=$(( w - ${#prefix} - ${#suffix} - 2 ))
   [ "$name_budget" -lt 1 ] && name_budget=1
-  fit_width "$name" "$name_budget"; name="$REPLY"
 
   if [ "$lines" = single ]; then
+    fit_width "$name" "$name_budget"; name="$REPLY"
     head="$prefix$name${suffix:+  $suffix}"
     local rest=$(( w - ${#head} - 3 ))
     if [ -n "$context" ] && [ "$rest" -ge 4 ]; then
@@ -2893,63 +2945,119 @@ nav_session_card() {
     return 0
   fi
 
-  gap=$(( w - ${#prefix} - ${#name} - ${#suffix} ))
-  [ "$gap" -lt 1 ] && gap=1
-  printf -v gap '%*s' "$gap" ''
+  # Multi: wrap instead of cut. Continuation lines align under the name.
+  nav_wrap_text "$name" "$name_budget"
+  local -a _name_lines=()
+  if [[ "$REPLY" == *$'\n'* ]]; then
+    while IFS= read -r _nl; do _name_lines+=("$_nl"); done <<< "$REPLY"
+  else
+    _name_lines=("$REPLY")
+  fi
+  local _first="${_name_lines[0]}"
   nav_style current "$marker"; marker_styled="$REPLY"
-  nav_style session "$name"; name_styled="$REPLY"
+  nav_style session "$_first"; name_styled="$REPLY"
   nav_style age "$age"; age_styled="$REPLY"
   nav_style "$state" "$label"; state_styled="$REPLY"
-  head="$marker_styled $name_styled$gap"
-  [ -n "$age" ] && head+="$age_styled"
+  head="$marker_styled $name_styled"
+  [ -n "$age" ] && head+="  $age_styled"
   [ -n "$age" ] && [ -n "$label" ] && head+='  '
   [ -n "$label" ] && head+="$state_styled"
+  local _i
+  for _i in "${_name_lines[@]:1}"; do
+    [ -n "$_i" ] || continue
+    nav_style session "$_i"; head+=$'\n'"  $REPLY"
+  done
 
   body="$head"
   if [ -n "$context" ]; then
-    fit_width "$context" $(( w - 4 )); context="$REPLY"
-    nav_style context "$context"; context_styled="$REPLY"
-    body+=$'\n'"    $context_styled"
+    nav_wrap_styled "$context" $(( w - 4 )) context '    '
+    body+=$'\n'"$REPLY"
   fi
   REPLY="$body"
   return 0
 }
 
 # nav_pane_card <branch> <pane-id> <runtime> <state> <task> <session-state> <lines>
-# Pane id, runtime, task, parent group and exact state share one bounded row.
+# Multi: pane id, group and exact state anchor line 1; runtime and task wrap
+# onto continuation lines rather than being cut. Single keeps deterministic
+# truncation (one physical line cannot hold more than the width).
 nav_pane_card() {
-  local branch="$1" pane="$2" runtime="$3" state="$4" task="$5" session_state="$6" w label group base prefix suffix runtime_budget task_budget gap
+  local branch="$1" pane="$2" runtime="$3" state="$4" task="$5" session_state="$6" lines="${7:-multi}" w label group indent runtime_sep base prefix suffix sep runtime_budget task_budget
   local branch_styled pane_styled runtime_styled task_styled group_styled state_styled
   nav_text_clean "$runtime"; runtime="$REPLY"
   nav_text_clean "$task"; task="$REPLY"
   nav_state_label "$state"; label="$REPLY"
   nav_group_label "$session_state"; group="$REPLY"
   nav_card_width; w="$REPLY"
-  suffix="  $group${label:+  $label}"
-  base="    $branch $pane  "
-  runtime_budget=$(( w - ${#base} - ${#suffix} ))
-  [ "$runtime_budget" -gt 11 ] && runtime_budget=11
-  [ "$runtime_budget" -lt 1 ] && runtime_budget=1
-  fit_width "$runtime" "$runtime_budget"; runtime="$REPLY"
-  prefix="$base$runtime"
-  task_budget=$(( w - ${#prefix} - ${#suffix} - 2 ))
-  [ "$task_budget" -lt 0 ] && task_budget=0
-  fit_width "$task" "$task_budget"; task="$REPLY"
-  gap=$(( w - ${#prefix} - ${#suffix} - ${#task} ))
-  [ -n "$task" ] && gap=$((gap - 2))
-  [ "$gap" -lt 0 ] && gap=0
-  printf -v gap '%*s' "$gap" ''
+  if [ "$w" -lt 32 ]; then
+    case "$group" in ATTN) group='A' ;; ACTIVE) group='R' ;; *) group='O' ;; esac
+    group="$group${label:+/$label}"; label=''; indent=''; runtime_sep=' '; sep=' '
+    suffix="$sep$group"
+    base="$indent$branch $pane$runtime_sep"
+  else
+    indent='    '; runtime_sep='  '; sep='  '
+    suffix="$sep$group${label:+  $label}"
+    base="$indent$branch $pane$runtime_sep"
+  fi
 
+  if [ "$lines" = single ]; then
+    runtime_budget=$(( w - ${#base} - ${#suffix} ))
+    if [ "$w" -lt 32 ] && [ "$runtime_budget" -gt 4 ]; then runtime_budget=4; fi
+    [ "$runtime_budget" -gt 11 ] && runtime_budget=11
+    [ "$runtime_budget" -lt 1 ] && runtime_budget=1
+    fit_width "$runtime" "$runtime_budget"; runtime="$REPLY"
+    prefix="$base$runtime"
+    task_budget=$(( w - ${#prefix} - ${#suffix} - 2 ))
+    [ "$task_budget" -gt 24 ] && task_budget=24
+    [ "$task_budget" -lt 0 ] && task_budget=0
+    fit_width "$task" "$task_budget"; task="$REPLY"
+    nav_style section "$branch"; branch_styled="$REPLY"
+    nav_style pane-id "$pane"; pane_styled="$REPLY"
+    nav_style runtime "$runtime"; runtime_styled="$REPLY"
+    nav_style task "$task"; task_styled="$REPLY"
+    nav_style "$session_state" "$group"; group_styled="$REPLY"
+    nav_style "$state" "$label"; state_styled="$REPLY"
+    REPLY="$indent$branch_styled $pane_styled$runtime_sep$runtime_styled"
+    [ -n "$task" ] && REPLY+="  $task_styled"
+    REPLY+="$sep$group_styled"
+    [ -n "$label" ] && REPLY+="  $state_styled"
+    return 0
+  fi
+
+  # Multi: line 1 = id + runtime + group/state; task and long runtimes wrap.
+  runtime_budget=$(( w - ${#base} - ${#suffix} ))
+  nav_wrap_text "$runtime" "$runtime_budget"
+  local -a _rt=()
+  if [[ "$REPLY" == *$'\n'* ]]; then
+    while IFS= read -r _rl; do _rt+=("$_rl"); done <<< "$REPLY"
+  else
+    _rt=("$REPLY")
+  fi
   nav_style section "$branch"; branch_styled="$REPLY"
   nav_style pane-id "$pane"; pane_styled="$REPLY"
-  nav_style runtime "$runtime"; runtime_styled="$REPLY"
-  nav_style task "$task"; task_styled="$REPLY"
   nav_style "$session_state" "$group"; group_styled="$REPLY"
   nav_style "$state" "$label"; state_styled="$REPLY"
-  REPLY="    $branch_styled $pane_styled  $runtime_styled"
-  [ -n "$task" ] && REPLY+="  $task_styled"
-  REPLY+="$gap  $group_styled"
-  [ -n "$label" ] && REPLY+="  $state_styled"
+  local _first="${_rt[0]}" _card="" _r _task_inline=0
+  nav_style runtime "$_first"; runtime_styled="$REPLY"
+  [ -n "$task" ] && [ $(( ${#base} + ${#_first} + 2 + ${#task} + ${#suffix} )) -le "$w" ] && _task_inline=1
+  _card="$indent$branch_styled $pane_styled$runtime_sep$runtime_styled"
+  if [ "$_task_inline" = 1 ]; then
+    nav_style task "$task"; task_styled="$REPLY"
+    _card+="  $task_styled"
+  fi
+  for _r in "${_rt[@]:1}"; do
+    [ -n "$_r" ] || continue
+    nav_style runtime "$_r"; _card+=$'\n'"$indent  $REPLY"
+  done
+  _card+="$sep$group_styled"
+  [ -n "$label" ] && _card+="  $state_styled"
+  if [ -n "$task" ] && [ "$_task_inline" = 0 ]; then
+    local _ti="$indent  "
+    [ "$w" -lt 32 ] && _ti=' '
+    nav_wrap_styled "$task" $(( w - ${#_ti} )) task "$_ti"
+    _card+=$'\n'"$REPLY"
+  fi
+  REPLY="$_card"
   return 0
 }
 
@@ -3118,6 +3226,17 @@ pick_classic() {
   jump_to_target "$type" "$sid" "$target"
 }
 
+# nav_reserve_fzf_width — convert popup columns into usable row columns. fzf's
+# border plus multi-select pointer/marker gutter consume eight terminal cells.
+nav_reserve_fzf_width() {
+  local w="${XTMUX_NAV_WIDTH:-${COLUMNS:-52}}"
+  case "$w" in ''|*[!0-9]*) w=52 ;; esac
+  w=$(( w - 8 ))
+  [ "$w" -lt 1 ] && w=1
+  XTMUX_NAV_WIDTH="$w"
+  export XTMUX_NAV_WIDTH
+}
+
 # pick_nav — the drawer launcher for bare `xtmux nav`. Routes on the capability
 # probe: multiline -> NUL hierarchy cards; oneline -> NUL one-line cards (same
 # hidden token architecture); classic -> the classic launcher.
@@ -3142,6 +3261,7 @@ pick_nav() {
       return $?
       ;;
   esac
+  nav_reserve_fzf_width
   local footer=' ↵ open · Tab panes · ^/ details · ? help '
   local inspector='hidden,bottom,7,border-top,wrap,follow'
   local inspector_max='bottom,50%,border-top,wrap,follow'
