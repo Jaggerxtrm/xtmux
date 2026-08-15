@@ -98,7 +98,7 @@ const PI_PACKAGE_MANIFEST = {
 const managedSources = {
   claudeHooks: {
     "agent-state.sh": join(root, "scripts", "agent-state.sh"),
-    ...Object.fromEntries(["auto-monitor-on-send.mjs", "auto-monitor-on-send.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs", "claude-agent-turn-capture.mjs"]
+    ...Object.fromEntries(["auto-monitor-on-send.mjs", "auto-monitor-on-send.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs", "claude-agent-turn-capture.mjs", "claude-user-prompt-episode.mjs"]
       .map((name) => [name, join(root, "hooks", "claude", name)])),
   },
   codexHooks: {
@@ -272,7 +272,10 @@ function canonicalHooks() {
     // and split the pane's history and Specialists jobs across a phantom
     // instance. `startup|resume|clear` is the same set the Codex wiring uses.
     SessionStart: [state("SessionStart", "idle --new-instance", "startup|resume|clear")],
-    UserPromptSubmit: [state("UserPromptSubmit", "running")],
+    // xtmux-gdk: the episode-opener runs alongside the state marker. It must
+    // never block (exit 0 always) — UserPromptSubmit exit 2 would erase the
+    // user's prompt. Order relative to the state marker carries no weight.
+    UserPromptSubmit: [state("UserPromptSubmit", "running"), wrapper(undefined, `node "${hook("claude-user-prompt-episode.mjs")}"`)],
     PreToolUse: [state("PreToolUse", "running")],
     Notification: [state("Notification", "needs-input")],
     PostToolUse: [
@@ -552,7 +555,7 @@ function install() {
   removeManagedDirectory(claudeHooks, "claudeHooks", state);
   mkdirSync(claudeHooks, { recursive: true });
   copyFileSync(join(root, "scripts", "agent-state.sh"), join(claudeHooks, "agent-state.sh"));
-  for (const name of ["auto-monitor-on-send.mjs", "auto-monitor-on-send.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs", "claude-agent-turn-capture.mjs"]) {
+  for (const name of ["auto-monitor-on-send.mjs", "auto-monitor-on-send.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs", "claude-agent-turn-capture.mjs", "claude-user-prompt-episode.mjs"]) {
     copyFileSync(join(root, "hooks", "claude", name), join(claudeHooks, name));
   }
   if (existsSync(codexRoot)) {

@@ -1,15 +1,28 @@
 #!/usr/bin/env node
-// claude-agent-turn-capture — Claude Code Stop hook (xtmux-avz).
+// claude-agent-turn-capture — Claude Code Stop hook (xtmux-avz, xtmux-gdk).
 //
-// On every Stop, parse the current session's transcript jsonl for the last
-// assistant text turn and spill it to a temp file, then emit
-// `log emit agent.turn.done` so the obs binary stores the uncompacted text in
+// On every Stop, capture the assistant text of the turn just completed and
+// emit `log emit agent.turn.done` so the obs binary stores it in
 // agent_turns.last_message_text (symmetric with the pi extension).
+//
+// Response episodes (xtmux-gdk): each row is a CANDIDATE inside the pane's
+// current episode (one user prompt + all continuations caused before control
+// returns to the operator). The UserPromptSubmit hook opens the episode and
+// records a transcript cursor; this hook reports episode_open=1 on every
+// non-continuation stop, 0 on stop_hook_active continuations, and the obs
+// attaches rows to the right episode. The viewer renders the episode, never
+// the latest row.
+//
+// Text source: input.last_assistant_message is primary — Claude's docs state
+// the transcript "isn't guaranteed to include the final message at Stop time
+// on all versions", so the settle-retry tail read is only the fallback for
+// payloads without it. The fallback polls until the file size settles or a
+// new assistant line appears after the episode cursor (~1s cap).
 //
 // Fail-open by contract: unreadable/malformed transcripts emit a metadata-only
 // completed-turn row; missing tmux context or emit failures remain silent.
 
-import { closeSync, fstatSync, openSync, readFileSync, readSync, writeFileSync, unlinkSync, mkdtempSync, rmSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readSync, writeFileSync, unlinkSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -66,17 +79,22 @@ function parseTail(raw) {
 }
 
 // Read only the tail — the full transcript can be large and only the most
-// recent assistant turn matters. 1MB tail covers thousands of lines.
-function readTail(transcriptPath) {
+// recent assistant turn matters. 1MB tail covers thousands of lines. When a
+// cursor (byte offset recorded at episode open) is given, only source at or
+// after the cursor is scanned, so a previous episode's text can never satisfy
+// the read.
+function readTail(transcriptPath, fromOffset = 0) {
   if (!transcriptPath) return { size: 0, text: "" };
   let fd;
   try {
     fd = openSync(transcriptPath, "r");
     const size = fstatSync(fd).size;
     const length = Math.min(size, 1024 * 1024);
+    const windowStart = size - length;
     const buf = Buffer.allocUnsafe(length);
-    const bytesRead = readSync(fd, buf, 0, length, size - length);
-    return { size, text: parseTail(buf.subarray(0, bytesRead).toString("utf8")) };
+    const bytesRead = readSync(fd, buf, 0, length, windowStart);
+    const sliceStart = Math.max(0, fromOffset - windowStart);
+    return { size, text: parseTail(buf.subarray(sliceStart, bytesRead).toString("utf8")) };
   } catch { return { size: 0, text: "" }; }
   finally { if (fd !== undefined) { try { closeSync(fd); } catch { /* fail-open */ } } }
 }
@@ -90,15 +108,15 @@ const POLL_MS = 25;
 const SLEEP_BUF = new Int32Array(new SharedArrayBuffer(4));
 function sleepSync(ms) { Atomics.wait(SLEEP_BUF, 0, 0, ms); }
 
-function settledTranscript(transcriptPath) {
+function settledTranscript(transcriptPath, fromOffset = 0) {
   const deadline = Date.now() + SETTLE_MS;
-  let prev = readTail(transcriptPath);
+  let prev = readTail(transcriptPath, fromOffset);
   sleepSync(POLL_MS);
   while (Date.now() < deadline) {
-    const cur = readTail(transcriptPath);
-    // Newer assistant text landing is the flush completing; a size unchanged
-    // across a full poll gap means the writer has settled. Either ends the
-    // retry with the freshest read.
+    const cur = readTail(transcriptPath, fromOffset);
+    // Newer assistant text landing (after the episode cursor) is the flush
+    // completing; a size unchanged across a full poll gap means the writer has
+    // settled. Either ends the retry with the freshest read.
     if (cur.text !== prev.text || cur.size === prev.size) return cur;
     prev = cur;
     sleepSync(POLL_MS);
@@ -113,10 +131,37 @@ function main() {
   // socket tmux resolves a bystander pane, so skip — same guard as
   // agent-state.sh.
   if (!process.env.TMUX || !process.env.TMUX_PANE) return;
-  const transcriptPath = input.transcript_path ?? input.transcriptPath;
-  const { size: transcriptSize, text: fullText } = settledTranscript(transcriptPath);
-
   const pane = process.env.TMUX_PANE;
+  const transcriptPath = input.transcript_path ?? input.transcriptPath;
+  const continuation = input.stop_hook_active === true;
+
+  // Episode correlation (xtmux-gdk). The UserPromptSubmit hook opens the
+  // episode and arms @agent_episode_pending; every other non-continuation stop
+  // starts a fresh episode itself (covers a missing UserPromptSubmit hook and
+  // sessions that never fired one). The pending flag is consumed here.
+  const cursor = Number(tmuxValue(["show-options", "-p", "-qv", "@agent_episode_cursor"], pane)) || 0;
+  const promptArmed = tmuxValue(["show-options", "-p", "-qv", "@agent_episode_pending"], pane) === "1";
+  const episodeOpen = continuation ? 0 : (promptArmed ? 0 : 1);
+  if (!continuation) {
+    try {
+      spawnSync("tmux", ["set-option", "-p", "-q", "@agent_episode_pending", "0"], { encoding: "utf8", timeout: 1000 });
+    } catch { /* best-effort: a stale flag only re-arms once per prompt */ }
+  }
+
+  // Text source: the Stop payload's own last_assistant_message is authoritative
+  // (race-free by contract); the settle-retry tail read after the episode
+  // cursor is the fallback for payloads without it.
+  const payloadText = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
+  let transcriptSize = 0;
+  let fullText = payloadText;
+  if (fullText) {
+    try { transcriptSize = statSync(transcriptPath).size; } catch { /* size only improves dedup identity */ }
+  } else {
+    const settled = settledTranscript(transcriptPath, cursor);
+    transcriptSize = settled.size;
+    fullText = settled.text;
+  }
+
   const sessionId = tmuxValue(["display-message", "-p", "#{session_id}"], pane);
   const sessionName = tmuxValue(["display-message", "-p", "#S"], pane);
   const bead = tmuxValue(["show-options", "-p", "-qv", "@agent_bead"], pane);
@@ -140,6 +185,7 @@ function main() {
       `session_name=${sessionName}`,
       `bead=${bead}`,
       `parent=${parent}`,
+      `episode_open=${episodeOpen}`,
       `last_message=${compactSummary(fullText)}`,
       `last_message_file=${tmpFile}`,
     ];

@@ -2,6 +2,7 @@ import type { Db } from "../../db/connection.ts";
 import { insertEnvelope } from "../../db/journal.ts";
 import { sendMessage } from "../messages/send.ts";
 import { findActiveInstanceForPane } from "./instance.ts";
+import { resolveEpisodeForTurn } from "./episode.ts";
 
 export interface TurnCompleteInput {
   paneId: string;
@@ -17,6 +18,10 @@ export interface TurnCompleteInput {
   turnIndex?: number | undefined;
   parentMessageText?: string | undefined;   // if set + parent, send message and link
   instanceId?: string | undefined;
+  // xtmux-gdk: true when this turn starts a fresh response episode (a Stop
+  // that is not a stop_hook_active continuation). False/absent attaches to the
+  // pane's open episode, lazy-opening one when none exists.
+  episodeOpen?: boolean | undefined;
 }
 
 export interface TurnCompleteResult {
@@ -51,15 +56,16 @@ export function completeTurn(
     }
 
     const completedAtMs = now();
+    const episodeId = resolveEpisodeForTurn(db, input.paneId, input.sessionId, instanceId, input.episodeOpen === true, now);
     const turnRow = db.raw
       .prepare<{ id: number }, [
         string | null, string, string, string | null, string | null,
-        number | null, string | null, string | null, number,
+        number | null, string | null, string | null, number, number | null,
       ]>(
         `INSERT INTO agent_turns
            (instance_id, session_id, pane_id, bead_id, parent_session_id,
-            turn_index, summary, last_message_text, completed_at_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            turn_index, summary, last_message_text, completed_at_ms, episode_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          RETURNING id`,
       )
       .get(
@@ -72,6 +78,7 @@ export function completeTurn(
         input.summary ?? null,
         input.lastMessageText ?? null,
         completedAtMs,
+        episodeId,
       );
     turnId = turnRow?.id ?? 0;
 

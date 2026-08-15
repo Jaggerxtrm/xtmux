@@ -108,6 +108,15 @@ xtmux agent-last '$1495' --json      # full row: turnId, runtime, summary,
                                      #          lastMessageText, completedAtMs
 ```
 
+The latest `agent_turns` row is a *candidate*, not the response: one user prompt can produce several rows (Stop-hook continuations, hook acknowledgements). The viewer-facing projection is the response **episode** — one user prompt plus all continuations until control returns to the operator:
+
+```sh
+xtmux agent-episode %42              # plain: the primary substantive text
+xtmux agent-episode '$1495' --json   # primary + followUps + collapsed acks
+```
+
+Episodes open on every real `UserPromptSubmit` (Claude hook `claude-user-prompt-episode.mjs`) and on every non-continuation Stop; `stop_hook_active` continuations append to the same episode. Short candidates ("Acknowledged.") are collapsed and never replace the primary response.
+
 A pane id (`%N`) matches `pane_id`; a session id (`$N`) matches `session_id`. Plain output prints `lastMessageText`, falling back to the compact `summary` when the full text is null (old rows, capture miss), then to nothing. `--json` prints the whole row. Exit 5 with a structured `XTMUX_NOT_FOUND` error if no turn is recorded for the target. This removes the need to `capture-pane` a sibling to answer “what did this agent conclude?”.
 
 The Claude `Stop` hook is registered by `scripts/install.mjs` alongside the other xtmux Claude hooks; it is fail-open (a missing `TMUX`/`TMUX_PANE`, an unreadable or malformed transcript, or any emit failure is a silent no-op — a Claude turn still lands a row via `agent-state.sh`, this hook only enriches it with the full text). It also sends one idempotent, reply-free `turn done:` FYI to a distinct `@agent_parent_session`.

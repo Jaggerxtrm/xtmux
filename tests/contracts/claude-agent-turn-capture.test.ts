@@ -1,10 +1,11 @@
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { expect, test } from "bun:test";
 
 const HOOK = join(import.meta.dir, "../../hooks/claude/claude-agent-turn-capture.mjs");
+const PROMPT_HOOK = join(import.meta.dir, "../../hooks/claude/claude-user-prompt-episode.mjs");
 
 test("Claude Stop publishes one idempotent parent FYI and skips root panes", () => {
   const root = mkdtempSync(join(tmpdir(), "xtmux-claude-turn-"));
@@ -125,6 +126,178 @@ for (let i = 0; i < process.env.FINAL_LINE.length; i += 8) {
     expect(emit).not.toContain("older turn");
   } finally {
     if (appender.exitCode === null) appender.kill();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Stateful tmux mock: set-option appends name=value lines to a state file;
+// show-options reads pending/cursor back from it. Everything else mirrors the
+// plain mock above.
+function statefulFixture(root: string): { bin: string; state: string } {
+  const bin = join(root, "bin");
+  mkdirSync(bin, { recursive: true });
+  const state = join(root, "tmux-state");
+  writeFileSync(join(bin, "tmux"), `#!/usr/bin/env bash
+state="${state}"
+case "$1" in
+  set-option)
+    printf '%s\\n' "$4=$5" >> "$state"
+    exit 0
+    ;;
+esac
+case "\${!#}" in
+  '#{pane_id}') printf '%%child\\n' ;;
+  '#{session_id}') printf '$child\\n' ;;
+  '#S') printf 'child\\n' ;;
+  '@agent_bead') printf 'xtmux-msg\\n' ;;
+  '@agent_parent_session') printf '%s\\n' "\${MOCK_PARENT:-}" ;;
+  '@agent_episode_pending') grep -Fqx '@agent_episode_pending=1' "$state" && printf '1\\n' ;;
+  '@agent_episode_cursor') v="$(grep -F '@agent_episode_cursor=' "$state" | tail -1)"; printf '%s\\n' "\${v#*=}" ;;
+  *) : ;;
+esac
+`);
+  chmodSync(join(bin, "tmux"), 0o755);
+  return { bin, state };
+}
+
+function recordingPicker(root: string): string {
+  const picker = join(root, "bin", "picker");
+  writeFileSync(picker, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${join(root, "calls")}'\n`);
+  chmodSync(picker, 0o755);
+  return picker;
+}
+
+test("Stop payload last_assistant_message wins over a missing transcript", () => {
+  const root = mkdtempSync(join(tmpdir(), "xtmux-claude-turn-"));
+  try {
+    const { bin } = statefulFixture(root);
+    const env = {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      HOME: root,
+      TMUX: `${root}/tmux.sock,1,0`,
+      TMUX_PANE: "%child",
+      XTMUX_PICKER: recordingPicker(root),
+    };
+    const run = spawnSync("node", [HOOK], {
+      encoding: "utf8", env,
+      input: JSON.stringify({ transcript_path: join(root, "missing.jsonl"), last_assistant_message: "fresh answer" }),
+    });
+    expect(run.status).toBe(0);
+    const calls = readFileSync(join(root, "calls"), "utf8");
+    const emit = calls.split("\n").find((l) => l.startsWith("log emit agent.turn.done"));
+    expect(emit).toBeDefined();
+    expect(emit).toContain("last_message=fresh answer");
+    expect(emit).toContain("episode_open=1");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Stop hook reports episode_open: continuation and prompt-armed stops attach, plain stops open", () => {
+  const root = mkdtempSync(join(tmpdir(), "xtmux-claude-turn-"));
+  try {
+    const { bin, state } = statefulFixture(root);
+    const transcript = join(root, "transcript.jsonl");
+    writeFileSync(transcript, `${JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "hello" }] } })}\n`);
+    const env = {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      HOME: root,
+      TMUX: `${root}/tmux.sock,1,0`,
+      TMUX_PANE: "%child",
+      XTMUX_PICKER: recordingPicker(root),
+    };
+    const run = (input: Record<string, unknown>) => spawnSync("node", [HOOK], {
+      encoding: "utf8", env, input: JSON.stringify({ transcript_path: transcript, ...input }),
+    });
+
+    // Plain stop with no armed prompt: opens a fresh episode.
+    expect(run({}).status).toBe(0);
+    // stop_hook_active continuation: attaches.
+    expect(run({ stop_hook_active: true }).status).toBe(0);
+    // Prompt armed by UserPromptSubmit hook: the episode is already open.
+    writeFileSync(state, "@agent_episode_pending=1\n");
+    expect(run({}).status).toBe(0);
+
+    const emits = readFileSync(join(root, "calls"), "utf8")
+      .split("\n")
+      .filter((l) => l.startsWith("log emit agent.turn.done"));
+    expect(emits.map((l) => /episode_open=(\d)/.exec(l)?.[1])).toEqual(["1", "0", "0"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("UserPromptSubmit hook opens an episode, records the settled cursor, and arms pending", () => {
+  const root = mkdtempSync(join(tmpdir(), "xtmux-claude-turn-"));
+  try {
+    const { bin, state } = statefulFixture(root);
+    const transcript = join(root, "transcript.jsonl");
+    const seed = `${JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: "do the thing" }] } })}\n`;
+    writeFileSync(transcript, seed);
+    const env = {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      HOME: root,
+      TMUX: `${root}/tmux.sock,1,0`,
+      TMUX_PANE: "%child",
+      XTMUX_PICKER: recordingPicker(root),
+    };
+    const run = spawnSync("node", [PROMPT_HOOK], {
+      encoding: "utf8", env, input: JSON.stringify({ transcript_path: transcript }),
+    });
+    expect(run.status).toBe(0);
+    const calls = readFileSync(join(root, "calls"), "utf8");
+    const emit = calls.split("\n").find((l) => l.startsWith("log emit agent.episode.open"));
+    expect(emit).toBeDefined();
+    expect(emit).toContain(`pane=%child session=$child session_name=child bead=xtmux-msg`);
+    expect(emit).toContain(`cursor=${Buffer.byteLength(seed)}`);
+    const stateLines = readFileSync(state, "utf8");
+    expect(stateLines).toContain(`@agent_episode_pending=1`);
+    expect(stateLines).toContain(`@agent_episode_cursor=${Buffer.byteLength(seed)}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("fallback read correlates only source after the episode cursor", () => {
+  const root = mkdtempSync(join(tmpdir(), "xtmux-claude-turn-"));
+  try {
+    const { bin, state } = statefulFixture(root);
+    const oldLine = `${JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "previous episode" }] } })}\n`;
+    const transcript = join(root, "transcript.jsonl");
+    writeFileSync(transcript, oldLine);
+    // The cursor sits at the END of the previous episode's line: the fallback
+    // must not report it as this stop's text.
+    writeFileSync(state, `@agent_episode_cursor=${Buffer.byteLength(oldLine)}\n`);
+    const env = {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      HOME: root,
+      TMUX: `${root}/tmux.sock,1,0`,
+      TMUX_PANE: "%child",
+      XTMUX_PICKER: recordingPicker(root),
+    };
+    const run = (input: Record<string, unknown>) => spawnSync("node", [HOOK], {
+      encoding: "utf8", env, input: JSON.stringify({ transcript_path: transcript, ...input }),
+    });
+
+    expect(run({}).status).toBe(0);
+    const newLine = `${JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "this episode" }] } })}\n`;
+    appendFileSync(transcript, newLine);
+    expect(run({}).status).toBe(0);
+
+    const emits = readFileSync(join(root, "calls"), "utf8")
+      .split("\n")
+      .filter((l) => l.startsWith("log emit agent.turn.done"));
+    expect(emits).toHaveLength(2);
+    // First stop: nothing after the cursor → metadata-only row (no stale text).
+    expect(emits[0]).toContain("last_message= last_message_file=");
+    expect(emits[0]).not.toContain("previous episode");
+    // Second stop: the new line is after the cursor → captured.
+    expect(emits[1]).toContain("last_message=this episode");
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });

@@ -11,6 +11,7 @@ import { cliMonitorAgent, cliMonitorList, cliMonitorRun, cliWaitAgent } from "./
 import { cliLogEmit, cliLogTail, cliLogQuery, cliLogFollow } from "./cli-log.ts";
 import { cliOutcomeApply } from "./cli-outcome.ts";
 import { findLastTurn } from "./domains/agents/turn.ts";
+import { findLatestEpisode } from "./domains/agents/episode.ts";
 import { getInstance } from "./domains/agents/instance.ts";
 import { recordDelivery } from "./domains/deliveries/attempt.ts";
 import type { DeliveryKind } from "./domains/deliveries/attempt.ts";
@@ -54,6 +55,10 @@ commands:
 
   agent-last <pane-id|session-id> [--json]   full text of the target's most
                                            recent agent turn (xtmux-avz)
+  agent-episode <pane-id|session-id> [--json]  latest response episode of the
+                                           target: primary + substantive
+                                           follow-ups, short acks collapsed
+                                           (xtmux-gdk)
   instance-get <instance-id> [--json]        durable metadata of one agent
                                            occupation; used by agent-state.sh to
                                            rehydrate pane options (K4)
@@ -319,6 +324,7 @@ async function main(argv: string[]): Promise<number> {
       case "delivery-record":
       case "handoff":
       case "agent-last":
+      case "agent-episode":
       case "instance-get":
       case "outcome-apply": {
         const db = openDb(cfg);
@@ -345,6 +351,7 @@ async function main(argv: string[]): Promise<number> {
             case "delivery-record":  return cliDeliveryRecord(db, rest);
             case "handoff":          return cliHandoff(db, rest);
             case "agent-last":       return cliAgentLast(db, rest);
+            case "agent-episode":    return cliAgentEpisode(db, rest);
             case "instance-get":     return cliInstanceGet(db, rest);
             case "outcome-apply":    return cliOutcomeApply(db, rest);
           }
@@ -513,6 +520,50 @@ function cliAgentLast(db: import("./db/connection.ts").Db, argv: string[]): numb
   // Plain output: the full message if present, else the compact summary, else
   // nothing — a clean pipe surface for sibling agents / orchestrators.
   const text = row.lastMessageText ?? row.summary ?? "";
+  process.stdout.write(text + (text && !text.endsWith("\n") ? "\n" : ""));
+  return 0;
+}
+
+/**
+ * xtmux-gdk: `agent-episode <pane-id|session-id> [--json]` — the target's
+ * latest response episode (one user prompt + all continuations until control
+ * returns to the operator). The viewer contract: the latest agent_turns row is
+ * never the response; the episode is. The projection renders the first
+ * substantive candidate as `primary`, later substantive candidates as
+ * `followUps`, and short hook acknowledgements as `collapsed` (never primary).
+ * Plain output prints the primary text (pipes like agent-last); --json prints
+ * the full projection.
+ */
+function cliAgentEpisode(db: import("./db/connection.ts").Db, argv: string[]): number {
+  const flags = new Map<string, string | boolean>();
+  const positional: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a === "--json") { flags.set("json", true); continue; }
+    if (a.startsWith("--")) {
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("--")) { flags.set(a.slice(2), next); i++; }
+      else flags.set(a.slice(2), true);
+    } else {
+      positional.push(a);
+    }
+  }
+  const target = positional[0] ?? (typeof flags.get("target") === "string" ? flags.get("target") as string : "");
+  if (!target) {
+    process.stderr.write("agent-episode: <pane-id|session-id> required\n");
+    return 2;
+  }
+  const ep = findLatestEpisode(db, target);
+  if (!ep) {
+    const err = { code: "XTMUX_NOT_FOUND", message: `no response episode recorded for ${target}`, detail: { target } };
+    process.stderr.write(JSON.stringify(err) + "\n");
+    return 5;
+  }
+  if (flags.get("json") === true) {
+    process.stdout.write(JSON.stringify(ep) + "\n");
+    return 0;
+  }
+  const text = ep.primary?.lastMessageText ?? ep.primary?.summary ?? "";
   process.stdout.write(text + (text && !text.endsWith("\n") ? "\n" : ""));
   return 0;
 }

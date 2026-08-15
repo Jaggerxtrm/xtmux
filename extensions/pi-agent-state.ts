@@ -173,6 +173,9 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
         `session_name=${sessionName}`,
         `bead=${bead}`,
         `parent=${parent}`,
+        // xtmux-gdk: one pi run = one response episode (agent_end fires when
+        // control returns to the operator).
+        `episode_open=1`,
         `last_message=${text}`,
         ...(lastMessageFile ? [`last_message_file=${lastMessageFile}`] : []),
       ], { timeout: 1500 });
