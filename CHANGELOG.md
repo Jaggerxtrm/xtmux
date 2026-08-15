@@ -10,6 +10,8 @@ All notable changes to this project are documented here.
 - Complete Codex lifecycle, recovery, and terminal cleanup (xtmux-s96.4) ([0aa2f6b](https://github.com/Jaggerxtrm/xtmux/commit/0aa2f6b97201d738bb424cbf4ec2ccc306f68edc))
 
 ### Fixed
+- Survive deleted-cwd teardown in the obs launcher; message-send no longer fails after `xt end` removes the session worktree (xtmux-tml) ([471c49d9](https://github.com/Jaggerxtrm/xtmux/commit/471c49d9))
+- Honor the pane suffix in `session:%pane` message-send targets instead of delivering to the session's active pane (xtmux-tml) ([471c49d9](https://github.com/Jaggerxtrm/xtmux/commit/471c49d9))
 - K3 review-1 corrections — Core K3 fixtures, full v1 boundary, honest dedupe (xtmux-s96.2) ([45f039d](https://github.com/Jaggerxtrm/xtmux/commit/45f039da59686a6ccb68499bd4fcf8bd84384b75))
 - K3 review-2 corrections — Stop type guards, honest degraded-dedupe scope (xtmux-s96.2) ([599f01b](https://github.com/Jaggerxtrm/xtmux/commit/599f01b5632d097dacc45ff1ffa9ccb2468d69bb))
 - Strict per-identifier failure classifier for the EVAL-01 gate (xtmux-s96.3) ([08ab7ae](https://github.com/Jaggerxtrm/xtmux/commit/08ab7aee25a881834083e8f3ac3160f2157316e4))
