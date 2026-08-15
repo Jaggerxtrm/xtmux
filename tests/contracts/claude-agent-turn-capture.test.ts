@@ -153,6 +153,7 @@ case "\${!#}" in
   '@agent_parent_session') printf '%s\\n' "\${MOCK_PARENT:-}" ;;
   '@agent_episode_pending') grep -Fqx '@agent_episode_pending=1' "$state" && printf '1\\n' ;;
   '@agent_episode_cursor') v="$(grep -F '@agent_episode_cursor=' "$state" | tail -1)"; printf '%s\\n' "\${v#*=}" ;;
+  '@agent_last_candidate') v="$(grep -F '@agent_last_candidate=' "$state" | tail -1)"; printf '%s\\n' "\${v#*=}" ;;
   *) : ;;
 esac
 `);
@@ -256,6 +257,55 @@ test("UserPromptSubmit hook opens an episode, records the settled cursor, and ar
     const stateLines = readFileSync(state, "utf8");
     expect(stateLines).toContain(`@agent_episode_pending=1`);
     expect(stateLines).toContain(`@agent_episode_cursor=${Buffer.byteLength(seed)}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("fallback keeps polling past the previous candidate while the new line is still flushing", async () => {
+  // xtmux-9yo review blocker 1: a quiet interval must never settle on the
+  // last-emitted candidate. The transcript still holds only the previous
+  // candidate when the stop fires; the new line lands mid-poll.
+  const root = mkdtempSync(join(tmpdir(), "xtmux-claude-turn-"));
+  try {
+    const { bin, state } = statefulFixture(root);
+    const oldLine = `${JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "previous candidate" }] } })}\n`;
+    const transcript = join(root, "transcript.jsonl");
+    writeFileSync(transcript, oldLine);
+    writeFileSync(state, "@agent_last_candidate=previous candidate\n");
+    const finalLine = `${JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "new answer" }] } })}\n`;
+    const env = {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      HOME: root,
+      TMUX: `${root}/tmux.sock,1,0`,
+      TMUX_PANE: "%child",
+      XTMUX_PICKER: recordingPicker(root),
+      TRANSCRIPT: transcript,
+      FINAL_LINE: finalLine,
+    };
+    // Stream the new line in 8-byte fragments every 10ms (as the mid-flush
+    // race test): the found text stays "previous candidate" until the line
+    // completes, and the hook must NOT settle on it.
+    const appender = spawn("node", ["-e", `
+const fs = require("fs");
+for (let i = 0; i < process.env.FINAL_LINE.length; i += 8) {
+  fs.appendFileSync(process.env.TRANSCRIPT, process.env.FINAL_LINE.slice(i, i + 8));
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+}
+`], { env });
+    try {
+      const run = spawnSync("node", [HOOK], { encoding: "utf8", env, input: JSON.stringify({ transcript_path: transcript }) });
+      expect(run.status).toBe(0);
+      await new Promise((resolve) => appender.on("close", resolve));
+      const calls = readFileSync(join(root, "calls"), "utf8");
+      const emit = calls.split("\n").find((l) => l.startsWith("log emit agent.turn.done"));
+      expect(emit).toBeDefined();
+      expect(emit).toContain("last_message=new answer");
+      expect(emit).not.toContain("previous candidate");
+    } finally {
+      if (appender.exitCode === null) appender.kill();
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

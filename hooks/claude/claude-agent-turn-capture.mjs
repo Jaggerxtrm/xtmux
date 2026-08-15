@@ -101,27 +101,41 @@ function readTail(transcriptPath, fromOffset = 0) {
 
 // Claude's transcript writer flushes asynchronously: a Stop fired mid-flush
 // can read a tail where the final assistant line has not landed yet, which
-// would store the previous turn's text. Poll until the file size settles or
-// the assistant text advances (the final line landed), bounded by SETTLE_MS.
+// would store the previous turn's text. The retry NEVER settles on a quiet
+// interval alone — the writer can pause >25ms before the new assistant record
+// lands, and a hook/system record can land first. It polls until a NEW
+// candidate (text that differs from the last one this hook already emitted
+// for this transcript) appears, bounded by SETTLE_MS; at the deadline it
+// reports no text (metadata-only row) rather than the stale candidate.
 const SETTLE_MS = 1000;
 const POLL_MS = 25;
 const SLEEP_BUF = new Int32Array(new SharedArrayBuffer(4));
 function sleepSync(ms) { Atomics.wait(SLEEP_BUF, 0, 0, ms); }
 
-function settledTranscript(transcriptPath, fromOffset = 0) {
+function settledTranscript(transcriptPath, fromOffset = 0, lastCandidate = "") {
   const deadline = Date.now() + SETTLE_MS;
   let prev = readTail(transcriptPath, fromOffset);
+  if (prev.size === 0) return prev; // no transcript at all: nothing can arrive
   sleepSync(POLL_MS);
   while (Date.now() < deadline) {
     const cur = readTail(transcriptPath, fromOffset);
-    // Newer assistant text landing (after the episode cursor) is the flush
-    // completing; a size unchanged across a full poll gap means the writer has
-    // settled. Either ends the retry with the freshest read.
-    if (cur.text !== prev.text || cur.size === prev.size) return cur;
+    if (cur.text) {
+      const isNewCandidate = compactSummary(cur.text) !== lastCandidate;
+      if (isNewCandidate) {
+        if (lastCandidate !== "") return cur; // unambiguously this turn's text
+        // No prior candidate: the text could still be the previous turn's
+        // mid-flush. Trust it only when the transcript advanced or the writer
+        // is idle — with a fresh episode cursor this region holds only this
+        // turn's content, so a settled size makes it authoritative.
+        if (cur.text !== prev.text || cur.size === prev.size) return cur;
+      }
+    }
     prev = cur;
     sleepSync(POLL_MS);
   }
-  return prev;
+  // Never persist the previous candidate as this turn's text; the turn still
+  // lands as a metadata-only row (fail-open).
+  return { size: prev.size, text: "" };
 }
 
 function main() {
@@ -141,6 +155,9 @@ function main() {
   // sessions that never fired one). The pending flag is consumed here.
   const cursor = Number(tmuxValue(["show-options", "-p", "-qv", "@agent_episode_cursor"], pane)) || 0;
   const promptArmed = tmuxValue(["show-options", "-p", "-qv", "@agent_episode_pending"], pane) === "1";
+  // The compact text this hook last emitted for this transcript: the fallback
+  // read must never report it again as a new turn's text (xtmux-9yo review).
+  const lastCandidate = tmuxValue(["show-options", "-p", "-qv", "@agent_last_candidate"], pane);
   const episodeOpen = continuation ? 0 : (promptArmed ? 0 : 1);
   if (!continuation) {
     try {
@@ -157,7 +174,7 @@ function main() {
   if (fullText) {
     try { transcriptSize = statSync(transcriptPath).size; } catch { /* size only improves dedup identity */ }
   } else {
-    const settled = settledTranscript(transcriptPath, cursor);
+    const settled = settledTranscript(transcriptPath, cursor, lastCandidate);
     transcriptSize = settled.size;
     fullText = settled.text;
   }
@@ -195,6 +212,14 @@ function main() {
   } finally {
     if (tmpFile) { try { unlinkSync(tmpFile); } catch { /* consumed by obs */ } }
     if (tmpDir) { try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* already removed */ } }
+  }
+
+  // Remember the emitted candidate so the next stop's fallback read never
+  // re-reports it as new text. Only text-bearing candidates are recorded.
+  if (fullText) {
+    try {
+      spawnSync("tmux", ["set-option", "-p", "-q", "@agent_last_candidate", compactSummary(fullText)], { encoding: "utf8", timeout: 1000 });
+    } catch { /* best-effort */ }
   }
 
   if (parent && parent !== sessionId && parent !== pane && fullText) {
