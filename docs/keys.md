@@ -7,7 +7,7 @@ Copy these snippets into `~/.tmux.conf` after running `./install.sh`.
 Recommended sidebar-style navigator (verified tmux 3.5a syntax):
 
 ```tmux
-bind s display-popup -E -x 0 -y 0 -w 40% -h 100% 'XTMUX_NAV_WIDTH=$(tput cols) $HOME/.local/bin/xtmux nav'
+bind s display-popup -E -x 0 -y 0 -w 40% -h 75% 'XTMUX_NAV_WIDTH=$(tput cols) $HOME/.local/bin/xtmux nav'
 ```
 
 Set width in tmux configuration rather than application state:
@@ -16,10 +16,12 @@ Set width in tmux configuration rather than application state:
 - 44–50% when session names need more room
 - 55–60% on a small terminal
 
-Change `40%` to tune the drawer. `tput cols` runs inside the popup. The nav
-launcher reserves eight cells for fzf's border and selection gutter before it
-bounds rows; long names, branches, and tasks wrap onto continuation lines
-instead of being cut.
+Change `40%` to tune the drawer, and `75%` to tune its height. `tput cols` runs
+inside the popup. The nav launcher reserves eight cells for fzf's border and
+selection gutter before it bounds rows; long names, branches, and tasks wrap
+onto continuation lines instead of being cut. The `#222222` background uses a
+terminal-dependent alpha (`@200`) for slight transparency on terminals that
+support it. Nothing is bold; `%pane-id` and agent state labels differ by color only.
 
 Keep a classic/full-screen rollback binding:
 

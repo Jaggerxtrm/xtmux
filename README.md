@@ -31,7 +31,7 @@ projection over the same tmux/xtmux inventory; it creates no daemon, database,
 or runtime authority. [`docs/design/mockups/xtmux-nav-sidebar-target.html`](docs/design/mockups/xtmux-nav-sidebar-target.html)
 records the visual direction only; the shipped UI is terminal-native.
 
-- state-sorted session cards with durable `ATTN` / `ACTIVE` / `OTHER` labels
+- state-sorted session cards with durable `attn` / `active` / `other` labels
 - identity + age + group + exact state stay adjacent; fzf chrome gets an explicit width reserve
 - rows wrap onto continuation lines instead of being cut; no ellipsis in the default drawer
 - bounded repo and humanized branch context follow without pushing state off-screen
@@ -212,7 +212,7 @@ Suggested tmux bindings:
 
 ```tmux
 # recommended left drawer (tmux 3.5a syntax)
-bind s display-popup -E -x 0 -y 0 -w 40% -h 100% 'XTMUX_NAV_WIDTH=$(tput cols) $HOME/.local/bin/xtmux nav'
+bind s display-popup -E -x 0 -y 0 -w 40% -h 75% 'XTMUX_NAV_WIDTH=$(tput cols) $HOME/.local/bin/xtmux nav'
 
 # classic/full-size rollback
 bind S display-popup -E -w 99% -h 97% "$HOME/.local/bin/tmux-session-picker"
@@ -231,7 +231,8 @@ bind -n M-` run-shell '~/.local/bin/tmux-session-picker jump-back'
 ```
 
 Choose popup width in tmux configuration: 38–40% for the intended sidebar,
-44–50% for long session names, or 55–60% on a small terminal. `tput cols` reads the actual
+44–50% for long session names, or 55–60% on a small terminal. The drawer is
+75% of the viewport height by default. `tput cols` reads the actual
 popup width after tmux creates it. xtmux does not install or rewrite these global
 bindings automatically.
 

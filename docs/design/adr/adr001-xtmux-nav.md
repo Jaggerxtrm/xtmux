@@ -204,12 +204,16 @@ Sidebar/drawer appearance is achieved through tmux popup geometry.
 Conceptual binding:
 
 ```tmux
-bind s display-popup -E -x 0 -y 0 -w 40% -h 100% 'XTMUX_NAV_WIDTH=$(tput cols) $HOME/.local/bin/xtmux nav'
+bind s display-popup -E -x 0 -y 0 -w 40% -h 75% 'XTMUX_NAV_WIDTH=$(tput cols) $HOME/.local/bin/xtmux nav'
 ```
 
 This syntax was verified with tmux 3.5a. The intended sidebar is 38–40%; widen
 to 44–50% for long session names or 55–60% on a small terminal. The launcher
 subtracts eight cells for fzf border/selection chrome before bounding rows.
+The popup is 75% of the viewport height, and the `#222222` background uses a
+terminal-dependent alpha (`@200`) so supported terminals render it slightly
+transparent. Nothing is bold: rows, `%pane-id`, and agent state labels
+differ by color only.
 
 A classic/full-width binding remains available, and `XTMUX_NAV_LAYOUT=classic`
 selects it without changing runtime behavior.
@@ -218,7 +222,7 @@ selects it without changing runtime behavior.
 
 `../mockups/xtmux-nav-sidebar-target.html` is the visual-direction reference, not
 an implementation technology. Sessions sort as attention, active, then other.
-Every selectable record carries compact `ATTN`, `ACTIVE`, or `OTHER` group
+Every selectable record carries compact `attn`, `active`, or `other` group
 identity; no heading record can disappear under fuzzy filtering. Session and
 pane rows also retain the exact state. Rows wrap onto continuation lines
 rather than being cut: the default drawer never emits an ellipsis. The
@@ -227,14 +231,14 @@ truncation because a single physical line cannot exceed the terminal width.
 A session renders as:
 
 ```text
-▎ xtmux-ui                    2m  ATTN WAIT
+▎ xtmux-ui                    2m  attn wait
     xtmux · nav sidebar · +2
 ```
 
 Each expanded child pane uses one bounded line and keeps its operational id visible:
 
 ```text
-    └ %17  claude  sidebar picker  ATTN WAIT
+    └ %17  claude  sidebar picker  attn wait
 ```
 
 The primary list should not display every known metadata field.
