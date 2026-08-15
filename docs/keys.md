@@ -7,16 +7,16 @@ Copy these snippets into `~/.tmux.conf` after running `./install.sh`.
 Recommended sidebar-style navigator (verified tmux 3.5a syntax):
 
 ```tmux
-bind s display-popup -E -x 0 -y 0 -w 52% -h 100% 'XTMUX_NAV_WIDTH=$(tput cols) $HOME/.local/bin/xtmux nav'
+bind s display-popup -E -x 0 -y 0 -w 40% -h 100% 'XTMUX_NAV_WIDTH=$(tput cols) $HOME/.local/bin/xtmux nav'
 ```
 
 Set width in tmux configuration rather than application state:
 
-- 40% on a wide desktop
-- 50–55% for a normal terminal
-- 60–65% on a smaller laptop
+- 38–40% for the intended sidebar hierarchy
+- 44–50% when session names need more room
+- 55–60% on a small terminal
 
-Change `52%` to tune the drawer. `tput cols` runs inside the popup, so bounded
+Change `40%` to tune the drawer. `tput cols` runs inside the popup, so bounded
 rows follow its actual terminal width without tmux-format text leaking into the shell.
 
 Keep a classic/full-screen rollback binding:

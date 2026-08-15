@@ -52,21 +52,16 @@ Expanded drawer:
  xtmux nav · state groups · type to filter
  all›
 
- NEEDS ATTENTION ──────────────────────────
-   xtmux-ui                       2m  WAIT
-     xtmux · feat/nav-sidebar · +2
-     ├ %17  claude  picker UX         WAIT
-     └ %19  shell
-
- ACTIVE ───────────────────────────────────
->▎ sp-reviewer-a91f              <1m  RUN
-     specialists · xt/nav-review
-     └ %23  pi  reviewer · nav       RUN
-
- OTHER SESSIONS ───────────────────────────
-   quant                         18m  IDLE
+   xtmux-ui                  2m  ATTN WAIT
+     xtmux · nav sidebar · +2
+     ├ %17  claude  picker UX  ATTN WAIT
+     └ %19  shell             ATTN
+>▎ sp-reviewer-a91f         <1m  ACTIVE RUN
+     specialists · nav review
+     └ %23  pi  reviewer     ACTIVE RUN
+   quant                    18m  OTHER IDLE
      quant · main
-     └ %31  shell                    IDLE
+     └ %31  shell             OTHER IDLE
 
  ─ ↵ open · Tab panes · ^/ details · ? help
 ```
@@ -75,18 +70,18 @@ Compact view:
 
 ```text
 ╭─ xtmux ─ compact ───────────────────────╮
-│ > ▶ xtmux-ui                   [wait]   │
-│     quant                      [idle]   │
-│     market-data                [run]    │
-│     sp-reviewer-a91f           [run]    │
+│ > ▎ xtmux-ui              ATTN WAIT    │
+│     quant                 OTHER IDLE   │
+│     market-data           ACTIVE RUN  │
+│     sp-reviewer-a91f      ACTIVE RUN  │
 ╰──────────────────────────────────────────╯
 ```
 
 The current target marker and selection pointer intentionally differ:
 
 ```text
-▶ = where the invoking tmux client currently is
-> = what the navigator currently highlights
+▎ = where the invoking tmux client currently is
+› = what the navigator currently highlights
 ```
 
 ## 4. UI structure
@@ -146,7 +141,7 @@ Am I already there?
 Display:
 
 ```text
-▶ xtmux-ui                         [wait]
+▎ xtmux-ui                    ATTN WAIT
 ```
 
 Candidate tokens:
@@ -578,7 +573,7 @@ tmux client
     display-popup
       left aligned
       full height
-      ~50% width
+      38–40% width
         xtmux nav
 ```
 
@@ -587,9 +582,9 @@ The exact percentage should remain configurable through tmux configuration rathe
 Recommended examples may include:
 
 ```text
-40%  very wide terminals
-50-55% normal desktop use
-60-65% compact laptop terminals
+38-40% intended sidebar hierarchy
+44-50% long session names
+55-60% small terminals
 ```
 
 The binding syntax was verified with tmux 3.5a. No automatic terminal rewriting
@@ -600,13 +595,13 @@ or global key installation is required in v1.
 Default drawer footer:
 
 ```text
-Enter go · Tab compact · ^/ inspect · ? help
+↵ open · Tab panes · ^/ details · ? help
 ```
 
 When compact:
 
 ```text
-Enter go · Tab expand · ^/ inspect · ? help
+↵ open · Tab panes · ^/ details · ? help · compact
 ```
 
 When a structured filter is active, the prompt itself should communicate that state.
@@ -622,7 +617,7 @@ Adopt:
 | Herdr mechanism | xtmux interpretation |
 | --- | --- |
 | bounded multi-row cards | session/context and pane/task lines |
-| active row distinct from navigation selection | independent `▶` current marker and fzf pointer |
+| active row distinct from navigation selection | independent `▎` current marker and fzf `›` pointer |
 | explicit worktree membership | group from normalized repository/worktree identity, never rendered names |
 | priority projection | use xtmux's existing attention rank and tie-breakers, not Herdr state authority |
 | minimal scroll adjustment | reveal current target on open; thereafter retain the operator selection/viewport |

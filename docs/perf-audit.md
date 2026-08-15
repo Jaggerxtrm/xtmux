@@ -188,6 +188,12 @@ and 147.0 ms. This short paired run establishes no renderer regression, not a
 general speedup claim. NAV-5 only reformats the existing inventory and adds no
 subprocess call sites.
 
+The final PR-review follow-up (durable group/state labels and humanized
+branch/task text) was interleaved against commit `688ab099` for 12 warm runs each
+on the same live server. Baseline/current medians were 151.0/153.2 ms and trimmed
+means were 152.8/154.2 ms (+0.9%). This is evidence of no material regression,
+not a speed claim.
+
 Warm structural counts from the process trace are unchanged:
 
 | command class | origin/main | feature nav |
