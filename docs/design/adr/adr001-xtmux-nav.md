@@ -208,7 +208,8 @@ bind s display-popup -E -x 0 -y 0 -w 40% -h 100% 'XTMUX_NAV_WIDTH=$(tput cols) $
 ```
 
 This syntax was verified with tmux 3.5a. The intended sidebar is 38–40%; widen
-to 44–50% for long session names or 55–60% on a small terminal.
+to 44–50% for long session names or 55–60% on a small terminal. The launcher
+subtracts eight cells for fzf border/selection chrome before bounding rows.
 
 A classic/full-width binding remains available, and `XTMUX_NAV_LAYOUT=classic`
 selects it without changing runtime behavior.
@@ -219,7 +220,11 @@ selects it without changing runtime behavior.
 an implementation technology. Sessions sort as attention, active, then other.
 Every selectable record carries compact `ATTN`, `ACTIVE`, or `OTHER` group
 identity; no heading record can disappear under fuzzy filtering. Session and
-pane rows also retain the exact state. A session renders as:
+pane rows also retain the exact state. Rows wrap onto continuation lines
+rather than being cut: the default drawer never emits an ellipsis. The
+one-line fallback (fzf builds without multiline records) keeps deterministic
+truncation because a single physical line cannot exceed the terminal width.
+A session renders as:
 
 ```text
 ▎ xtmux-ui                    2m  ATTN WAIT
