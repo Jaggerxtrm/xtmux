@@ -65,6 +65,35 @@ test("projectEpisode: a short ack can never replace the substantive primary (the
   assert.notEqual(projected.primary.turnId, 3);
 });
 
+test("projectEpisode: an UNDER-200-char Mermaid beats a later acknowledgement (review P1)", () => {
+  // The reviewer's exact case: the useful response is a short fenced Mermaid
+  // (< SUBSTANTIVE_MIN chars); a later "Acknowledged." must not displace it.
+  const shortMermaid = "```mermaid\ngraph TD\n  A-->B\n```";
+  assert.ok(shortMermaid.length < 200);
+  assert.ok(shortMermaid.length < SUBSTANTIVE_MIN);
+  const projected = projectEpisode({
+    ...episode,
+    candidates: [
+      { turnId: 1, summary: "diagram", lastMessageText: shortMermaid, completedAtMs: 1001, runtime: "claude" },
+      { turnId: 2, summary: "ack", lastMessageText: "Acknowledged.", completedAtMs: 1002, runtime: "claude" },
+    ],
+  });
+  assert.equal(projected.primary.turnId, 1);
+  assert.equal(projected.primary.lastMessageText, shortMermaid);
+  assert.deepEqual(projected.followUps, []);
+  assert.deepEqual(projected.collapsed.map((c) => c.turnId), [2]);
+  // A short markdown table is substantive too; a plain short sentence is not.
+  const tabled = projectEpisode({
+    ...episode,
+    candidates: [
+      { turnId: 1, summary: "t", lastMessageText: "| a | b |\n|---|---|\n| 1 | 2 |", completedAtMs: 1001 },
+      { turnId: 2, summary: "ack", lastMessageText: "done", completedAtMs: 1002 },
+    ],
+  });
+  assert.equal(tabled.primary.turnId, 1);
+  assert.deepEqual(tabled.collapsed.map((c) => c.turnId), [2]);
+});
+
 test("projectEpisode: with no substantive candidate, the last text-bearing one is primary", () => {
   const projected = projectEpisode({
     ...episode,

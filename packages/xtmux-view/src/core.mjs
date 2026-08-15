@@ -116,9 +116,19 @@ export function sanitizeTerminalText(value) {
 
 // xtmux-it6: a candidate is "substantive" when its text clears this bar;
 // shorter rows are hook acknowledgements ("Acknowledged.") and are collapsed,
-// never used to replace the primary response. Mirrors SUBSTANTIVE_MIN in
+// never used to replace the primary response. Length alone is not the rule: a
+// short Mermaid/table/code block is still a real response, and a later short
+// acknowledgement must never displace it. Mirrors isSubstantiveText in
 // src/domains/agents/episode.ts (xtmux core) — the two must stay in lockstep.
 export const SUBSTANTIVE_MIN = 200;
+
+export function isSubstantiveText(text) {
+  const t = String(text ?? "");
+  if (t.length >= SUBSTANTIVE_MIN) return true;
+  if (t.includes("```") || t.includes("~~~")) return true;
+  if (t.includes("\n") && /^\s*\|/m.test(t)) return true;
+  return false;
+}
 
 function candidateText(candidate) {
   return String(candidate.lastMessageText ?? candidate.summary ?? "");
@@ -133,7 +143,7 @@ function candidateText(candidate) {
  */
 export function projectEpisode(episode) {
   const candidates = episode.candidates ?? [];
-  const substantive = candidates.filter((c) => candidateText(c).length >= SUBSTANTIVE_MIN);
+  const substantive = candidates.filter((c) => isSubstantiveText(candidateText(c)));
   const primary = substantive[0]
     ?? [...candidates].reverse().find((c) => candidateText(c).length > 0)
     ?? null;
