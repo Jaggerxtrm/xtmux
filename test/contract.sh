@@ -469,6 +469,51 @@ else
 fi
 wx2_missing_rc=0; XDG_STATE_HOME="$wx2_state" XTMUX_OBS_V2=1 "$PICKER" message-get wx2-missing --json >/dev/null 2>&1 || wx2_missing_rc=$?
 [ "$wx2_missing_rc" = 5 ] && ok "message-get: missing key returns XTMUX_NOT_FOUND" || nok "message-get: missing key returns XTMUX_NOT_FOUND (rc=$wx2_missing_rc)"
+# xtmux-tml: message-send must survive the caller's cwd being deleted out from
+# under it (xt end worktree teardown). Bun refuses to start from a deleted
+# directory; scripts/xtmux-obs.mjs restores a valid cwd before spawning. Run
+# the full picker chain from a deleted cwd and assert the message lands.
+tml_state="$WORK/tml-state"; mkdir -p "$tml_state"
+tml_cwd="$WORK/tml-cwd"; mkdir -p "$tml_cwd"
+tml_send="$(cd "$tml_cwd" && rmdir "$tml_cwd" && XDG_STATE_HOME="$tml_state" XTMUX_OBS_V2=1 "$PICKER" message-send --to tml-sess --from tml-agent --text 'deleted cwd probe' --expects-reply=false --json 2>/dev/null)"
+if printf '%s' "$tml_send" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["recipientId"]=="tml-sess" and d["senderId"]=="tml-agent"' 2>/dev/null; then
+  ok "message-send: survives deleted cwd (xt end teardown)"
+else
+  nok "message-send: survives deleted cwd (xt end teardown)"
+fi
+# xtmux-tml: `session:%pane` targets must route to the NAMED pane, not the
+# session's active pane. tmux parses `spfix:%875` as session:window, the %875
+# window lookup fails, and it silently returns the session's active pane; the
+# picker must extract the %N suffix itself. Mock tmux to emulate that misparse
+# (session-qualified targets return the active pane, bare %N returns itself)
+# and assert the message is recorded against the named pane.
+(
+  tml_routing_state="$WORK/tml-routing-state"; mkdir -p "$tml_routing_state"
+  # Sourced-function context: restore the picker's real path so obs_runtime_argv
+  # resolves the launcher instead of deriving a bogus root from fn_file.
+  self="$PICKER"
+  tmux() {
+    [ "$1" = display-message ] || return 1
+    local tgt="${4:-}" fmt="${5:-}"
+    case "$fmt" in
+      '#{session_id}') printf '$560\n' ;;
+      '#{pane_id}')
+        case "$tgt" in
+          *:%[0-9]*|*.%[0-9]*) printf '%%999\n' ;;   # tmux real misparse: session active pane
+          '%999999') return 1 ;;                    # nonexistent pane
+          '%'*) printf '%s\n' "$tgt" ;;
+          *) printf '%%999\n' ;;
+        esac
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  routing_out="$(XDG_STATE_HOME="$tml_routing_state" XTMUX_OBS_V2=1 message_send --to 'spfix:%875' --from tml-agent --text 'routing probe' --expects-reply=false --json 2>/dev/null)"
+  if printf '%s' "$routing_out" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["recipientId"]=="$560" and d["targetPaneId"]=="%875"' 2>/dev/null; then
+    exit 0
+  fi
+  exit 1
+) && ok "message-send: session:%pane routes to named pane" || nok "message-send: session:%pane routes to named pane"
 grep -F '"turn_end"' extensions/pi-agent-state.ts >/dev/null && grep -F 'agent.turn.done' extensions/pi-agent-state.ts >/dev/null && grep -F 'last_message=' extensions/pi-agent-state.ts >/dev/null && ok "pi extension: publishes turn done" || nok "pi extension: publishes turn done"
 grep -F 'obligations' hooks/claude/auto-monitor-drain-stop.mjs >/dev/null \
   && grep -F 'monitor-list' hooks/claude/auto-monitor-drain-stop.mjs >/dev/null \
