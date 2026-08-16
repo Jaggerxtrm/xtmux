@@ -188,4 +188,127 @@ console.log(JSON.stringify(db.query("SELECT id, closed_at_ms FROM agent_episodes
     expect(rows[0]!.closed_at_ms).not.toBeNull(); // closed by the new prompt
     expect(rows[1]!.closed_at_ms).toBeNull(); // open: the current episode
   });
+
+  // xtmux-gdk review P1: source identity at the adapter boundary comes from the
+  // assistant record's own immutable provider id (message.id), never from live
+  // transcript size/text. These three run the REAL pipeline (hook -> picker ->
+  // obs -> SQLite) so the DB outcome is asserted, not just the emitted key.
+  const entry = (id: string, text: string, extra: Record<string, unknown> = {}) =>
+    `${JSON.stringify({ type: "assistant", message: { id, role: "assistant", content: [{ type: "text", text }] }, ...extra })}\n`;
+
+  test("A: a replayed Stop resolves the same immutable identity after the transcript grows (review P1)", () => {
+    const ctx = fixture();
+    const transcript = join(ctx.root, "transcript.jsonl");
+    const db = join(ctx.root, "observability.db");
+    writeFileSync(transcript, entry("msg_ea1", "unique answer X"));
+    const env = {
+      ...ctx.env,
+      XTMUX_PICKER: PICKER,
+      XTMUX_OBS_V2: "1",
+      XTMUX_OBS_V2_REPO: ROOT,
+      XTMUX_OBS_DB_PATH: db,
+    };
+    const stopRun = (input: Record<string, unknown>) =>
+      run(process.execPath, [HOOK], env, JSON.stringify({ transcript_path: transcript, ...input }));
+    const keys = () => {
+      const result = run("bun", ["-e", `import { Database } from "bun:sqlite";
+const db = new Database(process.env.XTMUX_OBS_DB_PATH);
+console.log(JSON.stringify(db.query("SELECT source_key, last_message_text FROM agent_turns ORDER BY id").all()));`], env);
+      expect(result.status).toBe(0);
+      return JSON.parse(result.stdout);
+    };
+
+    // Capture E at transcript size ~small.
+    expect(stopRun({ last_assistant_message: "unique answer X" }).status).toBe(0);
+    const [first] = keys() as { source_key: string | null; last_message_text: string | null }[];
+    expect(first.source_key).toMatch(/^[0-9a-f]{24}$/);
+
+    // The transcript grows (other entries land after E's record).
+    appendFileSync(transcript, `${JSON.stringify({ type: "user", message: { role: "user", content: "noise" } })}\n`);
+    appendFileSync(transcript, entry("msg_ea2", "something else"));
+
+    // Replay of the SAME event: the payload match pins E's own record, so the
+    // identity is unchanged despite the file growth.
+    expect(stopRun({ last_assistant_message: "unique answer X" }).status).toBe(0);
+    const rows = keys() as { source_key: string | null; last_message_text: string | null }[];
+    expect(rows).toHaveLength(1); // one agent_turn, one episode candidate
+    expect(rows[0]!.source_key).toBe(first.source_key); // same immutable identity
+    expect(rows[0]!.last_message_text).toBe("unique answer X");
+  });
+
+  test("B: identical text in two distinct events resolves two distinct identities (review P1)", () => {
+    const ctx = fixture();
+    const transcript = join(ctx.root, "transcript.jsonl");
+    const db = join(ctx.root, "observability.db");
+    writeFileSync(transcript, entry("msg_eb1", "done"));
+    const env = {
+      ...ctx.env,
+      XTMUX_PICKER: PICKER,
+      XTMUX_OBS_V2: "1",
+      XTMUX_OBS_V2_REPO: ROOT,
+      XTMUX_OBS_DB_PATH: db,
+    };
+    const stopRun = (input: Record<string, unknown>) =>
+      run(process.execPath, [HOOK], env, JSON.stringify({ transcript_path: transcript, ...input }));
+    const keys = () => {
+      const result = run("bun", ["-e", `import { Database } from "bun:sqlite";
+const db = new Database(process.env.XTMUX_OBS_DB_PATH);
+console.log(JSON.stringify(db.query("SELECT source_key FROM agent_turns ORDER BY id").all()));`], env);
+      expect(result.status).toBe(0);
+      return JSON.parse(result.stdout);
+    };
+
+    // E1: "done" at record msg_eb1.
+    expect(stopRun({ last_assistant_message: "done" }).status).toBe(0);
+    // E2: a later "done" at record msg_eb2 — the transcript may even sit at the
+    // same size for both observations; the record identity still differs.
+    appendFileSync(transcript, entry("msg_eb2", "done"));
+    expect(stopRun({ last_assistant_message: "done" }).status).toBe(0);
+
+    const rows = keys() as { source_key: string }[];
+    expect(rows).toHaveLength(2); // two legitimate candidates persist
+    expect(rows[0]!.source_key).not.toBe(rows[1]!.source_key);
+  });
+
+  test("C: provider payload leads the transcript — pending until correlated, then finalized exactly once (review P1)", () => {
+    const ctx = fixture();
+    const transcript = join(ctx.root, "transcript.jsonl");
+    const db = join(ctx.root, "observability.db");
+    // The file exists but holds no assistant record yet (only a user entry).
+    writeFileSync(transcript, `${JSON.stringify({ type: "user", message: { role: "user", content: "prompt" } })}\n`);
+    const env = {
+      ...ctx.env,
+      XTMUX_PICKER: PICKER,
+      XTMUX_OBS_V2: "1",
+      XTMUX_OBS_V2_REPO: ROOT,
+      XTMUX_OBS_DB_PATH: db,
+    };
+    const stopRun = (input: Record<string, unknown>) =>
+      run(process.execPath, [HOOK], env, JSON.stringify({ transcript_path: transcript, ...input }));
+    const rows = () => {
+      const result = run("bun", ["-e", `import { Database } from "bun:sqlite";
+const db = new Database(process.env.XTMUX_OBS_DB_PATH);
+console.log(JSON.stringify(db.query("SELECT source_key, last_message_text FROM agent_turns ORDER BY id").all()));`], env);
+      expect(result.status).toBe(0);
+      return JSON.parse(result.stdout);
+    };
+
+    // Payload available, source occurrence not yet correlated: the bounded
+    // reconciliation finds nothing, so NO candidate is finalized and NO
+    // guessed source_key is emitted. Seed the DB first (the skipped emission
+    // never touches it): agent-last on an empty store exits 5 (structured
+    // not-found) but creates + migrates the DB.
+    expect(run(PICKER, ["agent-last", "%9", "--json"], env).status).toBe(5);
+    expect(stopRun({ last_assistant_message: "final answer" }).status).toBe(0);
+    expect(rows()).toHaveLength(0);
+
+    // The transcript entry lands later; the replayed Stop reconciles.
+    appendFileSync(transcript, entry("msg_fa1", "final answer"));
+    expect(stopRun({ last_assistant_message: "final answer" }).status).toBe(0);
+
+    const reconciled = rows() as { source_key: string | null; last_message_text: string | null }[];
+    expect(reconciled).toHaveLength(1); // finalized exactly once
+    expect(reconciled[0]!.last_message_text).toBe("final answer"); // text unchanged
+    expect(reconciled[0]!.source_key).toMatch(/^[0-9a-f]{24}$/); // identity from the record
+  });
 });

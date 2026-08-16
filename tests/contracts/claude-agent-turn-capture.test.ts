@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -12,7 +12,7 @@ test("Claude Stop publishes one idempotent parent FYI and skips root panes", () 
   const bin = join(root, "bin");
   mkdirSync(bin, { recursive: true });
   const transcript = join(root, "transcript.jsonl");
-  writeFileSync(transcript, `${JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "done" }] } })}\n`);
+  writeFileSync(transcript, `${JSON.stringify({ type: "assistant", message: { id: "msg_01fyi", role: "assistant", content: [{ type: "text", text: "done" }] } })}\n`);
   writeFileSync(join(bin, "tmux"), `#!/usr/bin/env bash
 case "\${!#}" in
   '#{pane_id}') printf '%%child\\n' ;;
@@ -168,7 +168,11 @@ function recordingPicker(root: string): string {
   return picker;
 }
 
-test("Stop payload last_assistant_message wins over a missing transcript", () => {
+test("an uncorrelated payload is not finalized with a guessed source_key (review P1)", () => {
+  // The transcript is missing: no source occurrence can ever be correlated, so
+  // the candidate must NOT be finalized with an identity guessed from mutable
+  // state. The emission is skipped (the rich view lags; the baseline turn row
+  // still lands via agent-state.sh).
   const root = mkdtempSync(join(tmpdir(), "xtmux-claude-turn-"));
   try {
     const { bin } = statefulFixture(root);
@@ -185,14 +189,44 @@ test("Stop payload last_assistant_message wins over a missing transcript", () =>
       input: JSON.stringify({ transcript_path: join(root, "missing.jsonl"), last_assistant_message: "fresh answer" }),
     });
     expect(run.status).toBe(0);
+    // No emission at all: the picker was never invoked (no calls file).
+    expect(existsSync(join(root, "calls"))).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a correlated payload emits source_key from the record's own immutable identity (review P1)", () => {
+  const root = mkdtempSync(join(tmpdir(), "xtmux-claude-turn-"));
+  try {
+    const { bin } = statefulFixture(root);
+    const transcript = join(root, "transcript.jsonl");
+    // The assistant record carries Anthropic's provider message id — the
+    // immutable source occurrence. The payload text matches it, so the record
+    // is correlated and its identity becomes source_key.
+    writeFileSync(transcript, `${JSON.stringify({ type: "assistant", message: { id: "msg_01abcd", role: "assistant", content: [{ type: "text", text: "fresh answer" }] } })}\n`);
+    const env = {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      HOME: root,
+      TMUX: `${root}/tmux.sock,1,0`,
+      TMUX_PANE: "%child",
+      XTMUX_PICKER: recordingPicker(root),
+    };
+    const run = spawnSync("node", [HOOK], {
+      encoding: "utf8", env,
+      input: JSON.stringify({ transcript_path: transcript, last_assistant_message: "fresh answer" }),
+    });
+    expect(run.status).toBe(0);
     const calls = readFileSync(join(root, "calls"), "utf8");
     const emit = calls.split("\n").find((l) => l.startsWith("log emit agent.turn.done"));
     expect(emit).toBeDefined();
     expect(emit).toContain("last_message=fresh answer");
     expect(emit).toContain("episode_open=1");
-    // Durable source identity for replay dedupe: sha256(session\0path\0size\0text),
-    // 24 hex chars. An exact Stop replay reproduces it -> one candidate row.
+    // Identity comes from the record (msg_01abcd), not from text/size: the
+    // key is deterministic for this record across replays.
     expect(emit).toMatch(/source_key=[0-9a-f]{24}/);
+    expect(emit).not.toContain("msg_01abcd"); // raw provider id is never leaked
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
