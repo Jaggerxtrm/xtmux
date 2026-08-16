@@ -66,6 +66,7 @@ export interface RetentionReport {
   monitorsDeleted: number;
   agentStatesCompacted: number;
   turnsDeleted: number;
+  episodesDeleted: number;
   commandRunsDeleted: number;
   auditFindingsDeleted: number;
   deliveriesDeleted: number;
@@ -134,6 +135,7 @@ export function applyRetention(
     monitorsDeleted: 0,
     agentStatesCompacted: 0,
     turnsDeleted: 0,
+    episodesDeleted: 0,
     commandRunsDeleted: 0,
     auditFindingsDeleted: 0,
     deliveriesDeleted: 0,
@@ -257,6 +259,16 @@ export function applyRetention(
       .prepare<unknown, [number]>("DELETE FROM agent_turns WHERE completed_at_ms < ?")
       .run(cutoff);
     report.turnsDeleted = Number((r as { changes?: number }).changes ?? 0);
+  }
+
+  // Episodes: closed episodes age out with their turns; the pane's open
+  // episode is never pruned (it is the current response in progress).
+  {
+    const cutoff = t - cfg.turnDays * DAY_MS;
+    const r = db.raw
+      .prepare<unknown, [number]>("DELETE FROM agent_episodes WHERE closed_at_ms IS NOT NULL AND closed_at_ms < ?")
+      .run(cutoff);
+    report.episodesDeleted = Number((r as { changes?: number }).changes ?? 0);
   }
 
   // Command runs: only completed runs deleted. Incomplete preserved.

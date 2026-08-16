@@ -73,7 +73,7 @@ test("clean install, idempotent update, xtrm coexistence, and uninstall", () => 
   assert.ok(commands.some((command) => command.includes('bash "') && command.includes("auto-monitor-consumed.sh")));
   assert.equal(commands.some((command) => command.includes('node "') && command.includes("auto-monitor-on-send.mjs")), false);
   assert.deepEqual(readdirSync(join(home, ".claude", "hooks", "xtmux")).sort(), [
-    "agent-state.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs", "auto-monitor-on-send.mjs", "auto-monitor-on-send.sh", "claude-agent-turn-capture.mjs",
+    "agent-state.sh", "auto-monitor-consumed.mjs", "auto-monitor-consumed.sh", "auto-monitor-drain-stop.mjs", "auto-monitor-on-send.mjs", "auto-monitor-on-send.sh", "claude-agent-turn-capture.mjs", "claude-user-prompt-episode.mjs",
   ]);
   assert.equal(
     readFileSync(join(home, ".claude", "hooks", "xtmux", "agent-state.sh"), "utf8"),

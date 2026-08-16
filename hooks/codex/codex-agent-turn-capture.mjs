@@ -101,6 +101,8 @@ function main() {
       `session_name=${sessionName}`,
       `bead=${bead}`,
       `parent=${parent}`,
+      // xtmux-gdk: every non-continuation Stop is a fresh response episode.
+      `episode_open=${input.stop_hook_active === true ? 0 : 1}`,
       `last_message=${compactSummary(fullText)}`,
       `last_message_file=${tmpFile}`,
     ];

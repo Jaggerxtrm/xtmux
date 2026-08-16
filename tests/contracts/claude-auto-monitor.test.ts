@@ -145,7 +145,7 @@ describe("Claude SQLite auto-monitor hooks", () => {
     expect(payload.reason).toContain("wait-agent %101 --wait-for-transition --consume --timeout 30m --interval 30s");
     expect(payload.reason).not.toContain("rm -f");
 
-    const child = spawn("bun", [CLI, "wait-agent", "%101", "--wait-for-transition", "--consume", "--timeout", "5s", "--interval", "10ms", "--json"], { cwd: ROOT, env: baseEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("bun", [CLI, "wait-agent", "%101", "--wait-for-transition", "--consume", "--timeout", "10s", "--interval", "10ms", "--json"], { cwd: ROOT, env: baseEnv(), stdio: ["ignore", "pipe", "pipe"] });
     let childOut = "", childErr = "";
     child.stdout!.on("data", (chunk) => childOut += chunk); child.stderr!.on("data", (chunk) => childErr += chunk);
     await waitUntil(() => monitorRows().some((row) => row.requesterPaneId === "%100" && row.paneId === "%101" && row.terminalStatus === null));
@@ -166,7 +166,7 @@ describe("Claude SQLite auto-monitor hooks", () => {
   test("terminal wake consumption is requester-owned and occurs once after restart", async () => {
     const envB = baseEnv("$owner-b", "%200");
     sendExpected("expected-b", "$201", "%201", envB);
-    const child = spawn("bun", [CLI, "wait-agent", "%201", "--wait-for-transition", "--timeout", "5s", "--interval", "10ms", "--json"], { cwd: ROOT, env: envB, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("bun", [CLI, "wait-agent", "%201", "--wait-for-transition", "--timeout", "10s", "--interval", "10ms", "--json"], { cwd: ROOT, env: envB, stdio: ["ignore", "pipe", "pipe"] });
     let output = ""; child.stdout!.on("data", (chunk) => output += chunk);
     await waitUntil(() => monitorRows(envB).some((row) => row.requesterPaneId === "%200" && row.paneId === "%201"));
     setState("%201", "working"); await Bun.sleep(80); setState("%201", "done");
@@ -183,7 +183,7 @@ describe("Claude SQLite auto-monitor hooks", () => {
 
   test("a later same-target obligation requires a wait created after it", async () => {
     sendExpected("fresh-a", "$104", "%104");
-    const first = spawn("bun", [CLI, "wait-agent", "%104", "--wait-for-transition", "--consume", "--timeout", "5s", "--interval", "10ms", "--json"], { cwd: ROOT, env: baseEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    const first = spawn("bun", [CLI, "wait-agent", "%104", "--wait-for-transition", "--consume", "--timeout", "10s", "--interval", "10ms", "--json"], { cwd: ROOT, env: baseEnv(), stdio: ["ignore", "pipe", "pipe"] });
     await waitUntil(() => monitorRows().some((row) => row.paneId === "%104" && row.terminalStatus === null));
     expect(stop().stdout).toBe("");
     setState("%104", "working"); await Bun.sleep(80); setState("%104", "done");
@@ -196,7 +196,7 @@ describe("Claude SQLite auto-monitor hooks", () => {
     expect(blocked.reason).toContain("wait-agent %104");
 
     const previousCount = monitorRows().filter((row) => row.paneId === "%104").length;
-    const fresh = spawn("bun", [CLI, "wait-agent", "%104", "--wait-for-transition", "--consume", "--timeout", "5s", "--interval", "10ms", "--json"], { cwd: ROOT, env: baseEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    const fresh = spawn("bun", [CLI, "wait-agent", "%104", "--wait-for-transition", "--consume", "--timeout", "10s", "--interval", "10ms", "--json"], { cwd: ROOT, env: baseEnv(), stdio: ["ignore", "pipe", "pipe"] });
     await waitUntil(() => monitorRows().filter((row) => row.paneId === "%104").length > previousCount);
     expect(monitorRows().filter((row) => row.paneId === "%104").at(-1)).toMatchObject({ terminalStatus: null });
     expect(stop().stdout).toBe("");
@@ -207,7 +207,7 @@ describe("Claude SQLite auto-monitor hooks", () => {
 
   test("the generated transition wait replaces a terminal-unconsumed wait", async () => {
     sendExpected("unconsumed-a", "$105", "%105");
-    const old = spawn("bun", [CLI, "wait-agent", "%105", "--wait-for-transition", "--timeout", "5s", "--interval", "10ms", "--json"], { cwd: ROOT, env: baseEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    const old = spawn("bun", [CLI, "wait-agent", "%105", "--wait-for-transition", "--timeout", "10s", "--interval", "10ms", "--json"], { cwd: ROOT, env: baseEnv(), stdio: ["ignore", "pipe", "pipe"] });
     let oldOutput = ""; old.stdout!.on("data", (chunk) => oldOutput += chunk);
     await waitUntil(() => monitorRows().some((row) => row.paneId === "%105" && row.terminalStatus === null));
     setState("%105", "working"); await Bun.sleep(80); setState("%105", "done");

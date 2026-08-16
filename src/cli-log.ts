@@ -10,7 +10,8 @@ import { spawnSync } from "node:child_process";
 import { emitEvent, query as journalQuery, tail as journalTail } from "./domains/events/query.ts";
 import { journalPage, type JournalPageItemV1 } from "./domains/events/page.ts";
 import type { JournalRow } from "./domains/events/query.ts";
-import { closeInstance, openInstance } from "./domains/agents/instance.ts";
+import { closeInstance, findActiveInstanceForPane, openInstance } from "./domains/agents/instance.ts";
+import { openEpisode } from "./domains/agents/episode.ts";
 import { cancelMonitorsOwnedByPane } from "./domains/monitors/store.ts";
 import { insertEnvelope } from "./db/journal.ts";
 import { isUniqueViolation } from "./db/errors.ts";
@@ -375,8 +376,33 @@ export function cliLogEmit(db: Db, argv: string[]): number {
         parentSessionId: fields["parent"] ?? fields["parent_session"],
         summary: fields["last_message"] ?? fields["summary"],
         lastMessageText: readLastMessageFile(fields["last_message_file"]),
+        // xtmux-gdk: the Claude Stop hook signals a fresh response episode on
+        // every non-continuation stop (episode_open=1); continuations and the
+        // pi/codex adapters omit it and attach to the open episode.
+        episodeOpen: fields["episode_open"] === "1",
+        // xtmux-gdk review P2: sha256(session\0transcript_path\0size\0text)
+        // from the Stop hook — the durable source identity that makes an exact
+        // Stop replay one candidate row instead of two.
+        sourceKey: fields["source_key"] || undefined,
       });
       return 0;
+    case "agent.episode.open": {
+      // xtmux-gdk: UserPromptSubmit (Claude) / run start (pi) — close the
+      // pane's open episode and open a fresh one. The instance is resolved the
+      // same way completeTurn resolves it, so follow-up turns attach to the
+      // same occupant's episode.
+      const paneId = fields["pane"] ?? fields["pane_id"] ?? "";
+      const cursorRaw = Number(fields["cursor"] ?? fields["source_cursor"] ?? "");
+      openEpisode(db, {
+        paneId,
+        sessionId: fields["session"] ?? fields["session_id"] ?? "",
+        instanceId: fields["instance_id"] ?? findActiveInstanceForPane(db, paneId)?.instance_id ?? undefined,
+        beadId: fields["bead"] ?? fields["bead_id"],
+        parentSessionId: fields["parent"] ?? fields["parent_session"],
+        sourceCursor: Number.isFinite(cursorRaw) && cursorRaw > 0 ? cursorRaw : undefined,
+      });
+      return 0;
+    }
     default:
       emitEvent(db, { type, fields });
       return 0;

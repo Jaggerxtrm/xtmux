@@ -967,7 +967,7 @@ json_requested() {
 json_command_state() {
   local command="$1" subcommand="${2:-}"
   case "$command:$subcommand" in
-    message-list:*|message-status:*|message-get:*|unread-count:*|obligations:list|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|monitors:*|safe-send-pointer:*|handoff:*|message-send:*|message-reply:*|message-cancel:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|log:follow|context:--current|pane:capture|bridge:--stdio|agent-last:*|instance-get:*) REPLY='ready' ;;
+    message-list:*|message-status:*|message-get:*|unread-count:*|obligations:list|wait-agent:*|monitor-agent:*|monitor-list:*|monitor-kill:*|monitors:*|safe-send-pointer:*|handoff:*|message-send:*|message-reply:*|message-cancel:*|message-ack:*|worktree-collisions:*|dashboard:*|topology:*|audit:*|log:tail|log:query|log:follow|context:--current|pane:capture|bridge:--stdio|agent-last:*|agent-episode:*|instance-get:*) REPLY='ready' ;;
     # Everything else, including the interactive-only nav family and picker
     # internals, is refused with XTMUX_JSON_UNSUPPORTED by
     # json_request_preflight — never classified as JSON-ready.
@@ -1533,6 +1533,22 @@ agent_last() {
   [ "$REPLY" = on ] || { printf 'agent-last: requires XTMUX_OBS_V2=1\n' >&2; return 2; }
   obs_runtime_argv
   local args=(agent-last "$target")
+  [ "$json" = 1 ] && args+=(--json)
+  exec "${OBS_ARGV[@]}" "${args[@]}"
+}
+
+# xtmux-gdk: the viewer-facing episode projection — one user prompt plus all
+# continuations until control returns to the operator. The latest agent_turns
+# row is never the response; the episode is.
+agent_episode() {
+  local target="${1:-}" json=0
+  [ -n "$target" ] || { printf 'usage: agent-episode <pane-id|session-id> [--json]\n' >&2; return 2; }
+  shift || true
+  [ "${1:-}" = '--json' ] && json=1
+  obs_v2_mode
+  [ "$REPLY" = on ] || { printf 'agent-episode: requires XTMUX_OBS_V2=1\n' >&2; return 2; }
+  obs_runtime_argv
+  local args=(agent-episode "$target")
   [ "$json" = 1 ] && args+=(--json)
   exec "${OBS_ARGV[@]}" "${args[@]}"
 }
@@ -2240,7 +2256,7 @@ IDENTITY & LAST TURN — who a pane is, and what it last said.
   context --current [--json]   the runtime origin of the INVOKING pane, as
                                xtrm.runtime-origin.v1. Read-only; outside tmux, or
                                unverifiable, exits non-zero — never a guessed binding.
-  agent-last <pane-id|session-id> [--json]   full text of the target's most recent agent turn (pi+claude); plain falls back to summary; exit 5 XTMUX_NOT_FOUND.
+  agent-last <pane-id|session-id> [--json]   full text of the target's most recent agent turn (pi+claude); plain falls back to summary; exit 5 XTMUX_NOT_FOUND.  agent-episode <pane-id|session-id> [--json]  latest response episode: primary + follow-ups, acks collapsed.
   instance-get <instance-id> [--json]        one durable agent occupation by id; plain output is field<TAB>value so a hook can read one field without a JSON parser; exit 5 XTMUX_NOT_FOUND.
 
   json output:
@@ -2248,10 +2264,10 @@ IDENTITY & LAST TURN — who a pane is, and what it last said.
                    pane_id (stable $N/@N/%N ids, never names or indexes),
                    agent_instance_id?, bead_id?, parent_session_id?,
                    captured_at_ms, capture_source, verified
-    agent-last     turnId, paneId, sessionId, instanceId, beadId, turnIndex, runtime,
-                   summary, lastMessageText, completedAtMs, completedAt (OMITTED when absent)
+    agent-last/agent-episode  turnId, ..., completedAt (OMITTED when absent); episode:
+                   episodeId, openedAtMs, closedAtMs, primary, followUps[], collapsed[]
 
-SESSIONS & DASHBOARD — inventory for orchestrators.
+SESSIONS & DASHBOARD — inventory for orchestrators. — inventory for orchestrators.
   dashboard [sessions-only|expanded] [json]   agent-readable inventory
   topology --json                            complete host/session/window/pane snapshot
   list [all|waiting|running|repo:<x>|branch:<x>|cmd:<x>|grep:<x>]
@@ -5516,6 +5532,11 @@ case "${1:-}" in
   agent-last)
     shift
     agent_last "$@"
+    exit $?
+    ;;
+  agent-episode)
+    shift
+    agent_episode "$@"
     exit $?
     ;;
   instance-get)
