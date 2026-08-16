@@ -41,6 +41,8 @@ case "\${!#}" in
   '@agent_bead') printf 'bead-1\\n' ;;
   '@agent_episode_pending') grep -Fqx '@agent_episode_pending=1' "$state" && printf '1\\n' ;;
   '@agent_episode_cursor') v="$(grep -F '@agent_episode_cursor=' "$state" | tail -1)"; printf '%s\\n' "\${v#*=}" ;;
+  '@agent_last_candidate') v="$(grep -F '@agent_last_candidate=' "$state" | tail -1)"; printf '%s\\n' "\${v#*=}" ;;
+  '@agent_capture_anchor') v="$(grep -F '@agent_capture_anchor=' "$state" | tail -1)"; printf '%s\\n' "\${v#*=}" ;;
   *) : ;;
 esac
 `);
@@ -126,7 +128,10 @@ describe("P2 turn capture and runtime context contracts", () => {
     writeFileSync(small, line);
     writeFileSync(large, "");
     truncateSync(large, 100 * 1024 * 1024);
-    appendFileSync(large, `\n${line}`);
+    // Distinct text: the fixture now simulates @agent_last_candidate state, and
+    // a same-text second stop legitimately polls the full settle window — that
+    // would inflate the RSS measurement instead of testing the tail-read bound.
+    appendFileSync(large, `\n${JSON.stringify({ type: "assistant", message: { role: "assistant", content: "done-large" } })}\n`);
     const env = { ...ctx.env, XTMUX_PICKER: join(ctx.bin, "picker") };
 
     const baseline = await peakRssKib(small, env);
@@ -227,8 +232,10 @@ console.log(JSON.stringify(db.query("SELECT source_key, last_message_text FROM a
     appendFileSync(transcript, `${JSON.stringify({ type: "user", message: { role: "user", content: "noise" } })}\n`);
     appendFileSync(transcript, entry("msg_ea2", "something else"));
 
-    // Replay of the SAME event: the payload match pins E's own record, so the
-    // identity is unchanged despite the file growth.
+    // Replay of the SAME event: the monotonic capture anchor advanced past E
+    // on the first delivery, so the replay's correlation finds nothing new and
+    // is absorbed (no duplicate emission, no duplicate row) — the identity on
+    // the single row is unchanged despite the file growth.
     expect(stopRun({ last_assistant_message: "unique answer X" }).status).toBe(0);
     const rows = keys() as { source_key: string | null; last_message_text: string | null }[];
     expect(rows).toHaveLength(1); // one agent_turn, one episode candidate
@@ -268,6 +275,60 @@ console.log(JSON.stringify(db.query("SELECT source_key FROM agent_turns ORDER BY
     const rows = keys() as { source_key: string }[];
     expect(rows).toHaveLength(2); // two legitimate candidates persist
     expect(rows[0]!.source_key).not.toBe(rows[1]!.source_key);
+  });
+
+  test("B2: same text + transcript lag — a later stop can never absorb the earlier record (post-merge P1, 5308191397)", async () => {
+    // The reviewer's exact race: Stop A "done" is captured (anchor advances
+    // past A). Stop B fires with payload "done" while B's own record is still
+    // flushing. Without the monotonic capture anchor, the correlation scan
+    // would match A's record and B would be absorbed as a replay of A.
+    const ctx = fixture();
+    const transcript = join(ctx.root, "transcript.jsonl");
+    const db = join(ctx.root, "observability.db");
+    writeFileSync(transcript, entry("msg_ra1", "done"));
+    const env = {
+      ...ctx.env,
+      XTMUX_PICKER: PICKER,
+      XTMUX_OBS_V2: "1",
+      XTMUX_OBS_V2_REPO: ROOT,
+      XTMUX_OBS_DB_PATH: db,
+    };
+    const stopRun = (input: Record<string, unknown>) =>
+      run(process.execPath, [HOOK], env, JSON.stringify({ transcript_path: transcript, ...input }));
+    const keys = () => {
+      const result = run("bun", ["-e", `import { Database } from "bun:sqlite";
+const db = new Database(process.env.XTMUX_OBS_DB_PATH);
+console.log(JSON.stringify(db.query("SELECT source_key FROM agent_turns ORDER BY id").all()));`], env);
+      expect(result.status).toBe(0);
+      return JSON.parse(result.stdout);
+    };
+
+    // Stop A: correlated to msg_ra1; the anchor advances past it.
+    expect(stopRun({ last_assistant_message: "done" }).status).toBe(0);
+    const [keyA] = keys() as { source_key: string }[];
+    expect(keyA.source_key).toMatch(/^[0-9a-f]{24}$/);
+
+    // B's record streams in AFTER Stop B starts (8-byte fragments every 10ms),
+    // so at B's first correlation read only A's "done" exists.
+    const finalLine = entry("msg_ra2", "done");
+    const appender = spawn("node", ["-e", `
+const fs = require("fs");
+for (let i = 0; i < process.env.FINAL_LINE.length; i += 8) {
+  fs.appendFileSync(process.env.TRANSCRIPT, process.env.FINAL_LINE.slice(i, i + 8));
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+}
+`], { env: { ...env, TRANSCRIPT: transcript, FINAL_LINE: finalLine } });
+    try {
+      expect(stopRun({ last_assistant_message: "done" }).status).toBe(0);
+      await new Promise((resolve) => appender.on("close", resolve));
+    } finally {
+      if (appender.exitCode === null) appender.kill();
+    }
+
+    const rows = keys() as { source_key: string }[];
+    expect(rows).toHaveLength(2); // B is NOT absorbed as a replay of A
+    expect(rows[0]!.source_key).toBe(keyA.source_key);
+    expect(rows[1]!.source_key).not.toBe(keyA.source_key); // B's own identity
   });
 
   test("C: provider payload leads the transcript — pending until correlated, then finalized exactly once (review P1)", () => {
