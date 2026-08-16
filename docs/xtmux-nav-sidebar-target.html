@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>xtmux nav — sidebar target</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0d0e;
+    --panel: #101213;
+    --panel-2: #151819;
+    --row: #131617;
+    --row-selected: #202426;
+    --line: #34393c;
+    --line-soft: #252a2c;
+    --text: #d7dbdd;
+    --muted: #858d91;
+    --muted-2: #657075;
+    --bright: #f0f2f3;
+    --wait: #e8c878;
+    --run: #8fcda0;
+    --done: #8da9c7;
+    --idle: #788287;
+    --danger: #d88d8d;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { min-height: 100%; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(circle at 18% 0%, rgba(255,255,255,.025), transparent 34rem),
+      var(--bg);
+    color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    font-size: 14px;
+    line-height: 1.35;
+    display: grid;
+    place-items: center;
+    padding: 28px;
+  }
+
+  .stage {
+    width: min(1080px, 100%);
+    display: grid;
+    grid-template-columns: minmax(480px, 720px) minmax(230px, 1fr);
+    gap: 26px;
+    align-items: start;
+  }
+
+  .terminal {
+    background: var(--panel);
+    border: 1px solid #4b5052;
+    box-shadow: 0 24px 80px rgba(0,0,0,.42), inset 0 0 0 1px rgba(255,255,255,.02);
+    min-height: 810px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .titlebar {
+    height: 38px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 13px;
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+    background: #111415;
+  }
+  .titlebar strong { color: var(--bright); font-weight: 600; }
+  .titlebar .count { margin-left: auto; color: var(--muted); }
+  .titlebar .attention-count { color: var(--wait); }
+
+  .search {
+    height: 40px;
+    display: flex;
+    align-items: center;
+    padding: 0 13px;
+    border-bottom: 1px solid var(--line-soft);
+    color: var(--muted);
+  }
+  .search .prompt { color: #b6bec1; }
+  .cursor {
+    width: 7px;
+    height: 15px;
+    margin-left: 5px;
+    background: #87a9bb;
+    opacity: .88;
+  }
+  .search .hint { margin-left: auto; color: var(--muted-2); font-size: 12px; }
+
+  .list {
+    flex: 1;
+    padding: 9px 8px 10px;
+    overflow: hidden;
+  }
+
+  .section {
+    margin-top: 8px;
+    margin-bottom: 4px;
+  }
+  .section:first-child { margin-top: 1px; }
+  .section-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #697277;
+    font-size: 11px;
+    letter-spacing: .11em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+  }
+  .section-title::after {
+    content: "";
+    height: 1px;
+    background: var(--line-soft);
+    flex: 1;
+  }
+
+  .session {
+    position: relative;
+    padding: 6px 9px 7px 11px;
+    border-left: 2px solid transparent;
+    margin: 1px 0;
+  }
+  .session.selected {
+    background: var(--row-selected);
+    border-left-color: #c7cdcf;
+  }
+  .session.current:not(.selected) { border-left-color: #626a6d; }
+
+  .primary {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto auto;
+    gap: 7px;
+    align-items: baseline;
+    color: var(--bright);
+  }
+  .selector { color: #bfc5c7; }
+  .selector.dim { color: transparent; }
+  .session-name {
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 600;
+  }
+  .age { color: var(--muted); font-size: 12px; }
+  .state {
+    width: 42px;
+    text-align: right;
+    font-size: 11px;
+    letter-spacing: .04em;
+    font-weight: 600;
+  }
+  .state.wait { color: var(--wait); }
+  .state.run { color: var(--run); }
+  .state.done { color: var(--done); }
+  .state.idle { color: var(--idle); }
+
+  .context {
+    margin: 2px 0 1px 25px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 12px;
+  }
+  .context .repo { color: #a2aaad; }
+  .context .dirty { color: #bca973; }
+  .context .shared { color: #a98c8c; }
+
+  .panes {
+    margin: 3px 0 0 25px;
+    border-left: 1px solid #42494c;
+  }
+  .pane {
+    display: grid;
+    grid-template-columns: 11px 50px 72px minmax(0, 1fr) auto;
+    gap: 6px;
+    align-items: baseline;
+    min-width: 0;
+    padding: 1px 0 1px 8px;
+    color: #aeb5b8;
+  }
+  .pane .branch { color: #687175; }
+  .pane-id {
+    color: #d1d7da;
+    font-weight: 600;
+  }
+  .pane.current-pane .pane-id { color: #ffffff; }
+  .runtime { color: #9fa8ab; }
+  .task {
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: #899296;
+  }
+  .pane-state { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+  .pane-state.wait { color: var(--wait); }
+  .pane-state.run { color: var(--run); }
+  .pane-state.done { color: var(--done); }
+
+  .footer {
+    height: 36px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 13px;
+    border-top: 1px solid var(--line);
+    background: #111415;
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .footer kbd {
+    font: inherit;
+    color: #d1d6d8;
+    background: none;
+    padding: 0;
+  }
+  .footer .spacer { flex: 1; }
+  .footer .mode { color: #6e787c; }
+
+  .notes {
+    border-left: 1px solid var(--line-soft);
+    padding: 7px 0 0 22px;
+    color: var(--muted);
+  }
+  .notes h1 {
+    margin: 0 0 18px;
+    color: var(--bright);
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .rule {
+    margin: 0 0 18px;
+    padding-bottom: 17px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .rule:last-child { border-bottom: 0; }
+  .rule b { display: block; color: #b9c0c3; margin-bottom: 5px; font-weight: 600; }
+  .rule code { color: #d8dddf; font-family: inherit; }
+  .rule p { margin: 0; font-size: 12px; line-height: 1.55; }
+
+  @media (max-width: 860px) {
+    body { padding: 12px; }
+    .stage { grid-template-columns: 1fr; }
+    .notes { border-left: 0; border-top: 1px solid var(--line-soft); padding: 18px 0 0; }
+    .terminal { min-height: 760px; }
+  }
+
+  @media (max-width: 560px) {
+    body { font-size: 12px; }
+    .terminal { min-height: 700px; }
+    .pane { grid-template-columns: 9px 46px 58px minmax(0,1fr); }
+    .pane-state { display: none; }
+    .context { font-size: 11px; }
+    .footer { gap: 10px; font-size: 11px; }
+    .search .hint { display: none; }
+  }
+</style>
+</head>
+<body>
+  <main class="stage">
+    <section class="terminal" aria-label="xtmux nav target sidebar mockup">
+      <header class="titlebar">
+        <strong>xtmux nav</strong>
+        <span>all</span>
+        <span class="count">26 sessions · <span class="attention-count">3 attention</span></span>
+      </header>
+
+      <div class="search">
+        <span class="prompt">all&gt;</span><span class="cursor" aria-hidden="true"></span>
+        <span class="hint">type to filter</span>
+      </div>
+
+      <div class="list">
+        <div class="section">
+          <div class="section-title">needs attention</div>
+
+          <div class="session selected current">
+            <div class="primary">
+              <span class="selector">&gt;</span>
+              <span class="session-name">claude-jct5k-coord8</span>
+              <span class="age">3d</span>
+              <span class="state wait">WAIT</span>
+            </div>
+            <div class="context"><span class="repo">market-data</span> · docs/jct5k-coord8-regression-fixes</div>
+            <div class="panes">
+              <div class="pane current-pane">
+                <span class="branch">└</span><span class="pane-id">%553</span><span class="runtime">claude</span><span class="task">coordinator · regression fixes</span><span class="pane-state wait">wait</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="session">
+            <div class="primary">
+              <span class="selector dim">&gt;</span>
+              <span class="session-name">specialists-xt-claude-dolt-migration-tpafe</span>
+              <span class="age">10h</span>
+              <span class="state wait">WAIT</span>
+            </div>
+            <div class="context"><span class="repo">specialists</span> · xt/dolt-migration-tpafe</div>
+            <div class="panes">
+              <div class="pane">
+                <span class="branch">└</span><span class="pane-id">%907</span><span class="runtime">claude</span><span class="task">dolt migration · coordinator</span><span class="pane-state wait">wait</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">active</div>
+
+          <div class="session">
+            <div class="primary">
+              <span class="selector dim">&gt;</span>
+              <span class="session-name">program</span>
+              <span class="age">4m</span>
+              <span class="state run">RUN</span>
+            </div>
+            <div class="context"><span class="repo">program</span> · master</div>
+            <div class="panes">
+              <div class="pane">
+                <span class="branch">└</span><span class="pane-id">%141</span><span class="runtime">claude</span><span class="task">programme coordination</span><span class="pane-state run">run</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="session">
+            <div class="primary">
+              <span class="selector dim">&gt;</span>
+              <span class="session-name">spfix</span>
+              <span class="age">&lt;1m</span>
+              <span class="state run">RUN</span>
+            </div>
+            <div class="context"><span class="repo">core</span> · main · <span class="shared">shared-wt</span></div>
+            <div class="panes">
+              <div class="pane">
+                <span class="branch">├</span><span class="pane-id">%875</span><span class="runtime">claude</span><span class="task">core review</span><span class="pane-state run">run</span>
+              </div>
+              <div class="pane">
+                <span class="branch">└</span><span class="pane-id">%962</span><span class="runtime">node</span><span class="task">local helper</span><span class="pane-state run">run</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="session">
+            <div class="primary">
+              <span class="selector dim">&gt;</span>
+              <span class="session-name">ws007-ws008</span>
+              <span class="age">4m</span>
+              <span class="state run">RUN</span>
+            </div>
+            <div class="context"><span class="repo">darth-feedor</span> · fix/ws008-p3g-deploy-specialist-path</div>
+            <div class="panes">
+              <div class="pane">
+                <span class="branch">└</span><span class="pane-id">%640</span><span class="runtime">pi</span><span class="task">session:research-papers-gcp</span><span class="pane-state run">run</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">other sessions</div>
+
+          <div class="session">
+            <div class="primary">
+              <span class="selector dim">&gt;</span>
+              <span class="session-name">second-mind</span>
+              <span class="age">14m</span>
+              <span class="state idle">IDLE</span>
+            </div>
+            <div class="context"><span class="repo">core/transcripts</span> · education/issue-78-exp013-student-derivative-pilot</div>
+            <div class="panes">
+              <div class="pane">
+                <span class="branch">└</span><span class="pane-id">%103</span><span class="runtime">claude</span><span class="task">transcript work</span><span class="pane-state done">done</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="session">
+            <div class="primary">
+              <span class="selector dim">&gt;</span>
+              <span class="session-name">pi-spike-read-line-numbers</span>
+              <span class="age">1d</span>
+              <span class="state idle">IDLE</span>
+            </div>
+            <div class="context"><span class="repo">core</span> · xt/spike-read-line-numbers</div>
+            <div class="panes">
+              <div class="pane">
+                <span class="branch">└</span><span class="pane-id">%887</span><span class="runtime">pi</span><span class="task">session:spike-read-line-numbers</span><span class="pane-state done">done</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <footer class="footer">
+        <span><kbd>↵</kbd> open</span>
+        <span><kbd>Tab</kbd> panes</span>
+        <span><kbd>A</kbd> attention</span>
+        <span><kbd>^/</kbd> details</span>
+        <span><kbd>?</kbd> help</span>
+        <span class="spacer"></span>
+        <span class="mode">expanded</span>
+      </footer>
+    </section>
+
+    <aside class="notes">
+      <h1>Target default state</h1>
+      <div class="rule">
+        <b>Pane IDs stay visible.</b>
+        <p><code>%553</code>, <code>%141</code>, <code>%875</code> remain first-class because they are operational handles for multiplexing and communication.</p>
+      </div>
+      <div class="rule">
+        <b>One line per pane.</b>
+        <p>No second metadata line under every pane. Runtime and short task share one bounded row.</p>
+      </div>
+      <div class="rule">
+        <b>No ambient inspector.</b>
+        <p><code>^/ details</code> opens detail on demand. Paths, geometry, parent IDs, timestamps and full Bead data do not consume the default viewport.</p>
+      </div>
+      <div class="rule">
+        <b>State drives grouping.</b>
+        <p>Attention first, active second, everything else last. Session identity remains the dominant scanning axis.</p>
+      </div>
+    </aside>
+  </main>
+</body>
+</html>
