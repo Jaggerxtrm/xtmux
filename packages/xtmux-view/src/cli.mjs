@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 import { spawnSync } from "node:child_process";
-import { buildDocument, normalizeTarget, parseCli, safeTitle, sanitizeTerminalText, shellQuote, ViewError, defaultDbPath } from "./core.mjs";
+import { buildDocument, episodeBody, normalizeTarget, parseCli, projectEpisode, safeTitle, shellQuote, ViewError, defaultDbPath } from "./core.mjs";
 import { findExecutable, renderDocument } from "./renderer.mjs";
-import { readLatestTurn } from "./store.mjs";
+import { readLatestEpisode } from "./store.mjs";
 
 function help() {
   process.stdout.write(`xtmux-view — rich Markdown overlay for xtmux-managed agent turns
@@ -21,7 +21,7 @@ Options:
   --popup-height <value>     tmux popup height (default: 90%)
   --no-popup                 render in the current terminal
   --raw                      print captured Markdown without rich rendering
-  --json                     print the normalized latest-turn record
+  --json                     print the normalized episode record
   --render                   internal: render directly without creating a popup
   -h, --help                 show help
 
@@ -90,33 +90,34 @@ async function main() {
   if (args.doctor) return doctor();
 
   const target = normalizeTarget(args.target);
-  const turn = await readLatestTurn(target);
-  if (!turn) {
+  const rawEpisode = await readLatestEpisode(target);
+  if (!rawEpisode) {
     throw new ViewError(
-      "XTMUX_VIEW_NO_TURN",
-      `no completed assistant turn is stored for ${target}`,
+      "XTMUX_VIEW_NO_EPISODE",
+      `no completed response episode is stored for ${target}`,
       { target },
     );
   }
+  const episode = projectEpisode(rawEpisode);
 
   if (args.json) {
-    process.stdout.write(`${JSON.stringify(turn, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(episode, null, 2)}\n`);
     return 0;
   }
   if (args.raw) {
-    process.stdout.write(`${sanitizeTerminalText(turn.lastMessageText || turn.summary || "")}\n`);
+    process.stdout.write(`${episodeBody(episode)}\n`);
     return 0;
   }
 
   if (args.render || args.noPopup || !process.env.TMUX) {
-    return renderDocument(buildDocument(turn), {
+    return renderDocument(buildDocument(episode), {
       renderer: args.renderer,
       style: args.style,
       env: process.env,
     });
   }
 
-  return popupCommand(args, target, turn);
+  return popupCommand(args, target, episode);
 }
 
 try {
