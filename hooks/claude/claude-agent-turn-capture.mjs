@@ -33,7 +33,7 @@
 // Fail-open by contract: unreadable/malformed transcripts emit a metadata-only
 // completed-turn row; missing tmux context or emit failures remain silent.
 
-import { closeSync, fstatSync, openSync, readFileSync, readSync, writeFileSync, unlinkSync, mkdtempSync, rmSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readSync, statSync, writeFileSync, unlinkSync, mkdtempSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -131,14 +131,21 @@ const POLL_MS = 25;
 const SLEEP_BUF = new Int32Array(new SharedArrayBuffer(4));
 function sleepSync(ms) { Atomics.wait(SLEEP_BUF, 0, 0, ms); }
 
-function settledTranscript(transcriptPath, fromOffset = 0, lastCandidate = "", expectedText = "") {
+function settledTranscript(transcriptPath, fromOffset = 0, lastCandidate = "", expectedText = "", anchor = 0) {
+  // The capture anchor is validated against the live file size (compaction can
+  // shrink the transcript below a stored offset); the scan then starts past
+  // the last correlated record so a same-text earlier record can never satisfy
+  // a later stop's correlation (xtmux-gdk post-merge P1).
+  let size = 0;
+  try { size = statSync(transcriptPath).size; } catch { /* readTail reports 0 */ }
+  const start = (anchor > 0 && anchor <= size) ? Math.max(fromOffset, anchor) : fromOffset;
   const deadline = Date.now() + SETTLE_MS;
-  let prev = readTail(transcriptPath, fromOffset, expectedText);
+  let prev = readTail(transcriptPath, start, expectedText);
   if (prev.size === 0) return prev; // no transcript at all: nothing can arrive
   if (expectedText && prev.text) return prev; // payload's record already landed
   sleepSync(POLL_MS);
   while (Date.now() < deadline) {
-    const cur = readTail(transcriptPath, fromOffset, expectedText);
+    const cur = readTail(transcriptPath, start, expectedText);
     if (expectedText) {
       // Payload-correlation mode: the read only qualifies records whose text
       // equals the payload's — the first qualified read IS the source
@@ -183,6 +190,17 @@ function main() {
   // The compact text this hook last emitted for this transcript: the fallback
   // read must never report it again as a new turn's text (xtmux-9yo review).
   const lastCandidate = tmuxValue(["show-options", "-p", "-qv", "@agent_last_candidate"], pane);
+  // Monotonic per-candidate capture anchor (xtmux-gdk post-merge P1):
+  // "<transcript_path>|<byte offset>" of the transcript when the last candidate
+  // was emitted. Correlation scans only source AFTER the anchor, so a later
+  // stop whose payload text equals an earlier candidate's text can never
+  // absorb that earlier record while its own record is still flushing. Path
+  // scoping keeps anchors from one session file from leaking into another.
+  const anchorRaw = tmuxValue(["show-options", "-p", "-qv", "@agent_capture_anchor"], pane);
+  const anchorSep = anchorRaw.lastIndexOf("|");
+  const anchorOffset = (anchorSep > 0 && anchorRaw.slice(0, anchorSep) === transcriptPath)
+    ? Number(anchorRaw.slice(anchorSep + 1)) || 0
+    : 0;
   const episodeOpen = continuation ? 0 : (promptArmed ? 0 : 1);
   if (!continuation) {
     try {
@@ -197,6 +215,7 @@ function main() {
   let fullText = "";
   let sourceMessageId = "";
   let skipEmission = false;
+  let capturedSize = 0;
   if (payloadText) {
     // Provider payload leads the transcript: correlate the payload to its
     // assistant record (the immutable source occurrence) within the bounded
@@ -205,17 +224,19 @@ function main() {
     // with a guessed key (xtmux-gdk review P1); the emission is skipped and a
     // later replay reconciles once the record exists. The baseline turn row
     // still lands via agent-state.sh — fail-open, the rich view may lag.
-    const settled = settledTranscript(transcriptPath, cursor, lastCandidate, payloadText);
+    const settled = settledTranscript(transcriptPath, cursor, lastCandidate, payloadText, anchorOffset);
     if (settled.text) {
       fullText = payloadText;
       sourceMessageId = settled.messageId;
+      capturedSize = settled.size;
     } else {
       skipEmission = true;
     }
   } else {
-    const settled = settledTranscript(transcriptPath, cursor, lastCandidate);
+    const settled = settledTranscript(transcriptPath, cursor, lastCandidate, "", anchorOffset);
     fullText = settled.text;
     sourceMessageId = settled.messageId;
+    capturedSize = settled.size;
   }
 
   const sessionId = tmuxValue(["display-message", "-p", "#{session_id}"], pane);
@@ -274,6 +295,12 @@ function main() {
   if (fullText) {
     try {
       spawnSync("tmux", ["set-option", "-p", "-q", "@agent_last_candidate", compactSummary(fullText)], { encoding: "utf8", timeout: 1000 });
+    } catch { /* best-effort */ }
+    // Advance the monotonic capture anchor past this candidate. The transcript
+    // is append-only, so every later source occurrence starts beyond this
+    // offset; a same-text earlier record stays invisible to later scans.
+    try {
+      spawnSync("tmux", ["set-option", "-p", "-q", "@agent_capture_anchor", `${transcriptPath}|${capturedSize}`], { encoding: "utf8", timeout: 1000 });
     } catch { /* best-effort */ }
   }
 

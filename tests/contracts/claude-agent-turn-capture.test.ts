@@ -154,6 +154,7 @@ case "\${!#}" in
   '@agent_episode_pending') grep -Fqx '@agent_episode_pending=1' "$state" && printf '1\\n' ;;
   '@agent_episode_cursor') v="$(grep -F '@agent_episode_cursor=' "$state" | tail -1)"; printf '%s\\n' "\${v#*=}" ;;
   '@agent_last_candidate') v="$(grep -F '@agent_last_candidate=' "$state" | tail -1)"; printf '%s\\n' "\${v#*=}" ;;
+  '@agent_capture_anchor') v="$(grep -F '@agent_capture_anchor=' "$state" | tail -1)"; printf '%s\\n' "\${v#*=}" ;;
   *) : ;;
 esac
 `);
@@ -227,6 +228,10 @@ test("a correlated payload emits source_key from the record's own immutable iden
     // key is deterministic for this record across replays.
     expect(emit).toMatch(/source_key=[0-9a-f]{24}/);
     expect(emit).not.toContain("msg_01abcd"); // raw provider id is never leaked
+    // The monotonic capture anchor advanced past this candidate: the next
+    // stop's correlation can never absorb this record.
+    const state = readFileSync(join(root, "tmux-state"), "utf8");
+    expect(state).toMatch(new RegExp(`@agent_capture_anchor=${transcript.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\|[0-9]+`));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
