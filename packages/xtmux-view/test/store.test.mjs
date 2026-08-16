@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readLatestEpisode, EPISODE_SELECT, CANDIDATE_SELECT, episodeWhere, mapEpisode } from "../src/store.mjs";
+import { readLatestEpisode, EPISODE_SELECT, episodeWhere, mapEpisode } from "../src/store.mjs";
 
 // The store reads via bun:sqlite (the xtmux observability backend), so the
 // end-to-end cases run under Bun and skip under plain node. The fixture DDL

@@ -110,7 +110,9 @@ export function parseCli(argv) {
 
 export function sanitizeTerminalText(value) {
   return String(value ?? "")
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
+    // C0 + DEL + C1 controls: terminal control sequences (ESC, CSI U+009B,
+    // BEL, …) must never reach the rendered Markdown from any candidate role.
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u0080-\u009f]/g, "")
     .replace(/\r\n?/g, "\n");
 }
 
@@ -172,8 +174,11 @@ export function episodeBody(episode) {
   }
   const collapsedCount = (episode.collapsed ?? []).length;
   if (collapsedCount > 0) {
+    // Collapsed hints pass through the SAME sanitization boundary as the
+    // primary and follow-ups: a short "Acknowledged. <ESC>[2J" must be at
+    // least as safe when collapsed as it would be as a body section.
     const hints = (episode.collapsed ?? [])
-      .map((c) => candidateText(c).replace(/\s+/g, " ").trim())
+      .map((c) => sanitizeTerminalText(candidateText(c)).replace(/\s+/g, " ").trim())
       .filter(Boolean)
       .slice(0, 3)
       .map((text) => `\"${text.slice(0, 80)}\"`);

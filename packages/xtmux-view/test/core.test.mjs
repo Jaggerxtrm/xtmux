@@ -127,6 +127,27 @@ test("buildDocument renders substantive follow-ups and collapses short acks", ()
   assert.doesNotMatch(doc, /^ok$/m);
 });
 
+test("collapsed hints are sanitized: ESC/BEL/C1 in a short ack never reach the footer (review P1)", () => {
+  // A collapsed candidate is at least as safe as a body section: terminal
+  // control bytes (ESC clear-screen, BEL, C1 CSI) must be stripped before the
+  // hint is rendered into Markdown.
+  const hostile = "Acknowledged. \u001b[2J \u0007 \u009b2J";
+  const projected = projectEpisode({
+    ...episode,
+    candidates: [
+      { turnId: 1, summary: "real", lastMessageText: long("substantive primary"), completedAtMs: 1001 },
+      { turnId: 2, summary: "ack", lastMessageText: hostile, completedAtMs: 1002 },
+    ],
+  });
+  const doc = buildDocument(projected);
+  assert.match(doc, /Collapsed: 1 short hook acknowledgement/);
+  assert.match(doc, /"Acknowledged\. \[2J 2J"/); // controls stripped, prose intact
+  assert.doesNotMatch(doc, /\u001b|\u0007|\u009b/);
+  // The body path sanitizes the same way (control bytes never render anywhere).
+  const body = episodeBody(projected);
+  assert.doesNotMatch(body, /\u001b|\u0007|\u009b/);
+});
+
 test("buildDocument shows a placeholder for an episode with no captured text", () => {
   const doc = buildDocument(projectEpisode({ ...episode, candidates: [] }));
   assert.match(doc, /_No assistant text was captured for this episode\._/);
