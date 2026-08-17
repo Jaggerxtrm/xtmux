@@ -885,7 +885,7 @@ if grep -q 'load:pos(2)' "$WORK/nav-fzf-args"; then
 else
   nok "nav reveal: initial selection positions on current marker"
 fi
-if grep -q -- '--preview-window=hidden,bottom,7,border-top,wrap,follow' "$WORK/nav-fzf-args"; then
+if grep -q -- '--preview-window=hidden,bottom,7,wrap,follow' "$WORK/nav-fzf-args"; then
   ok "nav details: inspector is hidden until explicit toggle"
 else
   nok "nav details: inspector is hidden until explicit toggle"
@@ -901,11 +901,11 @@ else
   nok "nav help: ? explicitly reveals the hidden details pane"
 fi
 assert_eq "nav filter: initial list uses persisted filter state" list-active-nav "$(cat "$WORK/nav-stub-command")"
-assert_eq "nav width: fzf border and selection chrome are reserved" 32 "$(cat "$WORK/nav-stub-width")"
+assert_eq "nav width: fzf selection chrome is reserved" 36 "$(cat "$WORK/nav-stub-width")"
 _width_narrow="$(XTMUX_NAV_WIDTH=32 nav_reserve_fzf_width; printf '%s' "$XTMUX_NAV_WIDTH")"
-assert_eq "nav width: narrow physical drawers reserve chrome without widening" 24 "$_width_narrow"
+assert_eq "nav width: narrow physical drawers reserve chrome without widening" 28 "$_width_narrow"
 _width_default="$(unset XTMUX_NAV_WIDTH; COLUMNS=52 nav_reserve_fzf_width; printf '%s' "$XTMUX_NAV_WIDTH")"
-assert_eq "nav width: unset override reserves chrome from terminal columns" 44 "$_width_default"
+assert_eq "nav width: unset override reserves chrome from terminal columns" 48 "$_width_default"
 (
   nav_route() { REPLY=multiline; }
   fzf() { printf '%s\n' "$*" > "$WORK/nav-specialist-fzf-args"; cat >/dev/null; }

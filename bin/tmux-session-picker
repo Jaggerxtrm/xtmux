@@ -3559,19 +3559,19 @@ pick_classic() {
     tmux display-message 'fzf non trovato'
     exit 1
   fi
-  local preview_window='right,62%,border-left,wrap,follow'
-  local preview_window_max='right,94%,border-left,wrap,follow'
+  local preview_window='right,62%,wrap,follow'
+  local preview_window_max='right,94%,wrap,follow'
   local border_label=' Enter switch · Tab mark · Alt-R rename · Alt-X bulk kill · Alt-x kill · ^Y ok · Alt-I int · ^O msg · ^A all ^W wait ^E run · ^F filter · Ctrl-r refresh · ? help · Ctrl-/ preview '
   local choice type sid name target _
   case "$mode" in
     compact-wrap)
-      preview_window='right,68%,border-left,wrap,follow'
-      preview_window_max='right,94%,border-left,wrap,follow'
+      preview_window='right,68%,wrap,follow'
+      preview_window_max='right,94%,wrap,follow'
       border_label=' compact wrap · Enter switch · Alt-Enter popup · Alt-x kill · ^Y approve · Alt-I interrupt · ^O msg · ^A/^W/^E filtri · ^F filter · Ctrl-r refresh · ? help '
       ;;
     compact-nowrap)
-      preview_window='right,68%,border-left,follow'
-      preview_window_max='right,94%,border-left,follow'
+      preview_window='right,68%,follow'
+      preview_window_max='right,94%,follow'
       border_label=' compact no-wrap · Enter switch · Alt-Enter popup · Alt-x kill · ^Y approve · Alt-I interrupt · ^O msg · ^A/^W/^E filtri · ^F filter · Ctrl-r refresh · ? help '
       ;;
   esac
@@ -3583,9 +3583,11 @@ pick_classic() {
     --with-nth=5 \
     --layout=reverse-list \
     --height=100% \
-    --border=sharp \
-    --border-label "$border_label" \
-    --border-label-pos='3:bottom' \
+    --margin=1,2 \
+    --border=none \
+    --list-border=none \
+    --header "$border_label" \
+    --header-first \
     --no-scrollbar \
     --cycle \
     --no-bold \
@@ -3596,7 +3598,7 @@ pick_classic() {
     --info=inline-right \
     --color='fg:#b8bcc0,bg:-1,hl:#ffffff,fg+:#ffffff,bg+:#222222,hl+:#ffffff,info:#8a8f94,prompt:#8a8f94,pointer:#c6cacf,marker:#c6cacf,label:#8a8f94,border:#303030,gutter:-1' \
     --preview-window="$preview_window" \
-    --bind="load:transform-prompt($self prompt-label)+transform-border-label($self border-label)" \
+    --bind="load:transform-prompt($self prompt-label)" \
     --bind="ctrl-/:toggle-preview" \
     --bind="?:change-preview($self mux-help)" \
     --bind="ctrl-r:reload(TMUX_PICKER_NO_CACHE=1 $self list-active)" \
@@ -3604,7 +3606,7 @@ pick_classic() {
     --bind="ctrl-w:execute-silent($self filter-preset waiting)+change-prompt(wait> )+reload($self list waiting)" \
     --bind="ctrl-e:execute-silent($self filter-preset running)+change-prompt(run> )+reload($self list running)" \
     --bind="ctrl-f:execute($self filter-menu)+reload($self list-active)+transform-prompt($self prompt-label)" \
-    --bind="tab:execute($self mode-toggle)+reload($self list-active)+transform-prompt($self prompt-label)+transform-border-label($self border-label)" \
+    --bind="tab:execute($self mode-toggle)+reload($self list-active)+transform-prompt($self prompt-label)" \
     --bind="space:toggle+down" \
     --bind="alt-p:change-preview-window($preview_window_max|$preview_window)" \
     --bind="alt-x:execute-silent($self kill {1} {2} {4})+reload($self list-active)" \
@@ -3621,12 +3623,13 @@ pick_classic() {
   jump_to_target "$type" "$sid" "$target"
 }
 
-# nav_reserve_fzf_width — convert popup columns into usable row columns. fzf's
-# border plus multi-select pointer/marker gutter consume eight terminal cells.
+# nav_reserve_fzf_width — convert popup columns into usable row columns. With
+# the borderless rendering the multi-select pointer/marker gutter still consumes
+# four terminal cells (no fzf border anymore; was eight with one).
 nav_reserve_fzf_width() {
   local w="${XTMUX_NAV_WIDTH:-${COLUMNS:-52}}"
   case "$w" in ''|*[!0-9]*) w=52 ;; esac
-  w=$(( w - 8 ))
+  w=$(( w - 4 ))
   [ "$w" -lt 1 ] && w=1
   XTMUX_NAV_WIDTH="$w"
   export XTMUX_NAV_WIDTH
@@ -3658,8 +3661,8 @@ pick_nav() {
   esac
   nav_reserve_fzf_width
   local footer=' ↵ open · Tab compact · ^/ details · ? help '
-  local inspector='hidden,bottom,7,border-top,wrap,follow'
-  local inspector_max='bottom,50%,border-top,wrap,follow'
+  local inspector='hidden,bottom,7,wrap,follow'
+  local inspector_max='bottom,50%,wrap,follow'
   local lall lwait lrun lactive self_q
   printf -v self_q '%q' "$self"
   if [ "$navmode" = oneline ]; then
@@ -3699,14 +3702,14 @@ pick_nav() {
     --with-nth=6 \
     --layout=reverse-list \
     --height=100% \
-    --border=sharp \
-    --border-label "$footer" \
-    --border-label-pos='3:bottom' \
+    --margin=1,2 \
+    --border=none \
+    --list-border=none \
     --no-scrollbar \
     --cycle \
     --no-bold \
     --multi \
-    --header=' xtmux nav · state groups · type to filter ' \
+    --header=" xtmux nav · state groups · type to filter $footer" \
     --header-first \
     --prompt='all> ' \
     --pointer='>' \
@@ -3714,7 +3717,7 @@ pick_nav() {
     --info=inline-right \
     --color='fg:#b8bcc0,bg:-1,hl:#ffffff,fg+:#ffffff,bg+:#222222,hl+:#ffffff,info:#8a8f94,prompt:#8a8f94,pointer:#c6cacf,marker:#c6cacf,label:#8a8f94,border:#303030,gutter:-1' \
     --preview-window="$inspector" \
-    --bind="load:pos($pos)+transform-prompt($self_q prompt-label nav)+transform-border-label($self_q nav-border-label)" \
+    --bind="load:pos($pos)+transform-prompt($self_q prompt-label nav)" \
     --bind="ctrl-/:toggle-preview" \
     --bind="?:change-preview($self_q nav-key-help)+show-preview" \
     --bind="ctrl-r:reload-sync(TMUX_PICKER_NO_CACHE=1 $lactive)+track-current" \
@@ -3722,7 +3725,7 @@ pick_nav() {
     --bind="ctrl-w:execute-silent($self_q filter-preset waiting)+change-prompt(wait> )+reload-sync($lwait)+track-current" \
     --bind="ctrl-e:execute-silent($self_q filter-preset running)+change-prompt(run> )+reload-sync($lrun)+track-current" \
     --bind="ctrl-f:execute($self_q filter-menu)+reload-sync($lactive)+track-current+transform-prompt($self_q prompt-label nav)" \
-    --bind="tab:execute($self_q mode-toggle)+reload-sync($lactive)+track-current+transform-prompt($self_q prompt-label nav)+transform-border-label($self_q nav-border-label)" \
+    --bind="tab:execute($self_q mode-toggle)+reload-sync($lactive)+track-current+transform-prompt($self_q prompt-label nav)" \
     --bind="space:toggle+down" \
     --bind="alt-p:change-preview-window($inspector_max|$inspector)" \
     --bind="enter:become($self_q nav-go {5})" \
