@@ -48,6 +48,65 @@ field name here or there and the contract test fails.
 
 Domain-specific existing objects remain authoritative for `HealthReport`, `MessageStatus`, `UnreadStats`, migration reports, retention reports, shadow summaries, and obligation rows.
 
+## Nav records and nav verbs
+
+The nav drawer (`list-nav`, `list-nav-single`, `list-active-nav`,
+`list-active-nav-single`) is a private fzf transport, not a public API. Records
+are NUL-delimited with six fields:
+
+```text
+type<TAB>sid<TAB>name<TAB>target<TAB>token<TAB>display<NUL>
+```
+
+- `type` is `session`, `window`, or `pane`.
+- `sid` is the `$N` session that owns the row.
+- `name` is bounded presentation text (session, window, or pane name); it is never an action input.
+- `target` is the exact tmux target of the row: `$N` for a session, `@N` for a window, `%N` for a pane.
+- `token` is the machine action token: `s:$N`, `w:$N:@N`, or `p:$N:%N`. Every fzf action resolves this token; display text is never parsed.
+- `display` is the bounded multi-line card (or one-line card in the single fallback); trailing `<NUL>` terminates the record.
+
+Three record shapes are emitted:
+
+```text
+session<TAB>$N<TAB>name<TAB>$N<TAB>s:$N<TAB><card><NUL>
+window<TAB>$N<TAB>name<TAB>@N<TAB>w:$N:@N<TAB><card><NUL>
+pane<TAB>$N<TAB>name<TAB>%N<TAB>p:$N:%N<TAB><card><NUL>
+```
+
+Before any jump or action the claimed `$session_id` is revalidated against live
+tmux (window against its live owning session, pane against its live session); a
+stale or moved target fails safely with no state change.
+
+The public `xtmux list` TSV is unchanged: five fields, newline-separated,
+session and pane rows only — no window records. Agents that need the full
+hierarchy use `topology --json`, which remains the full structured authority and
+is unchanged by the NAV workstream: per session `session_id`, `name`,
+`created_at_ms`, `activity_at_ms`, `attached`, `active`, `windows[]`; per window
+`window_id`, `window_index`, `name`, `active`, `panes[]`; per pane `pane_id`,
+`pane_index`, `active`, `width`, `height`, `left`, `top`, `pid`,
+`current_command`, `current_path`, and optional `agent` metadata.
+
+The direct nav verb family (`xtmux nav <verb>`) is interactive-only and refuses
+`--json`. Verbs, matching `xtmux nav help`:
+
+```text
+nav                 open the interactive navigator (fzf)
+nav next            switch to the next tmux session (native switch-client -n)
+nav prev            switch to the previous tmux session (native switch-client -p)
+nav window-next     native tmux next-window (current session)
+nav window-prev     native tmux previous-window (current session)
+nav attention-next  cycle to the next attention target
+nav attention-prev  cycle to the previous attention target
+nav back            return to the target recorded before the last jump (@picker_prev)
+nav help            this reference
+```
+
+Direct navigation must not invoke fzf, git, preview enrichment, or the full nav
+renderer: `window-next`/`window-prev` are a single tmux call (verified syntax:
+no `-t` needed, the current client's session, wraps around), `attention-*` use
+one live `list-panes` traversal over the authoritative attention ordering (an
+empty attention list is a non-error), and `back` reuses `@picker_prev`.
+
 ## Correlated coordination lifecycle
 
 A send with `--bead` defaults to `expectsReply:true`; an FYI send opts out with
@@ -165,11 +224,11 @@ Categories are closed: **agent-json** gains/retains structured output for agents
 |---|---|---|---|
 | `picker:list` | interactive-only | public five-field newline TSV, unchanged; use dashboard for agents | — |
 | `picker:list-active` | interactive-only | public TSV reload using persisted filter | — |
-| `picker:list-nav` | interactive-only | private six-field NUL records with multiline display; not a public API | rib.23 |
-| `picker:list-nav-single` | interactive-only | private NUL records with bounded one-line display fallback | rib.23 |
+| `picker:list-nav` | interactive-only | private six-field NUL records (`type<TAB>sid<TAB>name<TAB>target<TAB>token<TAB>display<NUL>`) with `s:$N` / `w:$N:@N` / `p:$N:%N` tokens and multiline cards; not a public API | rib.23 |
+| `picker:list-nav-single` | interactive-only | private NUL records with bounded one-line display fallback; same token architecture | rib.23 |
 | `picker:list-active-nav` | interactive-only | private multiline nav reload using persisted filter/mode | rib.24 |
 | `picker:list-active-nav-single` | interactive-only | private one-line nav reload using persisted filter/mode | rib.24 |
-| `picker:nav` | interactive-only | sidebar navigator and direct traversal family; `--json` returns `XTMUX_JSON_UNSUPPORTED` | rib.25 |
+| `picker:nav` | interactive-only | sidebar navigator and direct traversal family incl. `window-next`/`window-prev`; `--json` returns `XTMUX_JSON_UNSUPPORTED` | rib.25 |
 | `picker:nav-go` | interactive-only | exact hidden-token navigation; never parses display | rib.23 |
 | `picker:nav-act` | guarded-admin | token-validated popup/kill/rename/approve/interrupt/message action | rib.24 |
 | `picker:nav-key-help` | interactive-only | complete nav key reference for fzf preview | rib.24 |
@@ -184,7 +243,7 @@ Categories are closed: **agent-json** gains/retains structured output for agents
 | `picker:safe-send-pointer` | guarded-admin | pane injection; retain dry-run and confirmation guards | .2 |
 | `picker:worktree-collisions` | agent-json | TSV → collision array | .3 |
 | `picker:dashboard` | agent-json | TSV header/rows → session inventory object | .3 |
-| `picker:topology` | agent-json | one bounded `tmux list-panes -a -F` pass → versioned nested topology snapshot; no pane content | j46.3 |
+| `picker:topology` | agent-json | one bounded `tmux list-panes -a -F` pass → versioned nested topology snapshot; no pane content; unchanged by the NAV workstream and remains the full structured authority (sessions → windows → panes) | j46.3 |
 | `picker:audit` | agent-json | TSV findings → audit finding array | .3 |
 | `picker:context` | agent-json | `context --current --json` → `xtrm.runtime-origin.v1` for the invoking pane; read-only; exempt from the V2-mode gate (reads tmux + host-id file, not the store) | j46.2 |
 | `picker:message-get` | agent-json | `message-get <messageKey|messageId> [--json]` → one message row; never acknowledges or changes reply state | wx2 |

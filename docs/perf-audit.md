@@ -223,3 +223,42 @@ switches. None invokes git, `pgrep`, `ps`, `jq`, or preview enrichment.
 A parent-process sample measured approximately 6.9 MiB RSS. Short-lived child RSS
 could not be captured reliably; this is a measurement limitation, not a claim of
 zero child memory. Records remain bounded and temporary probe state is cleaned.
+
+## nav topology renderer — hot-path shape and measurements (2026-08-17)
+
+The NAV workstream replaced the nav hot-path shape with a topology-correct one:
+
+```text
+one bulk tmux list-panes -a inventory (session_id + @window_id + window_active
++ %pane_id on every row)
+  → derive windows (aggregation, current-window, pane counts)
+  → aggregate session → window → pane state
+  → render bounded session/window/pane records
+```
+
+There is no per-session, per-window, or per-pane tmux fanout and no per-pane
+subprocess: `nav_pane_location` is pure path arithmetic over the already-
+collected pane cwd and the existing path→git-root cache (zero added
+tmux/git subprocesses, zero filesystem traversal on the hot path). Warm git
+subprocess count does not regress.
+
+Every private nav record is explicitly bounded: visual lines `NAV_SESSION_LINES`
+= 3, `NAV_WINDOW_LINES` = 2, `NAV_PANE_LINES` = 2; byte budget
+`NAV_MAX_RECORD_BYTES` = 4096 backed by an emission guard at
+`NAV_MAX_RECORD_CHARS` = 2048 that preserves machine fields 1–5 and refits only
+the display tail. Pathological metadata (3000-char session/window name, task,
+cwd) stays ≤ ~400 B per record — it cannot create unbounded row height or
+memory growth (proven in `test/nav-contract.sh`).
+
+Epic-fixture byte measurements (`.xtrm/reports/`):
+
+| report | expanded total | max record | records | warm tmux/git | cold tmux/git |
+|---|---|---|---|---|---|
+| before — `2026-08-17-nav-topology-baseline.md` | 905 B | 190 B | 5 (1 session + 4 panes) | 2 / 0 | 2 / 3 |
+| after — `2026-08-17-nav-renderer-after.md` | 1364 B | 227 B | 7 (1 session + 2 windows + 4 panes) | 2 / 0 | 2 / 3 |
+
+The delta is the two new window rows plus the bounded pane location line — the
+topology feature itself, not unbounded growth. NAV-T7 produces the definitive
+before/after comparison in `.xtrm/reports/2026-08-17-nav-topology-perf.md`
+(same deterministic §29 fixture as both reports above); this section does not
+restate its numbers.

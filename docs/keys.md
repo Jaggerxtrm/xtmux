@@ -35,8 +35,15 @@ bind G display-popup -E -w 99% -h 97% "TMUX_PICKER_MODE=compact-nowrap $HOME/.lo
 are optional prefix-table examples; xtmux does not install global bindings.
 
 Inside nav, `▎` is the live tmux target and `›` is the fzf selection. Sessions
-are grouped by attention, active, and other state. `Tab` toggles expanded/sessions-only,
-`Ctrl-/` opens the hidden details inspector, and `?` shows all nav actions.
+are grouped by urgent, active, and other state. `Tab` toggles compact <-> expanded
+topology — compact shows session rows only, expanded shows session → window →
+pane (it does not merely hide/show pane rows). `Ctrl-/` opens the hidden details
+inspector, and `?` shows all nav actions.
+
+Window rows show `@window-id` intact plus truncatable `index:name`, the
+pane→window aggregate state, and the pane count. `Enter` on a window row selects
+that exact window; `Alt-r` renames it and `Alt-x` kills it. Pane-only actions
+(approve/interrupt/message) on a window row are refused with a bounded message.
 
 ## native and xtmux traversal
 
@@ -49,13 +56,17 @@ bind L switch-client -l
 # optional discoverable xtmux wrappers
 bind N run-shell '$HOME/.local/bin/xtmux nav next'
 bind P run-shell '$HOME/.local/bin/xtmux nav prev'
+bind W run-shell '$HOME/.local/bin/xtmux nav window-next'
+bind Q run-shell '$HOME/.local/bin/xtmux nav window-prev'
 bind A run-shell '$HOME/.local/bin/xtmux nav attention-next'
 bind B run-shell '$HOME/.local/bin/xtmux nav back'
 ```
 
 `nav attention-next` and `nav attention-prev` wrap the authoritative attention
-order. `nav back` reuses `jump-back` state. Choose keys that do not collide with
-your existing prefix table.
+order. `nav window-next` and `nav window-prev` invoke the native tmux
+next-window/previous-window operations for the current client's session (single
+tmux call, no inventory, wraps around). `nav back` reuses `jump-back` state.
+Choose keys that do not collide with your existing prefix table.
 
 ## attention jumps
 

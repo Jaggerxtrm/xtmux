@@ -6,6 +6,42 @@
 **Decision scope:** local tmux session/pane navigation and picker presentation
 **Out of scope:** xtmux runtime authority, persistence redesign, Herdr runtime adoption, native TUI implementation
 
+## Topology model (amended 2026-08-17 — NAV-T8)
+
+The shipped navigator projects tmux's real hierarchy, explicitly correcting the
+earlier two-level model:
+
+```text
+previous:
+session
+  pane
+
+new:
+session
+  window
+    pane
+```
+
+Identity is machine-owned and stable at every level:
+
+```text
+$ = session identity
+@ = window identity
+% = pane identity
+```
+
+- Window index and window name are presentation only. Display text never
+determines action identity: every action resolves the hidden token
+(`s:$N`, `w:$N:@N`, `p:$N:%N`) and revalidates ownership against live tmux
+before mutation (window → its live owning session; pane → its live session).
+- Windows are independently selectable rows (`Enter` selects the exact
+`@window_id`); panes are grouped under their real windows.
+- Pane location (repo, `repo · relative-path`, worktree → canonical repo
+label) is first-class sidebar context in expanded mode; full absolute paths
+remain details-only behind the inspector.
+- Compact mode emits session rows only; expanded mode emits session → window →
+pane. This amendment supersedes any two-level session → pane wording below.
+
 ## Context
 
 xtmux has evolved from a small tmux picker into a coordination runtime with live agent-state awareness, durable messages, monitors, handoffs, runtime identity, topology, audit and recovery surfaces.
@@ -122,6 +158,8 @@ Example:
 
 ```text
 pane    $42    xtmux-ui    %17    p:$42:%17    <multi-line display>
+window  $42    coord        @17   w:$42:@17    <multi-line display>
+session $42    xtmux-ui    $42    s:$42       <multi-line display>
 ```
 
 The first fields are machine-owned.
@@ -231,15 +269,15 @@ truncation because a single physical line cannot exceed the terminal width.
 A session renders as:
 
 ```text
-▎ xtmux-ui                    2m  attn wait
+▎ xtmux-ui                    2m  urgent wait
     xtmux · nav sidebar · +2
+    ▸ @17  0:coord  wait · 2
+        %17  claude  sidebar picker  wait
+        %19  shell                 wait
 ```
 
-Each expanded child pane uses one bounded line and keeps its operational id visible:
-
-```text
-    └ %17  claude  sidebar picker  attn wait
-```
+Each window is an independently selectable row under its session. Each expanded
+child pane uses one bounded line and keeps its operational id visible:
 
 The primary list should not display every known metadata field.
 
@@ -322,9 +360,11 @@ Rollback changes presentation, not semantics.
     <SessionRow>
       identity + state
       repo + branch + dirty + age
-    <PaneRow>
-      pane + runtime + state
-      bead + short task
+      <WindowRow>
+        @window-id + index:name + aggregate state + pane count
+        <PaneRow>
+          %pane-id + runtime + state
+          location line
     <SectionHeader>
   <FzfNavigator>
     fuzzy search

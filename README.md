@@ -31,18 +31,32 @@ projection over the same tmux/xtmux inventory; it creates no daemon, database,
 or runtime authority. [`docs/design/mockups/xtmux-nav-sidebar-target.html`](docs/design/mockups/xtmux-nav-sidebar-target.html)
 records the visual direction only; the shipped UI is terminal-native.
 
-- state-sorted session cards with durable `attn` / `active` / `other` labels
+The nav models tmux's real hierarchy — session `$N` → window `@N` → pane `%N`.
+Each record carries a hidden machine token (`s:$N`, `w:$N:@N`, `p:$N:%N`) that
+drives every action; display text is presentation-only and never parsed.
+
+- state-sorted session cards with `urgent` / `active` / `other` group labels
+  (the visible group is the narrow attention-relevance bucket; attention-next/prev
+  still traverse the full authoritative attention ordering)
 - identity + age + group + exact state stay adjacent; fzf chrome gets an explicit width reserve
 - rows wrap onto continuation lines instead of being cut; no ellipsis in the default drawer
 - bounded repo and humanized branch context follow without pushing state off-screen
-- one bounded line per pane with permanently visible `%pane-id`, runtime, task, and state
+- window rows: `@window-id` intact, truncatable `index:name`, aggregate state, pane
+  count; `Enter` on a window row selects that exact window
+- one bounded pane card per pane: line 1 keeps `%pane-id`, runtime, task, and
+  state; line 2 is the pane location projection — repo, `repo · relative-path`,
+  worktree → canonical repo label, or shortened `~/…` when no repo
+- full absolute paths, bead, task, and last transition stay in the details inspector
 - `▎` marks the invoking tmux target; fzf's `›` marks the highlighted target
-- `Tab` keeps the existing expanded / sessions-only state
+- `Tab` toggles compact <-> expanded topology: compact shows session rows only;
+  expanded shows sessions → windows → panes
 - details inspector (`Ctrl-/`) is hidden by default; paths and debug metadata stay there
 - short persistent footer; `?` shows the complete nav key reference
 - private NUL-delimited records with strict machine action tokens; display is never parsed
 - semantic fzf capability gate: multiline, bounded one-line, then classic fallback
-- direct `nav next|prev|attention-next|attention-prev|back` traversal without building the picker
+- direct `nav next|prev|window-next|window-prev|attention-next|attention-prev|back`
+  traversal without building the picker (window-next/window-prev invoke the native
+  tmux next-window/previous-window operations)
 
 Set `XTMUX_NAV_LAYOUT=classic` to use the classic renderer without reverting code.
 Public `xtmux list` remains the unchanged five-field newline TSV surface.
@@ -92,9 +106,9 @@ Public `xtmux list` remains the unchanged five-field newline TSV surface.
 - comma-separated clauses are ANDed
 - unknown filter clauses are ignored defensively
 - active `Ctrl-f` filter survives refresh/cache invalidation
-- `Tab` toggles nesting:
-  - expanded = session rows + child pane rows
-  - sessions-only = dense session-only overview
+- `Tab` toggles compact <-> expanded topology:
+  - expanded = session → window → pane rows (`nav`); classic keeps session + pane rows
+  - compact = session rows only (dense overview)
 
 ### Multiplexing/orchestrator primitives
 

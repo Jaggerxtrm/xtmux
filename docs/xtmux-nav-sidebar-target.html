@@ -182,7 +182,7 @@
     gap: 6px;
     align-items: baseline;
     min-width: 0;
-    padding: 1px 0 1px 8px;
+    padding: 1px 0 1px 16px;
     color: #aeb5b8;
   }
   .pane .branch { color: #687175; }
@@ -203,6 +203,24 @@
   .pane-state.wait { color: var(--wait); }
   .pane-state.run { color: var(--run); }
   .pane-state.done { color: var(--done); }
+
+  .window {
+    display: grid;
+    grid-template-columns: 50px minmax(0, 1fr) auto auto;
+    gap: 6px;
+    align-items: baseline;
+    min-width: 0;
+    padding: 3px 0 1px 8px;
+    color: #b8bfc2;
+  }
+  .win-id { color: #d1d7da; font-weight: 600; }
+  .win-label { color: #9fa8ab; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .win-state { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+  .win-state.wait { color: var(--wait); }
+  .win-state.run { color: var(--run); }
+  .win-state.done { color: var(--done); }
+  .win-state.idle { color: var(--idle); }
+  .win-count { color: #687175; font-size: 11px; }
 
   .footer {
     height: 36px;
@@ -292,6 +310,9 @@
             </div>
             <div class="context"><span class="repo">market-data</span> · docs/jct5k-coord8-regression-fixes</div>
             <div class="panes">
+              <div class="window">
+                <span class="win-id">@17</span><span class="win-label">0:coord</span><span class="win-state wait">wait</span><span class="win-count">1</span>
+              </div>
               <div class="pane current-pane">
                 <span class="branch">└</span><span class="pane-id">%553</span><span class="runtime">claude</span><span class="task">coordinator · regression fixes</span><span class="pane-state wait">wait</span>
               </div>
@@ -307,6 +328,9 @@
             </div>
             <div class="context"><span class="repo">specialists</span> · xt/dolt-migration-tpafe</div>
             <div class="panes">
+              <div class="window">
+                <span class="win-id">@18</span><span class="win-label">0:migrate</span><span class="win-state wait">wait</span><span class="win-count">1</span>
+              </div>
               <div class="pane">
                 <span class="branch">└</span><span class="pane-id">%907</span><span class="runtime">claude</span><span class="task">dolt migration · coordinator</span><span class="pane-state wait">wait</span>
               </div>
@@ -326,6 +350,9 @@
             </div>
             <div class="context"><span class="repo">program</span> · master</div>
             <div class="panes">
+              <div class="window">
+                <span class="win-id">@19</span><span class="win-label">0:prog</span><span class="win-state run">run</span><span class="win-count">1</span>
+              </div>
               <div class="pane">
                 <span class="branch">└</span><span class="pane-id">%141</span><span class="runtime">claude</span><span class="task">programme coordination</span><span class="pane-state run">run</span>
               </div>
@@ -341,6 +368,9 @@
             </div>
             <div class="context"><span class="repo">core</span> · main · <span class="shared">shared-wt</span></div>
             <div class="panes">
+              <div class="window">
+                <span class="win-id">@20</span><span class="win-label">0:core</span><span class="win-state run">run</span><span class="win-count">2</span>
+              </div>
               <div class="pane">
                 <span class="branch">├</span><span class="pane-id">%875</span><span class="runtime">claude</span><span class="task">core review</span><span class="pane-state run">run</span>
               </div>
@@ -359,6 +389,9 @@
             </div>
             <div class="context"><span class="repo">darth-feedor</span> · fix/ws008-p3g-deploy-specialist-path</div>
             <div class="panes">
+              <div class="window">
+                <span class="win-id">@21</span><span class="win-label">0:deploy</span><span class="win-state run">run</span><span class="win-count">1</span>
+              </div>
               <div class="pane">
                 <span class="branch">└</span><span class="pane-id">%640</span><span class="runtime">pi</span><span class="task">session:research-papers-gcp</span><span class="pane-state run">run</span>
               </div>
@@ -378,6 +411,9 @@
             </div>
             <div class="context"><span class="repo">core/transcripts</span> · education/issue-78-exp013-student-derivative-pilot</div>
             <div class="panes">
+              <div class="window">
+                <span class="win-id">@22</span><span class="win-label">0:transcripts</span><span class="win-state done">done</span><span class="win-count">1</span>
+              </div>
               <div class="pane">
                 <span class="branch">└</span><span class="pane-id">%103</span><span class="runtime">claude</span><span class="task">transcript work</span><span class="pane-state done">done</span>
               </div>
@@ -393,6 +429,9 @@
             </div>
             <div class="context"><span class="repo">core</span> · xt/spike-read-line-numbers</div>
             <div class="panes">
+              <div class="window">
+                <span class="win-id">@23</span><span class="win-label">0:spike</span><span class="win-state done">done</span><span class="win-count">1</span>
+              </div>
               <div class="pane">
                 <span class="branch">└</span><span class="pane-id">%887</span><span class="runtime">pi</span><span class="task">session:spike-read-line-numbers</span><span class="pane-state done">done</span>
               </div>
@@ -403,7 +442,7 @@
 
       <footer class="footer">
         <span><kbd>↵</kbd> open</span>
-        <span><kbd>Tab</kbd> panes</span>
+        <span><kbd>Tab</kbd> compact/expanded</span>
         <span><kbd>A</kbd> attention</span>
         <span><kbd>^/</kbd> details</span>
         <span><kbd>?</kbd> help</span>
@@ -417,6 +456,10 @@
       <div class="rule">
         <b>Pane IDs stay visible.</b>
         <p><code>%553</code>, <code>%141</code>, <code>%875</code> remain first-class because they are operational handles for multiplexing and communication.</p>
+      </div>
+      <div class="rule">
+        <b>Windows are rows too.</b>
+        <p>Each window renders as its own selectable row (<code>@17</code> with <code>0:coord</code>). The <code>@window-id</code> is machine identity and never truncates; the <code>index:name</code> pair is presentation only.</p>
       </div>
       <div class="rule">
         <b>One line per pane.</b>
