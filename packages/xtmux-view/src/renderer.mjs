@@ -168,7 +168,7 @@ export function selectRenderer(renderer, { glow, mdcat, style = "dark", width = 
         "mdcat is not installed; install mdcat or use --renderer glow|raw",
       );
     }
-    return { bin: mdcat, args: ["--no-pager"], decorate: false };
+    return { bin: mdcat, args: ["--paginate"], decorate: false };
   }
   if (renderer === "glow") {
     if (!glow) {
@@ -179,7 +179,7 @@ export function selectRenderer(renderer, { glow, mdcat, style = "dark", width = 
     }
     return { bin: glow, args: ["--tui", "-s", style], decorate: true, width };
   }
-  if (mdcat) return { bin: mdcat, args: ["--no-pager"], decorate: false };
+  if (mdcat) return { bin: mdcat, args: ["--paginate"], decorate: false };
   if (glow) return { bin: glow, args: ["--tui", "-s", style], decorate: true, width };
   throw new ViewError(
     "XTMUX_VIEW_RENDERER_MISSING",
