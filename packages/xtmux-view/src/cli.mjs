@@ -63,6 +63,23 @@ export async function doctor(env = process.env) {
   return data.glow && data.bun ? 0 : 1;
 }
 
+// Resolve a "NN%" or absolute size against a total, clamped to [1, total].
+// Percentages must be resolved against the *client* size, not the session window:
+// tmux sizes % popups off the window, which can exceed the client and make the
+// popup stretch to fill (or overflow) the whole terminal.
+function parseSize(value, total) {
+  const s = String(value ?? "").trim();
+  const match = /^(\d+(?:\.\d+)?)%$/.exec(s);
+  const size = match ? Math.floor((Number(match[1]) / 100) * total) : Number(s);
+  return Math.max(1, Math.min(Number.isFinite(size) ? size : total, total));
+}
+
+function clientSize(tmux) {
+  const r = spawnSync(tmux, ["display-message", "-p", "#{client_width} #{client_height}"], { encoding: "utf8" });
+  const [w, h] = (r.stdout || "").trim().split(/\s+/).map(Number);
+  return { width: Number.isFinite(w) ? w : 80, height: Number.isFinite(h) ? h : 24 };
+}
+
 function popupCommand(args, target, turn) {
   const tmux = findExecutable("tmux");
   if (!tmux) {
@@ -79,11 +96,20 @@ function popupCommand(args, target, turn) {
     "--style", args.style,
   ];
   const shellCommand = commandArgs.map(shellQuote).join(" ");
+
+  const { width: cw, height: ch } = clientSize(tmux);
+  const width = parseSize(args.popupWidth, cw);
+  const height = parseSize(args.popupHeight, ch);
+  const x = Math.max(0, Math.floor((cw - width) / 2));
+  const y = Math.max(0, Math.floor((ch - height) / 2));
+
   const result = spawnSync(tmux, [
     "display-popup",
     "-E",
-    "-w", args.popupWidth,
-    "-h", args.popupHeight,
+    "-x", String(x),
+    "-y", String(y),
+    "-w", String(width),
+    "-h", String(height),
     "-T", safeTitle(turn),
     shellCommand,
   ], { stdio: "inherit", env: process.env });
