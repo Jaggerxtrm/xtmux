@@ -15,7 +15,7 @@ Usage:
   xtmux-view doctor
 
 Options:
-  --renderer auto|glow|raw   renderer backend (default: auto)
+  --renderer auto|glow|mdcat|raw   renderer backend (default: auto, prefers mdcat)
   --style <name|path>        Glow style (default: dark)
   --popup-width <value>      tmux popup width (default: 88%)
   --popup-height <value>     tmux popup height (default: 90%)
@@ -27,7 +27,7 @@ Options:
 
 Environment:
   XTMUX_OBS_DB_PATH          override xtmux observability DB
-  XTMUX_VIEW_RENDERER        auto|glow|raw
+  XTMUX_VIEW_RENDERER        auto|glow|mdcat|raw
   XTMUX_VIEW_GLOW_STYLE      Glow style
   XTMUX_VIEW_POPUP_WIDTH     tmux popup width
   XTMUX_VIEW_POPUP_HEIGHT    tmux popup height
@@ -42,11 +42,18 @@ function printError(error) {
   process.stderr.write(`XTMUX_VIEW_FAILED: ${error instanceof Error ? error.message : String(error)}\n`);
 }
 
-function doctor(env = process.env) {
+export async function doctor(env = process.env) {
+  let mermaid = false;
+  try {
+    await import("mermaid");
+    mermaid = true;
+  } catch { /* renderer unavailable */ }
   const data = {
-    schemaVersion: "xtmux.view.doctor.v1",
+    schemaVersion: "xtmux.view.doctor.v3",
     tmux: findExecutable("tmux", env),
     glow: findExecutable("glow", env),
+    mdcat: findExecutable("mdcat", env),
+    mermaid,
     bun: process.versions.bun || null,
     dbPath: defaultDbPath(env),
     inTmux: Boolean(env.TMUX),
@@ -87,7 +94,7 @@ function popupCommand(args, target, turn) {
 async function main() {
   const args = parseCli(process.argv.slice(2));
   if (args.help) { help(); return 0; }
-  if (args.doctor) return doctor();
+  if (args.doctor) return await doctor();
 
   const target = normalizeTarget(args.target);
   const rawEpisode = await readLatestEpisode(target);
@@ -114,6 +121,7 @@ async function main() {
       renderer: args.renderer,
       style: args.style,
       env: process.env,
+      width: Number(process.env.COLUMNS) || 80,
     });
   }
 
