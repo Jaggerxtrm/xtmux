@@ -391,6 +391,144 @@ else
   nok "C7: session A still reported current after client moved to B (current markers do not track the attached client)"
 fi
 
+# ---------------------------------------------------------------------------
+echo
+echo "== TEST D: linked-window PANE occurrences validate and act per occurrence =="
+
+# A third session C that does NOT own %P: its p:$C:%P claim must be rejected,
+# not accepted via tmux's silent fallback to C's current pane.
+tmux new-session -d -s C "$EVAL_CMD"
+CID="$(tmux display-message -p -t C '#{session_id}')"
+
+REPLY=''
+if resolve_nav_pane_session "$AID" "$P" && [ "$REPLY" = "$AID" ]; then
+  ok "D1: p:\$A:%P validates (occurrence resolves to session A)"
+else
+  nok "D1: p:\$A:%P failed occurrence validation"
+fi
+REPLY=''
+if resolve_nav_pane_session "$BID" "$P" && [ "$REPLY" = "$BID" ]; then
+  ok "D2: p:\$B:%P validates (the LINKED occurrence is independently real)"
+else
+  nok "D2: p:\$B:%P failed occurrence validation (linked occurrence lost)"
+fi
+REPLY=''
+if resolve_nav_pane_session "$CID" "$P"; then
+  nok "D3: p:\$C:%P was NOT rejected (bare-%pane fallback accepted a foreign session)"
+else
+  ok "D3: p:\$C:%P is rejected (session+pane pair, not bare %id, is authoritative)"
+fi
+
+# Real cross-session pane action on each occurrence. The client ends TEST C
+# attached to B; driving p:$A:%P must move it to session A at the EXACT %P.
+cat > "$WORK/gopane.sh" <<EOF
+cd /tmp
+"$PICKER" nav-go 'p:$AID:$P'
+echo GOPANE_RC=\$? >> "$RESULT"
+EOF
+: > "$RESULT"
+run_in_client "$CLIENT_C" "$WORK/gopane.sh"
+wait_file "$RESULT" 'GOPANE_RC=' || nok "TEST D: nav-go p:\$A:%P did not complete"
+assert_eq "D4: nav-go p:\$A:%P moves the client onto session A" \
+  "$AID" "$(tmux display-message -p -t "$CLIENT_C" '#{session_id}')"
+assert_eq "D5: ... and lands on the exact pane %P" \
+  "$P" "$(tmux display-message -p -t "$CLIENT_C" '#{pane_id}')"
+
+cat > "$WORK/gopaneb.sh" <<EOF
+cd /tmp
+"$PICKER" nav-go 'p:$BID:$P'
+echo GOPANEB_RC=\$? >> "$RESULT"
+EOF
+: > "$RESULT"
+run_in_client "$CLIENT_C" "$WORK/gopaneb.sh"
+wait_file "$RESULT" 'GOPANEB_RC=' || nok "TEST D: nav-go p:\$B:%P did not complete"
+assert_eq "D6: nav-go p:\$B:%P moves the SAME pane occurrence back to session B" \
+  "$BID" "$(tmux display-message -p -t "$CLIENT_C" '#{session_id}')"
+
+# The foreign claim must fail safely: nonzero rc, client and pane unmoved.
+cat > "$WORK/gopanec.sh" <<EOF
+cd /tmp
+"$PICKER" nav-go 'p:$CID:$P'
+echo GOPANEC_RC=\$? >> "$RESULT"
+EOF
+: > "$RESULT"
+run_in_client "$CLIENT_C" "$WORK/gopanec.sh"
+wait_file "$RESULT" 'GOPANEC_RC=' || nok "TEST D: nav-go p:\$C:%P did not complete"
+assert_eq "D7: foreign p:\$C:%P refuses with nonzero rc" \
+  'GOPANEC_RC=1' "$(grep -o 'GOPANEC_RC=[0-9]*' "$RESULT" | tail -1)"
+assert_eq "D8: ... and the client never left session B" \
+  "$BID" "$(tmux display-message -p -t "$CLIENT_C" '#{session_id}')"
+
+# ---------------------------------------------------------------------------
+echo
+echo "== TEST E: fuzzy query retains ancestry (real fzf over the live chain) =="
+
+if command -v fzf >/dev/null 2>&1; then
+  TMUX_PICKER_NO_CACHE=1 fzf_multiline_probe; _e_route="$REPLY"
+else
+  _e_route='none'
+fi
+if [ "$_e_route" != on ]; then
+  ok "TEST E: skipped (no multiline-capable fzf on this host)"
+else
+  # Pane-side driver: real picker subprocesses under the attached client's
+  # isolated TMUX env, real fzf --filter over the live chain projection.
+  cat > "$WORK/fuzzy.sh" <<'PANEEOF'
+set -u
+cd /tmp
+"$WORK_PICKER" list-active-nav-chain "$WORK_PANE" > "$WORK_DIR/chain.q" 2>/dev/null
+"$WORK_PICKER" list-active-nav            > "$WORK_DIR/flat"   2>/dev/null
+"$WORK_PICKER" list-active-nav-chain ''   > "$WORK_DIR/chain.empty" 2>/dev/null
+if cmp -s "$WORK_DIR/flat" "$WORK_DIR/chain.empty"; then
+  echo 'EMPTY_SAME=yes' >> "$WORK_RESULT"
+else
+  echo 'EMPTY_SAME=no' >> "$WORK_RESULT"
+fi
+fzf --read0 --delimiter=$'\t' --with-nth=6 --filter="$WORK_PANE" \
+  < "$WORK_DIR/chain.q" 2>/dev/null | sed $'s/\x1b\\[[0-9;]*m//g' > "$WORK_DIR/matched"
+grep -qF 'p:$WORK_SESSA:$WORK_PANE' "$WORK_DIR/matched" && echo 'OCC_A=yes' >> "$WORK_RESULT" || echo 'OCC_A=no' >> "$WORK_RESULT"
+grep -qF 'p:$WORK_SESSB:$WORK_PANE' "$WORK_DIR/matched" && echo 'OCC_B=yes' >> "$WORK_RESULT" || echo 'OCC_B=no' >> "$WORK_RESULT"
+grep -qF 'p:$WORK_SESSC:$WORK_PANE' "$WORK_DIR/matched" && echo 'OCC_FOREIGN=yes' >> "$WORK_RESULT" || echo 'OCC_FOREIGN=no' >> "$WORK_RESULT"
+grep -q "$WORK_SESSA_NAME" "$WORK_DIR/matched" && echo 'HAS_A=yes' >> "$WORK_RESULT" || echo 'HAS_A=no' >> "$WORK_RESULT"
+grep -q "$WORK_SESSB_NAME" "$WORK_DIR/matched" && echo 'HAS_B=yes' >> "$WORK_RESULT" || echo 'HAS_B=no' >> "$WORK_RESULT"
+grep -qF "$WORK_PANE" "$WORK_DIR/matched" && echo 'HAS_PANE=yes' >> "$WORK_RESULT" || echo 'HAS_PANE=no' >> "$WORK_RESULT"
+grep -qF "$WORK_WIN" "$WORK_DIR/matched" && echo 'HAS_WIN=yes' >> "$WORK_RESULT" || echo 'HAS_WIN=no' >> "$WORK_RESULT"
+echo 'FUZZY_DONE=yes' >> "$WORK_RESULT"
+PANEEOF
+  sed -e "s|\$WORK_PICKER|$PICKER|g" -e "s|\$WORK_DIR|$WORK|g" -e "s|\$WORK_RESULT|$RESULT|g" \
+      -e "s|\$WORK_PANE|$P|g" -e "s|\$WORK_WIN|$WID|g" \
+      -e "s|\$WORK_SESSA_NAME|A|g" -e "s|\$WORK_SESSB_NAME|B|g" \
+      -e "s|\$WORK_SESSA|$AID|g" -e "s|\$WORK_SESSB|$BID|g" -e "s|\$WORK_SESSC|$CID|g" \
+      "$WORK/fuzzy.sh" > "$WORK/fuzzy.run.sh"
+  : > "$RESULT"
+  run_in_client "$CLIENT_C" "$WORK/fuzzy.run.sh"
+  wait_file "$RESULT" 'FUZZY_DONE=' || nok "TEST E: fuzzy driver did not complete"
+  assert_eq "E1: empty query re-emits the flat tree verbatim (browse view preserved)" \
+    'EMPTY_SAME=yes' "$(grep -o 'EMPTY_SAME=[a-z]*' "$RESULT" | tail -1)"
+  _oa="$(grep -o 'OCC_A=[a-z]*' "$RESULT" | tail -1)"; _ob="$(grep -o 'OCC_B=[a-z]*' "$RESULT" | tail -1)"
+  _of="$(grep -o 'OCC_FOREIGN=[a-z]*' "$RESULT" | tail -1)"
+  if [ "$_oa" = 'OCC_A=yes' ] && [ "$_ob" = 'OCC_B=yes' ]; then
+    ok "E2: fuzzy pane query returns BOTH linked occurrences (p:\$A:%P and p:\$B:%P chains)"
+  else
+    nok "E2: a linked occurrence chain is missing from the fuzzy result ($_oa $_ob)"
+  fi
+  if [ "$_of" = 'OCC_FOREIGN=no' ]; then
+    ok "E2b: no foreign p:\$C:%P occurrence chain exists (fuzzy noise never fabricates occurrences)"
+  else
+    nok "E2b: a foreign p:\$C:%P chain appeared in the fuzzy result"
+  fi
+  _ha="$(grep -o 'HAS_A=[a-z]*' "$RESULT" | tail -1)"; _hb="$(grep -o 'HAS_B=[a-z]*' "$RESULT" | tail -1)"
+  if [ "$_ha" = 'HAS_A=yes' ] && [ "$_hb" = 'HAS_B=yes' ]; then
+    ok "E3: each occurrence retains ITS OWN session ancestor (A and B both present)"
+  else
+    nok "E3: occurrence ancestry lost ($_ha $_hb)"
+  fi
+  assert_eq "E4: the matched pane chain retains the pane itself" \
+    'HAS_PANE=yes' "$(grep -o 'HAS_PANE=[a-z]*' "$RESULT" | tail -1)"
+  assert_eq "E5: the matched pane chain retains its parent window" \
+    'HAS_WIN=yes' "$(grep -o 'HAS_WIN=[a-z]*' "$RESULT" | tail -1)"
+fi
+
 echo
 harness_summary
 exit $?

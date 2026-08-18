@@ -300,6 +300,13 @@ Each window is an independently selectable row under its session. Each pane uses
 one bounded line (single `↳` glyph, fixed sibling indent) and keeps its
 operational `%pane-id` visible plus its filesystem location.
 
+Fuzzy filtering is ancestry-preserving. While a query is active the picker
+re-projects records so each match carries its full chain (a pane match retains
+parent window + session; a window match retains its parent session); the empty
+query re-emits the flat tree verbatim. Fields 1-5 (machine identity + action
+token) stay byte-identical in both projections, so enter/kill/popup always act
+on the matched node, never on display text.
+
 The primary list should not display every known metadata field.
 
 Full paths, prompt files, parent identity, timestamps, pane geometry, long task text and expensive enrichment belong in the inspector.

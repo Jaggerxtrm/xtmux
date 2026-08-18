@@ -453,7 +453,7 @@ require_fn resolve_nav_window_session "nav-t3: resolve_nav_window_session() exis
   fi
   assert_eq "nav-t3: bare window token resolves live owner (nothing to compare)" 'encodedless rc=0 reply=$42' "$(sed -n '4p' "$WORK/t3-own.out")"
   (
-    tmux() { case "$*" in *'%553'*) printf '$71\n' ;; *) printf '$99\n' ;; esac; }
+    tmux() { case "$*" in *'$71:%553'*) printf '$71\t%%553\n' ;; *'%553'*) printf '$42\t%%777\n' ;; *) printf '$99\n' ;; esac; }
     resolve_nav_pane_session '$71' '%553'; printf 'pane-match rc=%s\n' "$?"
     resolve_nav_pane_session '$42' '%553'; printf 'pane-mismatch rc=%s\n' "$?"
   ) > "$WORK/t3-pane-own.out"
@@ -918,6 +918,23 @@ if grep -qF '?:change-preview(' "$WORK/nav-fzf-args" && grep -qF ')+show-preview
   ok "nav help: ? explicitly reveals the hidden details pane"
 else
   nok "nav help: ? explicitly reveals the hidden details pane"
+fi
+# §36 wiring: ordinary typing re-projects through the ancestry chain source.
+if grep -qF "change:reload-sync(" "$WORK/nav-fzf-args" && grep -qF "list-active-nav-chain '{q}'" "$WORK/nav-fzf-args"; then
+  ok "nav chrome: query change re-projects through the ancestry chain source"
+else
+  nok "nav chrome: query change is not bound to the ancestry chain projection"
+fi
+(
+  nav_route() { REPLY=oneline; }
+  fzf() { printf '%s\n' "$*" > "$WORK/nav-fzf-args-oneline"; cat >/dev/null; }
+  self="$WORK/nav-list-stub"
+  XTMUX_NAV_WIDTH=40 pick_nav
+)
+if grep -qF "list-active-nav-single-chain '{q}'" "$WORK/nav-fzf-args-oneline"; then
+  ok "nav chrome: oneline fallback binds its own single-line chain source"
+else
+  nok "nav chrome: oneline fallback misses its single-line chain source"
 fi
 assert_eq "nav filter: initial list uses persisted filter state" list-active-nav "$(cat "$WORK/nav-stub-command")"
 assert_eq "nav width: fzf selection chrome is reserved" 36 "$(cat "$WORK/nav-stub-width")"
@@ -1685,8 +1702,8 @@ fi
   tmux() {
     printf '%s\n' "$*" >> "$WORK/t30-dispatch.log"
     case "$*" in
+      *'#{pane_id}'*) printf '$26\t%%553\n' ;;
       *'-t '*) printf '$26\n' ;;
-      *'#{pane_id}'*) printf '$26\t%553\n' ;;
       *) printf '\n' ;;
     esac
   }
@@ -1759,7 +1776,7 @@ fi
   export PATH="$WORK/bin:$PATH" XTMUX_TMUX_LOG="$WORK/t32-navgo.log"
   tmux() {
     case "$1" in
-      display-message) printf '%s\n' "$*" >> "$WORK/t32-navgo.log"; case "$*" in *'-t '*) printf '$47\n' ;; *) printf '$47\t%1\n' ;; esac ;;
+      display-message) printf '%s\n' "$*" >> "$WORK/t32-navgo.log"; printf '$47\t%%1\n' ;;
       *) printf '%s\n' "$*" >> "$WORK/t32-navgo.log" ;;
     esac
   }
@@ -2073,6 +2090,166 @@ done < "$WORK/sibling"
 [ "$_sib_fork" -eq 0 ] \
   && ok "sibling-invariance: glyph never forks into ├/└/╰ at any sibling position" \
   || nok "sibling-invariance: a box-drawing fork replaced '↳'"
+
+# ---- §36: ancestry-preserving fuzzy projection ----
+# Ordinary fzf filtering drops every non-matching record, so a flat pane row
+# loses its window and session the moment a query matches it. The chain
+# projection (fzf `change` reload, list-active-nav-chain) keeps fields 1-5
+# byte-identical while the display carries the full session -> window -> pane
+# chain: a pane match retains parent window + session, a window match retains
+# its parent session, and every action token still targets the matched node.
+echo
+echo "== §36: ancestry-preserving fuzzy projection =="
+_s36_fixture() {
+  session_meta() {
+    printf '%b\n' \
+      '$42\talpha\t%17\t'"$WORK"'/a\t1000' \
+      '$43\tbeta\t%18\t'"$WORK"'/b\t1000'
+  }
+  pane_meta() {
+    # %875/@31 occur in BOTH sessions: the linked-window occurrence case.
+    printf '%b\n' \
+      '$42\t@17\t0\tcoord\t0\t%553\t0\t1\tclaude\t'"$WORK"'/a\trunning\t553\t-\t-\t-\t-' \
+      '$42\t@17\t0\tcoord\t0\t%621\t1\t0\tbash\t'"$WORK"'/a\tidle\t621\t-\t-\t-\t-' \
+      '$42\t@31\t1\tresearch\t0\t%875\t0\t1\tpi\t'"$WORK"'/a\tneeds-input\t875\t-\t-\t-\t-' \
+      '$43\t@31\t1\tresearch\t0\t%875\t0\t1\tpi\t'"$WORK"'/a\tneeds-input\t875\t-\t-\t-\t-'
+  }
+}
+(
+  _s36_fixture
+  TMUX_PANE='%621' XTMUX_NAV_WIDTH=60 TMUX_PICKER_NO_CACHE=1 build_list all expanded nav multi
+) > "$WORK/s36-flat"
+(
+  _s36_fixture
+  TMUX_PANE='%621' XTMUX_NAV_WIDTH=60 TMUX_PICKER_NO_CACHE=1 build_list all expanded nav multi chain
+) > "$WORK/s36-chain"
+_s36_nflat=0; _s36_nchain=0
+while IFS= read -r -d '' _r; do _s36_nflat=$((_s36_nflat+1)); done < "$WORK/s36-flat"
+while IFS= read -r -d '' _r; do _s36_nchain=$((_s36_nchain+1)); done < "$WORK/s36-chain"
+[ "$_s36_nflat" -eq 9 ] && [ "$_s36_nchain" -eq "$_s36_nflat" ] \
+  && ok "§36: chain re-projects every record (same count, no dropped nodes)" \
+  || nok "§36: chain record count diverges (flat=$_s36_nflat chain=$_s36_nchain)"
+# fields 1-5 (machine identity + token) byte-identical and same order
+_s36_identity_ok=1; _s36_session_same=1
+exec 3< "$WORK/s36-flat" 4< "$WORK/s36-chain"
+while IFS= read -r -d '' _f <&3 && IFS= read -r -d '' _c <&4; do
+  _fh=''; _ch=''; _fr="$_f"; _cr="$_c"
+  for _i in 1 2 3 4 5; do
+    _ff="${_fr%%$'\t'*}"; _cf="${_cr%%$'\t'*}"
+    [ "$_ff" = "$_cf" ] || _s36_identity_ok=0
+    _fr="${_fr#*$'\t'}"; _cr="${_cr#*$'\t'}"
+  done
+  case "$_f" in
+    session*) [ "$_fr" = "$_cr" ] || _s36_session_same=0 ;;
+  esac
+done
+exec 3<&- 4<&-
+[ "$_s36_identity_ok" -eq 1 ] && ok "§36: fields 1-5 (identity + action token) stay byte-identical" || nok "§36: chain altered machine identity fields"
+[ "$_s36_session_same" -eq 1 ] && ok "§36: session records unchanged (a session has no ancestors)" || nok "§36: session records changed under chain"
+# window chain: parent session line above the window card, occurrence-specific
+_s36_w42=$(while IFS= read -r -d '' _r; do case "$_r" in window*$'\t''w:$42:@31'$'\t'*) printf '%s' "$_r" ;; esac; done < "$WORK/s36-chain")
+_s36_w43=$(while IFS= read -r -d '' _r; do case "$_r" in window*$'\t''w:$43:@31'$'\t'*) printf '%s' "$_r" ;; esac; done < "$WORK/s36-chain")
+_s36_w42_plain="$(_strip_nav_ansi "${_s36_w42#*$'\t'w:\$42:@31$'\t'}")"
+_s36_w43_plain="$(_strip_nav_ansi "${_s36_w43#*$'\t'w:\$43:@31$'\t'}")"
+case "$_s36_w42_plain" in *alpha*@31*) ok "§36: window match retains parent session" ;; *) nok "§36: window chain lost its parent session" ;; esac
+case "$_s36_w43_plain" in *beta*) ok "§36: linked-window occurrence carries its own session ancestor" ;; *) nok "§36: linked-window occurrence ancestry wrong" ;; esac
+# pane chain: session + window + pane; occurrence-specific for the linked pane
+_s36_p42=''; _s36_p43=''
+while IFS= read -r -d '' _r; do
+  case "$_r" in
+    *p:'$42:%875'*) _s36_p42="$_r" ;;
+    *p:'$43:%875'*) _s36_p43="$_r" ;;
+  esac
+done < "$WORK/s36-chain"
+_s36_p42_disp="$(_strip_nav_ansi "${_s36_p42#*p:\$42:%875$'\t'}")"
+_s36_p43_disp="$(_strip_nav_ansi "${_s36_p43#*p:\$43:%875$'\t'}")"
+_s36_p42_lines=$(printf '%s' "$_s36_p42_disp" | wc -l)
+[ "$_s36_p42_lines" -ge 2 ] \
+  && ok "§36: pane match retains parent window + session (multi-line chain)" \
+  || nok "§36: pane chain collapsed to $_s36_p42_lines lines"
+case "$_s36_p42_disp" in *alpha*@31*%875*) ok "§36: pane chain reads session -> window -> pane in order" ;; *) nok "§36: pane chain order wrong" ;; esac
+case "$_s36_p43_disp" in *beta*@31*%875*) ok "§36: linked-pane occurrence chain names its own session" ;; *) nok "§36: linked-pane occurrence chain wrong ancestor" ;; esac
+# single-line fallback: bounded one-line chain, still ancestry-bearing
+(
+  _s36_fixture
+  TMUX_PANE='%621' XTMUX_NAV_WIDTH=60 TMUX_PICKER_NO_CACHE=1 build_list all expanded nav single chain
+) > "$WORK/s36-single"
+_s36_single_ok=1; _s36_single_lines=0
+while IFS= read -r -d '' _r; do
+  case "$_r" in
+    pane*%875*)
+      _s36_single_lines=$((_s36_single_lines+1))
+      _d="${_r#*$'\t'}"; _d="${_d#*$'\t'}"; _d="${_d#*$'\t'}"; _d="${_d#*$'\t'}"; _d="${_d#*$'\t'}"
+      _dp="$(_strip_nav_ansi "$_d")"
+      case "$_dp" in *$'\n'*) _s36_single_ok=0 ;; esac
+      case "$_dp" in *alpha*%875*|*beta*%875*) ;; *) _s36_single_ok=0 ;; esac
+      ;;
+  esac
+done < "$WORK/s36-single"
+[ "$_s36_single_lines" -eq 2 ] && [ "$_s36_single_ok" -eq 1 ] \
+  && ok "§36: oneline fallback keeps one bounded ancestry line per pane" \
+  || nok "§36: oneline chain malformed (lines=$_s36_single_lines ok=$_s36_single_ok)"
+# dispatcher level: empty query re-emits the flat tree verbatim; any active
+# query re-emits chains. git exits nonzero (no roots), fzf fails loudly.
+mkdir -p "$WORK/bin-chain"
+cat > "$WORK/bin-chain/tmux" <<'CHAINSIM'
+#!/usr/bin/env bash
+case "$1" in
+  list-sessions) printf '%b\n' '$42\talpha\t%17\t/a\t1000' '$43\tbeta\t%18\t/b\t1000' ;;
+  list-panes) printf '%b\n' \
+    '$42\t@17\t0\tcoord\t0\t%553\t0\t1\tclaude\t/a\t-\t553\t-\t-\t-\t-' \
+    '$42\t@31\t1\tresearch\t0\t%875\t0\t1\tpi\t/a\t-\t875\t-\t-\t-\t-' \
+    '$43\t@31\t1\tresearch\t0\t%875\t0\t1\tpi\t/a\t-\t875\t-\t-\t-\t-' ;;
+  display-message) printf '$42\n' ;;
+esac
+exit 0
+CHAINSIM
+cat > "$WORK/bin-chain/git" <<'GITSHIM'
+#!/usr/bin/env bash
+exit 1
+GITSHIM
+cat > "$WORK/bin-chain/fzf" <<'FZFSHIM'
+#!/usr/bin/env bash
+echo "FORBIDDEN: fzf $*" >&2
+exit 99
+FZFSHIM
+chmod +x "$WORK/bin-chain/tmux" "$WORK/bin-chain/git" "$WORK/bin-chain/fzf"
+PATH="$WORK/bin-chain:$PATH" TMUX_PICKER_NO_CACHE=1 "$PICKER" list-active-nav > "$WORK/s36-d-flat" 2>/dev/null
+PATH="$WORK/bin-chain:$PATH" TMUX_PICKER_NO_CACHE=1 "$PICKER" list-active-nav-chain '' > "$WORK/s36-d-empty" 2>/dev/null
+PATH="$WORK/bin-chain:$PATH" TMUX_PICKER_NO_CACHE=1 "$PICKER" list-active-nav-chain '%875' > "$WORK/s36-d-query" 2>/dev/null
+if cmp -s "$WORK/s36-d-flat" "$WORK/s36-d-empty"; then
+  ok "§36: empty query re-emits the flat tree verbatim (browse view preserved)"
+else
+  nok "§36: empty-query chain diverges from the flat tree"
+fi
+_s36_dq_nl=0
+while IFS= read -r -d '' _r; do
+  case "$_r" in pane*) _d="${_r#*$'\t'}"; _d="${_d#*$'\t'}"; _d="${_d#*$'\t'}"; _d="${_d#*$'\t'}"; _d="${_d#*$'\t'}"; case "$_d" in *$'\n'*) _s36_dq_nl=$((_s36_dq_nl+1)) ;; esac ;; esac
+done < "$WORK/s36-d-query"
+[ "$_s36_dq_nl" -ge 2 ] \
+  && ok "§36: active query re-emits ancestry chains at the dispatcher" \
+  || nok "§36: dispatcher did not switch to chains (multiline panes=$_s36_dq_nl)"
+# real fuzzy-query behavior: feed chain records to fzf --filter and prove the
+# surviving records carry the ancestors. Gated on a multiline-capable fzf.
+if command -v fzf >/dev/null 2>&1; then
+  TMUX_PICKER_NO_CACHE=1 fzf_multiline_probe; _s36_route="$REPLY"
+else
+  _s36_route='none'
+fi
+if [ "$_s36_route" = on ]; then
+  fzf --read0 --delimiter=$'\t' --with-nth=6 --filter='%875' < "$WORK/s36-chain" > "$WORK/s36-fuzzy" 2>/dev/null
+  _s36_fz="$(_strip_nav_ansi "$(cat "$WORK/s36-fuzzy")")"
+  case "$_s36_fz" in *alpha*@31*%875*) _a=1 ;; *) _a=0 ;; esac
+  case "$_s36_fz" in *beta*@31*%875*) _b=1 ;; *) _b=0 ;; esac
+  [ "${_a:-0}" -eq 1 ] && [ "${_b:-0}" -eq 1 ] \
+    && ok "§36: fuzzy pane query returns both linked occurrences, each with its ancestry" \
+    || nok "§36: fuzzy pane query lost an occurrence or its ancestry (alpha=${_a:-0} beta=${_b:-0})"
+  fzf --read0 --delimiter=$'\t' --with-nth=6 --filter='coord' < "$WORK/s36-chain" > "$WORK/s36-fuzzy-w" 2>/dev/null
+  _s36_fzw="$(_strip_nav_ansi "$(cat "$WORK/s36-fuzzy-w")")"
+  case "$_s36_fzw" in *alpha*@17*%553*) ok "§36: fuzzy window query retains the session and reaches its panes" ;; *) nok "§36: fuzzy window query lost ancestry" ;; esac
+else
+  ok "§36: real-fzf fuzzy assertions skipped (no multiline-capable fzf on this host)"
+fi
 
 harness_summary
 exit $?

@@ -2380,11 +2380,10 @@ IDENTITY & LAST TURN — who a pane is, and what it last said.
     agent-last/agent-episode  turnId, ..., completedAt (OMITTED when absent); episode:
                    episodeId, openedAtMs, closedAtMs, primary, followUps[], collapsed[]
 
-SESSIONS & DASHBOARD — inventory for orchestrators. — inventory for orchestrators.
+SESSIONS & DASHBOARD — inventory for orchestrators.
   dashboard [sessions-only|expanded] [json]   agent-readable inventory
   topology --json                            complete host/session/window/pane snapshot
-  list [all|waiting|running|repo:<x>|branch:<x>|cmd:<x>|grep:<x>]
-  list-active                                 list under the active filter
+  list [all|waiting|running|repo:<x>|branch:<x>|cmd:<x>|grep:<x>]   list-active  same list under the active filter
 
 NAVIGATION — operator traversal over sessions and attention targets.
   nav [next|prev|attention-next|attention-prev|back|help]
@@ -2466,7 +2465,8 @@ HYGIENE — end-of-session cleanup.
 PICKER INTERNALS — invoked by the fzf UI. Agents do not normally call these.
   preview, popup, jump, kill, act, attn-jump, jump-back, kill-confirm, bulk-kill, bulk-kill-targets
   bulk-kill-confirm, rename, rename-apply, mode-toggle, filter-menu, filter-clear, filter-preset, prompt-label, border-label, nav-go, nav-act
-  nav-border-label, nav-key-help, list-nav, list-nav-single, list-active-nav, list-active-nav-single
+  nav-border-label, nav-key-help, list-nav, list-nav-single, list-active-nav,
+  list-active-nav-single, list-active-nav-chain, list-active-nav-single-chain
 
 Errors are `exit 2` with a usage line; under --json they are
 {"code":"XTMUX_...","message":...}. See docs/json-command-api.md.
@@ -3687,18 +3687,20 @@ pick_nav() {
   local footer=' ↵ open · Tab compact · ^/ details · ? help '
   local inspector='hidden,bottom,7,wrap,follow'
   local inspector_max='bottom,50%,wrap,follow'
-  local lall lwait lrun lactive self_q
+  local lall lwait lrun lactive lchain self_q
   printf -v self_q '%q' "$self"
   if [ "$navmode" = oneline ]; then
     lall="$self_q list-nav-single all"
     lwait="$self_q list-nav-single waiting"
     lrun="$self_q list-nav-single running"
     lactive="$self_q list-active-nav-single"
+    lchain="$self_q list-active-nav-single-chain '{q}'"
   else
     lall="$self_q list-nav all"
     lwait="$self_q list-nav waiting"
     lrun="$self_q list-nav running"
     lactive="$self_q list-active-nav"
+    lchain="$self_q list-active-nav-chain '{q}'"
   fi
   local -a initial_list
   if [ "$navmode" = oneline ]; then
@@ -3742,6 +3744,7 @@ pick_nav() {
     --color='fg:#b8bcc0,bg:-1,hl:#68a8c4,fg+:#ffffff,bg+:#222222,hl+:#68a8c4,info:#8a8f94,prompt:#8a8f94,pointer:#68a8c4,marker:#68a8c4,label:#8a8f94,border:#303030,gutter:-1' \
     --preview-window="$inspector" \
     --bind="load:pos($pos)+transform-prompt($self_q prompt-label nav)" \
+    --bind="change:reload-sync($lchain)" \
     --bind="ctrl-/:toggle-preview" \
     --bind="?:change-preview($self_q nav-key-help)+show-preview" \
     --bind="ctrl-r:reload-sync(TMUX_PICKER_NO_CACHE=1 $lactive)+track-current" \
@@ -3890,7 +3893,7 @@ cmd_filter_menu() {
 # lines: multi (session primary/context plus one-line panes) | single (bounded one-line cards,
 # the fzf-multiline off fallback; same token architecture)
 build_list() (
-  local filter="${1:-all}" list_mode="${2:-expanded}" emit="${3:-tsv}" lines="${4:-multi}"
+  local filter="${1:-all}" list_mode="${2:-expanded}" emit="${3:-tsv}" lines="${4:-multi}" chain="${5:-}"
   local tmp_sessions tmp_panes pane_rows sid sname pane_id pane_path session_activity root sort_key group_key display root_status name_width=12 session_col
   local window_id window_index window_name window_active pane_index pane_active pane_cmd pane_row_path pane_col pane_state pane_pid pane_bead pane_task pane_parent pane_rank cur_rank _cls
   local psid pwi ppi ppid pcol attn idle stale_bucket section last_section=-1 header_label now
@@ -4240,8 +4243,50 @@ build_list() (
           # internally and each row is re-terminated with NUL at emit time.
           _pblock="${pane_block[$sid]:-}"
           if [ -n "$_pblock" ]; then
+            _cur_wdisp=''; _cur_wflat=''
             while IFS= read -r -d $'\x1f' _pline; do
               [ -n "$_pline" ] || continue
+              if [ "$chain" = chain ]; then
+                # Ancestry-preserving projection (PART: fuzzy search must never
+                # orphan a match). fzf filters records independently, so a flat
+                # pane row loses its window and session the moment a query
+                # matches it. Here each record's DISPLAY carries the full
+                # session -> window -> pane chain while fields 1-5 (machine
+                # identity + action token) stay byte-identical to the flat
+                # stream: enter/kill/popup still act on exactly the matched
+                # node. multi stacks the chain lines (same cards, same order as
+                # the unfiltered tree); single inlines them bounded on one
+                # line. Window rows carry the session line; pane rows carry
+                # session + window.
+                _rtype="${_pline%%$'\t'*}"
+                _rest="$_pline"; _hdr=''; _fname=''
+                for _i in 1 2 3 4 5; do
+                  _f="${_rest%%$'\t'*}"
+                  [ "$_i" = 3 ] && _fname="$_f"
+                  _hdr+="$_f"; [ "$_i" -lt 5 ] && _hdr+=$'\t'
+                  _rest="${_rest#*$'\t'}"
+                done
+                case "$_rtype" in
+                  window)
+                    _cur_wdisp="$_rest"; _cur_wflat="$_fname"
+                    if [ "$lines" = single ]; then
+                      _rest="${_sname}  $_rest"
+                    else
+                      _rest="${_scard}"$'\n'"$_rest"
+                    fi
+                    ;;
+                  pane)
+                    if [ "$lines" = single ]; then
+                      _rest="${_sname}  ${_cur_wflat}  $_rest"
+                    elif [ -n "$_cur_wdisp" ]; then
+                      _rest="${_scard}"$'\n'"${_cur_wdisp}"$'\n'"$_rest"
+                    else
+                      _rest="${_scard}"$'\n'"$_rest"
+                    fi
+                    ;;
+                esac
+                _pline="$_hdr"$'\t'"$_rest"
+              fi
               # §19: emission guard — hostile input cannot grow a record past
               # the byte budget; the display tail yields, machine fields never.
               if [ "${#_pline}" -gt "$NAV_MAX_RECORD_CHARS" ]; then
@@ -4461,12 +4506,31 @@ resolve_nav_window_session() {
 }
 
 # resolve_nav_pane_session <encoded-sid-or-empty> <pane> -> REPLY=live sid.
-# A paired token is rejected if the pane no longer belongs to that session.
+# Proves the encoded session+pane OCCURRENCE against live tmux, not a bare
+# %pane lookup. A pane id alone is ambiguous when its window is LINKED into
+# several sessions, so a bare `display-message -t %pane '#{session_id}'` picks
+# one arbitrary session and cannot validate each occurrence. tmux `-t "$sid:%pane"`
+# silently falls back to the session's CURRENT window/pane when that pane is
+# not under $sid (same trap as the window resolver), so a single session-scoped
+# display-message reads BOTH #{session_id} and #{pane_id} and both must match
+# the claim (live session == encoded AND live pane == claimed %pane). This
+# accepts each real occurrence of a linked pane (p:$A:%P and p:$B:%P both
+# pass) and rejects an occurrence in a session where the pane does not exist.
+# One display-message per action, never on the hot path.
 resolve_nav_pane_session() {
-  local encoded="${1:-}" pane="$2" live
-  live="$(tmux display-message -p -t "$pane" '#{session_id}' 2>/dev/null || true)"
-  [ -n "$live" ] || return 1
-  [ -z "$encoded" ] || [ "$encoded" = "$live" ] || return 1
+  local encoded="${1:-}" pane="$2" live livepane tgt
+  if [ -n "$encoded" ]; then
+    tgt="$encoded:$pane"
+    live="$(tmux display-message -p -t "$tgt" $'#{session_id}\t#{pane_id}' 2>/dev/null || true)"
+    IFS=$'\t' read -r live livepane <<< "$live"
+    [ -n "$live" ] || return 1
+    [ "$live" = "$encoded" ] || return 1
+    [ "$livepane" = "$pane" ] || return 1
+  else
+    live="$(tmux display-message -p -t "$pane" '#{session_id}' 2>/dev/null || true)"
+    live="${live%%$'\t'*}"
+    [ -n "$live" ] || return 1
+  fi
   REPLY="$live"
 }
 
@@ -5946,6 +6010,35 @@ case "${1:-}" in
     picker_state_read filter || true; _spec="$REPLY"
     read_list_mode
     build_list "$_spec" "$REPLY" nav single
+    exit 0
+    ;;
+  list-active-nav-chain|list-active-nav-single-chain)
+    # Ancestry-preserving fuzzy projection, bound to fzf's `change` event. An
+    # empty query re-emits the flat tree verbatim (the drawer's browse view);
+    # any active query re-emits records whose display carries the full
+    # session -> window -> pane chain, so ordinary fuzzy filtering can never
+    # orphan a pane from its window and session. $1 carries fzf's {q} and is
+    # used ONLY for the emptiness test — it is data, never reaches tmux or
+    # eval, and is not part of any record.
+    _chain_single=0
+    [ "${1:-}" = list-active-nav-single-chain ] && _chain_single=1
+    shift
+    _chain_q="${1:-}"
+    picker_state_read filter || true; _spec="$REPLY"
+    read_list_mode
+    if [ -n "$_chain_q" ]; then
+      if [ "$_chain_single" = 1 ]; then
+        build_list "$_spec" "$REPLY" nav single chain
+      else
+        build_list "$_spec" "$REPLY" nav multi chain
+      fi
+    else
+      if [ "$_chain_single" = 1 ]; then
+        build_list "$_spec" "$REPLY" nav single
+      else
+        build_list "$_spec" "$REPLY" nav multi
+      fi
+    fi
     exit 0
     ;;
   nav-go)
