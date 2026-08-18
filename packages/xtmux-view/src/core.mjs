@@ -99,10 +99,10 @@ export function parseCli(argv) {
   if (positional.length > 1) {
     throw new ViewError("XTMUX_VIEW_INVALID_ARGUMENT", "only one target may be supplied");
   }
-  if (!new Set(["auto", "glow", "mdcat", "raw"]).has(out.renderer)) {
+  if (!new Set(["auto", "glow", "raw"]).has(out.renderer)) {
     throw new ViewError(
       "XTMUX_VIEW_INVALID_ARGUMENT",
-      `unsupported renderer ${JSON.stringify(out.renderer)}; expected auto|glow|mdcat|raw`,
+      `unsupported renderer ${JSON.stringify(out.renderer)}; expected auto|glow|raw`,
     );
   }
   return out;

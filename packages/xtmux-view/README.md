@@ -12,7 +12,7 @@ flowchart TB
     Hooks["xtmux hooks / extensions"]
     DB[("agent_episodes<br/>+ agent_turns.episode_id")]
     View["@jaggerxtrm/xtmux-view"]
-    Renderer["mdcat / Glow"]
+    Renderer["Glow Markdown TUI"]
     Raw["raw Markdown on stdout"]
     Popup["tmux display-popup<br/>over the live agent pane"]
 
@@ -32,7 +32,7 @@ sequenceDiagram
     participant Hooks as xtmux hooks
     participant DB as xtmux SQLite
     participant View as xtmux-view
-    participant Renderer as mdcat / Glow
+    participant Renderer as Glow
 
     Agent->>Hooks: UserPromptSubmit opens episode
     Agent->>Hooks: Stop / agent_end stores full turn
@@ -48,10 +48,9 @@ sequenceDiagram
 - xtmux with response-episode capture (`agent_episodes` + `agent_turns.episode_id`, migration 0014; targeted for xtmux v0.3.0). Against an older schema the viewer degrades to the previous single-row read.
 - Bun
 - tmux for popup mode
-- [mdcat](https://github.com/swsnr/mdcat) for the default rich Markdown renderer (renders Mermaid natively)
-- [Glow](https://github.com/charmbracelet/glow) >= 2.1.0 as the fallback renderer (`--renderer glow`)
+- [Glow](https://github.com/charmbracelet/glow) >= 2.1.0 for rich Markdown rendering (`--tui`)
 
-Renderers are intentionally external rather than reimplemented here. `auto` prefers `mdcat` and falls back to `glow`. This package owns runtime/session integration, not Markdown layout technology.
+Glow is intentionally an external renderer rather than reimplemented here. This package owns runtime/session integration, not Markdown layout technology.
 
 ## Local install
 
@@ -139,11 +138,9 @@ No runtime-specific transcript parsing belongs in this package unless the xtmux 
 
 ## Mermaid
 
-With the default renderer, `mdcat` renders Mermaid fences natively (real diagrams with typographic styling); the fence is handed through untouched. Supported types: `graph`/`flowchart`, `sequenceDiagram`, `classDiagram`, `erDiagram`, `stateDiagram(-v2)`, plus `mdcat`'s own broader coverage. A broken fence degrades to the source. `--raw` and `--json` never render Mermaid; the transform runs only in the rich render path.
+Mermaid fences in a response are rendered to ASCII box-drawing before Glow sees the document, inside a plain code fence. Supported types: `graph`/`flowchart`, `sequenceDiagram`, `classDiagram`, `erDiagram`, `stateDiagram(-v2)`. The padding preset is chosen by popup width (default/compact/tight/squeezed), and lines still wider than the popup are clipped with a hint. A fence that is unsupported, oversized, or fails to parse is left as the original ```mermaid source so Glow shows it verbatim. `--raw` and `--json` never render Mermaid; the transform runs only in the rich render path.
 
-When falling back to `glow` (`--renderer glow`), Mermaid fences are rendered to ASCII box-drawing inside a plain code fence first. The padding preset is chosen by popup width (default/compact/tight/squeezed), and lines still wider than the popup are clipped with a hint. A fence that is unsupported, oversized, or fails to parse is left as the original ```mermaid source so Glow shows it verbatim.
-
-Glow's ASCII rendering is best-effort: `mermaid.parse` cannot fully validate headlessly (see Security and performance), so only a genuine parse error preserves the source — the ASCII renderer itself does not throw on malformed input.
+Rendering is best-effort: `mermaid.parse` cannot fully validate headlessly (see Security and performance), so only a genuine parse error preserves the source — the ASCII renderer itself does not throw on malformed input.
 
 ## Security and performance
 
@@ -155,4 +152,4 @@ The normal path performs one indexed SQLite read plus one Glow TUI process. It d
 
 ## Scope
 
-v0.1 renders the latest response episode only. Future work can add transcript navigation and follow mode while preserving the same read-only boundary. Mermaid renders via `mdcat` natively, or as ASCII box-drawing under the `glow` fallback; rasterized images await a terminal image-protocol renderer.
+v0.1 renders the latest response episode only. Future work can add transcript navigation and follow mode while preserving the same read-only boundary. Mermaid diagrams render as ASCII box-drawing in v0.1; real rasterized diagrams await a terminal-safe backend (e.g. an image-protocol renderer).

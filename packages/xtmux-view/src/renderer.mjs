@@ -156,61 +156,38 @@ function run(command, args, options = {}) {
   return result.status ?? 1;
 }
 
-// Pick a renderer backend. Returns { bin, args, decorate, width } or { raw: true }.
-// mdcat renders Mermaid natively, so for it we skip decorateMermaid and hand it the
-// original fence. "auto" prefers mdcat, falling back to glow.
-export function selectRenderer(renderer, { glow, mdcat, style = "dark", width = 80 } = {}) {
-  if (renderer === "raw") return { raw: true };
-  if (renderer === "mdcat") {
-    if (!mdcat) {
-      throw new ViewError(
-        "XTMUX_VIEW_RENDERER_MISSING",
-        "mdcat is not installed; install mdcat or use --renderer glow|raw",
-      );
-    }
-    return { bin: mdcat, args: ["--paginate"], decorate: false };
-  }
-  if (renderer === "glow") {
-    if (!glow) {
-      throw new ViewError(
-        "XTMUX_VIEW_RENDERER_MISSING",
-        "Glow is not installed; install Glow >= 2.1.0 or use --renderer mdcat|raw",
-      );
-    }
-    return { bin: glow, args: ["--tui", "-s", style], decorate: true, width };
-  }
-  if (mdcat) return { bin: mdcat, args: ["--paginate"], decorate: false };
-  if (glow) return { bin: glow, args: ["--tui", "-s", style], decorate: true, width };
-  throw new ViewError(
-    "XTMUX_VIEW_RENDERER_MISSING",
-    "no rich Markdown renderer found; install mdcat or Glow, or use --renderer raw",
-  );
-}
-
 export async function renderDocument(document, options = {}) {
   const env = options.env || process.env;
   const renderer = options.renderer || "auto";
-  const rendererChoice = selectRenderer(renderer, {
-    glow: findExecutable("glow", env),
-    mdcat: findExecutable("mdcat", env),
-    style: options.style,
-    width: options.width ?? (Number(env.COLUMNS) || 80),
-  });
-  if (rendererChoice.raw) {
+  const style = options.style || "dark";
+
+  if (renderer === "raw") {
     process.stdout.write(document);
     return 0;
   }
 
-  const width = rendererChoice.width ?? (Number(env.COLUMNS) || 80);
-  const content = rendererChoice.decorate
-    ? await decorateMermaid(document, { width })
-    : document;
+  const glow = findExecutable("glow", env);
+  if (!glow && renderer === "glow") {
+    throw new ViewError(
+      "XTMUX_VIEW_RENDERER_MISSING",
+      "Glow is not installed; install Glow >= 2.1.0 or use --renderer raw",
+    );
+  }
+  if (!glow) {
+    throw new ViewError(
+      "XTMUX_VIEW_RENDERER_MISSING",
+      "no rich Markdown renderer found; install Glow >= 2.1.0 or use --renderer raw",
+    );
+  }
+
+  const width = options.width ?? (Number(env.COLUMNS) || 80);
+  const decorated = await decorateMermaid(document, { width });
 
   const dir = mkdtempSync(join(tmpdir(), "xtmux-view-"));
   const path = join(dir, "turn.md");
   try {
-    writeFileSync(path, content, { encoding: "utf8", mode: 0o600 });
-    return run(rendererChoice.bin, [...rendererChoice.args, path], { env });
+    writeFileSync(path, decorated, { encoding: "utf8", mode: 0o600 });
+    return run(glow, ["--tui", "-s", style, path], { env });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
