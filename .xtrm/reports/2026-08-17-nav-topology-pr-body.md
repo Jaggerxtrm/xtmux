@@ -1,7 +1,8 @@
 # feat(nav): session → window → pane topology-correct sidebar + pane location
 
 **Head:** `<final head on xt/xjif — see PR #108>` (branch `xt/xjif`)
-**Base:** `main` · **CI:** analyze, smoke, test, CodeQL, pr-review-gate — green.
+**Base:** `main` · **CI:** CodeQL, analyze, pr-review-gate — green; `test`/`smoke`
+`bun test` step red on a **pre-existing origin/main lockfile break** (see below).
 
 > **DO NOT MERGE — external/web coordinator final review.**
 
@@ -112,6 +113,27 @@ Subprocess counts: **tmux = 3** (2 bulk inventory: `list-sessions`,
 for occurrence-correct current location), **warm git = 0**, **process probes
 = 0**. No per-window/session/pane fanout. Public `xtmux list` TSV and
 `topology --json` unchanged.
+
+
+## CI status on this head
+
+# A/B Evidence: CI `bun test` failure is pre-existing on origin/main, not caused by PR #108
+
+## Claim
+PR #108's `test` and `smoke` CI jobs fail at the `Run bun test` step with:
+`error: Cannot find package 'beautiful-mermaid' from packages/xtmux-view/src/renderer.mjs`
+This failure is NOT caused by the PR diff.
+
+## Evidence
+1. **PR diff touches zero `bun test` targets.** `git diff --name-only origin/main...HEAD | grep -E '\.test\.(ts|mjs|js)$'` → NONE. All changed files are bash (`bin/tmux-session-picker`, `test/*.sh`), docs, reports, `.gitignore`, CI wiring (`scripts/verify-json-api.sh`). None are run by `bun test`.
+2. **PR branch alone passes `bun test` 451/0** (run locally on `xt/xjif` head: `451 pass / 0 fail`).
+3. **Clean `origin/main` fails identically (A/B):** fresh `git worktree add` of `a16fc972` (origin/main HEAD) + `bun install --frozen-lockfile` + `bun test` → `error: Cannot find package 'beautiful-mermaid' ... 1 fail` (exit 1). No PR changes present.
+4. **Root cause is main-side:** `packages/xtmux-view/package.json` (on main) declares `beautiful-mermaid` and `packages/xtmux-view/src/renderer.mjs` imports it, but `bun.lock` (on main) contains NO `beautiful-mermaid` entry (`grep -a -c 'beautiful-mermaid' bun.lock` = 0 on both main and the branch). The rich-view commits (a8b516a0 "feat(view): render Mermaid fences...", a16fc972, 06f8b726) landed on main AFTER this nav branch forked (merge-base a1880953).
+5. **CI runs the PR merge ref** (main + head). Main's `renderer.mjs` is unchanged by the PR (diff empty for packages/), so the merge ref inherits the broken main-side import → same failure.
+6. CodeQL, analyze, pr-review-gate all **pass** on the PR head (checks don't run the bun suite) — the only failing checks are the two jobs that run `bun test`.
+
+## Conclusion
+The `bun test` CI failure is a pre-existing origin/main break (undeclared `beautiful-mermaid` dependency). It is not introduced by, and cannot be fixed inside, the nav PR without absorbing unrelated rich-view dependency work. The PR's own gates (bash -n, nav-contract 292/0, contract 292/0, real-tmux 24/0, bun 451/0, typecheck, build, verify-json-api) all pass locally on the exact head.
 
 ## Retained invariants
 
