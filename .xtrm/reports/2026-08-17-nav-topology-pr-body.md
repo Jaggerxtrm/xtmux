@@ -1,6 +1,6 @@
 # feat(nav): session → window → pane topology-correct sidebar + pane location
 
-**Head:** `<final head on xt/xjif — see PR #108>` (branch `xt/xjif`)
+**Head:** `7e6deb1d` (branch `xt/xjif`, rebased onto current `origin/main` `0af90e55`)
 **Base:** `main` · **CI:** CodeQL, analyze, pr-review-gate — green; `test`/`smoke`
 `bun test` step red on a **pre-existing origin/main lockfile break** (see below).
 
