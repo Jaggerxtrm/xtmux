@@ -2214,9 +2214,19 @@ echo "FORBIDDEN: fzf $*" >&2
 exit 99
 FZFSHIM
 chmod +x "$WORK/bin-chain/tmux" "$WORK/bin-chain/git" "$WORK/bin-chain/fzf"
-PATH="$WORK/bin-chain:$PATH" TMUX_PICKER_NO_CACHE=1 "$PICKER" list-active-nav > "$WORK/s36-d-flat" 2>/dev/null
-PATH="$WORK/bin-chain:$PATH" TMUX_PICKER_NO_CACHE=1 "$PICKER" list-active-nav-chain '' > "$WORK/s36-d-empty" 2>/dev/null
-PATH="$WORK/bin-chain:$PATH" TMUX_PICKER_NO_CACHE=1 "$PICKER" list-active-nav-chain '%875' > "$WORK/s36-d-query" 2>/dev/null
+# Cold-start guard: the projections must work with an EMPTY picker state
+# directory (fresh CI runner / first-use host). Point TMPDIR at a clean dir
+# so no ambient state file can mask a missing-file crash.
+_s36_tmp="$WORK/tmp-cold"
+mkdir -p "$_s36_tmp"
+TMPDIR="$_s36_tmp" PATH="$WORK/bin-chain:$PATH" TMUX_PICKER_NO_CACHE=1 "$PICKER" list-active-nav > "$WORK/s36-d-flat" 2>/dev/null
+TMPDIR="$_s36_tmp" PATH="$WORK/bin-chain:$PATH" TMUX_PICKER_NO_CACHE=1 "$PICKER" list-active-nav-chain '' > "$WORK/s36-d-empty" 2>/dev/null
+TMPDIR="$_s36_tmp" PATH="$WORK/bin-chain:$PATH" TMUX_PICKER_NO_CACHE=1 "$PICKER" list-active-nav-chain '%875' > "$WORK/s36-d-query" 2>/dev/null
+if [ -s "$WORK/s36-d-flat" ]; then
+  ok "§36: dispatcher flat projection is non-empty on a cold state dir"
+else
+  nok "§36: dispatcher flat projection is non-empty on a cold state dir (picker emitted nothing)"
+fi
 if cmp -s "$WORK/s36-d-flat" "$WORK/s36-d-empty"; then
   ok "§36: empty query re-emits the flat tree verbatim (browse view preserved)"
 else
@@ -2228,7 +2238,7 @@ while IFS= read -r -d '' _r; do
 done < "$WORK/s36-d-query"
 [ "$_s36_dq_nl" -ge 2 ] \
   && ok "§36: active query re-emits ancestry chains at the dispatcher" \
-  || nok "§36: dispatcher did not switch to chains (multiline panes=$_s36_dq_nl)"
+  || nok "§36: dispatcher did not switch to chains (multiline panes=$_s36_dq_nl flat_bytes=$(wc -c < "$WORK/s36-d-flat") empty_bytes=$(wc -c < "$WORK/s36-d-empty") query_bytes=$(wc -c < "$WORK/s36-d-query") query_head=$(head -c 80 "$WORK/s36-d-query" | tr '\0' '|'))"
 # real fuzzy-query behavior: feed chain records to fzf --filter and prove the
 # surviving records carry the ancestors. Gated on a multiline-capable fzf.
 if command -v fzf >/dev/null 2>&1; then
