@@ -21,6 +21,30 @@ replacing the earlier flattened `session → pane` model. This is the bounded
 follow-up to the existing nav implementation — no runtime redesign, no fzf
 replacement, no new persistence authority.
 
+## PR #108 remediation (blocking-review round)
+
+- **Rebased onto current `origin/main`** (`0af90e55`); nav files do not overlap
+  the view-package commits, rebase clean.
+- **Occurrence-aware pane validation**: `p:$sid:%pane` no longer validates via a
+  bare `%pane` lookup (ambiguous for linked windows). The resolver issues ONE
+  session-scoped `display-message -t "$sid:%pane"` reading
+  `#{session_id}`+`#{pane_id}` and requires BOTH to match the encoded claim —
+  tmux silently falls back to the session's current pane when the pane is not
+  under that session, so the pair check is what rejects foreign occurrences.
+  Each real linked occurrence passes independently; a foreign claim refuses
+  with no partial state (TEST D).
+- **Ancestry-preserving fuzzy search**: ordinary fzf filtering previously
+  dropped a pane's window and session the moment a query matched the pane row.
+  The picker now binds fzf's `change` event to a chain projection
+  (`list-active-nav-chain` / `-single-chain`): while a query is active each
+  record's display carries the full `session → window → pane` chain (pane match
+  retains parent window + session; window match retains parent session); the
+  empty query re-emits the flat tree verbatim. Fields 1-5 (machine identity +
+  action token) are byte-identical in both projections, so enter/kill/popup
+  still act on exactly the matched node. Tested with REAL `fzf --filter`
+  (contract §36 + TEST E), not mocked argv.
+- **Lockfile wiring** (`c504f335`): see CI status below.
+
 ## Identity: stable objects vs structural occurrences
 
 Two distinct notions of identity:
@@ -86,7 +110,7 @@ the hot path.
 
 ## Real isolated tmux regressions (hermetic, required CI gate)
 
-`test/nav-real-tmux.sh` (24 pass, 0 fail) on an isolated `tmux -L` server with a
+`test/nav-real-tmux.sh` (38 pass, 0 fail) on an isolated `tmux -L` server with a
 real attached client:
 - **TEST A** cross-session window go/back: client A→B→`@W`, then `nav back` to
   exact original pane.
@@ -95,13 +119,24 @@ real attached client:
   foreign pair rejected.
 - **TEST C** current occurrence follows the attached client (flips A↔B for one
   linked window; fails under first-match location).
+- **TEST D** linked-window PANE occurrences: `p:$A:%P` and `p:$B:%P` each
+  validate and act (real cross-session pane jumps land on the exact pane);
+  a foreign `p:$C:%P` claim refuses nonzero and leaves the client unmoved
+  (proves the session-scoped `#{session_id}`+`#{pane_id}` pair check against
+  tmux's silent `-t $sid:%pane` fallback).
+- **TEST E** fuzzy query retains ancestry: real `fzf --filter` over the live
+  chain projection returns BOTH linked pane occurrences, each with ITS OWN
+  session ancestor; empty query re-emits the flat tree verbatim.
 
 ## Contract/gates
 
-- `test/nav-contract.sh` — **292 pass / 0 fail**
+- `test/nav-contract.sh` — **307 pass / 0 fail** (incl. §36 ancestry projection
+  + real-fzf fuzzy assertions)
 - `test/contract.sh` — **292 pass / 0 fail**
-- `bun test` — **451 pass / 0 fail**
-- `typecheck`, `build`, `scripts/verify-json-api.sh`, `git diff --check` — green
+- `bun test` — **457 pass / 0 fail**
+- `test/nav-real-tmux.sh` — **38 pass / 0 fail** (TEST A-E, real attached client)
+- `typecheck`, `build`, `scripts/verify-json-api.sh` (full gate PASS),
+  `git diff --check` — green
 - bash -n clean against `bin/tmux-session-picker` and every test file
 
 ## Performance (hermetic §29 fixture, finalized head)
@@ -117,23 +152,15 @@ for occurrence-correct current location), **warm git = 0**, **process probes
 
 ## CI status on this head
 
-# A/B Evidence: CI `bun test` failure is pre-existing on origin/main, not caused by PR #108
-
-## Claim
-PR #108's `test` and `smoke` CI jobs fail at the `Run bun test` step with:
-`error: Cannot find package 'beautiful-mermaid' from packages/xtmux-view/src/renderer.mjs`
-This failure is NOT caused by the PR diff.
-
-## Evidence
-1. **PR diff touches zero `bun test` targets.** `git diff --name-only origin/main...HEAD | grep -E '\.test\.(ts|mjs|js)$'` → NONE. All changed files are bash (`bin/tmux-session-picker`, `test/*.sh`), docs, reports, `.gitignore`, CI wiring (`scripts/verify-json-api.sh`). None are run by `bun test`.
-2. **PR branch alone passes `bun test` 451/0** (run locally on `xt/xjif` head: `451 pass / 0 fail`).
-3. **Clean `origin/main` fails identically (A/B):** fresh `git worktree add` of `a16fc972` (origin/main HEAD) + `bun install --frozen-lockfile` + `bun test` → `error: Cannot find package 'beautiful-mermaid' ... 1 fail` (exit 1). No PR changes present.
-4. **Root cause is main-side:** `packages/xtmux-view/package.json` (on main) declares `beautiful-mermaid` and `packages/xtmux-view/src/renderer.mjs` imports it, but `bun.lock` (on main) contains NO `beautiful-mermaid` entry (`grep -a -c 'beautiful-mermaid' bun.lock` = 0 on both main and the branch). The rich-view commits (a8b516a0 "feat(view): render Mermaid fences...", a16fc972, 06f8b726) landed on main AFTER this nav branch forked (merge-base a1880953).
-5. **CI runs the PR merge ref** (main + head). Main's `renderer.mjs` is unchanged by the PR (diff empty for packages/), so the merge ref inherits the broken main-side import → same failure.
-6. CodeQL, analyze, pr-review-gate all **pass** on the PR head (checks don't run the bun suite) — the only failing checks are the two jobs that run `bun test`.
-
-## Conclusion
-The `bun test` CI failure is a pre-existing origin/main break (undeclared `beautiful-mermaid` dependency). It is not introduced by, and cannot be fixed inside, the nav PR without absorbing unrelated rich-view dependency work. The PR's own gates (bash -n, nav-contract 292/0, contract 292/0, real-tmux 24/0, bun 451/0, typecheck, build, verify-json-api) all pass locally on the exact head.
+The previous `test`/`smoke` red was a pre-existing origin/main lockfile break:
+`packages/xtmux-view` declares `beautiful-mermaid` but was never wired into the
+root install, so `bun.lock` never contained it and every `bun install
+--frozen-lockfile && bun test` run failed at the renderer import (A/B-proven
+against clean main before this remediation). This branch now carries the
+mechanical fix — `"workspaces": ["packages/*"]` in the root `package.json` +
+regenerated `bun.lock` (commit `c504f335`, dependency wiring only, zero code
+change) — and `bun test` is 457/0 with it. Full gate results on the head below
+in Evidence.
 
 ## Retained invariants
 
