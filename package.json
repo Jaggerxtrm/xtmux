@@ -91,5 +91,8 @@
   "publishConfig": {
     "access": "public",
     "provenance": true
-  }
+  },
+  "workspaces": [
+    "packages/*"
+  ]
 }
