@@ -2,6 +2,8 @@
 
 Rich Markdown overlays for completed Claude Code, Pi, and Codex turns managed by xtmux.
 
+> **Status: incomplete — resume later.** The Mermaid rendering design is not working as intended and was parked. `prefix-m` opens the Glow popup and the episode projection renders, but the Mermaid ASCII transform (`decorateMermaid` in `src/renderer.mjs`) and the popup experience need rework; a `mdcat` backend was tried and reverted (see git history). Do not treat the renderer as stable. Next session: reproduce against a real mermaid-bearing episode, then decide between fixing the Glow ASCII path and a different renderer.
+
 This package is deliberately separate from `xtmux nav`. The picker remains a navigation index. `xtmux-view` is a presentation layer over the raw agent TUIs.
 
 ## Architecture
