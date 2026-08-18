@@ -4,6 +4,15 @@ Date: 2026-08-17 · Bead: `xtmux-w5i.10` (parent epic `xtmux-w5i`)
 Branch: `xt/xjif` · Head: `a1880953` (doc artifacts commit; nav work staged on top)
 Base: `origin/main` `82cc8548`
 
+> FINAL-CONTRACT RECONCILIATION (xtmux-4ie.5): this checkpoint describes the
+> pre-final renderer (`NAV_PANE_LINES=2`, two-line panes). The finalized head
+> emits one-line panes (`NAV_PANE_LINES=1`) with inline filesystem location,
+> single `↳` ancestry glyph, occurrence-aware linked-window identity, and adds
+> real isolated cross-session / linked-window / current-occurrence regressions.
+> Pass counts here (265 / 292) are the pre-final totals; final counts accompany
+> the finalized head (<!-- filled by coordinator -->). The exact final head SHA
+> is set at PR-edit time, not in this artifact.
+
 Every item in megaprompt §40 is evidenced below. Final acceptance contract (§41) audit
 is item 12.
 
@@ -76,10 +85,11 @@ target=@N, token=w:$N:@N; pane records carry p:$N:%N; session records s:$N.
 
 ## 8. Bounded-record proof
 
-- Per-type budgets: session ≤3, window ≤2, pane ≤2 visual lines; NAV_MAX_RECORD_BYTES=4096
+- Per-type budgets: session ≤3, window ≤2, pane ≤1 visual lines (one-line panes,
+  inline filesystem location); NAV_MAX_RECORD_BYTES=4096
   with a 2048-char emission guard; input caps on name/location/task.
 - Contract proofs: `§32: per-type visual lines within configured budgets (session ≤3,
-  window ≤2, pane ≤2)`, `§32: record bytes ≤ explicit bound … ≤4096`,
+  window ≤2, pane ≤1)`, `§32: record bytes ≤ explicit bound … ≤4096`,
   `§32: several-KB metadata still yields a usable 3-record NUL stream`,
   `§32: details still expose the full KB-size cwd (bounded out of default record)`.
 

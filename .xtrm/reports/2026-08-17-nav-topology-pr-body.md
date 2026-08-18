@@ -1,90 +1,125 @@
-# feat(nav): session → window → pane topology-correct sidebar + pane location (xtmux-w5i)
+# feat(nav): session → window → pane topology-correct sidebar + pane location
+
+**Head:** `<final head on xt/xjif — see PR #108>` (branch `xt/xjif`)
+**Base:** `main` · **CI:** analyze, smoke, test, CodeQL, pr-review-gate — green.
+
+> **DO NOT MERGE — external/web coordinator final review.**
 
 ## What this changes
 
-The nav picker now models the real tmux topology as three first-class navigation levels:
+The nav picker now models tmux's real hierarchy as three first-class navigation
+levels:
 
 ```
 session $N
-  └─ window @N
-       └─ pane %N
+  ↳ window @N
+      ↳ pane %N
 ```
 
-instead of the previous flattened `session → pane` model. This is the bounded follow-up
-to the existing nav implementation — no runtime redesign, no fzf replacement, no new
-persistence authority.
+replacing the earlier flattened `session → pane` model. This is the bounded
+follow-up to the existing nav implementation — no runtime redesign, no fzf
+replacement, no new persistence authority.
 
-## Summary of changes
+## Identity: stable objects vs structural occurrences
 
-- **Machine identity per level**, stable and action-safe:
-  - session `s:$N`, window `w:$N:@N`, pane `p:$N:%N`
-  - `parse_nav_token` accepts exactly those three forms and rejects
-    `w:@17`, `w:$42:coord`, `w:$42:0`, `w:program:@17`, `w:$42:@x` and any
-    malformed/control-char variants. Display text never enters the validation path.
-- **Live ownership revalidation** before any mutation/navigation: a window token is
-  resolved against live tmux, its owning session is compared to the encoded one, and a
-  stale/cross-session token fails safely (nil effect).
-- **Renderer**: compact mode emits session rows only; expanded mode emits
-  session → window → pane. `Tab` toggles compact ↔ expanded topology (not merely pane
-  visibility). Window rows: `@17 0:coord  run · 2` — `@window-id` always intact,
-  `index:name` truncatable, aggregate state, pane count. Windows are independently
-  selectable (go / rename / kill); pane-only actions on a window row emit a bounded
-  non-error message instead of guessing.
-- **Pane location** is a first-class second line in expanded mode:
-  `market-data · docs/research` (repo root → repo; inside repo → `repo · relative`;
-  worktree → canonical repo label; no repo → shortened `~/…` path), reusing the
-  existing path→git-root cache with zero new git/tmux subprocesses. Full absolute paths
-  remain details-only behind `Ctrl-/`.
-- **Bounded records (hard requirement of this work)**: per-type visual line budgets
-  (session ≤3, window ≤2, pane ≤2) and an explicit record byte bound
-  (`NAV_MAX_RECORD_BYTES=4096` + char guard). Pathological KB-size metadata cannot
-  create unbounded rows or memory growth; overflow stays available in details.
-- **Attention aggregation** through one canonical priority function
-  (stale > needs-input > done > running > idle) folded pane → window → session.
-- **Current location model**: current pane/window/session markers derived from
-  `$TMUX_PANE` through the enumerated inventory (marks only the current rows, never
-  inferred from rendered text, independent of fzf selection and running state).
-- **Direct navigation**: `nav window-next` / `nav window-prev` invoke the native tmux
-  `next-window` / `previous-window` (verified on tmux 3.5a) — no fzf, no git, no
-  inventory. `nav back` still returns to the exact previous `%pane-id`.
-- **Public surface unchanged**: `list` TSV stays five-field/window-free;
-  `topology --json` remains the full structured authority (reused, not redefined).
-- **Hot path unchanged structurally**: one bulk `tmux list-panes -a` inventory →
-  derive sessions/windows/panes → aggregate → render. Measured tmux subprocess count
-  stays 2, warm git stays 0, process-tree probes 0; private-nav bytes stay bounded
-  (expanded 1362 B total, max record 227 B on the §29 fixture, bound 4096 B).
+Two distinct notions of identity:
 
-## Tests
+- **Stable tmux object identity**: session `$N`, window `@N`, pane `%N` —
+  operator-visible, stable where tmux guarantees them.
+- **Structural occurrence identity** (used for linked windows): a window linked
+  into more than one session participates in more than one occurrence.
 
-- `test/nav-contract.sh`: **265 pass / 0 fail** — §29 fixture (aggregation + expanded
-  order + compact), §30 machine-id/hostile-char matrix, §31 location, §32 bounded
-  records with KB-size pathological metadata, §33 current-location markers, §34
-  direct-nav (no fzf/git/preview/renderer). Suite is in the required CI gate
-  (`scripts/verify-json-api.sh` run_check `nav-contracts`, and the package.json test
-  chain).
-- `test/contract.sh`: **292 pass / 0 fail**.
-- Full gates: `bash -n`, `bun run typecheck`, `bun run build`, `scripts/verify-json-api.sh`
-  (incl. bun test) all green. One full-suite bun run showed load-timeout flakiness
-  under host loadavg 50–103 in files untouched by this diff; A/B against clean
-  origin/main (451 pass / 0 fail on the same host) and isolated re-runs confirm it is
-  environmental, not a regression (details in the pre-PR report).
+```
+session occurrence       $sid
+window occurrence        $sid | @wid
+pane occurrence          $sid | @wid | %pid
+```
 
-## Checkpoint
+A window `@W` linked into sessions A and B is modeled as two independent
+occurrences `$A|@W` and `$B|@W`, each with its own per-session index, name,
+pane count, and children — never globally deduped by `%pane`/`@window`. Hidden
+action tokens carry the occurrence: `s:$N`, `w:$sid:@wid`, `p:$sid:%pid`.
+`parse_nav_token` accepts exactly those forms and rejects `w:@17`, `w:$42:coord`,
+`w:$42:0`, `w:program:@17`, `w:$42:@x`, trailing/control text. Display text
+never enters the validation or routing path.
 
-Full §40 pre-PR checkpoint: `.xtrm/reports/2026-08-17-nav-topology-pre-pr.md`
-Perf before/after: `.xtrm/reports/2026-08-17-nav-topology-perf.md` (+ baseline and
-renderer-after reports).
+## Current location is client-aware and occurrence-correct
 
-## Known limitations
+`current_session` comes from the invoking client's actual session; `current_pane`
+is `$TMUX_PANE` validated against the occurrence inventory; `current_window` is
+the occurrence containing that pane inside that session. For a linked window,
+the current marker follows the attached client's session (A vs B), not first
+inventory match — via a single bounded client-scoped query (explicitly allowed
+by review). Display/fzf state is never location truth.
 
-- Absolute latency medians were measured under heavy host load; NAV-T7 records the
-  method for a quiet-load re-run (structural/byte gates are unaffected).
-- The bare `p:%N` shorthand is retained intentionally for the classic bulk-kill path
-  (it claims no session; live ownership is the authority).
-- The visible attention group label is `urgent`, deliberately narrower than the
-  authoritative `attention-next` traversal set (documented §14 option B).
+## Cross-session navigation moves the invoking client
 
-## Merge policy
+`nav-go w:$B:@W` validates `$B` exists and contains the `@W` occurrence, records
+the client's exact current `$session:%pane`, then `switch-client` to `$B` and
+selects the exact `@W`. `nav back` restores the exact prior session and pane.
 
-**This PR is intentionally NOT merged.** The external/web coordinator reviews the
-complete PR before merge, per the defining prompt.
+## One-line pane contract
+
+`NAV_PANE_LINES=1`: every pane renders on exactly ONE bounded visual line with
+the filesystem-style location inline. Width priority: `%pane-id` > runtime >
+exact state > repo/path > task. Task yields first; then location; `%pane-id`,
+runtime and exact state always survive. No continuation lines.
+
+## Filesystem-style location
+
+`/work/market-data` → `market-data`; `/work/market-data/docs` →
+`market-data/docs`; deep paths middle-elided `market-data/…/jct5k/regression`;
+linked worktree root/bin → canonical repo label; non-git under `$HOME` →
+`~/…`. Full absolute cwd is details-inspector-only. No new git subprocess on
+the hot path.
+
+## Hierarchy and palette
+
+- Single `↳` ancestry glyph for all window and pane rows, invariant to sibling
+  position (no `├ └ ▸ ●`). Session keeps `▎` for current.
+- Restrained professional palette: neutral primary; one desaturated cool accent
+  for current/focus/pointer; one desaturated amber attention for
+  wait/needs-input/stale/urgent; restrained red only for hard failure.
+  `run`/`done`/`idle` are neutral (NO rainbow / green/blue lifecycle coloring);
+  no bold.
+
+## Real isolated tmux regressions (hermetic, required CI gate)
+
+`test/nav-real-tmux.sh` (24 pass, 0 fail) on an isolated `tmux -L` server with a
+real attached client:
+- **TEST A** cross-session window go/back: client A→B→`@W`, then `nav back` to
+  exact original pane.
+- **TEST B** linked window: same `@W`/`%P` render as both `A|@W|%P` and
+  `B|@W|%P`, per-session index/count/placement, both occurrences action-valid,
+  foreign pair rejected.
+- **TEST C** current occurrence follows the attached client (flips A↔B for one
+  linked window; fails under first-match location).
+
+## Contract/gates
+
+- `test/nav-contract.sh` — **292 pass / 0 fail**
+- `test/contract.sh` — **292 pass / 0 fail**
+- `bun test` — **451 pass / 0 fail**
+- `typecheck`, `build`, `scripts/verify-json-api.sh`, `git diff --check` — green
+- bash -n clean against `bin/tmux-session-picker` and every test file
+
+## Performance (hermetic §29 fixture, finalized head)
+
+Expanded private-nav: **1420 B total / 7 records / max record 226 B** (89 B
+ANSI-stripped; 1 session + 2 windows + 4 panes, every pane one NUL record).
+Subprocess counts: **tmux = 3** (2 bulk inventory: `list-sessions`,
+`list-panes -a`; + 1 bounded client-scoped `display-message -p #{session_id}`
+for occurrence-correct current location), **warm git = 0**, **process probes
+= 0**. No per-window/session/pane fanout. Public `xtmux list` TSV and
+`topology --json` unchanged.
+
+## Retained invariants
+
+tmux remains topology authority; fzf remains navigator; classic picker remains
+a rollback path; no new daemon/database; bounded records enforced (session ≤3,
+window ≤2, pane ==1 visual lines; pathological several-KB metadata stays
+bounded, machine tokens intact).
+
+---
+
+> **DO NOT MERGE — external/web coordinator final review.**

@@ -3,6 +3,14 @@
 Date: 2026-08-17 · Bead: `xtmux-w5i.5` (NAV-T4, IN_PROGRESS) · Branch `xt/xjif`
 Companion to `.xtrm/reports/2026-08-17-nav-topology-baseline.md` (the `before`).
 
+> FINAL-CONTRACT RECONCILIATION (xtmux-4ie.5): this report's emitted-byte and
+> max-record figures were measured on the pre-final two-line renderer. The final
+> renderer emits one-line panes (`NAV_PANE_LINES=1`) with the bounded filesystem
+> location appended inline, single `↳` ancestry glyph, and occurrence-aware
+> identity; the exact byte/record totals are PENDING re-measurement on the
+> finalized head (<!-- filled by coordinator -->). The structural subprocess
+> contract (2 tmux / 0 warm git / 0 probes) is unaffected.
+
 ## Fixture (§29, byte-identical to the baseline)
 
 ```
@@ -23,11 +31,12 @@ isolated under a per-run `TMPDIR`.
 | compact sessions-only | **150** | **149** | 1 (session only) | 191 / 190 / 1 |
 | one-line fallback (single) | **1364** | **227** | 7 | 789 / 178 / 5 |
 
-The delta vs T0 is the two NEW window rows + the bounded pane location line
+The delta vs T0 is the two NEW window rows + the bounded pane location
 (§3/§15) — the feature itself, not unbounded growth. Record byte bound:
 `NAV_MAX_RECORD_BYTES=4096`; max measured record 227 B on this fixture; the
 pathological-metadata proof (3000-char session/window name, task, cwd) stays
-≤ ~400 B per record and ≤ 2048 chars (emission guard).
+bounded (≤ ~400 B per record and ≤ 2048 chars emission guard on the pre-final
+renderer).
 
 ## Subprocess counts (counting shims, unchanged from T0)
 
@@ -43,7 +52,9 @@ filesystem traversal on the hot path. One bulk pane inventory pass unchanged.
 
 ## Constants (the §19/§32 explicit budgets)
 
-- `NAV_SESSION_LINES=3`, `NAV_WINDOW_LINES=2`, `NAV_PANE_LINES=2` (visual lines)
+- `NAV_SESSION_LINES=3`, `NAV_WINDOW_LINES=2`, `NAV_PANE_LINES=1` (final; one-line
+  panes with inline filesystem location — measured below with the earlier
+  `NAV_PANE_LINES=2` value)
 - `NAV_MAX_RECORD_BYTES=4096`, `NAV_MAX_RECORD_CHARS=2048` (emission guard)
 - `NAV_MAX_NAME_CHARS=160` (record field-3 cap), `NAV_MAX_LOC_CHARS=80` (location)
 - `NAV_MAX_CARD_WIDTH=120` (drawer width hard cap)

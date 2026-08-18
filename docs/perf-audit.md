@@ -243,21 +243,26 @@ tmux/git subprocesses, zero filesystem traversal on the hot path). Warm git
 subprocess count does not regress.
 
 Every private nav record is explicitly bounded: visual lines `NAV_SESSION_LINES`
-= 3, `NAV_WINDOW_LINES` = 2, `NAV_PANE_LINES` = 2; byte budget
+= 3, `NAV_WINDOW_LINES` = 2, `NAV_PANE_LINES` = 1 (one-line panes; the bounded
+filesystem location is appended inline); byte budget
 `NAV_MAX_RECORD_BYTES` = 4096 backed by an emission guard at
 `NAV_MAX_RECORD_CHARS` = 2048 that preserves machine fields 1–5 and refits only
 the display tail. Pathological metadata (3000-char session/window name, task,
 cwd) stays ≤ ~400 B per record — it cannot create unbounded row height or
 memory growth (proven in `test/nav-contract.sh`).
 
-Epic-fixture byte measurements (`.xtrm/reports/`):
+Epic-fixture byte measurements (`.xtrm/reports/`) below were recorded on the
+pre-final two-line renderer. The final renderer emits one-line panes
+(`NAV_PANE_LINES=1`), so the exact byte/record totals are PENDING re-measurement
+on the finalized head (<!-- filled by coordinator -->); the structural
+subprocess contract (2 tmux / 0 warm git / 0 probes) is unaffected.
 
 | report | expanded total | max record | records | warm tmux/git | cold tmux/git |
 |---|---|---|---|---|---|
 | before — `2026-08-17-nav-topology-baseline.md` | 905 B | 190 B | 5 (1 session + 4 panes) | 2 / 0 | 2 / 3 |
 | after — `2026-08-17-nav-renderer-after.md` | 1364 B | 227 B | 7 (1 session + 2 windows + 4 panes) | 2 / 0 | 2 / 3 |
 
-The delta is the two new window rows plus the bounded pane location line — the
+The delta is the two new window rows plus the bounded pane location — the
 topology feature itself, not unbounded growth. NAV-T7 produces the definitive
 before/after comparison in `.xtrm/reports/2026-08-17-nav-topology-perf.md`
 (same deterministic §29 fixture as both reports above); this section does not

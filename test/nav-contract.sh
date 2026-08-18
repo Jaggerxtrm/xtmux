@@ -71,6 +71,18 @@ SHIM
   chmod +x "$WORK/bin/$_fbm"
 done
 
+# nav_current_location resolves the current session from the INVOKING CLIENT
+# (one bounded display-message #{session_id}). Sourced-function fixtures default
+# the client into $42; any subsection that needs different tmux behavior defines
+# its own tmux() and shadows this default. build_list nav subsections use it;
+# subprocess tests use the PATH shims above, never this function.
+tmux() {
+  case "$*" in
+    *'#{session_id}'*) printf '$42\n' ;;
+    *) return 0 ;;
+  esac
+}
+
 echo
 echo "== nav: dispatch, help, and --json classification (xtmux-rib.23/.25) =="
 # NAV-3 requires one discoverable command family: nav next|prev|attention-next|
@@ -422,7 +434,7 @@ require_fn resolve_nav_window_session "nav-t3: resolve_nav_window_session() exis
   (
     tmux() {
       case "$*" in
-        *'@17'*) printf '$42\n' ;;
+        *'@17'*) printf '$42\t@17\n' ;;
         *'@31'*) printf '$99\n' ;;
         *) return 1 ;;
       esac
@@ -451,7 +463,7 @@ require_fn resolve_nav_window_session "nav-t3: resolve_nav_window_session() exis
 
 # nav_go window: validate @N -> record previous exact pane -> select exact @N.
 (
-  tmux() { [ "$1" = display-message ] && printf '$42\n'; }
+  tmux() { [ "$1" = display-message ] && printf '$42\t@17\n'; }
   record_prev() { printf 'prev\n'; }
   jump_to_target() { printf 'jump:%s:%s:%s\n' "$1" "$2" "$3"; }
   nav_go 'w:$42:@17'
@@ -490,10 +502,10 @@ fi
   export XTMUX_TMUX_LOG="$WORK/t3-win-jump.log"
   jump_to_target window '$42' '@17'
 )
-if grep -q 'select-window -t @17' "$WORK/t3-win-jump.log" && ! grep -q 'switch-client' "$WORK/t3-win-jump.log"; then
-  ok "nav-t3: jump to window issues select-window -t @N only"
+if grep -q 'switch-client -t $42' "$WORK/t3-win-jump.log" && grep -q 'select-window -t @17' "$WORK/t3-win-jump.log"; then
+  ok "nav-t3: jump to window moves the client to the session and selects the exact @N"
 else
-  nok "nav-t3: jump to window issues select-window -t @N only (got $(tr '\n' ';' < "$WORK/t3-win-jump.log"))"
+  nok "nav-t3: jump to window moves the client and selects exact @N (got $(tr '\n' ';' < "$WORK/t3-win-jump.log"))"
 fi
 
 # Window actions: ownership gate first; kill/rename target the exact @N.
@@ -502,7 +514,7 @@ require_fn nav_act "nav-t3: window action dispatcher exists" && {
   (
     tmux() {
       case "$1" in
-        display-message) printf '%s\n' "$*" >> "$WORK/t3-win-kill.log"; case "$*" in *'#{session_id}'*) printf '$42\n' ;; *) printf '?\n' ;; esac ;;
+        display-message) printf '%s\n' "$*" >> "$WORK/t3-win-kill.log"; case "$*" in *'#{window_id}'*) printf '$42\t@17\n' ;; *'#{session_id}'*) printf '$42\n' ;; *) printf '?\n' ;; esac ;;
         *) printf '%s\n' "$*" >> "$WORK/t3-win-kill.log" ;;
       esac
     }
@@ -517,7 +529,7 @@ require_fn nav_act "nav-t3: window action dispatcher exists" && {
   (
     tmux() {
       case "$1" in
-        display-message) printf '%s\n' "$*" >> "$WORK/t3-win-rename.log"; case "$*" in *'#{session_id}'*) printf '$42\n' ;; *'#W'*) printf "hostile ; \$(rm -rf /tmp/x) ; \`id\` ; \"quoted\" ; Δ\n" ;; *) printf '?\n' ;; esac ;;
+        display-message) printf '%s\n' "$*" >> "$WORK/t3-win-rename.log"; case "$*" in *'#{window_id}'*) printf '$42\t@17\n' ;; *'#{session_id}'*) printf '$42\n' ;; *'#W'*) printf "hostile ; \$(rm -rf /tmp/x) ; \`id\` ; \"quoted\" ; Δ\n" ;; *) printf '?\n' ;; esac ;;
         *) printf '%s\n' "$*" >> "$WORK/t3-win-rename.log" ;;
       esac
     }
@@ -534,7 +546,7 @@ require_fn nav_act "nav-t3: window action dispatcher exists" && {
   (
     tmux() {
       case "$1" in
-        display-message) printf '%s\n' "$*" >> "$WORK/t3-win-paneonly.log"; case "$*" in *'#{session_id}'*) printf '$42\n' ;; *) printf '?\n' ;; esac ;;
+        display-message) printf '%s\n' "$*" >> "$WORK/t3-win-paneonly.log"; case "$*" in *'#{window_id}'*) printf '$42\t@17\n' ;; *'#{session_id}'*) printf '$42\n' ;; *) printf '?\n' ;; esac ;;
         *) printf '%s\n' "$*" >> "$WORK/t3-win-paneonly.log" ;;
       esac
     }
@@ -563,7 +575,7 @@ fi
 (
   tmux() {
     case "$1" in
-      display-message) case "$*" in *'#{session_id}'*) printf '$42\n' ;; *) printf '?\n' ;; esac ;;
+      display-message) case "$*" in *'#{window_id}'*) printf '$42\t@17\n' ;; *'#{session_id}'*) printf '$42\n' ;; *) printf '?\n' ;; esac ;;
       *) printf '%s\n' "$*" >> "$WORK/t3-bulkwin.log" ;;
     esac
   }
@@ -792,6 +804,13 @@ require_fn nav_session_context "renderer: session context helper exists" && {
   assert_eq "renderer: default session context keeps concise branch and terse status" 'core · nav sidebar redesign · +2 · shared' "$REPLY"
 }
 _strip_nav_ansi() { printf '%s' "$1" | sed -E $'s/\x1b\\[[0-9;]*m//g'; }
+# _nav_acc <raw-display> -> 0 when the row carries the nav ACCENT truecolor
+# (38;2;104;168;196). The current window/pane is distinguished by ACCENT
+# styling on the ↳ glyph and @/%id (PART V/§33), never by a ▸/● glyph, so the
+# §33/T4/occ markers are detected by presence of the accent code in the raw
+# (unstripped) display. Distinguishable from the amber ATTENTION code
+# (205;165;95) and the muted role codes.
+_nav_acc() { case "$1" in *'38;2;104;168;196'*) return 0 ;; *) return 1 ;; esac; }
 require_fn nav_session_card "renderer: session hierarchy card exists" && {
   XTMUX_NAV_WIDTH=60 nav_session_card '▎' alpha needs-input '12m' 'core · nav sidebar redesign' multi
   _plain="$(_strip_nav_ansi "$REPLY")"
@@ -802,31 +821,31 @@ require_fn nav_session_card "renderer: session hierarchy card exists" && {
 }
 _nav_nows() { printf '%s' "$1" | tr -d '\n[:space:]'; }
 require_fn nav_pane_card "renderer: pane hierarchy row exists" && {
-  XTMUX_NAV_WIDTH=60 nav_pane_card '└' '%42' claude running 'session:nav-redesign' running multi
+  XTMUX_NAV_WIDTH=60 nav_pane_card '↳' '%42' claude running 'session:nav-redesign' running multi
   _plain="$(_strip_nav_ansi "$REPLY")"
-  case "$_plain" in *$'\n'*) nok "renderer: pane metadata stays on one bounded line" ;; *) ok "renderer: pane metadata stays on one bounded line" ;; esac
-  case "$_plain" in *'%42'*'claude  session:nav-redesign  active  run') ok "renderer: pane metadata stays adjacent instead of at the clipped edge" ;; *) nok "renderer: pane metadata stays adjacent instead of at the clipped edge" ;; esac
-  XTMUX_NAV_WIDTH=32 nav_pane_card '└' '%1234' prime-agent done '' done multi
+  case "$_plain" in *$'\n'*) nok "renderer: pane renders on exactly ONE visual line (§19/§20/NAV_PANE_LINES=1)" ;; *) ok "renderer: pane renders on exactly ONE visual line (§19/§20/NAV_PANE_LINES=1)" ;; esac
+  case "$_plain" in *'%42'*'claude  active  run  session:nav-redesign') ok "renderer: one-line row order %id > runtime > state > task (§16)" ;; *) nok "renderer: one-line row order (got '$_plain')" ;; esac
+  XTMUX_NAV_WIDTH=32 nav_pane_card '↳' '%1234' prime-agent done '' done multi
   _plain="$(_strip_nav_ansi "$REPLY")"
   _over=0
   while IFS= read -r _vl; do [ "${#_vl}" -le 32 ] || _over=1; done <<< "$_plain"
   [ "$_over" -eq 0 ] && ok "renderer: every pane line fits the minimum drawer width" || nok "renderer: every pane line fits the minimum drawer width"
-  case "$(printf '%s' "$_plain" | tr -d '[:space:]')" in *'└%1234prime-agentother'*) ok "renderer: runtime wins over exact state at minimum width (§16 priority)" ;; *) nok "renderer: runtime wins over exact state at minimum width (§16 priority)" ;; esac
+  case "$(printf '%s' "$_plain" | tr -d '[:space:]')" in *'↳%1234prime-agentother'*) ok "renderer: runtime wins over exact state at minimum width (§16 priority)" ;; *) nok "renderer: runtime wins over exact state at minimum width (§16 priority)" ;; esac
   _pane_lines=$(printf '%s\n' "$_plain" | grep -c .)
-  [ "$_pane_lines" -le 2 ] && ok "renderer: pane card bounded at 2 visual lines (§19)" || nok "renderer: pane card bounded at 2 visual lines (§19, got $_pane_lines)"
-  XTMUX_NAV_WIDTH=24 nav_pane_card '└' '%1234' prime-agent done 'a-very-long-task-name-here' done multi
+  [ "$_pane_lines" -eq 1 ] && ok "renderer: pane card is exactly ONE visual line (§19/§20/NAV_PANE_LINES=1)" || nok "renderer: pane card one visual line (§19, got $_pane_lines)"
+  XTMUX_NAV_WIDTH=24 nav_pane_card '↳' '%1234' prime-agent done 'a-very-long-task-name-here' done multi
   _plain="$(_strip_nav_ansi "$REPLY")"
   _over=0
   while IFS= read -r _vl; do [ "${#_vl}" -le 24 ] || _over=1; done <<< "$_plain"
   [ "$_over" -eq 0 ] && ok "renderer: narrow physical drawer stays within usable width" || nok "renderer: narrow physical drawer stays within usable width"
-  case "$(printf '%s' "$_plain" | tr -d '[:space:]')" in *'└%1234prime-agento'*) ok "renderer: %id + full runtime + group survive; state/task compact (§16/§20)" ;; *) nok "renderer: %id + full runtime + group survive; state/task compact (§16/§20)" ;; esac
+  case "$(printf '%s' "$_plain" | tr -d '[:space:]')" in *'↳%1234prime-agento'*) ok "renderer: %id + full runtime + group survive; state/task compact (§16/§20)" ;; *) nok "renderer: %id + full runtime + group survive; state/task compact (§16/§20)" ;; esac
   _pane_lines=$(printf '%s\n' "$_plain" | grep -c .)
-  [ "$_pane_lines" -le 2 ] && ok "renderer: narrow pane card never exceeds 2 lines (§19)" || nok "renderer: narrow pane card never exceeds 2 lines (§19, got $_pane_lines)"
+  [ "$_pane_lines" -eq 1 ] && ok "renderer: narrow pane card stays one visual line (§19)" || nok "renderer: narrow pane card one line (§19, got $_pane_lines)"
 }
 require_fn nav_window_card "renderer: window hierarchy row exists" && {
-  XTMUX_NAV_WIDTH=60 nav_window_card '▸' '@17' '0:coord' run 2 multi
+  XTMUX_NAV_WIDTH=60 nav_window_card '↳' '@17' '0:coord' run 2 multi
   _plain="$(_strip_nav_ansi "$REPLY")"
-  case "$_plain" in '▸ @17  0:coord  run · 2') ok "renderer: window row shows @id + index:name + state + count (§15)" ;; *) nok "renderer: window row shows @id + index:name + state + count (§15)" ;; esac
+  case "$_plain" in '↳ @17  0:coord  run · 2') ok "renderer: window row shows @id + index:name + state + count (§15)" ;; *) nok "renderer: window row shows @id + index:name + state + count (§15)" ;; esac
   XTMUX_NAV_WIDTH=24 nav_window_card ' ' "@9999" '0:'"$(printf 'x%.0s' {1..60})" wait 2 multi
   _plain="$(_strip_nav_ansi "$REPLY")"
   case "$_plain" in *'@9999'*) ok "renderer: @window-id never truncated" ;; *) nok "renderer: @window-id never truncated" ;; esac
@@ -1051,7 +1070,7 @@ done < "$WORK/t3-hostile-records"
 (
   tmux() {
     case "$1" in
-      display-message) printf '%s\n' "$*" >> "$WORK/t3-hostile-kill.log"; case "$*" in *'#{session_id}'*) printf '$25\n' ;; *) printf '?\n' ;; esac ;;
+      display-message) printf '%s\n' "$*" >> "$WORK/t3-hostile-kill.log"; case "$*" in *'#{window_id}'*) printf '$25\t@100\n' ;; *'#{session_id}'*) printf '$25\n' ;; *) printf '?\n' ;; esac ;;
       *) printf '%s\n' "$*" >> "$WORK/t3-hostile-kill.log" ;;
     esac
   }
@@ -1146,6 +1165,67 @@ INVEOF
   fi
 }
 
+# ---- occurrence identity: a window LINKED into two sessions stays two rows ----
+# The same @W/%%P appears in $A (index 0) and $B (index 3). The projection must
+# preserve BOTH occurrences (per-session index/count/pane placement), never
+# collapse to a first-seen map. Stable object ids (@/%) are kept; only the key
+# is the hierarchy path.
+(
+  build_nav_inventory <<'LINKFIX'
+$A	@W	0	w0	0	%P	0	1	bash	/x	idle	1	-	-	-	-
+$B	@W	3	w3	0	%P	0	1	bash	/x	idle	1	-	-	-	-
+$B	@W	3	w3	0	%Q	1	0	bash	/x2	idle	2	-	-	-	-
+LINKFIX
+  printf 'countA=%s countB=%s\n' "${NAV_WIN_COUNT['$A|@W']:-EMPTY}" "${NAV_WIN_COUNT['$B|@W']:-EMPTY}"
+  printf 'swA=%s swB=%s\n' "${NAV_SESS_WINDOWS['$A']:-EMPTY}" "${NAV_SESS_WINDOWS['$B']:-EMPTY}"
+  printf 'idxA=%s idxB=%s\n' "${NAV_WIN_INDEX['$A|@W']:-EMPTY}" "${NAV_WIN_INDEX['$B|@W']:-EMPTY}"
+  printf 'panA=%s panB=%s paneA=%s paneB=%s\n' \
+    "${NAV_PANE_WIN['$A|%P']:-EMPTY}" "${NAV_PANE_WIN['$B|%P']:-EMPTY}" \
+    "${NAV_PANE_WIN['$A|%Q']:-EMPTY}" "${NAV_PANE_WIN['$B|%Q']:-EMPTY}"
+  # client in B then in A: current must follow the ATTACHED session, not first row.
+  tmux() { case "$*" in *'#{session_id}'*) printf '%b\n' '$B' ;; *) return 0 ;; esac; }
+  TMUX_PANE='%P' nav_current_location
+  printf 'curB=%s:%s:%s\n' "$cur_session" "$cur_window" "$cur_pane"
+  tmux() { case "$*" in *'#{session_id}'*) printf '%b\n' '$A' ;; *) return 0 ;; esac; }
+  TMUX_PANE='%P' nav_current_location
+  printf 'curA=%s:%s:%s\n' "$cur_session" "$cur_window" "$cur_pane"
+) > "$WORK/occ-proj"
+_occ_ok=1
+for _exp in 'countA=1 countB=2' 'swA=@W swB=@W' 'idxA=0 idxB=3' 'panA=@W panB=@W paneA=EMPTY paneB=@W' 'curB=$B:@W:%P' 'curA=$A:@W:%P'; do
+  grep -qF "$_exp" "$WORK/occ-proj" || { _occ_ok=0; printf '      missing: %s\n' "$_exp"; }
+done
+[ "$_occ_ok" -eq 1 ] && ok "NAV-occ: linked window @W keeps BOTH occurrences (A index 0 count1, B index 3 count2)" || nok "NAV-occ: linked window occurrence projection"
+
+# End-to-end render: client attached to B => ▎/▸/● markers land ONLY on the B
+# occurrence; the A occurrence of the same @W/%%P carries no current marker.
+(
+  session_meta() { printf '%b\n' '$A\talp\t%P\t/x\t1000' '$B\tbet\t%P\t/x\t1000'; }
+  pane_meta() { printf '%b\n' \
+    '$A\t@W\t0\tw0\t0\t%P\t0\t1\tbash\t/x\tidle\t1\t-\t-\t-\t-' \
+    '$B\t@W\t3\tw3\t0\t%P\t0\t1\tbash\t/x\tidle\t1\t-\t-\t-\t-' ; }
+  tmux() { case "$*" in *'#{session_id}'*) printf '%b\n' '$B' ;; *) return 0 ;; esac; }
+  TMUX_PANE='%P' XTMUX_NAV_WIDTH=40 TMUX_PICKER_NO_CACHE=1 build_list all expanded nav multi
+) > "$WORK/occ-render"
+_occB_mark=0; _occA_mark=0; _occAtoken=0; _occBtoken=0
+while IFS= read -r -d '' _record; do
+  IFS=$'\t' read -r _type _sid _name _target _token _first <<< "$_record"
+  _prefix="$_type"$'\t'"$_sid"$'\t'"$_name"$'\t'"$_target"$'\t'"$_token"$'\t'
+  _display="${_record#"$_prefix"}"
+  _plain="$(_strip_nav_ansi "$_display")"
+  case "$_type:$_token" in
+    'window:w:$B:@W')   _nav_acc "$_display" && _occB_mark=1 ;;
+    'window:w:$A:@W')   _nav_acc "$_display" && _occA_mark=1 ;;
+    'pane:p:$B:%P')     _nav_acc "$_display" && _occBtoken=1 ;;
+    'pane:p:$A:%P')     _nav_acc "$_display" && _occAtoken=1 ;;
+  esac
+done < "$WORK/occ-render"
+if [ "$_occB_mark" -eq 1 ] && [ "$_occA_mark" -eq 0 ] && [ "$_occBtoken" -eq 1 ] && [ "$_occAtoken" -eq 0 ]; then
+  ok "NAV-occ: client in B marks only the B occurrence of linked @W/%%P (A unmarked)"
+else
+  nok "NAV-occ: client-aware linked marker (Bwin=$_occB_mark Awin=$_occA_mark Bpane=$_occBtoken Apane=$_occAtoken)"
+fi
+
+
 # End-to-end: build_list folds pane -> window -> session on the fixture; the
 # session card must show the aggregated needs-input (attn + wait), not running.
 (
@@ -1233,10 +1313,10 @@ while IFS= read -r -d '' _record; do
   esac
   case "$_type:$_token" in
     'session:s:$42') case "$_plain" in '▎ '*) _t4_cur_markers+="sess " ;; esac ;;
-    'window:w:$42:@17') case "$_plain" in '▸ '*) _t4_cur_markers+="win " ;; esac ;;
-    'window:w:$42:@31') case "$_plain" in '▸ '*) _t4_cur_markers+="WIN-LEAK " ;; esac ;;
-    'pane:p:$42:%553') case "$_plain" in *'●'*) _t4_cur_markers+="pane " ;; esac ;;
-    'pane:p:$42:%621'|'pane:p:$42:%875'|'pane:p:$42:%901') case "$_plain" in *'●'*) _t4_cur_markers+="PANE-LEAK " ;; esac ;;
+    'window:w:$42:@17') _nav_acc "$_display" && _t4_cur_markers+="win " ;;
+    'window:w:$42:@31') _nav_acc "$_display" && _t4_cur_markers+="WIN-LEAK " ;;
+    'pane:p:$42:%553')  _nav_acc "$_display" && _t4_cur_markers+="pane " ;;
+    'pane:p:$42:%621'|'pane:p:$42:%875'|'pane:p:$42:%901') _nav_acc "$_display" && _t4_cur_markers+="PANE-LEAK " ;;
   esac
 done < "$WORK/t4-expanded"
 _t4_exp_ok=1
@@ -1273,9 +1353,9 @@ require_fn nav_pane_location "NAV-T4: nav_pane_location() exists" && {
   nav_pane_location '/work/market-data' '/work/market-data'
   assert_eq "loc: pane at repo root -> canonical repo" 'market-data' "$REPLY"
   nav_pane_location '/work/market-data/docs' '/work/market-data'
-  assert_eq "loc: pane at repo/docs -> repo · rel" 'market-data · docs' "$REPLY"
+  assert_eq "loc: pane at repo/docs -> filesystem repo/path (PART VII)" 'market-data/docs' "$REPLY"
   nav_pane_location '/work/market-data/src/coordinator/jct5k/regression' '/work/market-data'
-  assert_eq "loc: deep path elides to bounded relative" 'market-data · …/jct5k/regression' "$REPLY"
+  assert_eq "loc: deep path elides the middle, keeps repo prefix + trailing" 'market-data/…/jct5k/regression' "$REPLY"
   nav_pane_location "$HOME/space/alpha" ''
   case "$REPLY" in '~'*) ok "loc: no repo -> ~-relative shortened path (§31)" ;; *) nok "loc: no repo -> ~-relative shortened path (got '$REPLY')" ;; esac
   case "$REPLY" in *"$HOME"*) nok "loc: no-repo never emits the absolute HOME path" ;; *) ok "loc: no-repo never emits the absolute HOME path" ;; esac
@@ -1284,7 +1364,7 @@ require_fn nav_pane_location "NAV-T4: nav_pane_location() exists" && {
   _wt_root="$WORK/wtrepo"
   mkdir -p "$_wt_root/.git" "$_wt_root/.xtrm/worktrees/xtmux-xjif/bin" 2>/dev/null
   nav_pane_location "$_wt_root/.xtrm/worktrees/xtmux-xjif/bin" "$_wt_root/.xtrm/worktrees/xtmux-xjif"
-  case "$REPLY" in 'wtrepo · bin') ok "loc: worktree -> canonical repo label · worktree-relative cwd" ;; *) nok "loc: worktree -> canonical repo label (got '$REPLY')" ;; esac
+  case "$REPLY" in 'wtrepo/bin') ok "loc: worktree -> canonical repo/path (PART VII)" ;; *) nok "loc: worktree -> canonical repo label (got '$REPLY')" ;; esac
   nav_pane_location "$_wt_root/.xtrm/worktrees/xtmux-xjif" "$_wt_root/.xtrm/worktrees/xtmux-xjif"
   assert_eq "loc: pane at worktree root -> repo label only" 'wtrepo' "$REPLY"
   # §31: the canonical label must never leak the internal worktree wall.
@@ -1336,7 +1416,7 @@ require_fn nav_enforce_bounded "NAV-T4: record emission guard exists (§19)" && 
 require_fn nav_line_budget "NAV-T4: per-type line budgets exist (§19)" && {
   nav_line_budget session; assert_eq "NAV-T4: session budget = 3" 3 "$REPLY"
   nav_line_budget window;  assert_eq "NAV-T4: window budget = 2" 2 "$REPLY"
-  nav_line_budget pane;    assert_eq "NAV-T4: pane budget = 2" 2 "$REPLY"
+  nav_line_budget pane;    assert_eq "NAV-T4: pane budget = 1 (NAV_PANE_LINES=1)" 1 "$REPLY"
 }
 
 # Filtering keeps hierarchy ancestry (§23): a waiting-match keeps its whole
@@ -1456,9 +1536,13 @@ cat > "$WORK/bin-attn/tmux" <<'ATTNSHIM'
 printf '%s\n' "$*" >> "${XTMUX_TMUX_LOG:-/dev/null}"
 case "$1" in
   display-message)
-    # current-target read ends with #{pane_id} (needs 2 fields); owner probes
-    # query only #{session_id} (needs exactly 1 field).
-    case "$*" in *'#{pane_id}'*) printf '%b\n' '$42\t%553' ;; *) printf '$42\n' ;; esac
+    # current-target read ends with #{pane_id} (2 fields); window pair probe
+    # carries #{window_id} (2 fields); owner probes query #{session_id} only.
+    case "$*" in
+      *'#{pane_id}'*) printf '%b\n' '$42\t%553' ;;
+      *'#{window_id}'*) printf '%b\n' '$42\t@17' ;;
+      *) printf '$42\n' ;;
+    esac
     ;;
   list-panes) printf '%b\n' \
       '$42\tprogram\t%901\tpi\t2000\tneeds-input\t901\t-' \
@@ -1485,7 +1569,11 @@ cat > "$WORK/bin-mismatch/tmux" <<'MISSHIM'
 printf '%s\n' "$*" >> "${XTMUX_TMUX_LOG:-/dev/null}"
 case "$1" in
   display-message)
-    case "$*" in *'#{pane_id}'*) printf '%b\n' '$99\t%553' ;; *) printf '$99\n' ;; esac
+    case "$*" in
+      *'#{pane_id}'*) printf '%b\n' '$99\t%553' ;;
+      *'#{window_id}'*) printf '%b\n' '$99\t@17' ;;
+      *) printf '$99\n' ;;
+    esac
     ;;
 esac
 exit 0
@@ -1509,8 +1597,9 @@ fi
 : > "$WORK/t30-win.log"
 PATH="$WORK/bin-attn:$PATH" XTMUX_TMUX_LOG="$WORK/t30-win.log" "$PICKER" nav-go 'w:$42:@17' >/dev/null 2>&1
 _t30_rc=$?
-if [ "$_t30_rc" -eq 0 ] && grep -qF 'select-window -t @17' "$WORK/t30-win.log"; then
-  ok "§30: w:\$42:@17 accepted after live ownership match -> select-window -t @17"
+if [ "$_t30_rc" -eq 0 ] && grep -qF 'switch-client -t $42' "$WORK/t30-win.log" \
+  && grep -qF 'select-window -t @17' "$WORK/t30-win.log"; then
+  ok "§30: w:\$42:@17 accepted after live ownership match -> switch-client + select-window -t @17"
 else
   nok "§30: w:\$42:@17 accepted (rc=$_t30_rc, log: $(tr '\n' ';' < "$WORK/t30-win.log"))"
 fi
@@ -1646,7 +1735,7 @@ done < "$WORK/t4-pathologic"
 [ "$_t32_count" -eq 3 ] && ok "NAV-T6 §32: several-KB metadata still yields a usable 3-record NUL stream (fzf --read0)" || nok "NAV-T6 §32: stream round-trip length ($_t32_count)"
 [ "$_t32_headers_ok" -eq 1 ] && ok "NAV-T6 §32: every record keeps its 6-field machine header (type/sid/name/target/token/display)" || nok "NAV-T6 §32: 6-field machine header broken (fzf would mis-frame)"
 [ "$_t32_ident_ok" -eq 1 ] && ok "NAV-T6 §32: pathological metadata cannot corrupt action identity (s/w/p tokens exact)" || nok "NAV-T6 §32: pathological metadata corrupted a token"
-[ "$_t32_lines_ok" -eq 1 ] && ok "NAV-T6 §32: per-type visual lines within configured budgets (session ≤3, window ≤2, pane ≤2)" || nok "NAV-T6 §32: a pathological record exceeded its per-type line budget"
+[ "$_t32_lines_ok" -eq 1 ] && ok "NAV-T6 §32: per-type visual lines within configured budgets (session ≤3, window ≤2, pane ≤1)" || nok "NAV-T6 §32: a pathological record exceeded its per-type line budget"
 # details still expose the full semantic value: the window preview emits the raw
 # KB-size cwd verbatim even though the default record had to bound it.
 _l32="$(printf 'L%.0s' {1..3000})"
@@ -1684,11 +1773,10 @@ fi
 
 # ---- §33: current-location markers — TMUX_PANE + inventory, never text/focus ----
 # Direction 1: current pane %553 on the §29 fixture (t4-expanded ran with
-# TMUX_PANE=%553). Markers are the first glyph of the first display line AFTER
-# leading indent: session '▎', window '▸', pane '●' (pane cards are indented 4
-# spaces; window/session cards are not). Leading-glob checks are byte-exact and
-# locale-independent; decoy glyphs can only appear later in a line, never in the
-# marker slot.
+# TMUX_PANE=%553). The session keeps a literal '▎' marker; the current window
+# and pane are distinguished by the ACCENT truecolor on the uniform '↳' glyph
+# and @/%id (PART V/§33), detected here via _nav_acc on the raw display. The
+# accent code is distinguishable from the amber ATTENTION and muted roles.
 _t33_first() { # REPLY = first non-space glyph of the first display line
   local line="${1:-}"
   REPLY="${line%%$'\n'*}"
@@ -1698,14 +1786,15 @@ _t33_sess=0; _t33_w17=0; _t33_w31=0; _t33_p553=0; _t33_p_other=0
 while IFS= read -r -d '' _record; do
   IFS=$'\t' read -r _type _sid _name _target _token _first <<< "$_record"
   _prefix="$_type"$'\t'"$_sid"$'\t'"$_name"$'\t'"$_target"$'\t'"$_token"$'\t'
-  _plain="$(_strip_nav_ansi "${_record#"$_prefix"}")"
+  _display="${_record#"$_prefix"}"
+  _plain="$(_strip_nav_ansi "$_display")"
   _t33_first "$_plain"
   case "$_type:$_token" in
     'session:s:$42')            case "$REPLY" in '▎'*) _t33_sess=1 ;; esac ;;
-    'window:w:$42:@17')         case "$REPLY" in '▸'*) _t33_w17=1 ;; esac ;;
-    'window:w:$42:@31')         case "$REPLY" in '▸'*) _t33_w31=1 ;; esac ;;
-    'pane:p:$42:%553')          case "$REPLY" in '●'*) _t33_p553=1 ;; esac ;;
-    'pane:p:$42:%621'|'pane:p:$42:%875'|'pane:p:$42:%901') case "$REPLY" in '●'*) _t33_p_other=1 ;; esac ;;
+    'window:w:$42:@17')         _nav_acc "$_display" && _t33_w17=1 ;;
+    'window:w:$42:@31')         _nav_acc "$_display" && _t33_w31=1 ;;
+    'pane:p:$42:%553')          _nav_acc "$_display" && _t33_p553=1 ;;
+    'pane:p:$42:%621'|'pane:p:$42:%875'|'pane:p:$42:%901') _nav_acc "$_display" && _t33_p_other=1 ;;
   esac
 done < "$WORK/t4-expanded"
 [ "$_t33_sess" -eq 1 ] && ok "§33: session marker on \$42 (given current pane %553)" || nok "§33: session marker missing on \$42"
@@ -1733,18 +1822,21 @@ _t33f_mk_c=0; _t33f_mk_w=0; _t33f_mk_p=0
 while IFS= read -r -d '' _record; do
   IFS=$'\t' read -r _type _sid _name _target _token _first <<< "$_record"
   _prefix="$_type"$'\t'"$_sid"$'\t'"$_name"$'\t'"$_target"$'\t'"$_token"$'\t'
-  _plain="$(_strip_nav_ansi "${_record#"$_prefix"}")"
+  _display="${_record#"$_prefix"}"
+  _plain="$(_strip_nav_ansi "$_display")"
   _t33_first "$_plain"
   case "$REPLY" in '▎'*) _t33f_mk_c=$((_t33f_mk_c + 1)) ;; esac
-  case "$REPLY" in '▸'*) _t33f_mk_w=$((_t33f_mk_w + 1)) ;; esac
-  case "$REPLY" in '●'*) _t33f_mk_p=$((_t33f_mk_p + 1)) ;; esac
+  case "$_type" in
+    window) _nav_acc "$_display" && _t33f_mk_w=$((_t33f_mk_w + 1)) ;;
+    pane)   _nav_acc "$_display" && _t33f_mk_p=$((_t33f_mk_p + 1)) ;;
+  esac
   case "$_type:$_token" in
     'session:s:$42')    case "$REPLY" in '▎'*) _t33f_sess=1 ;; esac ;;
-    'window:w:$42:@31') case "$REPLY" in '▸'*) _t33f_w31=1 ;; esac ;;
-    'window:w:$42:@17') case "$REPLY" in '▸'*) _t33f_w17=1 ;; esac ;;
-    'pane:p:$42:%875')  case "$REPLY" in '●'*) _t33f_p875=1 ;; esac ;;
-    'pane:p:$42:%901')  case "$REPLY" in '●'*) _t33f_p901=1 ;; esac ;;
-    'pane:p:$42:%621')  case "$REPLY" in '●'*) _t33f_p621=1 ;; esac ;;
+    'window:w:$42:@31') _nav_acc "$_display" && _t33f_w31=1 ;;
+    'window:w:$42:@17') _nav_acc "$_display" && _t33f_w17=1 ;;
+    'pane:p:$42:%875')  _nav_acc "$_display" && _t33f_p875=1 ;;
+    'pane:p:$42:%901')  _nav_acc "$_display" && _t33f_p901=1 ;;
+    'pane:p:$42:%621')  _nav_acc "$_display" && _t33f_p621=1 ;;
   esac
 done < "$WORK/t33-flip"
 [ "$_t33f_sess" -eq 1 ] && ok "§33: flip keeps the session marker on \$42" || nok "§33: flip session marker lost"
@@ -1838,6 +1930,149 @@ if [ -n "$_ln_set" ] && [ -n "$_ln_sw" ] && [ "$_ln_set" -lt "$_ln_sw" ] && ! gr
 else
   nok "§34: nav prev record wiring (log: $(tr '\n' ';' < "$WORK/t34-pp.log"))"
 fi
+
+
+echo
+echo "== xtmux-4ie.4: semantic palette, width-priority, sibling-invariance =="
+# SEMANTIC PALETTE (PART VIII). Assertions are role-based — they never
+# hardcode an arbitrary RGB literal except to prove the few fixed semantic
+# separations (neutral != attention != accent). The strong rainbow guard:
+# run/done/idle must share ONE neutral muted role, so recoloring any
+# lifecycle state to green/blue/rainbow breaks these assertions immediately.
+# A style code SGR helper extracts the 38;2;R;G;B parameter from a styled
+# reply so tests compare roles, not raw escape bytes.
+_nav_scode() { printf '%s' "$1" | grep -oE '38;2;[0-9]+;[0-9]+;[0-9]+' | head -1; }
+if declare -F nav_style >/dev/null 2>&1; then
+  nav_style run X; _p_run="$REPLY"; _p_run_c="$(_nav_scode "$REPLY")"
+  nav_style done X; _p_done_c="$(_nav_scode "$REPLY")"
+  nav_style idle X; _p_idle="$REPLY"; _p_idle_c="$(_nav_scode "$REPLY")"
+  nav_style runtime X; _p_neutral_c="$(_nav_scode "$REPLY")"
+  nav_style wait X; _p_wait_c="$(_nav_scode "$REPLY")"
+  nav_style needs-input X; _p_ni_c="$(_nav_scode "$REPLY")"
+  nav_style stale X; _p_stale_c="$(_nav_scode "$REPLY")"
+  nav_style urgent X; _p_urg_c="$(_nav_scode "$REPLY")"
+  nav_style current X; _p_cur_c="$(_nav_scode "$REPLY")"
+  nav_style accent X; _p_acc_c="$(_nav_scode "$REPLY")"
+
+  [ -n "$_p_run_c" ] && [ "$_p_run_c" = "$_p_idle_c" ] && [ "$_p_run_c" = "$_p_done_c" ] \
+    && ok "palette: run/done/idle share ONE neutral lifecycle role (no green/blue differentiation)" \
+    || nok "palette: run/done/idle share ONE neutral lifecycle role (run=$_p_run_c done=$_p_done_c idle=$_p_idle_c)"
+  [ "$_p_run_c" = "$_p_neutral_c" ] && ok "palette: lifecycle neutral == runtime/secondary muted role" || nok "palette: lifecycle neutral diverges from the muted secondary role"
+  case "$_p_run_c" in "$_p_wait_c"|"$_p_cur_c") nok "palette: lifecycle neutral must be neither attention nor accent" ;; *) ok "palette: lifecycle neutral is distinct from attention and accent roles" ;; esac
+
+  [ -n "$_p_wait_c" ] && [ "$_p_wait_c" = "$_p_ni_c" ] && [ "$_p_wait_c" = "$_p_stale_c" ] && [ "$_p_wait_c" = "$_p_urg_c" ] \
+    && ok "palette: urgent/wait/needs-input/stale share ONE attention role" \
+    || nok "palette: urgent/wait/needs-input/stale share ONE attention role (wait=$_p_wait_c ni=$_p_ni_c stale=$_p_stale_c urgent=$_p_urg_c)"
+  case "$_p_wait_c" in "$_p_neutral_c"|"$_p_cur_c") nok "palette: attention role must be distinct from neutral and accent" ;; *) ok "palette: attention role is distinct from neutral and accent" ;; esac
+
+  [ -n "$_p_cur_c" ] && [ "$_p_cur_c" = "$_p_acc_c" ] \
+    && ok "palette: current/focus share ONE accent role" \
+    || nok "palette: current/focus share ONE accent role (cur=$_p_cur_c accent=$_p_acc_c)"
+  case "$_p_cur_c" in "$_p_neutral_c"|"$_p_wait_c") nok "palette: accent role must be distinct from neutral and attention" ;; *) ok "palette: accent role is distinct from neutral and attention" ;; esac
+
+  # No bold anywhere in the semantic palette (SGR parameter list never holds a
+  # bare 1, a 1;..., or a ;1 trailing segment).
+  _p_bold=0
+  for _p_reply in "$_p_run" "$_p_idle" "$(nav_style wait X; printf '%s' "$REPLY")" "$(nav_style current X; printf '%s' "$REPLY")"; do
+    case "$_p_reply" in *'[1;'*|*';1m'*|*'[1m'*) _p_bold=1 ;; esac
+  done
+  [ "$_p_bold" -eq 0 ] && ok "palette: no bold escapes anywhere in the semantic palette" || nok "palette: a bold SGR escape leaked into the palette"
+fi
+
+# WIDTH PRIORITY (PART XVI / §16/§20): with a repo/path location and a long
+# task on one one-line pane card, prove the yield order — task elides first,
+# then repo/path truncates, while %pane-id, runtime and exact state survive.
+if declare -F nav_pane_card >/dev/null 2>&1 && declare -F _strip_nav_ansi >/dev/null 2>&1; then
+  _wp_task="$(printf 'tasksegment%.0s' {1..40})"   # long, over the card
+  XTMUX_NAV_WIDTH=60 nav_pane_card '↳' '%1234' 'claude-deploy' 'done' "$_wp_task" done multi 'market-data/src' 0
+  _wp60="$(_strip_nav_ansi "$REPLY")"
+  XTMUX_NAV_WIDTH=44 nav_pane_card '↳' '%1234' 'claude-deploy' 'done' "$_wp_task" done multi 'market-data/src' 0
+  _wp44="$(_strip_nav_ansi "$REPLY")"
+  XTMUX_NAV_WIDTH=28 nav_pane_card '↳' '%1234' 'claude-deploy' 'done' "$_wp_task" done multi 'market-data/src' 0
+  _wp28="$(_strip_nav_ansi "$REPLY")"
+  _wp_oneline=1
+  for _wp_card in "$_wp60" "$_wp44" "$_wp28"; do
+    case "$_wp_card" in *$'\n'*) _wp_oneline=0 ;; esac
+  done
+  [ "$_wp_oneline" -eq 1 ] && ok "width: pane card stays ONE line at every width (60/44/28)" || nok "width: pane card broke into multiple visual lines"
+
+  # comfortable width: only task truncates; repo/path, state, runtime, id intact.
+  case "$_wp60" in
+    *'%1234'*) ok "width: %pane-id survives at comfortable width" ;; *) nok "width: %pane-id lost at width 60 (got '$_wp60')" ;; esac
+  case "$_wp60" in
+    *'claude-deploy'*) ok "width: runtime survives at comfortable width" ;; *) nok "width: runtime lost at width 60" ;; esac
+  case "$_wp60" in
+    *'done'*) ok "width: exact state survives at comfortable width" ;; *) nok "width: exact state lost at width 60" ;; esac
+  case "$_wp60" in
+    *'market-data/src'*) ok "width: repo/path survives at comfortable width" ;; *) nok "width: repo/path lost at width 60 (got '$_wp60')" ;; esac
+  case "$_wp60" in
+    *"$_wp_task"*) nok "width: overlong task never kept unbounded" ;; *) ok "width: overlong task elides first while everything else is intact" ;; esac
+
+  # narrow width: location now truncates but exact state + runtime + id survive.
+  case "$_wp44" in
+    *'market-data/src'*) nok "width: repo/path must truncate before exact state" ;; *) ok "width: repo/path truncates at 44 while state survives" ;; esac
+  case "$_wp44" in
+    *'…'*) ok "width: repo/path keeps a bounded ellipsized head when it yields" ;; *) nok "width: truncated repo/path head missing (got '$_wp44')" ;; esac
+  case "$_wp44" in
+    *'done'*) ok "width: exact state survives even as repo/path truncates" ;; *) nok "width: exact state dropped before repo/path (priority violation, got '$_wp44')" ;; esac
+  case "$_wp44" in
+    *'%1234'*) ok "width: %pane-id survives as location yields" ;; *) nok "width: %pane-id lost at width 44" ;; esac
+  case "$_wp44" in
+    *'claude-deploy'*) ok "width: runtime survives as location yields" ;; *) nok "width: runtime lost at width 44" ;; esac
+
+  # extreme width: state/location/task all gone; only %pane-id + runtime remain.
+  case "$_wp28" in
+    *'%1234'*) ok "width: %pane-id survives at extreme width" ;; *) nok "width: %pane-id lost at extreme width (got '$_wp28')" ;; esac
+  case "$_wp28" in
+    *'claude-deploy'*) ok "width: runtime survives at extreme width" ;; *) nok "width: runtime lost at extreme width" ;; esac
+  case "$_wp28" in
+    *'done'*) nok "width: exact state must yield before runtime at the extreme" ;; *) ok "width: exact state yields before runtime at the extreme" ;; esac
+
+  # every line stays within its usable width across the band
+  _wp_wideline=0
+  for _wp_pair in "60:$_wp60" "44:$_wp44" "28:$_wp28"; do
+    _wp_w="${_wp_pair%%:*}"; _wp_txt="${_wp_pair#*:}"
+    while IFS= read -r _wp_vl; do [ "${#_wp_vl}" -le "$_wp_w" ] || _wp_wideline=1; done <<< "$_wp_txt"
+  done
+  [ "$_wp_wideline" -eq 0 ] && ok "width: every rendered line is bounded by its usable width" || nok "width: a rendered line exceeded its usable width"
+fi
+
+# SIBLING-POSITION INVARIANCE (§13/§33): the ancestry glyph is UNIFORMLY '↳'
+# — it never mutates into '├'/'└'/'╰' based on whether a pane/window is the
+# first, last, or only sibling of its parent. Drive the real renderer over a
+# two-pane window + ranged sibling positions and assert every window/pane row
+# still carries the literal '↳' glyph and no box-drawing fork ever appears.
+(
+  session_meta() { printf '%b\n' '$42\tprogram\t%553\t'"$WORK"'/coord\t1000'; }
+  pane_meta() {
+    printf '%b\n' \
+      '$42\t@17\t0\tcoord\t0\t%553\t0\t1\tclaude\t'"$WORK"'/coord\trunning\t553\t-\t-\t-\t-' \
+      '$42\t@17\t0\tcoord\t0\t%621\t1\t0\tbash\t'"$WORK"'/scripts\tidle\t621\t-\t-\t-\t-' \
+      '$42\t@31\t1\tresearch\t0\t%875\t0\t1\tpi\t'"$WORK"'/research\tneeds-input\t875\t-\t-\t-\t-' \
+      '$42\t@31\t1\tresearch\t0\t%901\t1\t0\tclaude\t'"$WORK"'/reviews\trunning\t901\t-\t-\t-\t-'
+  }
+  TMUX_PANE='%621' XTMUX_NAV_WIDTH=60 TMUX_PICKER_NO_CACHE=1 build_list all expanded nav multi
+) > "$WORK/sibling"
+_sib_ok=1; _sib_rows=0; _sib_fork=0
+while IFS= read -r -d '' _record; do
+  IFS=$'\t' read -r _sib_type _sid _name _target _token _first <<< "$_record"
+  case "$_sib_type" in window|pane)
+      _sib_rows=$((_sib_rows + 1))
+      _prefix="$_sib_type"$'\t'"$_sid"$'\t'"$_name"$'\t'"$_target"$'\t'"$_token"$'\t'
+      _sib_plain="$(_strip_nav_ansi "${_record#"$_prefix"}")"
+      case "$_sib_plain" in
+        *'├'*|*'└'*|*'╰'*|*'┌'*|*'╭'*) _sib_fork=1 ;;
+      esac
+      case "$_sib_plain" in *'↳'*) ;; *) _sib_ok=0 ;; esac
+      ;;
+  esac
+done < "$WORK/sibling"
+[ "$_sib_rows" -gt 0 ] && [ "$_sib_ok" -eq 1 ] \
+  && ok "sibling-invariance: every window/pane row keeps the '↳' glyph" \
+  || nok "sibling-invariance: a window/pane row lost its '↳' glyph"
+[ "$_sib_fork" -eq 0 ] \
+  && ok "sibling-invariance: glyph never forks into ├/└/╰ at any sibling position" \
+  || nok "sibling-invariance: a box-drawing fork replaced '↳'"
 
 harness_summary
 exit $?

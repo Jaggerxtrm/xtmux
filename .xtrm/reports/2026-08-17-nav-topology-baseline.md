@@ -4,6 +4,12 @@ Date: 2026-08-17 · Host: `v2202602340735437128` · Bead: `xtmux-w5i.1` (parent 
 Branch: `xt/xjif` @ `a1880953` (base == `origin/main` `82cc8548`)
 Scope: read-only characterization + this one baseline report. No production/test/docs files modified.
 
+> FINAL-CONTRACT RECONCILIATION (xtmux-4ie.5): this is the pre-epic T0 baseline.
+> It predates the topology-correct renderer; its `one-line` rows refer to the
+> pre-existing multiline-off fallback, not the finalized `NAV_PANE_LINES=1`
+> one-line panes with inline filesystem location. Treat it as the historical
+> `before` comparison only.
+
 This report is the **before** snapshot for the epic's hard performance gate (megaprompt §27)
 and NAV-T7's after-comparison. Every metric below is recorded on the §29 deterministic fixture
 so NAV-T7 re-measures identically.

@@ -37,6 +37,13 @@ windows.
 - Pane location (repo / `repo · relative-path` / worktree → canonical repo
 label) is first-class sidebar context in expanded mode; full absolute paths
 stay in the inspector (details-only).
+- Occurrence identity: `$`/`@`/`%` are stable object identities. Where a window
+or pane is linked into more than one session, each structural occurrence is the
+full hierarchy path (`$sid@wid`, `$sid@wid%pane`); a stored token is the
+encoded `$session`+`@window` (resp. `%pane`) pair, never a bare object id.
+- Restrained palette: neutral primary, one cool accent for current/focus/pointer,
+one amber attention, one restrained red for danger; run/done/idle are neutral and
+nothing is bold (no rainbow).
 - Compact mode is session rows only; expanded mode is session → window → pane.
 The sections below are corrected in place to match this amendment.
 
@@ -90,17 +97,17 @@ Expanded drawer:
 
    xtmux-ui                  2m  urgent wait
      xtmux · nav sidebar · +2
-     ▸ @17  0:coord  wait · 2
-        %17  claude  picker UX  wait
-        %19  shell            wait
+     ↳ @17  0:coord  wait · 2
+        ↳ %17  claude  picker UX … · xtmux/src · wait
+        ↳ %19  shell  … · xtmux · wait
 >▎ sp-reviewer-a91f         <1m  active run
      specialists · nav review
-     ▸ @23  0:main  run · 1
-        %23  pi  reviewer     run
+     ↳ @23  0:main  run · 1
+        ↳ %23  pi  reviewer … · specialists/nav · run
    quant                    18m  other idle
      quant · main
-     ▸ @31  0:main  idle · 1
-        %31  shell             idle
+     ↳ @31  0:main  idle · 1
+        ↳ %31  shell  … · quant · idle
 
  ─ ↵ open · Tab compact · ^/ details · ? help
 ```
@@ -233,8 +240,10 @@ What state and how many panes?
 Display:
 
 ```text
-  ▸ @17  0:coord              run · 2
+  ↳ @17  0:coord              run · 2
 ```
+
+Single `↳` ancestry glyph, fixed sibling indent (sibling-position invariant).
 
 Candidate tokens:
 
@@ -256,11 +265,11 @@ Which bounded work item?
 Where is it?
 ```
 
-Display:
+Panes render one line each (`NAV_PANE_LINES=1`), with the bounded filesystem
+location appended inline:
 
 ```text
-  %17  claude  picker UX            WAIT
-      xtmux · src/nav
+  ↳ %17  claude  picker UX … · xtmux/src · WAIT
 ```
 
 Candidate tokens:
@@ -271,7 +280,7 @@ runtime/command
 state
 Bead
 short task
-bounded repo/location projection (line 2)
+bounded repo/location projection (inline)
 ```
 
 Pane location is first-class sidebar context in expanded mode: the same repo,

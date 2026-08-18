@@ -73,6 +73,12 @@ window<TAB>$N<TAB>name<TAB>@N<TAB>w:$N:@N<TAB><card><NUL>
 pane<TAB>$N<TAB>name<TAB>%N<TAB>p:$N:%N<TAB><card><NUL>
 ```
 
+`$` / `@` / `%` are stable object identities owned by tmux. A stored token is
+occurrence-aware: it encodes the full `$session`+`@window` (resp. `%pane`) pair,
+so a window or pane linked into more than one session is addressed by its
+structural occurrence path, not by a bare object id whose owning session would
+otherwise be ambiguous.
+
 Before any jump or action the claimed `$session_id` is revalidated against live
 tmux (window against its live owning session, pane against its live session); a
 stale or moved target fails safely with no state change.

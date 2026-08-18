@@ -519,14 +519,30 @@ pane_meta() {
 # Normalized session→window→pane projection built from ONE bulk pane inventory
 # pass (the rows pane_meta() already emitted) — no per-window/per-session tmux
 # fanout. tmux stays the topology authority; this only regroups the single
-# inventory read in a later phase. Windows are keyed by machine window_id (@N)
-# via the same "sid|wid" grouping the topology JSON path uses, never by
-# index/name. Populates the global associative arrays (reset on each call):
+# inventory read in a later phase.
+#
+# OCCURRENCE IDENTITY: tmux lets one window be LINKED into several sessions, even
+# at different indexes, and list-panes -a emits one row per session/winlink
+# occurrence. Identity is therefore the hierarchy PATH, not the object id:
+#   session occurrence : $sid
+#   window occurrence  : $sid|$wid           (a @window linked into two sessions
+#                                             yields two window occurrences)
+#   pane occurrence    : $sid|$wid|$pane_id   (placement of a %pane within an
+#                                             occurrence)
+# The stable object ids ($/@/% from tmux) are preserved and never derived from
+# display text; they are simply NOT the associative-array key. Every structural
+# array is keyed by an occurrence path, never globally by pane_id, so $A|@W|%P
+# and $B|@W|%P stay distinct rows with their own index/name/count/pane list.
+#
+# Populates the global associative arrays (reset on each call):
 #   NAV_SESS_ORDER[]          first-seen session ids (sessions[] order)
-#   NAV_SESS_WINDOWS[sid]     space-joined window ids, first-seen order
-#   NAV_WIN_INDEX/NAME/ACTIVE/COUNT/PANES[sid|wid]    per-window fields; PANES
-#                           and COUNT are the pane_id list / size for windows[]
-#   NAV_PANE_SESSION/NAV_PANE_WINDOW[pane_id]  per-pane placement (panes[])
+#   NAV_SESS_WINDOWS[sid]     space-joined window ids, first-seen occurrence
+#   NAV_WIN_INDEX/NAME/ACTIVE/COUNT/PANES[sid|wid]    per WINDOW OCCURRENCE; PANES
+#                           and COUNT are the pane_id list / size for that
+#                           occurrence (each linked window gets its own)
+#   NAV_PANE_WIN[sid|pane]    the @window that %pane belongs to WITHIN $sid; lets
+#                           a client-scoped current pane resolve its window in the
+#                           actual attached session, not a first-match pane map
 #
 # The pane/window/session STATE aggregates (NAV_PANE_STATE / NAV_WIN_STATE /
 # NAV_SESS_STATE) are folded in build_list's single pane loop, where the state
@@ -535,47 +551,56 @@ pane_meta() {
 build_nav_inventory() {
   local k sid wid
   NAV_SESS_ORDER=()
-  declare -g -A NAV_SESS_SEEN=() NAV_SESS_WINDOWS=() NAV_WIN_INDEX=() NAV_WIN_NAME=() NAV_WIN_ACTIVE=() NAV_WIN_COUNT=() NAV_WIN_PANES=() NAV_PANE_SESSION=() NAV_PANE_WINDOW=() NAV_PANE_STATE=() NAV_WIN_STATE=() NAV_SESS_STATE=()
+  declare -g -A NAV_SESS_SEEN=() NAV_SESS_WINDOWS=() NAV_WIN_INDEX=() NAV_WIN_NAME=() NAV_WIN_ACTIVE=() NAV_WIN_COUNT=() NAV_WIN_PANES=() NAV_PANE_WIN=() NAV_PANE_STATE=() NAV_WIN_STATE=() NAV_SESS_STATE=()
   local windex wname wactive pane_id
   while IFS=$'\t' read -r sid wid windex wname wactive pane_id __; do
     [ -n "$sid" ] || continue
-    if [ -z "${NAV_PANE_SESSION["$pane_id"]+x}" ]; then
-      NAV_PANE_SESSION["$pane_id"]="$sid"
-      NAV_PANE_WINDOW["$pane_id"]="$wid"
-      k="$sid|$wid"
-      if [ -z "${NAV_WIN_INDEX["$k"]+x}" ]; then
-        NAV_WIN_INDEX["$k"]="$(tsv_clean "$windex")"
-        NAV_WIN_NAME["$k"]="$(tsv_clean "$wname")"
-        NAV_WIN_ACTIVE["$k"]="$(tsv_clean "$wactive")"
-        NAV_WIN_COUNT["$k"]=0
-        NAV_WIN_PANES["$k"]=''
-        NAV_SESS_WINDOWS["$sid"]+="${NAV_SESS_WINDOWS["$sid"]:+ }$wid"
-      fi
-      NAV_WIN_COUNT["$k"]=$(( ${NAV_WIN_COUNT["$k"]} + 1 ))
-      NAV_WIN_PANES["$k"]+="${NAV_WIN_PANES["$k"]:+ }$pane_id"
-      if [ -z "${NAV_SESS_SEEN["$sid"]+x}" ]; then
-        NAV_SESS_SEEN["$sid"]=1; NAV_SESS_ORDER+=("$sid")
-      fi
+    k="$sid|$wid"                 # window occurrence (per session/winlink)
+    NAV_PANE_WIN["$sid|$pane_id"]="$wid"   # %pane's window within THIS session
+    if [ -z "${NAV_WIN_INDEX["$k"]+x}" ]; then
+      NAV_WIN_INDEX["$k"]="$(tsv_clean "$windex")"
+      NAV_WIN_NAME["$k"]="$(tsv_clean "$wname")"
+      NAV_WIN_ACTIVE["$k"]="$(tsv_clean "$wactive")"
+      NAV_WIN_COUNT["$k"]=0
+      NAV_WIN_PANES["$k"]=''
+      NAV_SESS_WINDOWS["$sid"]+="${NAV_SESS_WINDOWS["$sid"]:+ }$wid"
+    fi
+    NAV_WIN_COUNT["$k"]=$(( ${NAV_WIN_COUNT["$k"]} + 1 ))
+    NAV_WIN_PANES["$k"]+="${NAV_WIN_PANES["$k"]:+ }$pane_id"
+    if [ -z "${NAV_SESS_SEEN["$sid"]+x}" ]; then
+      NAV_SESS_SEEN["$sid"]=1; NAV_SESS_ORDER+=("$sid")
     fi
   done
 }
 
-# nav_current_location — current pane/window/session derived from the enumerated
-# inventory. $TMUX_PANE becomes current_pane ONLY when it names a pane that the
-# inventory actually enumerated (NAV_PANE_SESSION has it); current_window and
-# current_session then fall out of the same inventory, so locating the operator
-# costs no extra tmux query. This is location, not attention/running state, not
-# fzf selection (prompt 13).
+# nav_current_location — client-aware current pane/window/session.
+#
+# A pane can live in several sessions via a linked window, so current location
+# cannot come from a first-match pane->session map. Instead:
+#   cur_session = the INVOKING CLIENT's actual tmux session (one bounded
+#                 client-scoped query, consolidated on current_tmux_session_id);
+#   cur_pane    = $TMUX_PANE, but only when that pane has an occurrence inside
+#                 the client's session;
+#   cur_window  = the @window occurrence of cur_pane within cur_session
+#                 (NAV_PANE_WIN["$cs|$pane"]).
+# So when the same @W/%P is linked into sessions A and B, the marker follows the
+# attached client's session (A vs B), never the first inventory row. Display/fzf
+# state is never location truth (prompt 13).
 #
 # Sets globals: cur_pane, cur_window, cur_session (all empty when TMUX_PANE is
-# absent or unknown).
+# absent, the client session is unresolvable, or the pane has no occurrence in
+# that session).
 nav_current_location() {
-  local pane="${TMUX_PANE:-}"
+  local pane="${TMUX_PANE:-}" cs win
   cur_pane='' cur_window='' cur_session=''
-  [ -n "$pane" ] && [ -n "${NAV_PANE_SESSION["$pane"]+x}" ] || return 0
+  [ -n "$pane" ] || return 0
+  current_tmux_session_id; cs="$REPLY"   # bounded client-scoped query
+  [ -n "$cs" ] || return 0
+  win="${NAV_PANE_WIN["$cs|$pane"]:-}"
+  [ -n "$win" ] || return 0
   cur_pane="$pane"
-  cur_session="${NAV_PANE_SESSION["$pane"]}"
-  cur_window="${NAV_PANE_WINDOW["$pane"]}"
+  cur_session="$cs"
+  cur_window="$win"
 }
 
 agent_meta_value() {
@@ -2940,7 +2965,7 @@ nav_card_width() {
 # NAV_MAX_RECORD_BYTES) and defended by a cheap char guard at emission.
 readonly NAV_SESSION_LINES=3
 readonly NAV_WINDOW_LINES=2
-readonly NAV_PANE_LINES=2
+readonly NAV_PANE_LINES=1
 readonly NAV_MAX_RECORD_BYTES=4096
 readonly NAV_MAX_RECORD_CHARS=2048
 readonly NAV_MAX_NAME_CHARS=160      # record field-3 (presentation name) cap
@@ -3000,15 +3025,15 @@ nav_bounded_norepo() {
 }
 
 # nav_pane_location <pane_path> <git_root> -> REPLY: bounded paneLocation
-# projection (§3/§17/§31), the nav renderer's pane line 2.
+# projection (§3/§17/§31), the inline repo/path shown on the pane row (PART VII).
 #   path == root        -> canonical repo label
-#   path inside root    -> repo · bounded relative cwd
-#   worktree pane       -> parent-repo label · bounded worktree-relative cwd
+#   path inside root    -> filesystem repo/path, middle elided to …/
+#   worktree pane       -> parent-repo label / bounded worktree-relative path
 #                          (never a long .xtrm/worktrees/… wall)
 #   no repo             -> shortened user-relative path (never full absolute)
-# Reuses the already-collected pane cwd and the existing path→git-root cache:
-# zero git subprocesses, zero filesystem traversal on the hot path. Full
-# absolute path is details-only (§18).
+# Reuses the already-collected pane cwd, the existing path→git-root cache, and
+# the canonical worktree/root grouping: zero git subprocesses, zero filesystem
+# traversal on the hot path. Full absolute path is details-only (§18).
 nav_pane_location() {
   local pane_path="${1:-}" root="${2:-}" group repo rel
   pane_path="${pane_path:-$HOME}"
@@ -3020,7 +3045,10 @@ nav_pane_location() {
     rel="${pane_path#"$root"/}"
     if [ "$rel" != "$pane_path" ] && [ -n "$rel" ]; then
       nav_bounded_rel "$rel"; rel="$REPLY"
-      REPLY="$repo · $rel"
+      # filesystem-style repo/path projection (§3/§17 PART VII): the repo
+      # prefix and the useful trailing components survive; deep middles elide
+      # to …/ (nav_bounded_rel already collapses to the last two components).
+      REPLY="$repo/$rel"
       fit_width "$REPLY" "$NAV_MAX_LOC_CHARS"
     else
       REPLY="$repo"
@@ -3178,23 +3206,41 @@ nav_state_label() {
 
 # nav_style <role> <text> -> REPLY. Truecolor is presentation-only and is
 # applied after width calculation so ANSI bytes never affect truncation.
+# SEMANTIC PALETTE (PART VIII): one PRIMARY neutral off-white, one MUTED
+# medium gray, one desaturated cool ACCENT (current/focus/pointer), one
+# desaturated ATTENTION amber (urgent/wait/stale/needs-input), and a
+# restrained DANGER red reserved for hard failure only. Lifecycle states
+# run/done/idle are NEUTRAL, never green/blue/rainbow. No bold anywhere.
 nav_style() {
   local role="$1" text="${2:-}" code
   case "$role" in
-    session) code='38;2;240;242;243' ;;
-    pane-id) code='38;2;215;219;221' ;;
-    runtime) code='38;2;159;168;171' ;;
-    context|task) code='38;2;133;141;145' ;;
-    section) code='38;2;101;112;117' ;;
-    age) code='38;2;133;141;145' ;;
-    stale) code='38;2;216;141;141' ;;
-    needs-input|wait) code='38;2;232;200;120' ;;
-    running|run) code='38;2;143;205;160' ;;
-    done) code='38;2;141;169;199' ;;
-    idle) code='38;2;120;130;135' ;;
-    urgent) code='38;2;232;200;120' ;;     # wait bucket (§14 option B label)
-    window-id) code='38;2;215;219;221' ;;   # @N machine identity, never dimmed
-    current) code='38;2;240;242;243' ;;
+    # PRIMARY — neutral off-white: identity and important names
+    session) code='38;2;232;234;237' ;;
+    window-id) code='38;2;232;234;237' ;;
+    pane-id) code='38;2;232;234;237' ;;
+    primary) code='38;2;232;234;237' ;;
+    # MUTED — medium gray: task, path, age, group labels, separators, secondary
+    # runtime, non-current/non-attention lifecycle state
+    runtime) code='38;2;122;128;134' ;;
+    context|task) code='38;2;122;128;134' ;;
+    section) code='38;2;122;128;134' ;;
+    age) code='38;2;122;128;134' ;;
+    idle) code='38;2;122;128;134' ;;      # neutral, not grey-poisoned, just muted
+    running|run) code='38;2;122;128;134' ;; # NEUTRAL — never green
+    done) code='38;2;122;128;134' ;;       # NEUTRAL — never blue
+    active) code='38;2;122;128;134' ;;    # muted parent group
+    other) code='38;2;122;128;134' ;;     # muted parent group
+    muted) code='38;2;122;128;134' ;;
+    # ACCENT — one desaturated cool steel-blue: current row emphasis
+    current) code='38;2;104;168;196' ;;
+    accent) code='38;2;104;168;196' ;;
+    # ATTENTION — one desaturated amber: urgent / wait / needs-input / stale
+    stale) code='38;2;205;165;95' ;;
+    needs-input|wait) code='38;2;205;165;95' ;;
+    urgent) code='38;2;205;165;95' ;;
+    attention) code='38;2;205;165;95' ;;
+    # DANGER — restrained red: hard failure / unreachable / destructive only
+    danger) code='38;2;196;92;92' ;;
     *) REPLY="$text"; return 0 ;;
   esac
   REPLY=$'\033['"$code"'m'"$text"$'\033[0m'
@@ -3216,15 +3262,17 @@ nav_group_label() {
   esac
 }
 
-# nav_window_card <marker> <window-id> <label> <state> <count> <lines> ->
-# REPLY (§15): compact independently-selectable window row
-#   `▸ @17  0:coord  run · 2`
-# @window-id is machine identity and is NEVER truncated (§15 priority 1);
-# index:name is presentation and truncates; state is the canonical
-# pane→window aggregate; count = pane count. ≤ NAV_WINDOW_LINES lines.
+# nav_window_card <marker> <window-id> <label> <state> <count> <lines>
+# [<current>] -> REPLY (§15): compact independently-selectable window row
+#   `↳ @17  0:coord  run · 2`
+# The ancestry glyph is ALWAYS `↳` (uniform, invariant to sibling position). The
+# current window is distinguished by ACCENT styling on the `↳` and @id, never by
+# replacing the glyph (§ PART V/VIII). @window-id is machine identity and is
+# NEVER truncated (§15 priority 1); index:name truncates; state = aggregate;
+# count = pane count. ≤ NAV_WINDOW_LINES lines.
 nav_window_card() {
-  local marker="${1:- }" wid="${2:-}" label="$3" state="$4" count="$5" lines="${6:-multi}"
-  local w sep suffix label_budget out id_styled label_styled state_styled count_styled
+  local marker="${1:- }" wid="${2:-}" label="$3" state="$4" count="$5" lines="${6:-multi}" current="${7:-0}"
+  local w sep suffix label_budget out id_styled label_styled state_styled count_styled marker_styled
   nav_card_width; w="$REPLY"
   nav_state_label "$state"; state="$REPLY"
   nav_text_clean "$label"; label="$REPLY"
@@ -3235,11 +3283,17 @@ nav_window_card() {
   label_budget=$(( w - ${#marker} - 1 - ${#wid} - ${#sep} - ${#suffix} - ${#sep} ))
   [ "$label_budget" -lt 0 ] && label_budget=0
   fit_width "$label" "$label_budget"; label="$REPLY"
-  nav_style window-id "$wid"; id_styled="$REPLY"
+  if [ "$current" = 1 ]; then
+    nav_style current "$marker"; marker_styled="$REPLY"
+    nav_style current "$wid"; id_styled="$REPLY"
+  else
+    nav_style section "$marker"; marker_styled="$REPLY"
+    nav_style window-id "$wid"; id_styled="$REPLY"
+  fi
   nav_style session "$label"; label_styled="$REPLY"
   nav_style "$state" "$state"; state_styled="$REPLY"
   nav_style age "$count"; count_styled="$REPLY"
-  out="$marker $id_styled$sep$label_styled$sep$state_styled"
+  out="$marker_styled $id_styled$sep$label_styled$sep$state_styled"
   [ -n "$count" ] && out+=" · $count_styled"
   REPLY="$out"
 }
@@ -3321,107 +3375,77 @@ nav_session_card() {
 }
 
 # nav_pane_card <branch> <pane-id> <runtime> <state> <task> <session-state>
-# <lines> [<location>]
-# Multi (§3/§16/§19): at most 2 visual lines —
-#   line 1: branch %pane-id runtime [task] group/state, with %pane-id always
-#           present and information priority %id > runtime > state > task;
-#           task truncates first, runtime before state, never a third line.
-#   line 2: bounded repo/location projection (the §3 pane location line; the
-#           optional 8th argument; full absolute paths stay in details).
-# Single (§20): one bounded line; pane ID survives, task text truncates first.
+# <lines> [<location>] [<current>]
+# §3/§16/§19/§20 (PART V/VI): EVERY pane renders on exactly ONE visual line,
+# for both the multiline-capable expanded path and the single-line fallback
+# (NAV_PANE_LINES=1). There is no second location line — the bounded
+# repo/path location rides inline. Row order and width priority:
+#   %pane-id > runtime > exact state > location > task
+# Task yields first, then location; %pane-id, runtime and exact state are never
+# given up. The ancestry glyph is ALWAYS `↳`; the current pane is distinguished
+# by ACCENT styling on the `↳` and %pane-id, never by replacing the glyph.
 nav_pane_card() {
-  local branch="${1:-}" pane="${2:-}" runtime="$3" state="$4" task="$5" session_state="$6" lines="${7:-multi}" location="${8:-}" w label group g0
-  local indent runtime_sep sep suffix_bare compact_suffix runtime_budget task_budget used fixed loc_budget loc_prefix
-  local branch_styled pane_styled runtime_styled task_styled group_styled state_styled loc_styled out
+  local branch="${1:-}" pane="${2:-}" runtime="$3" state="$4" task="$5" session_state="$6" lines="${7:-multi}" location="${8:-}" current="${9:-0}" w label group grole
+  local indent runtime_sep sep suffix bare state_on used fixed loc_budget task_budget loc_len _loc_reserve
+  local branch_styled pane_styled runtime_styled task_styled group_styled state_styled loc_styled
   nav_text_clean "$runtime"; runtime="$REPLY"
   nav_text_clean "$task"; task="$REPLY"
   nav_text_clean "$location"; location="$REPLY"
   nav_state_label "$state"; label="$REPLY"
   nav_group_label "$session_state"; group="$REPLY"
   nav_card_width; w="$REPLY"
-  if [ "$w" -lt 32 ]; then
-    case "$group" in urgent) g0='w' ;; active) g0='r' ;; *) g0='o' ;; esac
-    group="$g0${label:+/$label}"; label=''
-    indent=''; runtime_sep=' '; sep=' '
-  else
-    g0="$group"
-    indent='    '; runtime_sep='  '; sep='  '
-  fi
+  indent='    '; runtime_sep='  '; sep='  '
+  if [ "$w" -lt 32 ]; then indent=''; runtime_sep=' '; sep=' '; fi
   fixed=$(( ${#indent} + ${#branch} + 1 + ${#pane} + ${#runtime_sep} ))
-  # runtime budget reserves only the MINIMAL suffix (group letter/word); the
-  # exact state label compacts after (§16: runtime before exact state)
-  compact_suffix="$sep$g0"
-
-  if [ "$lines" = single ]; then
-    # §20 one-line: %id + runtime + state first; location before task; task
-    # truncates first. No newlines by construction.
-    local loc_len=0 label_fit=0
-    runtime_budget=$(( w - fixed - ${#compact_suffix} ))
-    [ "$runtime_budget" -gt 11 ] && runtime_budget=11
-    [ "$runtime_budget" -lt 0 ] && runtime_budget=0
-    fit_width "$runtime" "$runtime_budget"; runtime="$REPLY"
-    used=$(( fixed + ${#runtime} ))
-    group_show="$group"
-    [ $(( used + ${#sep} + ${#group} )) -gt "$w" ] && group_show="$g0"
-    suffix_bare="$sep$group_show"
-    if [ -n "$label" ] && [ $(( used + ${#suffix_bare} + 2 + ${#label} )) -le "$w" ]; then
-      suffix_bare+="  $label"; label_fit=1
-    fi
-    loc_budget=$(( w - used - ${#suffix_bare} - 2 ))
-    [ "$loc_budget" -gt 16 ] && loc_budget=16
-    [ "$loc_budget" -lt 0 ] && loc_budget=0
-    if [ -n "$location" ]; then
-      fit_width "$location" "$loc_budget"; location="$REPLY"
-      loc_len=${#location}
-    fi
-    task_budget=$(( w - used - ${#suffix_bare} - 2 - loc_len ))
-    [ "$task_budget" -lt 3 ] && task_budget=0
-    fit_width "$task" "$task_budget"; task="$REPLY"
-  else
-    # Multi line 1: runtime and state win over task (§16); runtime gets the
-    # room first, the exact state label compacts when tight, task fills the
-    # leftover. Never a third line — line 2 is the location line only (§19).
-    local label_fit=0
-    runtime_budget=$(( w - fixed - ${#compact_suffix} ))
-    [ "$runtime_budget" -lt 0 ] && runtime_budget=0
-    fit_width "$runtime" "$runtime_budget"; runtime="$REPLY"
-    used=$(( fixed + ${#runtime} ))
-    group_show="$group"
-    [ $(( used + ${#sep} + ${#group} )) -gt "$w" ] && group_show="$g0"
-    suffix_bare="$sep$group_show"
-    if [ -n "$label" ] && [ $(( used + ${#suffix_bare} + 2 + ${#label} )) -le "$w" ]; then
-      suffix_bare+="  $label"; label_fit=1
-    fi
-    task_budget=$(( w - used - ${#suffix_bare} - 2 ))
-    [ "$task_budget" -lt 3 ] && task_budget=0
-    fit_width "$task" "$task_budget"; task="$REPLY"
+  # runtime budget reserves the minimal parent-group suffix so %id+runtime
+  # always fit first (§16); runtime shrinks before exact state is dropped.
+  runtime_budget=$(( w - fixed - ${#sep} - 1 ))
+  [ "$runtime_budget" -lt 0 ] && runtime_budget=0
+  fit_width "$runtime" "$runtime_budget"; runtime="$REPLY"
+  used=$(( fixed + ${#runtime} ))
+  # parent group: full word when it fits, else its letter; always muted except
+  # the urgent bucket (amber). Emphasise exact state, not the grouping.
+  case "$group" in urgent) grole='urgent' ;; *) grole='section' ;; esac
+  bare="$sep$group"
+  [ $(( used + ${#bare} )) -gt "$w" ] && { bare="$sep${group:0:1}"; grole='section'; }
+  suffix="$bare"
+  state_on=0
+  if [ -n "$label" ] && [ $(( used + ${#suffix} + 2 + ${#label} )) -le "$w" ]; then
+    suffix+="  $label"; state_on=1
   fi
-  nav_style section "$branch"; branch_styled="$REPLY"
-  nav_style pane-id "$pane"; pane_styled="$REPLY"
-  nav_style runtime "$runtime"; runtime_styled="$REPLY"
-  nav_style task "$task"; task_styled="$REPLY"
-  nav_style "$session_state" "$group_show"; group_styled="$REPLY"
-  [ "$label_fit" = 1 ] && nav_style "$state" "$label"; state_styled="$REPLY"
-  out="$indent$branch_styled $pane_styled$runtime_sep$runtime_styled"
-  [ -n "$task" ] && out+="  $task_styled"
-  out+="$sep$group_styled"
-  [ "$label_fit" = 1 ] && out+="  $state_styled"
-  if [ "$lines" = single ]; then
-    if [ -n "$location" ]; then
-      nav_style task "$location"; loc_styled="$REPLY"
-      out+=" $loc_styled"
-    fi
-    REPLY="$out"
-    return 0
-  fi
-  # line 2 (§3): bounded repository/location projection, one fitted line
+  # location rides inline before task; yields before task only ever squeezes
+  # task — never a continuation line, never id/runtime/state.
+  loc_len=0
   if [ -n "$location" ]; then
-    loc_prefix='      '
-    [ "$w" -lt 32 ] && loc_prefix=' '
-    fit_width "$location" $(( w - ${#loc_prefix} )); location="$REPLY"
-    nav_style context "$location"; loc_styled="$REPLY"
-    out+=$'\n'"$loc_prefix$loc_styled"
+    loc_budget=$(( w - used - ${#suffix} - 1 ))
+    [ "$loc_budget" -gt 24 ] && loc_budget=24
+    [ "$loc_budget" -lt 1 ] && loc_budget=0
+    fit_width "$location" "$loc_budget"; location="$REPLY"
+    loc_len=${#location}
   fi
+  # reserve the inline location width (loc + leading space) only when it rendered
+  _loc_reserve=0
+  [ "$loc_len" -gt 0 ] && _loc_reserve=$(( loc_len + 1 ))
+  task_budget=$(( w - used - ${#suffix} - _loc_reserve - 2 ))
+  [ "$task_budget" -lt 3 ] && task_budget=0
+  fit_width "$task" "$task_budget"; task="$REPLY"
+  if [ "$current" = 1 ]; then
+    nav_style current "$branch"; branch_styled="$REPLY"
+    nav_style current "$pane"; pane_styled="$REPLY"
+  else
+    nav_style section "$branch"; branch_styled="$REPLY"
+    nav_style pane-id "$pane"; pane_styled="$REPLY"
+  fi
+  nav_style runtime "$runtime"; runtime_styled="$REPLY"
+  nav_style "$grole" "${bare#"$sep"}"; group_styled="$REPLY"
+  [ "$state_on" = 1 ] && nav_style "$state" "$label"; state_styled="$REPLY"
+  nav_style task "$location"; loc_styled="$REPLY"
+  nav_style task "$task"; task_styled="$REPLY"
+  out="$indent$branch_styled $pane_styled$runtime_sep$runtime_styled"
+  out+="$sep$group_styled"
+  [ "$state_on" = 1 ] && out+="  $state_styled"
+  [ -n "$location" ] && [ "$loc_len" -gt 0 ] && out+=" $loc_styled"
+  [ -n "$task" ] && out+="  $task_styled"
   REPLY="$out"
   return 0
 }
@@ -3715,7 +3739,7 @@ pick_nav() {
     --pointer='>' \
     --marker='✓ ' \
     --info=inline-right \
-    --color='fg:#b8bcc0,bg:-1,hl:#ffffff,fg+:#ffffff,bg+:#222222,hl+:#ffffff,info:#8a8f94,prompt:#8a8f94,pointer:#c6cacf,marker:#c6cacf,label:#8a8f94,border:#303030,gutter:-1' \
+    --color='fg:#b8bcc0,bg:-1,hl:#68a8c4,fg+:#ffffff,bg+:#222222,hl+:#68a8c4,info:#8a8f94,prompt:#8a8f94,pointer:#68a8c4,marker:#68a8c4,label:#8a8f94,border:#303030,gutter:-1' \
     --preview-window="$inspector" \
     --bind="load:pos($pos)+transform-prompt($self_q prompt-label nav)" \
     --bind="ctrl-/:toggle-preview" \
@@ -3872,7 +3896,7 @@ build_list() (
   local psid pwi ppi ppid pcol attn idle stale_bucket section last_section=-1 header_label now
   local cur_pane='' cur_sid='' cur_window='' cur_session='' _sstate _stag _marker _sctx _scard _pblock _pline
   local nav_win_key=''
-  local _last_wsid='' _last_wid='' _wlabel='' _wname='' _wtag='' _wcard='' _wmarker='' _wk='' _ploc='' _pname=''
+  local _last_wsid='' _last_wid='' _wlabel='' _wname='' _wtag='' _wcard='' _wmarker='' _wk='' _ploc='' _pname='' _wcur=0 _pcur=0
   local pcmd pstate pbead ptask ppath proot pctx pstate_tag pdisp _nav_group _nav_state _branch _seen
   local -a _prow=()
   declare -A root_cache=()
@@ -4060,29 +4084,36 @@ build_list() (
         # index:name is presentation only. The card is compact and
         # independently selectable (already from NAV-T3) — @id never truncated,
         # index:name truncates, aggregate state + pane count from the folded
-        # inventory. Marker ▸ = current window (prompt 13).
+        # inventory. The ancestry glyph is ALWAYS `↳` (uniform, invariant to
+        # sibling position, PART V); the current window is distinguished by
+        # ACCENT styling on `↳`/@id inside nav_window_card, never by a `▸`.
         if [ -n "$pwid" ] && { [ "$psid" != "$_last_wsid" ] || [ "$pwid" != "$_last_wid" ]; }; then
           nav_window_label "${_prow[1]}" "$pwname"; _wlabel="$REPLY"
-          _wmarker=' '
-          [ -n "$cur_sid" ] && [ -n "$cur_window" ] && [ "$psid" = "$cur_sid" ] && [ "$pwid" = "$cur_window" ] && _wmarker='▸'
+          _wmarker='↳'
+          _wcur=0
+          [ -n "$cur_sid" ] && [ -n "$cur_window" ] && [ "$psid" = "$cur_sid" ] && [ "$pwid" = "$cur_window" ] && _wcur=1
           _wk="$psid|$pwid"
           nav_state_tag "${NAV_WIN_STATE["$_wk"]:-idle}"; _wtag="$REPLY"
-          nav_window_card "$_wmarker" "$pwid" "$_wlabel" "$_wtag" "${NAV_WIN_COUNT["$_wk"]:-0}" "$lines"; _wcard="$REPLY"
+          nav_window_card "$_wmarker" "$pwid" "$_wlabel" "$_wtag" "${NAV_WIN_COUNT["$_wk"]:-0}" "$lines" "$_wcur"; _wcard="$REPLY"
           nav_bounded_name "$_wlabel"; _wname="$REPLY"
           pane_block["$psid"]+="$(printf 'window\t%s\t%s\t%s\tw:%s:%s\t%s' "$psid" "$_wname" "$pwid" "$psid" "$pwid" "$_wcard")"$'\x1f'
           _last_wsid="$psid"; _last_wid="$pwid"
         fi
         nav_pane_context "$pbead" "$ptask" "$ppath" "$proot"; pctx="$REPLY"
         nav_state_tag "$pstate"; pstate_tag="$REPLY"
-        # NAV-T4 pane location (line 2): bounded paneLocation projection from
-        # the already-collected pane cwd + cached git root — zero new
-        # subprocesses on the hot path (§3/§17). Full path is details-only.
+        # NAV-T4 pane location: bounded paneLocation projection from the
+        # already-collected pane cwd + cached git root — zero new subprocesses
+        # on the hot path (§3/§17/§31). Rides inline on the single pane line;
+        # full path is details-only.
         nav_pane_location "$ppath" "$proot"; _ploc="$REPLY"
         _seen=$(( ${sess_pane_seen[$psid]:-0} + 1 )); sess_pane_seen["$psid"]="$_seen"
-        if [ -n "$cur_pane" ] && [ "$ppid" = "$cur_pane" ]; then _branch='●'   # current pane marker (§13)
-        elif [ "$_seen" -eq "${sess_pane_count[$psid]:-1}" ]; then _branch='└'
-        else _branch='├'; fi
-        nav_pane_card "$_branch" "$ppid" "${pcmd:-shell}" "$pstate_tag" "$pctx" "${sess_nav_state[$psid]:-idle}" "$lines" "$_ploc"; pdisp="$REPLY"
+        # Uniform `↳` ancestry glyph for every pane, invariant to sibling
+        # position (§ PART V — no more ●/└/├). The current pane is distinguished
+        # by ACCENT styling on `↳`/%pane-id inside nav_pane_card, never by a ●.
+        _branch='↳'
+        _pcur=0
+        [ -n "$cur_pane" ] && [ "$psid" = "$cur_sid" ] && [ "$ppid" = "$cur_pane" ] && _pcur=1
+        nav_pane_card "$_branch" "$ppid" "${pcmd:-shell}" "$pstate_tag" "$pctx" "${sess_nav_state[$psid]:-idle}" "$lines" "$_ploc" "$_pcur"; pdisp="$REPLY"
         nav_bounded_name "${sess_name[$psid]:-}"; _pname="$REPLY"
         pane_block["$psid"]+="$(printf 'pane\t%s\t%s\t%s\tp:%s:%s\t%s' "$psid" "$_pname" "$ppid" "$psid" "$ppid" "$pdisp")"$'\x1f'
       done < <(sort -t $'\t' -k1,1 -k2,2n -k3,3n "$tmp_panes")
@@ -4401,17 +4432,31 @@ parse_nav_token() {
 }
 
 # resolve_nav_window_session <encoded-sid-or-empty> <window> -> REPLY=live sid.
-# Resolves the exact @window_id against live tmux and compares its live owning
-# $session_id with the claim encoded in the token (§11). Refuses (nonzero, no
-# partial state) when the window is gone or moved to a different session — a
-# stale record must fail safely. Machine identity only: the window name/index
-# never influences this resolution. One display-message per action, never on
-# the inventory/rendering hot path.
+# Resolves the exact @window_id occurrence against live tmux and proves the
+# encoded session+window PAIR, not a bare @id (a window LINKED into several
+# sessions makes a bare @id's owning session ambiguous). tmux `-t "$sid:@wid"`
+# falls back to the session's current window when that winlink does NOT exist,
+# so a single display-message reads BOTH #{session_id} and #{window_id} and both
+# must match the claim (live session == encoded AND live window == claimed
+# @wid). This rejects a link present elsewhere while accepting each real
+# occurrence. Refuses (nonzero, no partial state) on any mismatch — a stale
+# record must fail safely. Machine identity only: names/indexes never influence
+# resolution. One display-message per action, never on the hot path.
 resolve_nav_window_session() {
-  local encoded="${1:-}" window="$2" live
-  live="$(tmux display-message -p -t "$window" '#{session_id}' 2>/dev/null || true)"
-  [ -n "$live" ] || return 1
-  [ -z "$encoded" ] || [ "$encoded" = "$live" ] || return 1
+  local encoded="${1:-}" window="$2" live tgt
+  if [ -n "$encoded" ]; then
+    tgt="$encoded:$window"
+    live="$(tmux display-message -p -t "$tgt" $'#{session_id}\t#{window_id}' 2>/dev/null || true)"
+    local livewin
+    IFS=$'\t' read -r live livewin <<< "$live"
+    [ -n "$live" ] || return 1
+    [ "$live" = "$encoded" ] || return 1
+    [ "$livewin" = "$window" ] || return 1
+  else
+    live="$(tmux display-message -p -t "$window" '#{session_id}' 2>/dev/null || true)"
+    live="${live%%$'\t'*}"
+    [ -n "$live" ] || return 1
+  fi
   REPLY="$live"
 }
 
@@ -5575,12 +5620,13 @@ jump_to_target() {
     return 0
   fi
 
-  # window: select the exact @window_id. tmux select-window -t @N moves the
-  # client to the window's own session and selects that exact window, so no
-  # switch-client preamble is needed (ownership was already validated by the
-  # caller against live tmux).
+  # window: MOVE THE INVOKING CLIENT to the encoded session and select the exact
+  # @window occurrence there. select-window alone only picks the target session's
+  # current winlink without reattaching the operator, so a cross-session row would
+  # leave them behind; switch-client first, then select the exact @wid in that
+  # session (ownership was already validated against live tmux by the caller).
   if [ "$type" = 'window' ] && [ -n "$target" ]; then
-    exec tmux select-window -t "$target"
+    exec tmux switch-client -t "$sid" \; select-window -t "$target"
   fi
 
   if [ "$type" = 'pane' ] && [ -n "$target" ]; then

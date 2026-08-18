@@ -2,6 +2,21 @@
 
 Date: 2026-08-17 · Host: `v2202602340735437128` (12 cores) · Bead: `xtmux-w5i.8` (NAV-T7)
 Branch: `xt/xjif` (worktree `xtmux-xt-pi-xjif`) — production nav code applied uncommitted.
+
+> FINAL-CONTRACT RECONCILIATION (xtmux-4ie.5): all byte/record/latency figures
+> below were measured on the pre-final two-line renderer. The final renderer
+> emits one-line panes (`NAV_PANE_LINES=1`) with inline filesystem location,
+> single `↳` glyph, and occurrence-aware identity, so the exact byte/record
+> measured on the finalized one-line renderer head (xtmux-4ie). Final byte/
+> record totals on the hermetic §29 fixture: expanded private-nav = **1420 B
+> total / 7 records / max record 226 B** (89 B ANSI-stripped) — 1 session + 2
+> windows + 4 panes, every pane a single NUL record. Subprocess count on the
+> finalized head: **tmux = 3** (2 bulk inventory: `list-sessions` +
+> `list-panes -a`; + 1 bounded client-scoped `display-message -p #{session_id}`
+> for occurrence-correct current location — the explicit client query the
+> blocking review allowed), **warm git = 0**, **process-tree probes = 0**. The
+> structural no-fanout proof and RSS order-of-magnitude share the pre-final
+> measurement and remain valid.
 Companion reports: `.xtrm/reports/2026-08-17-nav-topology-baseline.md` (T0 `before`),
 `.xtrm/reports/2026-08-17-nav-renderer-after.md` (NAV-T4 after-measurement).
 Measurement tool: `.xtrm/reports/2026-08-17-nav-topology-perf-measure.sh` (see §9 for commands).
@@ -15,8 +30,8 @@ hot-path fix was needed (see §10).
 
 ```
 $42 program
-├─ @17 0:coord        (%553 running, %621 idle)
-└─ @31 1:research     (%875 needs-input, %901 running)
+  ↳ @17 0:coord        (%553 running, %621 idle)
+  ↳ @31 1:research     (%875 needs-input, %901 running)
 ```
 
 - **Session count = 1, window count = 2, pane count = 4** (from the same canned

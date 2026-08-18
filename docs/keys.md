@@ -18,10 +18,14 @@ Set width in tmux configuration rather than application state:
 
 Change `40%` to tune the drawer, and `75%` to tune its height. `tput cols` runs
 inside the popup. The nav launcher reserves eight cells for fzf's border and
-selection gutter before it bounds rows; long names, branches, and tasks wrap
-onto continuation lines instead of being cut. The `#222222` background uses a
+selection gutter before it bounds rows; long names, branches, and tasks are
+truncated deterministically (machine identity always survives; full values stay
+in the details inspector). The `#222222` background uses a
 terminal-dependent alpha (`@200`) for slight transparency on terminals that
-support it. Nothing is bold; `%pane-id` and agent state labels differ by color only.
+support it. The palette is restrained (neutral primary, one cool accent,
+one amber attention, one restrained red for danger; run/done/idle neutral) and
+nothing is bold — `%pane-id` and agent state labels are styled by color, never
+by bold.
 
 Keep a classic/full-screen rollback binding:
 
@@ -34,7 +38,9 @@ bind G display-popup -E -w 99% -h 97% "TMUX_PICKER_MODE=compact-nowrap $HOME/.lo
 `XTMUX_NAV_LAYOUT=classic xtmux nav` also selects the classic renderer. These
 are optional prefix-table examples; xtmux does not install global bindings.
 
-Inside nav, `▎` is the live tmux target and `›` is the fzf selection. Sessions
+Inside nav, `▎` marks the current session (the pane the operator is attached
+to); the current window and pane get the cool accent, and `›` is the fzf
+selection (distinct from running state). Sessions
 are grouped by urgent, active, and other state. `Tab` toggles compact <-> expanded
 topology — compact shows session rows only, expanded shows session → window →
 pane (it does not merely hide/show pane rows). `Ctrl-/` opens the hidden details

@@ -58,6 +58,3 @@ dist/
 .xtrm/hooks/inbox-reminder-stop.mjs
 .xtrm/hooks/project-memory.mjs
 .xtrm/hooks/worktree-reap-sweep.mjs
-
-# bv (beads viewer) local config and caches
-.bv/
