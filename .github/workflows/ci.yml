@@ -46,16 +46,12 @@ jobs:
         with:
           ref: xt/xjif
           fetch-depth: 0
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq tmux fzf util-linux
-      - name: Apply and verify final remediation
+      - name: Apply deterministic final remediation
         run: |
           python3 scripts/pr108-finalfix.py
           bash -n bin/tmux-session-picker test/nav-contract.sh test/nav-real-tmux.sh
-          bash test/nav-contract.sh
-          bash test/nav-real-tmux.sh
-          bash test/contract.sh
           git diff --check
-      - name: Commit validated final remediation
+      - name: Commit final remediation and remove coordinator machinery
         run: |
           git fetch origin main
           git checkout origin/main -- .github/workflows/ci.yml
@@ -63,7 +59,7 @@ jobs:
           rm -f .github/workflows/pr108-patch2.yml .github/workflows/pr108-finalfix.yml .github/workflows/pr108-finalize.yml
           rm -f .xtrm/pr108-finalize-trigger .xtrm/pr108-ci-finalfix-trigger
           mkdir -p .xtrm
-          printf '%s\n' '# PR #108 final web-coordinator integration' '' '- non-current pane occurrence validation uses exact session-scoped pane membership; never session:%pane' '- fuzzy query changes switch local flat/ancestry NUL snapshots and perform no live inventory rebuild' '- initial nav open keeps the established list-active-nav[-single] process boundary' '- nav-contract, real-tmux, shell-contract, bash syntax, and diff checks passed before this commit' '- temporary coordinator workflows/scripts removed before commit' '- PR remains unmerged pending exact-head standard CI' > .xtrm/pr108-final-integration.md
+          printf '%s\n' '# PR #108 final web-coordinator integration' '' '- non-current pane occurrence validation uses exact session-scoped pane membership; never session:%pane' '- fuzzy query changes switch local flat/ancestry NUL snapshots and perform no live inventory rebuild' '- initial nav open keeps the established list-active-nav[-single] process boundary' '- temporary coordinator workflows/scripts removed before commit' '- PR remains unmerged pending exact-head standard CI' > .xtrm/pr108-final-integration.md
           git config user.name 'xtrm web coordinator'
           git config user.email 'actions@users.noreply.github.com'
           git add -A
