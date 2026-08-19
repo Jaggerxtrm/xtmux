@@ -945,10 +945,11 @@ fi
   self="$WORK/nav-list-stub"
   XTMUX_NAV_WIDTH=40 pick_nav
 )
-if grep -qF "list-active-nav-single-chain '{q}'" "$WORK/nav-fzf-args-oneline"; then
-  ok "nav chrome: oneline fallback binds its own single-line chain source"
+if grep -qF "nav-snapshot-view" "$WORK/nav-fzf-args-oneline" \
+  && ! grep -qF "list-active-nav-single-chain '{q}'" "$WORK/nav-fzf-args-oneline"; then
+  ok "nav chrome: oneline fallback also uses the local snapshot source"
 else
-  nok "nav chrome: oneline fallback misses its single-line chain source"
+  nok "nav chrome: oneline fallback is not snapshot-backed"
 fi
 assert_eq "nav filter: initial list uses persisted filter state" list-active-nav "$(cat "$WORK/nav-stub-command")"
 assert_eq "nav width: fzf selection chrome is reserved" 36 "$(cat "$WORK/nav-stub-width")"
@@ -1575,10 +1576,15 @@ case "$1" in
       *) printf '$42\n' ;;
     esac
     ;;
-  list-panes) printf '%b\n' \
-      '$42\tprogram\t%901\tpi\t2000\tneeds-input\t901\t-' \
-      '$42\tprogram\t%553\tclaude\t1000\tneeds-input\t553\t-' \
-      '$42\tprogram\t%875\tpi\t500\tdone\t875\t-' ;;
+  list-panes)
+    case "$*" in
+      *'#{session_name}'*) printf '%b\n' \
+          '$42\tprogram\t%901\tpi\t2000\tneeds-input\t901\t-' \
+          '$42\tprogram\t%553\tclaude\t1000\tneeds-input\t553\t-' \
+          '$42\tprogram\t%875\tpi\t500\tdone\t875\t-' ;;
+      *) printf '%s\n' '%901' '%553' '%875' ;;
+    esac
+    ;;
   show) printf '%b\n' '$42:%553' ;;
 esac
 exit 0
@@ -1716,6 +1722,7 @@ fi
   tmux() {
     printf '%s\n' "$*" >> "$WORK/t30-dispatch.log"
     case "$*" in
+      *'list-panes -s -t $26'*) printf '%%553\n' ;;
       *'#{pane_id}'*) printf '$26\t%%553\n' ;;
       *'-t '*) printf '$26\n' ;;
       *) printf '\n' ;;
@@ -1790,6 +1797,7 @@ fi
   export PATH="$WORK/bin:$PATH" XTMUX_TMUX_LOG="$WORK/t32-navgo.log"
   tmux() {
     case "$1" in
+      list-panes) printf '%%1\n' ;;
       display-message) printf '%s\n' "$*" >> "$WORK/t32-navgo.log"; printf '$47\t%%1\n' ;;
       *) printf '%s\n' "$*" >> "$WORK/t32-navgo.log" ;;
     esac

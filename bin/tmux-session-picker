@@ -2466,8 +2466,7 @@ PICKER INTERNALS — invoked by the fzf UI. Agents do not normally call these.
   preview, popup, jump, kill, act, attn-jump, jump-back, kill-confirm, bulk-kill, bulk-kill-targets
   bulk-kill-confirm, rename, rename-apply, mode-toggle, filter-menu, filter-clear, filter-preset, prompt-label, border-label, nav-go, nav-act
   nav-border-label, nav-key-help, list-nav, list-nav-single, list-active-nav,
-  list-active-nav-single, list-active-nav-chain, list-active-nav-single-chain,
-  nav-snapshot-view, nav-snapshot-refresh
+  list-active-nav-single, list-active-nav-chain, list-active-nav-single-chain
 
 Errors are `exit 2` with a usage line; under --json they are
 {"code":"XTMUX_...","message":...}. See docs/json-command-api.md.
@@ -3726,7 +3725,7 @@ nav_snapshot_view() {
 }
 
 # Explicit live refresh. Build one flat snapshot, derive ancestry from
-# those exact bytes, then atomically replace both files before output.
+# those exact bytes, then replace both temp-backed files before output.
 nav_snapshot_refresh() {
   local flat="${1:-}" chain="${2:-}" lines="${3:-}" requested="${4:-active}" query="${5:-}"
   local spec mode flat_tmp chain_tmp
@@ -3780,9 +3779,13 @@ pick_nav() {
     chain_file="$(mktemp "${TMPDIR:-/tmp}/xtmux-nav.chain.XXXXXX")" || { rm -f "$flat_file"; exit 1; }
     trap 'rm -f "$flat_file" "$chain_file"' EXIT INT TERM
 
-    picker_state_read filter || true; spec="$REPLY"
-    read_list_mode
-    build_list "$spec" "$REPLY" nav "$lines" > "$flat_file"
+    # Initial open performs one ordinary live projection. Query changes below
+    # never return to live inventory; they switch between local snapshots.
+    if [ "$lines" = single ]; then
+      "$self" list-active-nav-single > "$flat_file"
+    else
+      "$self" list-active-nav > "$flat_file"
+    fi
     nav_snapshot_project_stream "$flat_file" "$lines" > "$chain_file"
 
     printf -v flat_q '%q' "$flat_file"
