@@ -67,28 +67,29 @@ if needle in t:
 elif "*) printf '%s\\n' '%901' '%553' '%875' ;;" not in t:
     raise SystemExit("attention shim anchor missing")
 
-# Hosted dispatch fixture: p:$26:%553 membership read.
-marker = '> "$WORK/t30-dispatch"'
+# Hosted hostile-display dispatch: p:$26:%553 now performs an action-time
+# session-scoped list-panes membership read before the exact jump.
+marker = ': > "$WORK/t30-dispatch.log"'
 pos = t.index(marker)
-start = t.rfind("tmux() {", 0, pos)
-end = t.index("\n}", start) + 2
+start = t.index("  tmux() {", pos)
+end = t.index("\n  }", start) + len("\n  }")
 block = t[start:end]
 if "list-panes -s -t $26" not in block:
-    case_line = '  case "$*" in\n'
+    case_line = '    case "$*" in\n'
     at = block.index(case_line) + len(case_line)
-    block = block[:at] + "    *'list-panes -s -t $26'*) printf '%%553\\n' ;;\n" + block[at:]
+    block = block[:at] + "      *'list-panes -s -t $26'*) printf '%%553\\n' ;;\n" + block[at:]
     t = t[:start] + block + t[end:]
 
-# §32 nav-go fixture: p:$1:%1 membership read.
-marker = '> "$WORK/t32-navgo"'
+# §32 pathological nav-go: p:$47:%1 needs the same membership response.
+marker = ': > "$WORK/t32-navgo.log"'
 pos = t.index(marker)
-start = t.rfind("tmux() {", 0, pos)
-end = t.index("\n}", start) + 2
+start = t.index("  tmux() {", pos)
+end = t.index("\n  }", start) + len("\n  }")
 block = t[start:end]
 if "list-panes)" not in block:
-    case_line = '  case "$1" in\n'
+    case_line = '    case "$1" in\n'
     at = block.index(case_line) + len(case_line)
-    block = block[:at] + "    list-panes) printf '%%1\\n' ;;\n" + block[at:]
+    block = block[:at] + "      list-panes) printf '%%1\\n' ;;\n" + block[at:]
     t = t[:start] + block + t[end:]
 
 test.write_text(t)
