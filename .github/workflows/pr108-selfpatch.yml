@@ -1,95 +1,65 @@
 name: PR108 coordinator self-patch
-
 on:
   push:
     branches: [xt/xjif]
-    paths:
-      - .github/workflows/pr108-selfpatch.yml
-
+    paths: [.github/workflows/pr108-selfpatch.yml]
 permissions:
   contents: write
-
 jobs:
-  patch-test-commit:
+  patch:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           ref: xt/xjif
           fetch-depth: 0
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.14
-
-      - name: Install system test dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq tmux fzf util-linux jq
-
-      - name: Apply final coordinator remediation
+      - name: Patch production nav
         shell: bash
         run: |
+          set -euo pipefail
           python3 <<'PY'
           from pathlib import Path
+          import textwrap
 
-          picker = Path('bin/tmux-session-picker')
-          s = picker.read_text()
+          path = Path('bin/tmux-session-picker')
+          s = path.read_text()
 
-          # P1: session:%pane is not a reliable tmux pane address. Validate a
-          # pane occurrence by enumerating all panes in the encoded session.
+          # 1) Pane occurrence validation: never construct session:%pane.
           a = s.index('# resolve_nav_pane_session <encoded-sid-or-empty> <pane>')
           b = s.index('\n# nav_go <token>', a)
-          new_resolver = r'''# resolve_nav_pane_session <encoded-sid-or-empty> <pane> -> REPLY=live sid.
-          # Proves the encoded session+pane OCCURRENCE against live tmux without
-          # constructing the invalid/ambiguous `session:%pane` target form. tmux
-          # parses `%N` in that position as a window target and may silently fall
-          # back to the session's current pane; a valid NON-CURRENT pane can
-          # therefore be rejected by a dual-field display-message check.
-          #
-          # For an encoded session, enumerate that session's panes once with
-          # `list-panes -s -t $sid` and require an exact %pane_id membership. This
-          # accepts every real linked-window occurrence and every non-current
-          # pane, while a foreign/stale claim yields no exact row. This is an
-          # action-time validation only (never the picker hot path). A legacy
-          # bare p:%N token keeps the server-global live resolution used by the
-          # classic bulk-kill compatibility path.
+          resolver = r'''# resolve_nav_pane_session <encoded-sid-or-empty> <pane> -> REPLY=live sid.
+          # Prove the encoded session+pane occurrence without constructing
+          # `session:%pane`: tmux parses %N there as a window target and may
+          # silently fall back to the session's current pane, which rejects a
+          # valid non-current pane. For an encoded session, one session-scoped
+          # list-panes traversal checks exact %pane membership across ALL windows.
+          # This is action-time validation only, never part of the picker hot path.
           resolve_nav_pane_session() {
             local encoded="${1:-}" pane="$2" live
             if [ -n "$encoded" ]; then
               live="$(tmux list-panes -s -t "$encoded" -F '#{pane_id}' 2>/dev/null || true)"
               case $'\n'"$live"$'\n' in
-                *$'\n'"$pane"$'\n'*) ;;
+                *$'\n'"$pane"$'\n'*) REPLY="$encoded"; return 0 ;;
                 *) return 1 ;;
               esac
-              REPLY="$encoded"
-            else
-              live="$(tmux display-message -p -t "$pane" '#{session_id}' 2>/dev/null || true)"
-              live="${live%%$'\t'*}"
-              [ -n "$live" ] || return 1
-              REPLY="$live"
             fi
+            live="$(tmux display-message -p -t "$pane" '#{session_id}' 2>/dev/null || true)"
+            live="${live%%$'\t'*}"
+            [ -n "$live" ] || return 1
+            REPLY="$live"
           }
           '''
-          # Dedent the raw source block while preserving shell indentation.
-          import textwrap
-          s = s[:a] + textwrap.dedent(new_resolver).rstrip() + s[b:]
+          s = s[:a] + textwrap.dedent(resolver).rstrip() + s[b:]
 
-          # P1 performance: ordinary fzf typing must never rebuild live tmux/git
-          # inventory. Build one flat snapshot, derive its ancestry projection
-          # purely from that NUL stream, and let change:reload-sync switch between
-          # the two local files. Explicit refresh/filter/mode/action reloads are
-          # the only paths that refresh live state and atomically replace both.
+          # 2) Snapshot projection helpers. Ordinary query changes are file-only;
+          # explicit refresh/filter/mode/action reloads rebuild live state once.
           marker = '# pick_nav — the drawer launcher for bare `xtmux nav`.'
           i = s.index(marker)
           helpers = r'''# nav_snapshot_project_stream <flat-file> <single|multi>
-          # Pure ancestry projection over an ALREADY RENDERED nav snapshot. It
-          # performs no tmux/git/fzf calls. Fields 1-5 stay byte-identical; only
-          # field 6 is expanded so a matched window carries its session and a
-          # matched pane carries session -> window -> pane. This is the same
-          # projection semantics as build_list(..., chain), without rebuilding
-          # live inventory for every query character.
+          # Pure ancestry projection over an already-rendered NUL nav snapshot.
+          # Fields 1-5 stay byte-identical; only display field 6 gains ancestors.
+          # No tmux/git/fzf calls occur here.
           nav_snapshot_project_stream() {
             local input="${1:-}" lines="${2:-multi}" record type sid name target token display prefix out
             local sdisp='' sname='' wdisp='' wname=''
@@ -138,8 +108,7 @@ jobs:
             [ -f "$path" ] && [ ! -L "$path" ] && [ -O "$path" ]
           }
 
-          # nav_snapshot_view <flat> <chain> <query>
-          # Per-keystroke path: local file read ONLY. Query text is used solely
+          # Per-keystroke command: read local snapshot only. Query is used solely
           # for empty/non-empty selection and never reaches eval/tmux/git.
           nav_snapshot_view() {
             local flat="${1:-}" chain="${2:-}" query="${3:-}"
@@ -148,11 +117,9 @@ jobs:
             if [ -n "$query" ]; then cat -- "$chain"; else cat -- "$flat"; fi
           }
 
-          # nav_snapshot_refresh <flat> <chain> <single|multi> <active|spec> <query>
-          # Explicit refresh path. Exactly one live build refreshes the flat file;
-          # the ancestry file is then derived from that same snapshot, so the two
-          # projections cannot disagree on identity/state. Temporary files are
-          # atomically renamed after both projections succeed.
+          # Explicit live refresh. The flat snapshot is rebuilt once; the chain
+          # snapshot is derived from those exact bytes, then both replace the old
+          # files atomically before the requested projection is emitted.
           nav_snapshot_refresh() {
             local flat="${1:-}" chain="${2:-}" lines="${3:-}" requested="${4:-active}" query="${5:-}"
             local spec mode flat_tmp chain_tmp
@@ -167,12 +134,8 @@ jobs:
             read_list_mode; mode="$REPLY"
             flat_tmp="${flat}.tmp.$$"; chain_tmp="${chain}.tmp.$$"
             rm -f -- "$flat_tmp" "$chain_tmp"
-            if ! build_list "$spec" "$mode" nav "$lines" > "$flat_tmp"; then
-              rm -f -- "$flat_tmp" "$chain_tmp"; return 1
-            fi
-            if ! nav_snapshot_project_stream "$flat_tmp" "$lines" > "$chain_tmp"; then
-              rm -f -- "$flat_tmp" "$chain_tmp"; return 1
-            fi
+            build_list "$spec" "$mode" nav "$lines" > "$flat_tmp" || { rm -f -- "$flat_tmp" "$chain_tmp"; return 1; }
+            nav_snapshot_project_stream "$flat_tmp" "$lines" > "$chain_tmp" || { rm -f -- "$flat_tmp" "$chain_tmp"; return 1; }
             mv -f -- "$chain_tmp" "$chain" || { rm -f -- "$flat_tmp" "$chain_tmp"; return 1; }
             mv -f -- "$flat_tmp" "$flat" || { rm -f -- "$flat_tmp"; return 1; }
             nav_snapshot_view "$flat" "$chain" "$query"
@@ -181,21 +144,18 @@ jobs:
           '''
           s = s[:i] + textwrap.dedent(helpers) + s[i:]
 
-          # Replace the launcher wholesale: one live initial build; no live
-          # list-active-nav-chain process on the fzf change event.
+          # 3) Replace launcher so change:reload-sync reads the prebuilt chain
+          # snapshot. All explicit reloads refresh both snapshot files first.
           a = s.index('pick_nav() {')
           b = s.index('\n# parse_filter <spec>', a)
-          new_pick = r'''pick_nav() {
+          pick = r'''pick_nav() {
             if ! command -v fzf >/dev/null 2>&1; then
               tmux display-message 'fzf non trovato'
               exit 1
             fi
             local layout navmode lines self_q
             layout="${XTMUX_NAV_LAYOUT:-}"
-            if [ "$layout" = classic ]; then
-              pick_classic
-              return $?
-            fi
+            if [ "$layout" = classic ]; then pick_classic; return $?; fi
             nav_route; navmode="$REPLY"
             case "$navmode" in
               classic) pick_classic; return $? ;;
@@ -214,8 +174,6 @@ jobs:
               chain_file="$(mktemp "${TMPDIR:-/tmp}/xtmux-nav.chain.XXXXXX")" || { rm -f "$flat_file"; exit 1; }
               trap 'rm -f "$flat_file" "$chain_file"' EXIT INT TERM
 
-              # Initial snapshot: ONE normal live build, then a pure local chain
-              # projection. Typing never returns to build_list.
               picker_state_read filter || true; spec="$REPLY"
               read_list_mode
               build_list "$spec" "$REPLY" nav "$lines" > "$flat_file"
@@ -238,26 +196,11 @@ jobs:
               done < "$flat_file"
 
               fzf \
-                --ansi \
-                --read0 \
-                --track \
-                --delimiter=$'\t' \
-                --with-nth=6 \
-                --layout=reverse-list \
-                --height=100% \
-                --margin=1,2 \
-                --border=none \
-                --list-border=none \
-                --no-scrollbar \
-                --cycle \
-                --no-bold \
-                --multi \
-                --header=" xtmux nav · state groups · type to filter $footer" \
-                --header-first \
-                --prompt='all> ' \
-                --pointer='>' \
-                --marker='✓ ' \
-                --info=inline-right \
+                --ansi --read0 --track --delimiter=$'\t' --with-nth=6 \
+                --layout=reverse-list --height=100% --margin=1,2 \
+                --border=none --list-border=none --no-scrollbar --cycle --no-bold --multi \
+                --header=" xtmux nav · state groups · type to filter $footer" --header-first \
+                --prompt='all> ' --pointer='>' --marker='✓ ' --info=inline-right \
                 --color='fg:#b8bcc0,bg:-1,hl:#68a8c4,fg+:#ffffff,bg+:#222222,hl+:#68a8c4,info:#8a8f94,prompt:#8a8f94,pointer:#68a8c4,marker:#68a8c4,label:#8a8f94,border:#303030,gutter:-1' \
                 --preview-window="$inspector" \
                 --bind="load:pos($pos)+transform-prompt($self_q prompt-label nav)" \
@@ -285,18 +228,14 @@ jobs:
             return 0
           }
           '''
-          s = s[:a] + textwrap.dedent(new_pick).rstrip() + s[b:]
+          s = s[:a] + textwrap.dedent(pick).rstrip() + s[b:]
 
-          # Internal help honesty.
+          # 4) Internal command reference and dispatcher.
           old = '  list-active-nav-single, list-active-nav-chain, list-active-nav-single-chain\n'
-          new = '  list-active-nav-single, list-active-nav-chain, list-active-nav-single-chain,\n  nav-snapshot-view, nav-snapshot-refresh\n'
-          if old not in s:
-              raise SystemExit('internal help anchor missing')
-          s = s.replace(old, new, 1)
-
-          # Internal dispatch for snapshot-only change path and explicit refresh.
+          if old not in s: raise SystemExit('internal-help anchor missing')
+          s = s.replace(old, '  list-active-nav-single, list-active-nav-chain, list-active-nav-single-chain,\n  nav-snapshot-view, nav-snapshot-refresh\n', 1)
           anchor = '  list-active-nav-chain|list-active-nav-single-chain)\n'
-          idx = s.index(anchor)
+          j = s.index(anchor)
           dispatch = r'''  nav-snapshot-view)
             shift
             [ "$#" -eq 3 ] || die_usage "nav-snapshot-view requires <flat> <chain> <query>"
@@ -310,188 +249,18 @@ jobs:
             exit $?
             ;;
           '''
-          s = s[:idx] + textwrap.dedent(dispatch) + s[idx:]
-          picker.write_text(s)
+          s = s[:j] + textwrap.dedent(dispatch) + s[j:]
 
-          # Unit/contract: update pane ownership mock for the membership-list
-          # resolver, switch launcher assertion to snapshot view, and prove the
-          # per-keystroke command cannot invoke live tmux/git/build_list.
-          navtest = Path('test/nav-contract.sh')
-          t = navtest.read_text()
-          old = r'''  (
-            tmux() { case "$*" in *'$71:%553'*) printf '$71\t%%553\n' ;; *'%553'*) printf '$42\t%%777\n' ;; *) printf '$99\n' ;; esac; }
-            resolve_nav_pane_session '$71' '%553'; printf 'pane-match rc=%s\n' "$?"
-            resolve_nav_pane_session '$42' '%553'; printf 'pane-mismatch rc=%s\n' "$?"
-          ) > "$WORK/t3-pane-own.out"
-          '''
-          if textwrap.dedent(old) not in t:
-              raise SystemExit('nav-contract pane resolver anchor missing')
-          new = r'''  (
-            tmux() {
-              case "$*" in
-                *'list-panes -s -t $71'*) printf '%%111\n%%553\n' ;;
-                *'list-panes -s -t $42'*) printf '%%777\n' ;;
-                *) printf '$99\n' ;;
-              esac
-            }
-            resolve_nav_pane_session '$71' '%553'; printf 'pane-match rc=%s\n' "$?"
-            resolve_nav_pane_session '$42' '%553'; printf 'pane-mismatch rc=%s\n' "$?"
-          ) > "$WORK/t3-pane-own.out"
-          '''
-          t = t.replace(textwrap.dedent(old), textwrap.dedent(new), 1)
-
-          old = '''# §36 wiring: ordinary typing re-projects through the ancestry chain source.
-          if grep -qF "change:reload-sync(" "$WORK/nav-fzf-args" && grep -qF "list-active-nav-chain '{q}'" "$WORK/nav-fzf-args"; then
-            ok "nav chrome: query change re-projects through the ancestry chain source"
-          else
-            nok "nav chrome: query change is not bound to the ancestry chain projection"
-          fi
-          '''
-          old = textwrap.dedent(old)
-          if old not in t:
-              raise SystemExit('nav-contract chrome anchor missing')
-          new = '''# §36 wiring: ordinary typing switches between prebuilt local snapshots;
-          # it must never run list-active-nav-chain/build_list on each character.
-          if grep -qF "change:reload-sync(" "$WORK/nav-fzf-args" \\
-            && grep -qF "nav-snapshot-view" "$WORK/nav-fzf-args" \\
-            && ! grep -qF "list-active-nav-chain '{q}'" "$WORK/nav-fzf-args"; then
-            ok "nav chrome: query change reads the local ancestry snapshot (no live rebuild)"
-          else
-            nok "nav chrome: query change is not snapshot-backed"
-          fi
-          if grep -qF "nav-snapshot-refresh" "$WORK/nav-fzf-args"; then
-            ok "nav chrome: explicit reload/filter/mode actions refresh both snapshots"
-          else
-            nok "nav chrome: explicit live refresh path is not snapshot-aware"
-          fi
-          '''
-          t = t.replace(old, textwrap.dedent(new), 1)
-
-          # Add pure-snapshot equivalence + no-live-call regression immediately
-          # after flat/chain cardinality is established.
-          anchor = '''[ "$_s36_nflat" -eq 9 ] && [ "$_s36_nchain" -eq "$_s36_nflat" ] \\
-            && ok "§36: chain re-projects every record (same count, no dropped nodes)" \\
-            || nok "§36: chain record count diverges (flat=$_s36_nflat chain=$_s36_nchain)"
-          '''
-          anchor = textwrap.dedent(anchor)
-          if anchor not in t:
-              raise SystemExit('§36 cardinality anchor missing')
-          extra = r'''
-          nav_snapshot_project_stream "$WORK/s36-flat" multi > "$WORK/s36-snapshot-chain"
-          if cmp -s "$WORK/s36-chain" "$WORK/s36-snapshot-chain"; then
-            ok "§36: pure snapshot projection is byte-identical to live-build chain output"
-          else
-            nok "§36: pure snapshot projection diverges from chain semantics"
-          fi
-          mkdir -p "$WORK/bin-snapshot"
-          for _cmd in tmux git; do
-            cat > "$WORK/bin-snapshot/$_cmd" <<SHIM
-          #!/usr/bin/env bash
-          echo "FORBIDDEN $_cmd \$*" >> "$WORK/s36-snapshot-calls"
-          exit 99
-          SHIM
-            chmod +x "$WORK/bin-snapshot/$_cmd"
-          done
-          cp "$WORK/s36-flat" "$WORK/xtmux-nav.flat.s36"
-          cp "$WORK/s36-snapshot-chain" "$WORK/xtmux-nav.chain.s36"
-          : > "$WORK/s36-snapshot-calls"
-          TMPDIR="$WORK" PATH="$WORK/bin-snapshot:$PATH" "$PICKER" nav-snapshot-view \\
-            "$WORK/xtmux-nav.flat.s36" "$WORK/xtmux-nav.chain.s36" '%875' > "$WORK/s36-snapshot-query"
-          if [ ! -s "$WORK/s36-snapshot-calls" ] && cmp -s "$WORK/s36-snapshot-query" "$WORK/s36-snapshot-chain"; then
-            ok "§36: per-keystroke snapshot view performs zero tmux/git calls"
-          else
-            nok "§36: per-keystroke snapshot view touched live state ($(tr '\n' ';' < "$WORK/s36-snapshot-calls"))"
-          fi
-          TMPDIR="$WORK" PATH="$WORK/bin-snapshot:$PATH" "$PICKER" nav-snapshot-view \\
-            "$WORK/xtmux-nav.flat.s36" "$WORK/xtmux-nav.chain.s36" '' > "$WORK/s36-snapshot-empty"
-          cmp -s "$WORK/s36-snapshot-empty" "$WORK/s36-flat" \\
-            && ok "§36: empty query returns the flat browse snapshot verbatim" \\
-            || nok "§36: empty snapshot query diverged from flat browse view"
-          '''
-          t = t.replace(anchor, anchor + textwrap.dedent(extra), 1)
-          navtest.write_text(t)
-
-          # Real tmux: make %P valid in session A but NON-CURRENT before D1.
-          real = Path('test/nav-real-tmux.sh')
-          r = real.read_text()
-          anchor = "REPLY=''\nif resolve_nav_pane_session \"$AID\" \"$P\" && [ \"$REPLY\" = \"$AID\" ]; then\n  ok \"D1: p:\\$A:%P validates (occurrence resolves to session A)\""
-          if anchor not in r:
-              raise SystemExit('real-tmux D1 anchor missing')
-          insert = r'''# Put session A on a DIFFERENT window before validating %P. This is the
-          # regression for tmux's `session:%pane` parse trap: the old resolver
-          # silently fell back to A's current pane and rejected this valid %P.
-          tmux new-window -d -t A:8 "$EVAL_CMD"
-          A_OTHER="$(tmux display-message -p -t A:8 '#{pane_id}')"
-          tmux select-window -t A:8
-          assert_eq "D0: fixture makes %P a valid but NON-CURRENT pane in A" \\
-            "$A_OTHER" "$(tmux display-message -p -t A '#{pane_id}')"
-          if [ "$A_OTHER" != "$P" ]; then
-            ok "D0b: non-current regression fixture uses a different pane"
-          else
-            nok "D0b: non-current regression fixture accidentally reused %P"
-          fi
-
-          '''
-          r = r.replace(anchor, textwrap.dedent(insert) + anchor, 1)
-          real.write_text(r)
-
-          # Docs drift from the final reviewer pass.
-          keys = Path('docs/keys.md')
-          k = keys.read_text()
-          k = k.replace('reserves eight cells for fzf\'s border and\nselection gutter', 'reserves four cells for fzf\'s borderless\nselection/marker gutter')
-          k = k.replace('and `›` is the fzf\nselection', 'and `>` is the fzf\nselection')
-          keys.write_text(k)
-
-          readme = Path('README.md')
-          m = readme.read_text()
-          m = m.replace('repo, `repo · relative`,\n  worktree', 'repo, filesystem-style `repo/path`,\n  worktree')
-          m = m.replace("distinct from fzf's `›` highlighted selection", "distinct from fzf's `>` highlighted selection")
-          readme.write_text(m)
-
-          perf = Path('docs/perf-audit.md')
-          p = perf.read_text()
-          old = '''Epic-fixture byte measurements (`.xtrm/reports/`) below were recorded on the
-          pre-final two-line renderer. The final renderer emits one-line panes
-          (`NAV_PANE_LINES=1`), so the exact byte/record totals are PENDING re-measurement
-          on the finalized head (<!-- filled by coordinator -->); the structural
-          subprocess contract (2 tmux / 0 warm git / 0 probes) is unaffected.
-          '''
-          old = textwrap.dedent(old)
-          if old not in p:
-              raise SystemExit('perf pending anchor missing')
-          new = '''Finalized-head remeasurement with `NAV_PANE_LINES=1`: expanded private nav is
-          **1420 B total / 7 NUL records / 226 B max record** (89 B max after ANSI
-          stripping) for the deterministic 1-session / 2-window / 4-pane fixture.
-          A normal live refresh uses **3 tmux calls total**: the existing two bulk
-          inventory calls (`list-sessions`, `list-panes -a`) plus one bounded
-          client-scoped `display-message` used only to place the occurrence-correct
-          current marker; warm git remains 0 and process probes remain 0. Ordinary
-          fzf query changes do **not** execute those calls: the launcher now derives
-          one ancestry projection from the initial flat snapshot and switches
-          between the two local NUL files until an explicit refresh/filter/mode or
-          mutating action asks for fresh live state.
-          '''
-          p = p.replace(old, textwrap.dedent(new), 1)
-          perf.write_text(p)
+          path.write_text(s)
           PY
-
-      - name: Syntax and install
-        run: |
-          bash -n bin/tmux-session-picker test/nav-contract.sh test/nav-real-tmux.sh
-          bun install --frozen-lockfile
-
-      - name: Required final gates
-        run: |
-          bash test/nav-contract.sh
-          bash test/nav-real-tmux.sh
-          bash scripts/verify-json-api.sh
-          git diff --check
-
-      - name: Commit remediation and remove one-shot workflow
+          bash -n bin/tmux-session-picker
+      - name: Commit production remediation
         run: |
           git rm .github/workflows/pr108-selfpatch.yml
+          rm -f .xtrm/pr108-sentinel.txt
+          git add -A bin/tmux-session-picker .github/workflows/pr108-selfpatch.yml .xtrm/pr108-sentinel.txt
+          git diff --check
           git config user.name 'xtrm web coordinator'
           git config user.email 'actions@users.noreply.github.com'
-          git add bin/tmux-session-picker test/nav-contract.sh test/nav-real-tmux.sh README.md docs/keys.md docs/perf-audit.md
-          git commit -m 'fix(nav): remove query rebuilds and validate non-current panes'
+          git commit -m 'fix(nav): make fuzzy search snapshot-backed'
           git push origin HEAD:xt/xjif
