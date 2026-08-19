@@ -1,0 +1,201 @@
+{
+  "bd_version": "bd version 1.2.1 (634cbbc4b: HEAD@634cbbc4bc58)",
+  "diagnostics": {
+    "derived_dotted_parent_links": [
+      {
+        "child": "xtmux-d0a.22",
+        "parent": "xtmux-d0a"
+      }
+    ],
+    "unknown_parent_refs": [],
+    "unpackaged_selected_ids": []
+  },
+  "generated_at": "2026-08-19T00:38:01.300052+00:00",
+  "packages": [
+    {
+      "content_sha256": "38a10f08e5e9d69f082e5ba138513b1e8f4d0647bf5566e4a010aaa1fdd2e9ee",
+      "context_only_issue_count": 0,
+      "file": "work-packages/xtmux-0bz__integrate-xtmux-monitor-agent-wakes-with-claude-code-task-notification-pipeline.json",
+      "issue_count": 1,
+      "root_id": "xtmux-0bz",
+      "selected_issue_count": 1,
+      "title": "integrate xtmux monitor-agent wakes with Claude Code task-notification pipeline"
+    },
+    {
+      "content_sha256": "b143a62b6a6c17432f241e47ab9bc0565c5ede9b813898f529620ad8c5436dac",
+      "context_only_issue_count": 0,
+      "file": "work-packages/xtmux-0gf__audit-message-send-send-keys-safe-send-pointer-for-position-0-wrapping-core-launcher-redesign-pr.json",
+      "issue_count": 1,
+      "root_id": "xtmux-0gf",
+      "selected_issue_count": 1,
+      "title": "audit message-send / send-keys / safe-send-pointer for position-0 wrapping (core launcher-redesign prereq)"
+    },
+    {
+      "content_sha256": "92ce8a2f62751db1704fcc18b64ab6f3e6786be8569a4ac20d47edd883a2f4d7",
+      "context_only_issue_count": 0,
+      "file": "work-packages/xtmux-1fa__installer-tests-must-never-mutate-real-xtrm-global-state.json",
+      "issue_count": 1,
+      "root_id": "xtmux-1fa",
+      "selected_issue_count": 1,
+      "title": "Installer tests must never mutate real ~/.xtrm global state"
+    },
+    {
+      "content_sha256": "b3e1b786b8dc1be55e2ccbd00c8306e2f5a10e0e40a01bf32ed6e368b8522a06",
+      "context_only_issue_count": 0,
+      "file": "work-packages/xtmux-30f__topology-json-omits-host-tmux-server-id-which-xtrm-xtmux-topology-v1-requires.json",
+      "issue_count": 1,
+      "root_id": "xtmux-30f",
+      "selected_issue_count": 1,
+      "title": "topology --json omits host.tmux_server_id, which xtrm.xtmux.topology.v1 requires"
+    },
+    {
+      "content_sha256": "2e368ed149d70a2d1456f29ce16a400ec93eb5ac41a786cdaf85b6bbb5e37f53",
+      "context_only_issue_count": 0,
+      "file": "work-packages/xtmux-5hv__xtmux-view-transcript-navigation-list-turn-cycle.json",
+      "issue_count": 1,
+      "root_id": "xtmux-5hv",
+      "selected_issue_count": 1,
+      "title": "xtmux-view transcript navigation: --list / --turn / --cycle"
+    },
+    {
+      "content_sha256": "669f6d700fc5c8b76a18899d3d193db93a1b64082e59d6dbc04c3c4760f98494",
+      "context_only_issue_count": 1,
+      "file": "work-packages/xtmux-5j3__epic-release-preparation-changelog-docs-publish-install.json",
+      "issue_count": 2,
+      "root_id": "xtmux-5j3",
+      "selected_issue_count": 1,
+      "title": "[epic] Release preparation: changelog, docs, publish/install"
+    },
+    {
+      "content_sha256": "ebfe15468fe1b5fcd3ed93ce5f232a75293e7d56ba14ff3f225c357f40722d81",
+      "context_only_issue_count": 0,
+      "file": "work-packages/xtmux-71y__topology-json-agent-object-omits-role-worktree-branch-parent-pane-published-by-core-pr-465.json",
+      "issue_count": 1,
+      "root_id": "xtmux-71y",
+      "selected_issue_count": 1,
+      "title": "topology --json agent object omits role/worktree/branch/parent_pane published by Core PR #465"
+    },
+    {
+      "content_sha256": "c57c349624bd939b6792c9fb0cc92e67e47edf8d635743e5cf567fd5a699b150",
+      "context_only_issue_count": 0,
+      "file": "work-packages/xtmux-amn__session-handoff-2026-07-03-pick-up-next-priorities.json",
+      "issue_count": 1,
+      "root_id": "xtmux-amn",
+      "selected_issue_count": 1,
+      "title": "Session handoff 2026-07-03: pick up next priorities"
+    },
+    {
+      "content_sha256": "980981ff3a7f0672a8db1aa95acf975fc1dcd6884df78ef2a759e2337a669e22",
+      "context_only_issue_count": 0,
+      "file": "work-packages/xtmux-bbc__extend-serena-orphan-killer-to-cover-bun-sp-run-executor-debugger-orphans.json",
+      "issue_count": 1,
+      "root_id": "xtmux-bbc",
+      "selected_issue_count": 1,
+      "title": "extend serena_orphan_killer to cover 'bun sp run executor/debugger' orphans"
+    },
+    {
+      "content_sha256": "752cd6fc4fc9770894314ddd4db6daf1a72eefbf59b8210616a4651fdf8f5b14",
+      "context_only_issue_count": 0,
+      "file": "work-packages/xtmux-ck7__stream-canonical-beads-lifecycle-events-host-wide.json",
+      "issue_count": 1,
+      "root_id": "xtmux-ck7",
+      "selected_issue_count": 1,
+      "title": "Stream canonical Beads lifecycle events host-wide"
+    },
+    {
+      "content_sha256": "e8944f1328ab9596660a1ed329e15a3d52098c2f93cdb091259ed9c505bca3fd",
+      "context_only_issue_count": 0,
+      "file": "work-packages/xtmux-cku__stacked-prs-are-auto-closed-unrecoverably-when-their-base-branch-is-squash-merged.json",
+      "issue_count": 1,
+      "root_id": "xtmux-cku",
+      "selected_issue_count": 1,
+      "title": "Stacked PRs are auto-closed unrecoverably when their base branch is squash-merged"
+    },
+    {
+      "content_sha256": "9351ff12a1244e0701ecb88c6e5d3cde3f2343917065c56e277ed1d41cb6b736",
+      "context_only_issue_count": 0,
+      "file": "work-packages/xtmux-ivw__pr-108-remediation-occurrence-aware-pane-validation-ancestry-preserving-fuzzy-search.json",
+      "issue_count": 1,
+      "root_id": "xtmux-ivw",
+      "selected_issue_count": 1,
+      "title": "PR #108 remediation: occurrence-aware pane validation + ancestry-preserving fuzzy search"
+    },
+    {
+      "content_sha256": "b2e196dd29347d448ed422cc70b36b6fa07963d8fe2ecbb72b0c2b996e546bec",
+      "context_only_issue_count": 0,
+      "file": "work-packages/xtmux-kua__flaky-fresh-db-audit-never-leaks-a-raw-sqlite-error-fails-as-a-5s-timeout-on-a-busy-tmux-server.json",
+      "issue_count": 1,
+      "root_id": "xtmux-kua",
+      "selected_issue_count": 1,
+      "title": "Flaky: fresh-db 'audit never leaks a raw SQLite error' fails as a 5s TIMEOUT on a busy tmux server"
+    },
+    {
+      "content_sha256": "8bec2c052d686a2ced3a8b033018541c8b089d0f262bc6a6a8a06599e46709bd",
+      "context_only_issue_count": 0,
+      "file": "work-packages/xtmux-lg8__infra-sp-executor-returns-empty-turns-repo-wide-since-12-43-0-tool-calls-0-output-no-substantive.json",
+      "issue_count": 1,
+      "root_id": "xtmux-lg8",
+      "selected_issue_count": 1,
+      "title": "[infra] sp executor returns empty turns repo-wide since ~12:43 (0 tool calls, 0 output, no_substantive_changes)"
+    },
+    {
+      "content_sha256": "681a49a77b4cfcdeded1ebebc7df3f0f93ea23ec1b7d092e27a47e2fd04783a2",
+      "context_only_issue_count": 1,
+      "file": "work-packages/xtmux-r6g__post-3ua-polish-sprint-help-surfaces-npm-gh-release-hygiene-xtmux-monitor-ux-sp-tui-planning-ski.json",
+      "issue_count": 2,
+      "root_id": "xtmux-r6g",
+      "selected_issue_count": 1,
+      "title": "Post-3ua polish sprint: help surfaces, npm/GH release hygiene, xtmux monitor UX, sp TUI, planning skill, memory-processor"
+    },
+    {
+      "content_sha256": "efd0d09caa3b4e32cc8d7915384b8c68ff57ca516c6efa3bd1b15276e7def111",
+      "context_only_issue_count": 0,
+      "file": "work-packages/xtmux-rib__xtmux-picker-v0-2-actionable-control-surface-specialist-awareness.json",
+      "issue_count": 4,
+      "root_id": "xtmux-rib",
+      "selected_issue_count": 4,
+      "title": "xtmux picker v0.2: actionable control surface + specialist awareness"
+    },
+    {
+      "content_sha256": "f8fedc37afd9f25ef47fc804a34002773ff575a6b4b45f4aac979cb71d1cb998",
+      "context_only_issue_count": 0,
+      "file": "work-packages/xtmux-ro1__publish-jaggerxtrm-xtmux-to-npm-when-registry-consumers-are-wanted.json",
+      "issue_count": 1,
+      "root_id": "xtmux-ro1",
+      "selected_issue_count": 1,
+      "title": "Publish @jaggerxtrm/xtmux to npm when registry consumers are wanted"
+    },
+    {
+      "content_sha256": "5073ecb2de504737cd0bf38699e8c6b3d9fa252a2e8a20d250d7859ff1a790af",
+      "context_only_issue_count": 0,
+      "file": "work-packages/xtmux-rs3__sp-run-background-from-a-fresh-core-worktree-cwd-silently-fails-no-job-registered-no-error.json",
+      "issue_count": 1,
+      "root_id": "xtmux-rs3",
+      "selected_issue_count": 1,
+      "title": "sp run --background from a fresh core worktree cwd silently fails (no job registered, no error)"
+    },
+    {
+      "content_sha256": "6f08658b031369599426f3120d5b6844a373c3073a1cd7d500b19cc284e0f7e3",
+      "context_only_issue_count": 0,
+      "file": "work-packages/xtmux-s96__xt-codex-parity-xtmux-runtime-adapter-companion.json",
+      "issue_count": 3,
+      "root_id": "xtmux-s96",
+      "selected_issue_count": 3,
+      "title": "XT Codex parity — xtmux runtime adapter companion"
+    }
+  ],
+  "repository": "Jaggerxtrm/xtmux",
+  "schema_version": "xtrm.board-audit.snapshot-manifest.v1",
+  "selection": {
+    "context_only_record_count": 2,
+    "requested_id": null,
+    "scope": "open",
+    "selected_record_count": 24
+  },
+  "source": {
+    "command": "bd export --all",
+    "raw_file": "raw-beads.jsonl",
+    "raw_record_count": 468,
+    "raw_sha256": "9253139e896590aba60ea625caf15bc9917ff23bd257cbeb1a6519de7a6be540"
+  }
+}

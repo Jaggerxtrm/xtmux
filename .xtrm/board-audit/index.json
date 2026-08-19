@@ -1,0 +1,394 @@
+{
+  "open_issues": {
+    "xtmux-0bz": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-0bz.json",
+      "root_id": "xtmux-0bz",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "3bc4125c123bb383e51cfb78a8e0e14b8091b5af5036844341e3e05e701bf61b",
+      "state": "open"
+    },
+    "xtmux-0gf": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-0gf.json",
+      "root_id": "xtmux-0gf",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "f897cd58a79a71f4fd5f16b731e06306c2d26609243bdec43bb58bb63c48b8a5",
+      "state": "open"
+    },
+    "xtmux-1fa": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-1fa.json",
+      "root_id": "xtmux-1fa",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "1570b525179c2d9e4295cc07367286328ee30d6c33f28aa696582317a009a1a0",
+      "state": "open"
+    },
+    "xtmux-30f": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-30f.json",
+      "root_id": "xtmux-30f",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "6954a3e3dc259738e5132d22c540f32d9a7ba80d4b3ce95dc92f908dc63f3660",
+      "state": "open"
+    },
+    "xtmux-5hv": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-5hv.json",
+      "root_id": "xtmux-5hv",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "8ba7b7e09e541bda91772d47d786898d26cb59f6cb98c5004ae1c9cf94ad158e",
+      "state": "open"
+    },
+    "xtmux-5j3.7": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-5j3.7.json",
+      "root_id": "xtmux-5j3",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "4121a17f2d8be4e550fa49e530d90f089c95421abb338175bbc963d751e7207d",
+      "state": "open"
+    },
+    "xtmux-71y": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-71y.json",
+      "root_id": "xtmux-71y",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "01aa352ed9808c8cf5e418926069889dce4b9c207239fbdd9c8b296c86d66b64",
+      "state": "open"
+    },
+    "xtmux-amn": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-amn.json",
+      "root_id": "xtmux-amn",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "7348203c9fd742623c6372371ef51ce2e1e3a6fc0a3cb44126ccb60ae39b3395",
+      "state": "open"
+    },
+    "xtmux-bbc": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-bbc.json",
+      "root_id": "xtmux-bbc",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "a027d2d5bb4dbdd44e9da0afa5478ae5e5b3d03e593b750c4ac3f194f52c8469",
+      "state": "open"
+    },
+    "xtmux-ck7": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-ck7.json",
+      "root_id": "xtmux-ck7",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "4f704e7066b5bf3a824633f51a3b784c26c8010f28822794dfdd6b8904bbac51",
+      "state": "open"
+    },
+    "xtmux-cku": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-cku.json",
+      "root_id": "xtmux-cku",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "353c544b10b54a235dfd5219835b71a7272c6e574283c87cfe4cb01cf98ccf36",
+      "state": "open"
+    },
+    "xtmux-ivw": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-ivw.json",
+      "root_id": "xtmux-ivw",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "a9d60499d7680bf14649bfa8fdaffac2fa31fbb01e503e14b9a8ee00d7b85155",
+      "state": "open"
+    },
+    "xtmux-kua": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-kua.json",
+      "root_id": "xtmux-kua",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "c3c28e5e171701fd23c5480ffb0fdb14db078d70e480f171fd799668b39748c9",
+      "state": "open"
+    },
+    "xtmux-lg8": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-lg8.json",
+      "root_id": "xtmux-lg8",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "8671bafc8a5d655fd1f498f9dd2d8bd7c5360672ae680f5fff2772c52982248b",
+      "state": "open"
+    },
+    "xtmux-r6g.8": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-r6g.8.json",
+      "root_id": "xtmux-r6g",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "f82e3c855910b757dc4f26858d2bcd433f8be9332f165518869a5314d85b1de8",
+      "state": "open"
+    },
+    "xtmux-rib": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-rib.json",
+      "root_id": "xtmux-rib",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "de51d58772bb4284bfa7848783c7e629999220e76b19faf3e356275fcf0f2892",
+      "state": "open"
+    },
+    "xtmux-rib.13": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-rib.13.json",
+      "root_id": "xtmux-rib",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "2c4fcb7d377309bafc632771c70806f7e8faa8db3d0ae46afaa7e5b44c0d0a85",
+      "state": "open"
+    },
+    "xtmux-rib.14": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-rib.14.json",
+      "root_id": "xtmux-rib",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "f96d082e134050ae3f31fcdb397693464f242877da48809bed15c56f6912fb20",
+      "state": "open"
+    },
+    "xtmux-rib.15": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-rib.15.json",
+      "root_id": "xtmux-rib",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "4605add57e9c78fa3b20362da96b2ba6b4fa113b8c00c71c76aaeae88f684950",
+      "state": "open"
+    },
+    "xtmux-ro1": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-ro1.json",
+      "root_id": "xtmux-ro1",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "1f0b1d9ff1fba49422ee9573f75ef8cfe9e3c2480c60212e2419d82f1247a638",
+      "state": "open"
+    },
+    "xtmux-rs3": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-rs3.json",
+      "root_id": "xtmux-rs3",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "8ca1d99ecf38b5869aadbe5b9aaad871b37a2a0696baa9cdf2a6532a4d84f275",
+      "state": "open"
+    },
+    "xtmux-s96": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-s96.json",
+      "root_id": "xtmux-s96",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "dde510fe79cbf7b6133998e04ecccea6fc78f4a712823e4c1089ad48708faa3a",
+      "state": "open"
+    },
+    "xtmux-s96.5": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-s96.5.json",
+      "root_id": "xtmux-s96",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "d90628c6064cee636d16d974b51c7cbc7058e46b4d38f18647b23a2c8658a560",
+      "state": "open"
+    },
+    "xtmux-s96.7": {
+      "file": "snapshots/0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a/issues/xtmux-s96.7.json",
+      "root_id": "xtmux-s96",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "source_sha256": "4f1fa29e3d780af59ed0435483c8ce07da270898fa0865716188010800bec0cd",
+      "state": "open"
+    }
+  },
+  "packages": {
+    "xtmux-0bz": {
+      "base_package_sha256": "38a10f08e5e9d69f082e5ba138513b1e8f4d0647bf5566e4a010aaa1fdd2e9ee",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-0bz__integrate-xtmux-monitor-agent-wakes-with-claude-code-task-notification-pipeline.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-0bz__integrate-xtmux-monitor-agent-wakes-with-claude-code-task-notification-pipeline.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    },
+    "xtmux-0gf": {
+      "base_package_sha256": "b143a62b6a6c17432f241e47ab9bc0565c5ede9b813898f529620ad8c5436dac",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-0gf__audit-message-send-send-keys-safe-send-pointer-for-position-0-wrapping-core-launcher-redesign-pr.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-0gf__audit-message-send-send-keys-safe-send-pointer-for-position-0-wrapping-core-launcher-redesign-pr.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    },
+    "xtmux-1fa": {
+      "base_package_sha256": "92ce8a2f62751db1704fcc18b64ab6f3e6786be8569a4ac20d47edd883a2f4d7",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-1fa__installer-tests-must-never-mutate-real-xtrm-global-state.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-1fa__installer-tests-must-never-mutate-real-xtrm-global-state.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    },
+    "xtmux-30f": {
+      "base_package_sha256": "b3e1b786b8dc1be55e2ccbd00c8306e2f5a10e0e40a01bf32ed6e368b8522a06",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-30f__topology-json-omits-host-tmux-server-id-which-xtrm-xtmux-topology-v1-requires.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-30f__topology-json-omits-host-tmux-server-id-which-xtrm-xtmux-topology-v1-requires.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    },
+    "xtmux-5hv": {
+      "base_package_sha256": "2e368ed149d70a2d1456f29ce16a400ec93eb5ac41a786cdaf85b6bbb5e37f53",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-5hv__xtmux-view-transcript-navigation-list-turn-cycle.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-5hv__xtmux-view-transcript-navigation-list-turn-cycle.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    },
+    "xtmux-5j3": {
+      "base_package_sha256": "669f6d700fc5c8b76a18899d3d193db93a1b64082e59d6dbc04c3c4760f98494",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-5j3__epic-release-preparation-changelog-docs-publish-install.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-5j3__epic-release-preparation-changelog-docs-publish-install.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    },
+    "xtmux-71y": {
+      "base_package_sha256": "ebfe15468fe1b5fcd3ed93ce5f232a75293e7d56ba14ff3f225c357f40722d81",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-71y__topology-json-agent-object-omits-role-worktree-branch-parent-pane-published-by-core-pr-465.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-71y__topology-json-agent-object-omits-role-worktree-branch-parent-pane-published-by-core-pr-465.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    },
+    "xtmux-amn": {
+      "base_package_sha256": "c57c349624bd939b6792c9fb0cc92e67e47edf8d635743e5cf567fd5a699b150",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-amn__session-handoff-2026-07-03-pick-up-next-priorities.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-amn__session-handoff-2026-07-03-pick-up-next-priorities.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    },
+    "xtmux-bbc": {
+      "base_package_sha256": "980981ff3a7f0672a8db1aa95acf975fc1dcd6884df78ef2a759e2337a669e22",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-bbc__extend-serena-orphan-killer-to-cover-bun-sp-run-executor-debugger-orphans.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-bbc__extend-serena-orphan-killer-to-cover-bun-sp-run-executor-debugger-orphans.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    },
+    "xtmux-ck7": {
+      "base_package_sha256": "752cd6fc4fc9770894314ddd4db6daf1a72eefbf59b8210616a4651fdf8f5b14",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-ck7__stream-canonical-beads-lifecycle-events-host-wide.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-ck7__stream-canonical-beads-lifecycle-events-host-wide.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    },
+    "xtmux-cku": {
+      "base_package_sha256": "e8944f1328ab9596660a1ed329e15a3d52098c2f93cdb091259ed9c505bca3fd",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-cku__stacked-prs-are-auto-closed-unrecoverably-when-their-base-branch-is-squash-merged.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-cku__stacked-prs-are-auto-closed-unrecoverably-when-their-base-branch-is-squash-merged.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    },
+    "xtmux-ivw": {
+      "base_package_sha256": "9351ff12a1244e0701ecb88c6e5d3cde3f2343917065c56e277ed1d41cb6b736",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-ivw__pr-108-remediation-occurrence-aware-pane-validation-ancestry-preserving-fuzzy-search.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-ivw__pr-108-remediation-occurrence-aware-pane-validation-ancestry-preserving-fuzzy-search.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    },
+    "xtmux-kua": {
+      "base_package_sha256": "b2e196dd29347d448ed422cc70b36b6fa07963d8fe2ecbb72b0c2b996e546bec",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-kua__flaky-fresh-db-audit-never-leaks-a-raw-sqlite-error-fails-as-a-5s-timeout-on-a-busy-tmux-server.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-kua__flaky-fresh-db-audit-never-leaks-a-raw-sqlite-error-fails-as-a-5s-timeout-on-a-busy-tmux-server.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    },
+    "xtmux-lg8": {
+      "base_package_sha256": "8bec2c052d686a2ced3a8b033018541c8b089d0f262bc6a6a8a06599e46709bd",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-lg8__infra-sp-executor-returns-empty-turns-repo-wide-since-12-43-0-tool-calls-0-output-no-substantive.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-lg8__infra-sp-executor-returns-empty-turns-repo-wide-since-12-43-0-tool-calls-0-output-no-substantive.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    },
+    "xtmux-r6g": {
+      "base_package_sha256": "681a49a77b4cfcdeded1ebebc7df3f0f93ea23ec1b7d092e27a47e2fd04783a2",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-r6g__post-3ua-polish-sprint-help-surfaces-npm-gh-release-hygiene-xtmux-monitor-ux-sp-tui-planning-ski.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-r6g__post-3ua-polish-sprint-help-surfaces-npm-gh-release-hygiene-xtmux-monitor-ux-sp-tui-planning-ski.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    },
+    "xtmux-rib": {
+      "base_package_sha256": "efd0d09caa3b4e32cc8d7915384b8c68ff57ca516c6efa3bd1b15276e7def111",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-rib__xtmux-picker-v0-2-actionable-control-surface-specialist-awareness.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-rib__xtmux-picker-v0-2-actionable-control-surface-specialist-awareness.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    },
+    "xtmux-ro1": {
+      "base_package_sha256": "f8fedc37afd9f25ef47fc804a34002773ff575a6b4b45f4aac979cb71d1cb998",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-ro1__publish-jaggerxtrm-xtmux-to-npm-when-registry-consumers-are-wanted.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-ro1__publish-jaggerxtrm-xtmux-to-npm-when-registry-consumers-are-wanted.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    },
+    "xtmux-rs3": {
+      "base_package_sha256": "5073ecb2de504737cd0bf38699e8c6b3d9fa252a2e8a20d250d7859ff1a790af",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-rs3__sp-run-background-from-a-fresh-core-worktree-cwd-silently-fails-no-job-registered-no-error.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-rs3__sp-run-background-from-a-fresh-core-worktree-cwd-silently-fails-no-job-registered-no-error.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    },
+    "xtmux-s96": {
+      "base_package_sha256": "6f08658b031369599426f3120d5b6844a373c3073a1cd7d500b19cc284e0f7e3",
+      "branch": "board-audit/pr-108",
+      "editable": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-s96__xt-codex-parity-xtmux-runtime-adapter-companion.editable.json",
+      "export_dir": ".xtrm/board-audit/exports/export-20260819T023800",
+      "manifest": ".xtrm/board-audit/exports/export-20260819T023800/manifest.json",
+      "package": ".xtrm/board-audit/exports/export-20260819T023800/work-packages/xtmux-s96__xt-codex-parity-xtmux-runtime-adapter-companion.json",
+      "selected_record_count": 24,
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:38:04Z"
+    }
+  },
+  "pr_checkpoints": {
+    "108": {
+      "branch": "board-audit/pr-108",
+      "handoff": "handoffs/pr-108.json",
+      "implementation_head_sha": "25b2718f5b2d69cd791e8941e50530b3c457acc1",
+      "snapshot_id": "0d2ae90c3d1e079862a373d215d23aace5e9f3d4a9b0e0bd94938ebac1c9c65a",
+      "state": "prepared",
+      "updated_at": "2026-08-19T00:37:56Z"
+    }
+  },
+  "schema_version": "xtrm.board-audit.index.v1"
+}

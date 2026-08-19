@@ -1,0 +1,68 @@
+{
+  "content_sha256": "2e368ed149d70a2d1456f29ce16a400ec93eb5ac41a786cdaf85b6bbb5e37f53",
+  "desired_issues": {
+    "xtmux-5hv": {
+      "_type": "issue",
+      "comment_count": 0,
+      "created_at": "2026-08-15T00:29:48Z",
+      "created_by": "jaggerxtrm",
+      "dependency_count": 0,
+      "dependent_count": 0,
+      "description": "Next increment after PR #103 (v0.1). Data substrate already supports it: agent_turns is append-only per (instance_id, turn_index) with completed_at_ms; store.mjs query already orders (completed_at_ms DESC, id DESC). Proposed shape: (1) xtmux-view --list <target> -> newest N turns (index, local time, first line); (2) xtmux-view --turn <idx|N> <target> -> render a specific turn (same render path); (3) optional --cycle: popup runs a persistent loop that re-renders next/prev turn on n/p keys (requires a tiny key reader in the popup command; glow has no content-switch binding, glow dir-mode file browser is the lazy alternative). Caveats: stale/empty last_message_text (see xtmux-9yo race) -> fall back to summary or skip; duplicate rows from repeated Stop captures; ties on completed_at_ms broken by id DESC. No schema change needed.",
+      "id": "xtmux-5hv",
+      "issue_type": "task",
+      "owner": "jagger.xtrm@gmail.com",
+      "priority": 2,
+      "status": "open",
+      "title": "xtmux-view transcript navigation: --list / --turn / --cycle",
+      "updated_at": "2026-08-15T00:29:48Z"
+    }
+  },
+  "diagnostics": {
+    "dangling_relations": [],
+    "derived_dotted_parent_links": [],
+    "multiple_parent_nodes": []
+  },
+  "external_relations": [],
+  "hierarchy": {
+    "children": [],
+    "id": "xtmux-5hv"
+  },
+  "issues": {
+    "xtmux-5hv": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "comment_count": 0,
+        "created_at": "2026-08-15T00:29:48Z",
+        "created_by": "jaggerxtrm",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "description": "Next increment after PR #103 (v0.1). Data substrate already supports it: agent_turns is append-only per (instance_id, turn_index) with completed_at_ms; store.mjs query already orders (completed_at_ms DESC, id DESC). Proposed shape: (1) xtmux-view --list <target> -> newest N turns (index, local time, first line); (2) xtmux-view --turn <idx|N> <target> -> render a specific turn (same render path); (3) optional --cycle: popup runs a persistent loop that re-renders next/prev turn on n/p keys (requires a tiny key reader in the popup command; glow has no content-switch binding, glow dir-mode file browser is the lazy alternative). Caveats: stale/empty last_message_text (see xtmux-9yo race) -> fall back to summary or skip; duplicate rows from repeated Stop captures; ties on completed_at_ms broken by id DESC. No schema change needed.",
+        "id": "xtmux-5hv",
+        "issue_type": "task",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 2,
+        "status": "open",
+        "title": "xtmux-view transcript navigation: --list / --turn / --cycle",
+        "updated_at": "2026-08-15T00:29:48Z"
+      }
+    }
+  },
+  "new_comments": {},
+  "relations": [],
+  "repository": "Jaggerxtrm/xtmux",
+  "root_id": "xtmux-5hv",
+  "root_title": "xtmux-view transcript navigation: --list / --turn / --cycle",
+  "roundtrip": {
+    "base_package_sha256": "2e368ed149d70a2d1456f29ce16a400ec93eb5ac41a786cdaf85b6bbb5e37f53",
+    "base_record_sha256": {
+      "xtmux-5hv": "8ba7b7e09e541bda91772d47d786898d26cb59f6cb98c5004ae1c9cf94ad158e"
+    },
+    "edit_contract": "modify desired_issues and new_comments only; issues.*.source is immutable base state",
+    "prepared_at": "2026-08-19T00:38:02Z",
+    "schema_version": "xtrm.board-audit.roundtrip.v1"
+  },
+  "schema_version": "xtrm.board-audit.work-package.v1",
+  "scope": "open"
+}
