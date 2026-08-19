@@ -49,23 +49,19 @@ elif "oneline fallback also uses the local snapshot source" not in t:
 
 # Attention shim now serves two list-panes contracts: rich rows to attn_list,
 # bare pane ids to the action-time occurrence validator.
-needle = '''      list-panes)
-        printf '%b\\n' \\
+needle = '''  list-panes) printf '%b\\n' \\
+      '$42\\tprogram\\t%901\\tpi\\t2000\\tneeds-input\\t901\\t-' \\
+      '$42\\tprogram\\t%553\\tclaude\\t1000\\tneeds-input\\t553\\t-' \\
+      '$42\\tprogram\\t%875\\tpi\\t500\\tdone\\t875\\t-' ;;'''
+replacement = '''  list-panes)
+    case "$*" in
+      *'#{session_name}'*) printf '%b\\n' \\
           '$42\\tprogram\\t%901\\tpi\\t2000\\tneeds-input\\t901\\t-' \\
-          '$42\\tprogram\\t%553\\tclaude\\t1500\\tdone\\t553\\t-' \\
-          '$42\\tprogram\\t%875\\tclaude\\t1000\\tdone\\t875\\t-'
-        ;;'''
-replacement = '''      list-panes)
-        case "$*" in
-          *'#{session_name}'*)
-            printf '%b\\n' \\
-              '$42\\tprogram\\t%901\\tpi\\t2000\\tneeds-input\\t901\\t-' \\
-              '$42\\tprogram\\t%553\\tclaude\\t1500\\tdone\\t553\\t-' \\
-              '$42\\tprogram\\t%875\\tclaude\\t1000\\tdone\\t875\\t-'
-            ;;
-          *) printf '%s\\n' '%901' '%553' '%875' ;;
-        esac
-        ;;'''
+          '$42\\tprogram\\t%553\\tclaude\\t1000\\tneeds-input\\t553\\t-' \\
+          '$42\\tprogram\\t%875\\tpi\\t500\\tdone\\t875\\t-' ;;
+      *) printf '%s\\n' '%901' '%553' '%875' ;;
+    esac
+    ;;'''
 if needle in t:
     t = t.replace(needle, replacement, 1)
 elif "*) printf '%s\\n' '%901' '%553' '%875' ;;" not in t:
