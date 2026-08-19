@@ -2,7 +2,8 @@ name: PR108 snapshot compatibility patch
 on:
   push:
     branches: [xt/xjif]
-    paths: [.github/workflows/pr108-patch5.yml]
+    paths:
+      - .github/workflows/pr108-patch5.yml
 permissions:
   contents: write
 jobs:
