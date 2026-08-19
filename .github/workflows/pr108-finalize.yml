@@ -1,0 +1,135 @@
+name: PR108 final regression integration
+on:
+  push:
+    branches: [xt/xjif]
+    paths:
+      - .xtrm/pr108-finalize-trigger
+permissions:
+  contents: write
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: xt/xjif
+          fetch-depth: 0
+      - name: Install regression dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tmux fzf util-linux
+      - name: Integrate resolver mocks and launcher boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          picker=Path('bin/tmux-session-picker')
+          s=picker.read_text()
+
+          # The snapshot helpers are private fzf plumbing, not public command
+          # reference surface. Keep help bounded and do not advertise them.
+          help_added='''  list-active-nav-single, list-active-nav-chain, list-active-nav-single-chain,\n  nav-snapshot-view, nav-snapshot-refresh\n'''
+          help_original='''  list-active-nav-single, list-active-nav-chain, list-active-nav-single-chain\n'''
+          if help_added not in s:
+              raise SystemExit('snapshot help anchor missing')
+          s=s.replace(help_added, help_original, 1)
+
+          # Preserve the established initial-list subprocess boundary. This is
+          # one live build on open; query-change remains snapshot-only. It also
+          # keeps persisted filter/mode behavior independently testable.
+          old='''    picker_state_read filter || true; spec="$REPLY"\n    read_list_mode\n    build_list "$spec" "$REPLY" nav "$lines" > "$flat_file"\n    nav_snapshot_project_stream "$flat_file" "$lines" > "$chain_file"'''
+          new='''    # Initial open performs one ordinary live projection. Query changes below\n    # never return to live inventory; they switch between local snapshots.\n    if [ "$lines" = single ]; then\n      "$self" list-active-nav-single > "$flat_file"\n    else\n      "$self" list-active-nav > "$flat_file"\n    fi\n    nav_snapshot_project_stream "$flat_file" "$lines" > "$chain_file"'''
+          if old not in s:
+              raise SystemExit('initial live projection anchor missing')
+          s=s.replace(old,new,1)
+          s=s.replace('then atomically replace both files before output.', 'then replace both temp-backed files before output.', 1)
+          picker.write_text(s)
+
+          test=Path('test/nav-contract.sh')
+          t=test.read_text()
+
+          # Oneline launcher must use the same snapshot-only query source.
+          old='''if grep -qF "list-active-nav-single-chain '{q}'" "$WORK/nav-fzf-args-oneline"; then\n  ok "nav chrome: oneline fallback binds its own single-line chain source"\nelse\n  nok "nav chrome: oneline fallback misses its single-line chain source"\nfi'''
+          new='''if grep -qF "nav-snapshot-view" "$WORK/nav-fzf-args-oneline" \\
+  && ! grep -qF "list-active-nav-single-chain '{q}'" "$WORK/nav-fzf-args-oneline"; then\n  ok "nav chrome: oneline fallback also uses the local snapshot source"\nelse\n  nok "nav chrome: oneline fallback is not snapshot-backed"\nfi'''
+          if old not in t:
+              raise SystemExit('oneline chain assertion anchor missing')
+          t=t.replace(old,new,1)
+
+          # Attention shim serves two list-panes contracts now: attention's rich
+          # bulk format and action-time exact pane membership.
+          a=t.index('cat > "$WORK/bin-attn/tmux"')
+          lp=t.index('  list-panes)', a)
+          sh=t.index('  show)', lp)
+          old=t[lp:sh]
+          if '#{session_name}' not in old and 'program' not in old:
+              raise SystemExit('bin-attn list-panes block mismatch')
+          rich='''  list-panes)\n    case "$*" in\n      *'#{session_name}'*)\n        printf '%b\\n' \\
+          '$42\\tprogram\\t%901\\tpi\\t2000\\tneeds-input\\t901\\t-' \\
+          '$42\\tprogram\\t%553\\tclaude\\t1500\\tdone\\t553\\t-' \\
+          '$42\\tprogram\\t%875\\tclaude\\t1000\\tdone\\t875\\t-'\n        ;;\n      *) printf '%s\\n' '%901' '%553' '%875' ;;\n    esac\n    ;;\n'''
+          t=t[:lp]+rich+t[sh:]
+
+          # Hosted dispatch fixture: p:$26:%553 now validates through list-panes.
+          marker='> "$WORK/t30-dispatch"'
+          pos=t.index(marker)
+          start=t.rfind('tmux() {', 0, pos)
+          end=t.index('\n}', start)+2
+          block=t[start:end]
+          if "'$26\\t%%553\\n'" not in block:
+              raise SystemExit('t30 dispatch tmux block mismatch')
+          if 'list-panes -s -t $26' not in block:
+              block=block.replace('  case "$*" in\n', '  case "$*" in\n    *\'list-panes -s -t $26\'*) printf \'%%553\\n\' ;;\n', 1)
+              t=t[:start]+block+t[end:]
+
+          # §32 nav-go fixture needs the same membership response.
+          marker='> "$WORK/t32-navgo"'
+          pos=t.index(marker)
+          start=t.rfind('tmux() {', 0, pos)
+          end=t.index('\n}', start)+2
+          block=t[start:end]
+          if 'display-message)' not in block:
+              raise SystemExit('t32 navgo tmux block mismatch')
+          if 'list-panes)' not in block:
+              block=block.replace('  case "$1" in\n', '  case "$1" in\n    list-panes) printf \'%%1\\n\' ;;\n', 1)
+              t=t[:start]+block+t[end:]
+
+          test.write_text(t)
+          PY
+
+          bash -n bin/tmux-session-picker test/nav-contract.sh test/nav-real-tmux.sh
+          git diff --check
+
+      - name: Run nav gates
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .xtrm
+          log=.xtrm/pr108-finalize.log
+          {
+            echo "base=$(git rev-parse HEAD)"
+            echo "started=$(date -u +%FT%TZ)"
+            bash test/nav-contract.sh; echo "nav_contract_rc=$?"
+            bash test/nav-real-tmux.sh; echo "real_tmux_rc=$?"
+            bash test/contract.sh; echo "contract_rc=$?"
+            echo "completed=$(date -u +%FT%TZ)"
+          } >"$log" 2>&1
+          nav_rc=$(grep 'nav_contract_rc=' "$log" | tail -1 | cut -d= -f2)
+          tmux_rc=$(grep 'real_tmux_rc=' "$log" | tail -1 | cut -d= -f2)
+          contract_rc=$(grep 'contract_rc=' "$log" | tail -1 | cut -d= -f2)
+          if [ "${nav_rc:-1}" != 0 ] || [ "${tmux_rc:-1}" != 0 ] || [ "${contract_rc:-1}" != 0 ]; then
+            tail -120 "$log"
+            exit 1
+          fi
+      - name: Commit validated integration
+        run: |
+          git rm .github/workflows/pr108-finalize.yml .xtrm/pr108-finalize-trigger
+          git config user.name 'xtrm web coordinator'
+          git config user.email 'actions@users.noreply.github.com'
+          git add bin/tmux-session-picker test/nav-contract.sh .xtrm/pr108-finalize.log
+          git commit -m 'fix(nav): integrate snapshot search with action contracts'
+          git push origin HEAD:xt/xjif
