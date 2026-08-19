@@ -1,8 +1,9 @@
 # feat(nav): session → window → pane topology-correct sidebar + pane location
 
-**Head:** `7e6deb1d` (branch `xt/xjif`, rebased onto current `origin/main` `0af90e55`)
-**Base:** `main` · **CI:** CodeQL, analyze, pr-review-gate — green; `test`/`smoke`
-`bun test` step red on a **pre-existing origin/main lockfile break** (see below).
+**Head:** branch `xt/xjif` (rebased onto `origin/main` `0af90e55`; last code head
+with full gate evidence: `21afd41`; final commit is this body sync)
+**Base:** `main` · **CI: ALL GREEN on `21afd41`** — CodeQL, analyze,
+pr-review-gate, `test`, `smoke` all success.
 
 > **DO NOT MERGE — external/web coordinator final review.**
 
@@ -44,6 +45,17 @@ replacement, no new persistence authority.
   still act on exactly the matched node. Tested with REAL `fzf --filter`
   (contract §36 + TEST E), not mocked argv.
 - **Lockfile wiring** (`c504f335`): see CI status below.
+- **Cold-state robustness** (`42e3e7da`): `picker_state_read` crashed under
+  `set -euo pipefail` whenever a state file did not exist — `REPLY="$(<missing)"`
+  raises a redirection error that exits the script even under a caller's
+  `|| true`. On a cold host (fresh runner, first-use user) every
+  `list-active-nav*` projection died before rendering. Now guarded with
+  `[ -f ]`; §36 adds a cold-state-dir regression guard that reproduces the
+  exact failure against the unfixed picker.
+- **CI-terminal robustness** (`21afd41`): real-tmux suite pins
+  `TERM=xterm-256color` for the attached client — CI jobs have no TERM and
+  tmux attach refuses an unqueryable terminal; attach logs now surface on
+  timeout.
 
 ## Identity: stable objects vs structural occurrences
 
@@ -130,8 +142,8 @@ real attached client:
 
 ## Contract/gates
 
-- `test/nav-contract.sh` — **307 pass / 0 fail** (incl. §36 ancestry projection
-  + real-fzf fuzzy assertions)
+- `test/nav-contract.sh` — **308 pass / 0 fail** (incl. §36 ancestry projection
+  + cold-state-dir guard + real-fzf fuzzy assertions)
 - `test/contract.sh` — **292 pass / 0 fail**
 - `bun test` — **457 pass / 0 fail**
 - `test/nav-real-tmux.sh` — **38 pass / 0 fail** (TEST A-E, real attached client)
@@ -150,17 +162,29 @@ for occurrence-correct current location), **warm git = 0**, **process probes
 `topology --json` unchanged.
 
 
-## CI status on this head
+## CI status on this head — fully green
 
-The previous `test`/`smoke` red was a pre-existing origin/main lockfile break:
-`packages/xtmux-view` declares `beautiful-mermaid` but was never wired into the
-root install, so `bun.lock` never contained it and every `bun install
---frozen-lockfile && bun test` run failed at the renderer import (A/B-proven
-against clean main before this remediation). This branch now carries the
-mechanical fix — `"workspaces": ["packages/*"]` in the root `package.json` +
-regenerated `bun.lock` (commit `c504f335`, dependency wiring only, zero code
-change) — and `bun test` is 457/0 with it. Full gate results on the head below
-in Evidence.
+All five checks (CodeQL, analyze, pr-review-gate, test, smoke) are **success**
+on `21afd41`. The earlier red states were each root-caused and fixed on this
+branch:
+
+1. **Pre-existing origin/main lockfile break** (fixed `c504f335`):
+   `packages/xtmux-view` declares `beautiful-mermaid` but was never wired into
+   the root install, so `bun.lock` never contained it and every `bun install
+   --frozen-lockfile && bun test` failed at the renderer import (A/B-proven
+   against clean main before this remediation). Fix: `"workspaces":
+   ["packages/*"]` in the root `package.json` + regenerated `bun.lock` —
+   dependency wiring only, zero code change; `bun test` 457/0 with it.
+2. **Cold-state crash** (fixed `42e3e7da`): `picker_state_read` exited the
+   picker under `set -e` on missing state files (see remediation list).
+3. **TERM-less CI attach** (fixed `21afd41`): real-tmux suite pins TERM for
+   the attached client.
+
+Local gate evidence on `21afd41`: `verify-json-api.sh` full gate PASS (build,
+bun tests 457/0, typecheck, harness selftest, shell contracts 292/0, nav
+contracts 308/0, real tmux 38/0, v1 fixtures, live smoke), also PASS under
+`env -u TERM` (CI-like).
+
 
 ## Retained invariants
 
