@@ -1,0 +1,37 @@
+name: PR108 production patch
+on:
+  push:
+    branches: [xt/xjif]
+    paths: [.github/workflows/pr108-patch2.yml]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: xt/xjif
+          fetch-depth: 0
+      - name: Reconcile private dispatch help in-place
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('bin/tmux-session-picker')
+          s=p.read_text()
+          old='  list-active-nav-single, list-active-nav-chain, list-active-nav-single-chain\n'
+          new='  list-active-nav-single, list-active-nav-chain, list-active-nav-single-chain, nav-snapshot-view, nav-snapshot-refresh\n'
+          if old not in s:
+              raise SystemExit('picker-internals help line missing')
+          p.write_text(s.replace(old,new,1))
+          PY
+          bash -n bin/tmux-session-picker
+          git diff --check
+      - name: Commit and self-remove
+        run: |
+          git rm .github/workflows/pr108-patch2.yml
+          git config user.name 'xtrm web coordinator'
+          git config user.email 'actions@users.noreply.github.com'
+          git add bin/tmux-session-picker
+          git commit -m 'fix(nav): document private snapshot dispatch without growing help'
+          git push origin HEAD:xt/xjif
