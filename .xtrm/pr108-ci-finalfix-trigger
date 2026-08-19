@@ -1,1 +1,1 @@
-trigger valid final integration job from staged CI workflow
+trigger infrastructure-independent final integration job
