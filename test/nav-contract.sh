@@ -453,10 +453,16 @@ require_fn resolve_nav_window_session "nav-t3: resolve_nav_window_session() exis
   fi
   assert_eq "nav-t3: bare window token resolves live owner (nothing to compare)" 'encodedless rc=0 reply=$42' "$(sed -n '4p' "$WORK/t3-own.out")"
   (
-    tmux() { case "$*" in *'$71:%553'*) printf '$71\t%%553\n' ;; *'%553'*) printf '$42\t%%777\n' ;; *) printf '$99\n' ;; esac; }
-    resolve_nav_pane_session '$71' '%553'; printf 'pane-match rc=%s\n' "$?"
-    resolve_nav_pane_session '$42' '%553'; printf 'pane-mismatch rc=%s\n' "$?"
-  ) > "$WORK/t3-pane-own.out"
+  tmux() {
+    case "$*" in
+      *'list-panes -s -t $71'*) printf '%%111\n%%553\n' ;;
+      *'list-panes -s -t $42'*) printf '%%777\n' ;;
+      *) printf '$99\n' ;;
+    esac
+  }
+  resolve_nav_pane_session '$71' '%553'; printf 'pane-match rc=%s\n' "$?"
+  resolve_nav_pane_session '$42' '%553'; printf 'pane-mismatch rc=%s\n' "$?"
+) > "$WORK/t3-pane-own.out"
   assert_eq "nav-t3: pane ownership match" 'pane-match rc=0' "$(sed -n '1p' "$WORK/t3-pane-own.out")"
   assert_eq "nav-t3: pane in a different session refuses" 'pane-mismatch rc=1' "$(sed -n '2p' "$WORK/t3-pane-own.out")"
 }
@@ -919,11 +925,19 @@ if grep -qF '?:change-preview(' "$WORK/nav-fzf-args" && grep -qF ')+show-preview
 else
   nok "nav help: ? explicitly reveals the hidden details pane"
 fi
-# §36 wiring: ordinary typing re-projects through the ancestry chain source.
-if grep -qF "change:reload-sync(" "$WORK/nav-fzf-args" && grep -qF "list-active-nav-chain '{q}'" "$WORK/nav-fzf-args"; then
-  ok "nav chrome: query change re-projects through the ancestry chain source"
+# §36 wiring: ordinary typing switches between prebuilt local snapshots.
+# No query character may invoke list-active-nav-chain/build_list.
+if grep -qF "change:reload-sync(" "$WORK/nav-fzf-args" \
+  && grep -qF "nav-snapshot-view" "$WORK/nav-fzf-args" \
+  && ! grep -qF "list-active-nav-chain '{q}'" "$WORK/nav-fzf-args"; then
+  ok "nav chrome: query change reads local ancestry snapshot (no live rebuild)"
 else
-  nok "nav chrome: query change is not bound to the ancestry chain projection"
+  nok "nav chrome: query change is not snapshot-backed"
+fi
+if grep -qF "nav-snapshot-refresh" "$WORK/nav-fzf-args"; then
+  ok "nav chrome: explicit reload/filter/mode actions refresh both snapshots"
+else
+  nok "nav chrome: explicit live refresh path is not snapshot-aware"
 fi
 (
   nav_route() { REPLY=oneline; }
@@ -2129,6 +2143,38 @@ while IFS= read -r -d '' _r; do _s36_nchain=$((_s36_nchain+1)); done < "$WORK/s3
 [ "$_s36_nflat" -eq 9 ] && [ "$_s36_nchain" -eq "$_s36_nflat" ] \
   && ok "§36: chain re-projects every record (same count, no dropped nodes)" \
   || nok "§36: chain record count diverges (flat=$_s36_nflat chain=$_s36_nchain)"
+
+nav_snapshot_project_stream "$WORK/s36-flat" multi > "$WORK/s36-snapshot-chain"
+if cmp -s "$WORK/s36-chain" "$WORK/s36-snapshot-chain"; then
+  ok "§36: snapshot projection is byte-identical to chain semantics"
+else
+  nok "§36: snapshot projection diverges from chain semantics"
+fi
+mkdir -p "$WORK/bin-snapshot"
+for _cmd in tmux git; do
+  cat > "$WORK/bin-snapshot/$_cmd" <<SHIM
+#!/usr/bin/env bash
+echo "FORBIDDEN $_cmd \$*" >> "$WORK/s36-snapshot-calls"
+exit 99
+SHIM
+  chmod +x "$WORK/bin-snapshot/$_cmd"
+done
+cp "$WORK/s36-flat" "$WORK/xtmux-nav.flat.s36"
+cp "$WORK/s36-snapshot-chain" "$WORK/xtmux-nav.chain.s36"
+: > "$WORK/s36-snapshot-calls"
+TMPDIR="$WORK" PATH="$WORK/bin-snapshot:$PATH" "$PICKER" nav-snapshot-view \
+  "$WORK/xtmux-nav.flat.s36" "$WORK/xtmux-nav.chain.s36" '%875' > "$WORK/s36-snapshot-query"
+if [ ! -s "$WORK/s36-snapshot-calls" ] && cmp -s "$WORK/s36-snapshot-query" "$WORK/s36-snapshot-chain"; then
+  ok "§36: per-keystroke snapshot view performs zero tmux/git calls"
+else
+  nok "§36: per-keystroke snapshot view touched live state ($(tr '\n' ';' < "$WORK/s36-snapshot-calls"))"
+fi
+TMPDIR="$WORK" PATH="$WORK/bin-snapshot:$PATH" "$PICKER" nav-snapshot-view \
+  "$WORK/xtmux-nav.flat.s36" "$WORK/xtmux-nav.chain.s36" '' > "$WORK/s36-snapshot-empty"
+cmp -s "$WORK/s36-snapshot-empty" "$WORK/s36-flat" \
+  && ok "§36: empty query returns flat browse snapshot verbatim" \
+  || nok "§36: empty snapshot query diverged from flat browse view"
+
 # fields 1-5 (machine identity + token) byte-identical and same order
 _s36_identity_ok=1; _s36_session_same=1
 exec 3< "$WORK/s36-flat" 4< "$WORK/s36-chain"

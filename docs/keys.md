@@ -17,8 +17,8 @@ Set width in tmux configuration rather than application state:
 - 55–60% on a small terminal
 
 Change `40%` to tune the drawer, and `75%` to tune its height. `tput cols` runs
-inside the popup. The nav launcher reserves eight cells for fzf's border and
-selection gutter before it bounds rows; long names, branches, and tasks are
+inside the popup. The nav launcher reserves four cells for fzf's borderless
+selection/marker gutter before it bounds rows; long names, branches, and tasks are
 truncated deterministically (machine identity always survives; full values stay
 in the details inspector). The `#222222` background uses a
 terminal-dependent alpha (`@200`) for slight transparency on terminals that
@@ -39,7 +39,7 @@ bind G display-popup -E -w 99% -h 97% "TMUX_PICKER_MODE=compact-nowrap $HOME/.lo
 are optional prefix-table examples; xtmux does not install global bindings.
 
 Inside nav, `▎` marks the current session (the pane the operator is attached
-to); the current window and pane get the cool accent, and `›` is the fzf
+to); the current window and pane get the cool accent, and `>` is the fzf
 selection (distinct from running state). Sessions
 are grouped by urgent, active, and other state. `Tab` toggles compact <-> expanded
 topology — compact shows session rows only, expanded shows session → window →

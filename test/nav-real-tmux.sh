@@ -405,6 +405,19 @@ echo "== TEST D: linked-window PANE occurrences validate and act per occurrence 
 tmux new-session -d -s C "$EVAL_CMD"
 CID="$(tmux display-message -p -t C '#{session_id}')"
 
+# Make %P a valid but NON-CURRENT pane in session A. This specifically
+    # catches tmux's session:%pane parse/fallback trap.
+    tmux new-window -d -t A:8 "$EVAL_CMD"
+    A_OTHER="$(tmux display-message -p -t A:8 '#{pane_id}')"
+    tmux select-window -t A:8
+    assert_eq "D0: fixture makes %P a valid but NON-CURRENT pane in A" \
+      "$A_OTHER" "$(tmux display-message -p -t A '#{pane_id}')"
+    if [ "$A_OTHER" != "$P" ]; then
+      ok "D0b: non-current regression fixture uses a different pane"
+    else
+      nok "D0b: non-current regression fixture accidentally reused %P"
+    fi
+
 REPLY=''
 if resolve_nav_pane_session "$AID" "$P" && [ "$REPLY" = "$AID" ]; then
   ok "D1: p:\$A:%P validates (occurrence resolves to session A)"

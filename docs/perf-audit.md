@@ -251,11 +251,17 @@ the display tail. Pathological metadata (3000-char session/window name, task,
 cwd) stays ≤ ~400 B per record — it cannot create unbounded row height or
 memory growth (proven in `test/nav-contract.sh`).
 
-Epic-fixture byte measurements (`.xtrm/reports/`) below were recorded on the
-pre-final two-line renderer. The final renderer emits one-line panes
-(`NAV_PANE_LINES=1`), so the exact byte/record totals are PENDING re-measurement
-on the finalized head (<!-- filled by coordinator -->); the structural
-subprocess contract (2 tmux / 0 warm git / 0 probes) is unaffected.
+Finalized-head remeasurement with `NAV_PANE_LINES=1`: expanded private nav is
+**1420 B total / 7 NUL records / 226 B max record** (89 B max after ANSI
+stripping) for the deterministic 1-session / 2-window / 4-pane fixture.
+A normal live refresh uses **3 tmux calls total**: the existing two bulk
+inventory calls (`list-sessions`, `list-panes -a`) plus one bounded
+client-scoped `display-message` used only to place the occurrence-correct
+current marker; warm git remains 0 and process probes remain 0. Ordinary
+fzf query changes execute **0 tmux / 0 git / 0 process-probe calls**: the
+launcher derives one ancestry projection from the initial flat snapshot
+and switches between the two local NUL files until an explicit refresh,
+filter/mode change, or mutating action asks for fresh live state.
 
 | report | expanded total | max record | records | warm tmux/git | cold tmux/git |
 |---|---|---|---|---|---|

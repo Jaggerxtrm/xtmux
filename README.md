@@ -53,13 +53,13 @@ stable object id — a stored token is always the encoded `$session`+`@window`
 - window rows: `@window-id` intact, truncatable `index:name`, aggregate state, pane
   count; `Enter` on a window row selects that exact window
 - one-line panes (`NAV_PANE_LINES=1`): `%pane-id`, runtime, task, and state on one
-  bounded row with the pane location appended inline — repo, `repo · relative`,
+  bounded row with the pane location appended inline — repo, filesystem-style `repo/path`,
   worktree → canonical repo label, or shortened `~/…` when no repo
 - full absolute paths, bead, task, and last transition stay in the details inspector
 - hierarchy uses the single `↳` ancestry glyph at a fixed sibling indent; no
   `├`/`└`/`▸`/`●` tree-branch rows
 - current-location markers: `▎` marks the current session; the current window and
-  pane get the cool accent — distinct from fzf's `›` highlighted selection and
+  pane get the cool accent — distinct from fzf's `>` highlighted selection and
   from running state
 - restrained palette: neutral primary, one cool accent for current/focus/pointer,
   one amber attention, a restrained red for danger; run/done/idle are neutral and
