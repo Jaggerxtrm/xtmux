@@ -2466,7 +2466,7 @@ PICKER INTERNALS — invoked by the fzf UI. Agents do not normally call these.
   preview, popup, jump, kill, act, attn-jump, jump-back, kill-confirm, bulk-kill, bulk-kill-targets
   bulk-kill-confirm, rename, rename-apply, mode-toggle, filter-menu, filter-clear, filter-preset, prompt-label, border-label, nav-go, nav-act
   nav-border-label, nav-key-help, list-nav, list-nav-single, list-active-nav,
-  list-active-nav-single, list-active-nav-chain, list-active-nav-single-chain
+  list-active-nav-single, list-active-nav-chain, list-active-nav-single-chain, nav-snapshot-view, nav-snapshot-refresh
 
 Errors are `exit 2` with a usage line; under --json they are
 {"code":"XTMUX_...","message":...}. See docs/json-command-api.md.
