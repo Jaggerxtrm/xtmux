@@ -128,10 +128,14 @@ NAV_PANE_FMT=$'#{session_id}\t#{window_id}\t#{window_index}\t#{s/\n/ /:#{s/\t/ /
 # start a real attached client on session $1 (background pty via `script`).
 # Sets REPLY to the client target; returns 0 once attached to $1.
 start_client() {
-  local sess="$1" c i attempt=0 n_attempt=3 try_pids=''
+  local sess="$1" c i attempt=0 n_attempt=3 try_pids='' last_log=''
   while [ "$attempt" -lt "$n_attempt" ]; do
     attempt=$(( attempt + 1 ))
-    script -qec "tmux -S '$SOCK' attach-session -t '$sess'" /dev/null >"$WORK/c$RANDOM.log" 2>&1 &
+    last_log="$WORK/c$RANDOM.log"
+    # CI runners have no TERM in the job environment; tmux attach refuses a
+    # terminal it cannot query, so pin a known-good terminal type for the
+    # attached client.
+    TERM=xterm-256color script -qec "tmux -S '$SOCK' attach-session -t '$sess'" /dev/null >"$last_log" 2>&1 &
     try_pids="$try_pids $!"
     i=0
     while [ "$i" -lt 150 ]; do
@@ -150,6 +154,7 @@ start_client() {
   done
   printf 'start_client timeout after %d attempts: clients=[%s]\n' "$n_attempt" \
     "$(tmux list-clients -F '#{client_name}->#{client_session}' 2>/dev/null | tr '\n' ' ')" >&2
+  [ -f "$last_log" ] && { printf 'attach log (%s):\n' "$last_log" >&2; head -5 "$last_log" >&2; }
   REPLY=''
   return 1
 }
