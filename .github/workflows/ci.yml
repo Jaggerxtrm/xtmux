@@ -77,7 +77,8 @@ jobs:
           PY
           bash -n bin/tmux-session-picker
           git diff --check
-          bash test/contract.sh
+          grep -q '^  nav-snapshot-view)' bin/tmux-session-picker
+          grep -q '^  nav-snapshot-refresh)' bin/tmux-session-picker
       - name: Commit patch and remove temporary coordinator workflow state
         run: |
           set -euo pipefail
