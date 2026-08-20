@@ -1,0 +1,68 @@
+{
+  "content_sha256": "b143a62b6a6c17432f241e47ab9bc0565c5ede9b813898f529620ad8c5436dac",
+  "desired_issues": {
+    "xtmux-0gf": {
+      "_type": "issue",
+      "comment_count": 0,
+      "created_at": "2026-07-14T23:25:53Z",
+      "created_by": "jaggerxtrm",
+      "dependency_count": 0,
+      "dependent_count": 0,
+      "description": "Core-side xt --role launcher redesign (parent: core bead xtrm-osipt) turns turn-1 into a positional string that must start with '/skill:name' (pi) or '/skill-name' (claude) at literal byte 0 so the runtime slash-command parser force-loads the skill body. Any wrapper, prefix, or leading whitespace breaks slash-cmd parsing silently — the model sees a normal user message that happens to contain '/skill:foo' somewhere in it, no body loads.\n\n## Scope — audit only, no code changes in this bead\n\n1. message-send composition — when message-send delivers text to a target, does it prepend any envelope ('<message from …>', '<from …>', '[from …]:', header, sender attribution, timestamps, JSON wrapper, etc.)? If yes, the recipient pane never sees '/' at position 0 for slash-cmd purposes; any orchestrator flow that tries to force-load a skill via message-send silently fails.\n\n2. safe-send-pointer / handoff / send-keys — same question. These paths are already used to deliver ad-hoc instructions to running panes; if they wrap, quote-escape in a way that shifts the first byte, or otherwise inject leading content, they can't be used to force-load a skill on an already-running pane.\n\n3. Any other delivery primitive in this repo (pane events, hook-triggered messages, picker actions that inject keys, notification-style deliveries) — audit the same rule.\n\n## Outcome branches\n\n- If NO wrapping today on any path: document the invariant explicitly (README + inline comments at each send site) so future changes don't silently break it. No code needed.\n- If ANY wrapping today: add a --raw / --no-wrap flag to the affected primitive so the launcher (and any orchestrator that needs slash-cmd semantics) can opt out. File a fix bead separately (this bead is audit-only).\n\n## Why P1\n\nPrereq for the core launcher redesign contract. Without confirmed non-wrapping delivery, the redesign only works for launcher-owned spawn (initial argv the runtime auto-submits). Any downstream orchestrator flow that would re-inject a skill on an already-running pane relies on this being clean.\n\n## References\n\n- Core: xtrm-osipt (closed, stopgap fix landed) + successor launcher-redesign bead (to be filed on core).\n- Specialists: unitAI-0o3pv (P1) tracks equivalent pool-isolation gap on their spawn paths.\n- Once this audit resolves: xtrm-tools/skills/default/multiplexing/SKILL.md gets a paragraph documenting the position-0 '/' invariant with a link to whichever xtmux primitives are safe (or how to opt out of wrapping).",
+      "id": "xtmux-0gf",
+      "issue_type": "task",
+      "owner": "jagger.xtrm@gmail.com",
+      "priority": 1,
+      "status": "open",
+      "title": "audit message-send / send-keys / safe-send-pointer for position-0 wrapping (core launcher-redesign prereq)",
+      "updated_at": "2026-07-14T23:25:53Z"
+    }
+  },
+  "diagnostics": {
+    "dangling_relations": [],
+    "derived_dotted_parent_links": [],
+    "multiple_parent_nodes": []
+  },
+  "external_relations": [],
+  "hierarchy": {
+    "children": [],
+    "id": "xtmux-0gf"
+  },
+  "issues": {
+    "xtmux-0gf": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "comment_count": 0,
+        "created_at": "2026-07-14T23:25:53Z",
+        "created_by": "jaggerxtrm",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "description": "Core-side xt --role launcher redesign (parent: core bead xtrm-osipt) turns turn-1 into a positional string that must start with '/skill:name' (pi) or '/skill-name' (claude) at literal byte 0 so the runtime slash-command parser force-loads the skill body. Any wrapper, prefix, or leading whitespace breaks slash-cmd parsing silently — the model sees a normal user message that happens to contain '/skill:foo' somewhere in it, no body loads.\n\n## Scope — audit only, no code changes in this bead\n\n1. message-send composition — when message-send delivers text to a target, does it prepend any envelope ('<message from …>', '<from …>', '[from …]:', header, sender attribution, timestamps, JSON wrapper, etc.)? If yes, the recipient pane never sees '/' at position 0 for slash-cmd purposes; any orchestrator flow that tries to force-load a skill via message-send silently fails.\n\n2. safe-send-pointer / handoff / send-keys — same question. These paths are already used to deliver ad-hoc instructions to running panes; if they wrap, quote-escape in a way that shifts the first byte, or otherwise inject leading content, they can't be used to force-load a skill on an already-running pane.\n\n3. Any other delivery primitive in this repo (pane events, hook-triggered messages, picker actions that inject keys, notification-style deliveries) — audit the same rule.\n\n## Outcome branches\n\n- If NO wrapping today on any path: document the invariant explicitly (README + inline comments at each send site) so future changes don't silently break it. No code needed.\n- If ANY wrapping today: add a --raw / --no-wrap flag to the affected primitive so the launcher (and any orchestrator that needs slash-cmd semantics) can opt out. File a fix bead separately (this bead is audit-only).\n\n## Why P1\n\nPrereq for the core launcher redesign contract. Without confirmed non-wrapping delivery, the redesign only works for launcher-owned spawn (initial argv the runtime auto-submits). Any downstream orchestrator flow that would re-inject a skill on an already-running pane relies on this being clean.\n\n## References\n\n- Core: xtrm-osipt (closed, stopgap fix landed) + successor launcher-redesign bead (to be filed on core).\n- Specialists: unitAI-0o3pv (P1) tracks equivalent pool-isolation gap on their spawn paths.\n- Once this audit resolves: xtrm-tools/skills/default/multiplexing/SKILL.md gets a paragraph documenting the position-0 '/' invariant with a link to whichever xtmux primitives are safe (or how to opt out of wrapping).",
+        "id": "xtmux-0gf",
+        "issue_type": "task",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 1,
+        "status": "open",
+        "title": "audit message-send / send-keys / safe-send-pointer for position-0 wrapping (core launcher-redesign prereq)",
+        "updated_at": "2026-07-14T23:25:53Z"
+      }
+    }
+  },
+  "new_comments": {},
+  "relations": [],
+  "repository": "Jaggerxtrm/xtmux",
+  "root_id": "xtmux-0gf",
+  "root_title": "audit message-send / send-keys / safe-send-pointer for position-0 wrapping (core launcher-redesign prereq)",
+  "roundtrip": {
+    "base_package_sha256": "b143a62b6a6c17432f241e47ab9bc0565c5ede9b813898f529620ad8c5436dac",
+    "base_record_sha256": {
+      "xtmux-0gf": "f897cd58a79a71f4fd5f16b731e06306c2d26609243bdec43bb58bb63c48b8a5"
+    },
+    "edit_contract": "modify desired_issues and new_comments only; issues.*.source is immutable base state",
+    "prepared_at": "2026-08-20T14:56:15Z",
+    "schema_version": "xtrm.board-audit.roundtrip.v1"
+  },
+  "schema_version": "xtrm.board-audit.work-package.v1",
+  "scope": "open"
+}

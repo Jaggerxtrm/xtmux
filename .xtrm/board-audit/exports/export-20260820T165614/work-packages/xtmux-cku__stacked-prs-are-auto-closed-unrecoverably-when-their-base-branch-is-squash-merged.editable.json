@@ -1,0 +1,68 @@
+{
+  "content_sha256": "e8944f1328ab9596660a1ed329e15a3d52098c2f93cdb091259ed9c505bca3fd",
+  "desired_issues": {
+    "xtmux-cku": {
+      "_type": "issue",
+      "comment_count": 0,
+      "created_at": "2026-07-22T02:15:22Z",
+      "created_by": "jaggerxtrm",
+      "dependency_count": 0,
+      "dependent_count": 0,
+      "description": "Hit on xtmux #59 (2026-07-22). #59 was stacked on #58's branch xt/wave-8b-xtmux. Squash-merging #58 deleted that branch; GitHub auto-closed #59.\n\nEvery repair path is refused:\n- gh pr edit 59 --base main -> GraphQL projects-classic deprecation error\n- REST PATCH state=open -> 422 'state cannot be changed. The <head> branch was force-pushed or recreated'\n- Recreating the base ref then reopening -> same 422. Permanent, not retryable.\n\nRecovery is only: open a NEW PR from the same head, cross-link, lose the review-thread continuity on the old one. Done as #61.\n\nDoctrine fix for the multiplexing/stacked-PR flow: retarget a stacked PR to main BEFORE its parent merges, not after. Marking the child draft (which we did) keeps it out of the merge queue but gives zero protection against base-branch deletion.\n\nSecondary: with the child's review history stranded on a closed PR, a re-review of the replacement can resurface findings already answered — #61 immediately drew a fresh P1 that partly restated known context.",
+      "id": "xtmux-cku",
+      "issue_type": "task",
+      "owner": "jagger.xtrm@gmail.com",
+      "priority": 2,
+      "status": "open",
+      "title": "Stacked PRs are auto-closed unrecoverably when their base branch is squash-merged",
+      "updated_at": "2026-07-22T02:15:22Z"
+    }
+  },
+  "diagnostics": {
+    "dangling_relations": [],
+    "derived_dotted_parent_links": [],
+    "multiple_parent_nodes": []
+  },
+  "external_relations": [],
+  "hierarchy": {
+    "children": [],
+    "id": "xtmux-cku"
+  },
+  "issues": {
+    "xtmux-cku": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "comment_count": 0,
+        "created_at": "2026-07-22T02:15:22Z",
+        "created_by": "jaggerxtrm",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "description": "Hit on xtmux #59 (2026-07-22). #59 was stacked on #58's branch xt/wave-8b-xtmux. Squash-merging #58 deleted that branch; GitHub auto-closed #59.\n\nEvery repair path is refused:\n- gh pr edit 59 --base main -> GraphQL projects-classic deprecation error\n- REST PATCH state=open -> 422 'state cannot be changed. The <head> branch was force-pushed or recreated'\n- Recreating the base ref then reopening -> same 422. Permanent, not retryable.\n\nRecovery is only: open a NEW PR from the same head, cross-link, lose the review-thread continuity on the old one. Done as #61.\n\nDoctrine fix for the multiplexing/stacked-PR flow: retarget a stacked PR to main BEFORE its parent merges, not after. Marking the child draft (which we did) keeps it out of the merge queue but gives zero protection against base-branch deletion.\n\nSecondary: with the child's review history stranded on a closed PR, a re-review of the replacement can resurface findings already answered — #61 immediately drew a fresh P1 that partly restated known context.",
+        "id": "xtmux-cku",
+        "issue_type": "task",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 2,
+        "status": "open",
+        "title": "Stacked PRs are auto-closed unrecoverably when their base branch is squash-merged",
+        "updated_at": "2026-07-22T02:15:22Z"
+      }
+    }
+  },
+  "new_comments": {},
+  "relations": [],
+  "repository": "Jaggerxtrm/xtmux",
+  "root_id": "xtmux-cku",
+  "root_title": "Stacked PRs are auto-closed unrecoverably when their base branch is squash-merged",
+  "roundtrip": {
+    "base_package_sha256": "e8944f1328ab9596660a1ed329e15a3d52098c2f93cdb091259ed9c505bca3fd",
+    "base_record_sha256": {
+      "xtmux-cku": "353c544b10b54a235dfd5219835b71a7272c6e574283c87cfe4cb01cf98ccf36"
+    },
+    "edit_contract": "modify desired_issues and new_comments only; issues.*.source is immutable base state",
+    "prepared_at": "2026-08-20T14:56:16Z",
+    "schema_version": "xtrm.board-audit.roundtrip.v1"
+  },
+  "schema_version": "xtrm.board-audit.work-package.v1",
+  "scope": "open"
+}

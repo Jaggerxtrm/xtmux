@@ -1,0 +1,44 @@
+{
+  "content_sha256": "752cd6fc4fc9770894314ddd4db6daf1a72eefbf59b8210616a4651fdf8f5b14",
+  "diagnostics": {
+    "dangling_relations": [],
+    "derived_dotted_parent_links": [],
+    "multiple_parent_nodes": []
+  },
+  "external_relations": [],
+  "hierarchy": {
+    "children": [],
+    "id": "xtmux-ck7"
+  },
+  "issues": {
+    "xtmux-ck7": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "assignee": "jaggerxtrm",
+        "comment_count": 0,
+        "created_at": "2026-07-21T11:27:29Z",
+        "created_by": "jaggerxtrm",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "description": "## PROBLEM\nThe host event helper streams xtmux journal and Specialists forensic rows but omits the canonical Beads lifecycle source. Existing xtmux telemetry names `bd.claim`/`bd.close` conflict with Beads' authoritative event types.\n\n## SUCCESS\n`scripts/test-session-events.sh` follows each startup-snapshot repo's Beads Dolt `events` table and emits canonical `bd.created`, `bd.claimed`, `bd.updated`, `bd.closed`, `bd.reopened`, and `bd.status_changed` rows in both human and `--json` modes.\n\n## SCOPE\nThe host event helper, focused mock/integration tests, canonical normalization, legacy alias handling, and repo/session/tmux enrichment when correlation is available.\n\n## NON_GOALS\n- Do not invent lifecycle facts from Core hooks or Specialists jobs.\n- Do not make Console snapshots the live source.\n- Do not add a daemon.\n\n## CONSTRAINTS\n- Beads `events.id` (UUIDv7) is the source event ID, idempotency key, and UTC timestamp source.\n- Do not trust Beads 1.1.0 `events.created_at` as UTC: it currently serializes local DATETIME with `Z`.\n- Preserve raw event type and old/new values in `--json`; redact nothing beyond existing Beads payload policy.\n- Canonical names mirror Beads: `bd.<event_type>`. Treat `bd.claim`/`bd.close` and hook duplicates as compatibility aliases, never duplicate facts.\n- Startup snapshot semantics remain: restart to discover later sessions/repos.\n\n## VALIDATION\n- [ ] Mock coverage for create, claim, update, close, reopen, and status change.\n- [ ] Duplicate legacy hook/telemetry rows collapse onto one Beads event.\n- [ ] Human output includes repo, `$session_id`, `%pane_id` when known.\n- [ ] `--json` remains normalized NDJSON and carries source event ID/actor/old/new.\n- [ ] Live smoke observes a real Beads mutation with correct UUIDv7 UTC time.",
+        "external_ref": "core:xtrm-etmv4.2",
+        "id": "xtmux-ck7",
+        "issue_type": "task",
+        "notes": "Stale in_progress claim released to open on 2026-08-07 during KAN-127 K4 work: started 2026-07-21 and untouched since, so no session was actually holding it. Not closed — completion was not verified. Its external ref core:xtrm-etmv4.2 belongs to the xtrm-etmv4 epic, which shipped (core PRs #461/#462/#463 + xtmux #56), so this may already be satisfied and worth a premise check before re-claiming.",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 1,
+        "started_at": "2026-07-21T11:27:57Z",
+        "status": "open",
+        "title": "Stream canonical Beads lifecycle events host-wide",
+        "updated_at": "2026-08-07T15:41:24Z"
+      }
+    }
+  },
+  "relations": [],
+  "repository": "Jaggerxtrm/xtmux",
+  "root_id": "xtmux-ck7",
+  "root_title": "Stream canonical Beads lifecycle events host-wide",
+  "schema_version": "xtrm.board-audit.work-package.v1",
+  "scope": "open"
+}

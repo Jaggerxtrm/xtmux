@@ -1,0 +1,281 @@
+{
+  "content_sha256": "efd0d09caa3b4e32cc8d7915384b8c68ff57ca516c6efa3bd1b15276e7def111",
+  "diagnostics": {
+    "dangling_relations": [],
+    "derived_dotted_parent_links": [],
+    "multiple_parent_nodes": []
+  },
+  "external_relations": [
+    {
+      "raw": {
+        "created_at": "2026-07-03T16:19:51Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "xtmux-amn",
+        "issue_id": "xtmux-rib.13",
+        "metadata": "{}",
+        "type": "relates-to"
+      },
+      "source": "xtmux-rib.13",
+      "source_field": "dependencies",
+      "target": "xtmux-amn",
+      "target_present_in_snapshot": true,
+      "target_title": "Session handoff 2026-07-03: pick up next priorities",
+      "type": "relates-to"
+    },
+    {
+      "raw": {
+        "created_at": "2026-06-30T00:56:59Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "xtmux-rib.1",
+        "issue_id": "xtmux-rib.14",
+        "metadata": "{}",
+        "type": "blocks"
+      },
+      "source": "xtmux-rib.14",
+      "source_field": "dependencies",
+      "target": "xtmux-rib.1",
+      "target_present_in_snapshot": true,
+      "target_title": "Test harness: contract tests for status-line + list/preview output",
+      "type": "blocks"
+    },
+    {
+      "raw": {
+        "created_at": "2026-07-03T16:19:53Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "xtmux-amn",
+        "issue_id": "xtmux-rib.14",
+        "metadata": "{}",
+        "type": "relates-to"
+      },
+      "source": "xtmux-rib.14",
+      "source_field": "dependencies",
+      "target": "xtmux-amn",
+      "target_present_in_snapshot": true,
+      "target_title": "Session handoff 2026-07-03: pick up next priorities",
+      "type": "relates-to"
+    },
+    {
+      "raw": {
+        "created_at": "2026-07-03T16:19:52Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "xtmux-amn",
+        "issue_id": "xtmux-rib.15",
+        "metadata": "{}",
+        "type": "relates-to"
+      },
+      "source": "xtmux-rib.15",
+      "source_field": "dependencies",
+      "target": "xtmux-amn",
+      "target_present_in_snapshot": true,
+      "target_title": "Session handoff 2026-07-03: pick up next priorities",
+      "type": "relates-to"
+    }
+  ],
+  "hierarchy": {
+    "children": [
+      {
+        "children": [],
+        "id": "xtmux-rib.13"
+      },
+      {
+        "children": [],
+        "id": "xtmux-rib.14"
+      },
+      {
+        "children": [],
+        "id": "xtmux-rib.15"
+      }
+    ],
+    "id": "xtmux-rib"
+  },
+  "issues": {
+    "xtmux-rib": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "comment_count": 0,
+        "created_at": "2026-06-29T22:54:25Z",
+        "created_by": "jaggerxtrm",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "description": "## Overview\n\nPromote the fzf tmux session/pane picker from read-only switcher to an actionable, truthful, create-able control surface — with first-class awareness of specialist (`sp-*`) runs and rich worktree/bead context in previews.\n\n## Goals\n\n- **Truthful state**: agent and specialist states come from written hooks/options, not capture-pane guessing.\n- **Act, don't just attach**: approve/interrupt/send-to panes directly from the list.\n- **Create flow**: spawn worktree/new sessions from inside the picker.\n- **Specialist-aware**: `sp-*` sessions are peers of agents in attention ranking, with job/bead/role enrichment and stale/orphan detection.\n- **Safe + observable**: confirm before destructive kills, staleness badges, frecency, cache invalidation.\n\n## Non-goals\n\n- No TUI rewrite (bubbletea/gum). Stay bash + fzf.\n- No daemon. No replacing tmux-resurrect.\n- No mouse-support work.\n\n## Success criteria\n\n- [ ] `@agent_state` populated by pi/claude/codex hooks; WAIT/RUN/DONE badges reflect real transitions.\n- [ ] Act-on-preview: one keystroke to approve / interrupt / send a line to any pane.\n- [ ] Create flow: `prefix` + key → fzf over worktrees + recent dirs → new session.\n- [ ] `sp-*` sessions show job/bead/role/state; feed attention ranking; stale/orphan panes flagged.\n- [ ] All Tier 1/2/3 polish shipped; `test/contract.sh` green.\n\n## Context\n\n- Repo: https://github.com/Jaggerxtrm/xtmux (branch `main`).\n- Perf baseline + architecture captured in `docs/perf-audit.md`.\n- Status-line script (`scripts/git-pane-status.sh`) output contract must stay byte-identical (also used by the tmux status bar).\n- Specialist data verified: session name `sp-<role>-<jobhash>`, cmd `bun`; jobs at `~/dev/specialists/.specialists/jobs/<hash>/`; `sp ps` reports running/waiting/orphans.\n",
+        "id": "xtmux-rib",
+        "issue_type": "epic",
+        "notes": "\n--- Audit 2026-06-30 (pre-implementation review of operator's hook plan) ---\n\nVerified against authoritative sources:\n- Claude Code hook events+semantics: context7 /anthropics/claude-code (all 9 event names valid: PreToolUse, PostToolUse, Stop, SubagentStop, SessionStart, SessionEnd, UserPromptSubmit, PreCompact, Notification). Confirmed live via operator's plugins (~30k hook refs).\n- pi (v0.80.1) npm docs: pi has NO settings.json-style hooks — uses TypeScript extensions via pi.on(event). Correct event mapping added to xtmux-rib.2.\n- ⚠️ pi `needs-input` gap: no documented event for awaits-permission. Sub-investigation logged in xtmux-rib.2.\n\nFindings that changed the board:\n1. NEW xtmux-rib.17 (P0, cache-split): regression in the perf-audit cache — it freezes agent-derived sort/badges for the TTL. Blocks xtmux-rib.2. tmux 3.5a has no option-changed hook, so must fix structurally.\n2. NEW xtmux-rib.18 (P1, attn-jump binds): operator's draft had wrong script path (tmux-picker.sh vs tmux-session-picker) + M-digit collision risk. Path-corrected + collision policy documented.\n3. UPDATED xtmux-rib.2: pi section rewritten (extension-based, not settings.json); needs-input gap logged.\n\nVerified-correct (no board change): deliver() send-keys gate (#4), wait-for rendezvous semantics (#5), attn-jump target freshness (bypasses cache).",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 1,
+        "status": "open",
+        "title": "xtmux picker v0.2: actionable control surface + specialist awareness",
+        "updated_at": "2026-06-29T23:43:49Z"
+      }
+    },
+    "xtmux-rib.13": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "comment_count": 0,
+        "created_at": "2026-06-29T22:56:33Z",
+        "created_by": "jaggerxtrm",
+        "dependencies": [
+          {
+            "created_at": "2026-07-03T16:19:51Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "xtmux-amn",
+            "issue_id": "xtmux-rib.13",
+            "metadata": "{}",
+            "type": "relates-to"
+          },
+          {
+            "created_at": "2026-06-30T00:56:33Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "xtmux-rib",
+            "issue_id": "xtmux-rib.13",
+            "metadata": "{}",
+            "type": "parent-child"
+          }
+        ],
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "description": "## Context\n\nPreview is a snapshot. Watching an agent think shouldn't require re-highlighting.\n\n## What to build\n\n- `ctrl-t` → `transform-preview` / reload preview for the current line (manual refresh).\n- Optional auto-tick: a fifo helper (`tail -f` fed by a `while sleep N` loop) that refreshes the preview pane every N seconds while the cursor is stationary. Guarded behind `TMUX_PICKER_LIVE_PREVIEW` (default off — fragile/fragile resource).\n- Document the tradeoff; ship tap-to-refresh as the default.\n\n## Acceptance criteria\n\n- [ ] `ctrl-t` refreshes the preview in place.\n- [ ] Auto-tick mode is opt-in, documented, and cleans up its background loop on close.\n- [ ] No leak of background processes after the popup exits.\n- [ ] README updated.\n\n## Approach notes\n\n- Tap-to-refresh is trivial + robust; lead with it.\n- Auto-tick via a named pipe + trap cleanup; consider `fzf --bind` with a reload scheduled by `sleep` — verify no leftover PIDs.\n- Layer: shell.\n",
+        "id": "xtmux-rib.13",
+        "issue_type": "task",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 3,
+        "status": "open",
+        "title": "Live preview: tap-to-refresh (ctrl-t) + optional auto-tick",
+        "updated_at": "2026-06-29T22:56:33Z"
+      }
+    },
+    "xtmux-rib.14": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "comment_count": 0,
+        "created_at": "2026-06-29T22:56:34Z",
+        "created_by": "jaggerxtrm",
+        "dependencies": [
+          {
+            "created_at": "2026-07-03T16:19:53Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "xtmux-amn",
+            "issue_id": "xtmux-rib.14",
+            "metadata": "{}",
+            "type": "relates-to"
+          },
+          {
+            "created_at": "2026-06-30T00:56:34Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "xtmux-rib",
+            "issue_id": "xtmux-rib.14",
+            "metadata": "{}",
+            "type": "parent-child"
+          },
+          {
+            "created_at": "2026-06-30T00:56:59Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "xtmux-rib.1",
+            "issue_id": "xtmux-rib.14",
+            "metadata": "{}",
+            "type": "blocks"
+          }
+        ],
+        "dependency_count": 1,
+        "dependent_count": 0,
+        "description": "## Context\n\nSessions you live in should float up below the attention-ranked head. Pure alphabetical sorts bury them.\n\n## What to build\n\n- On switch (`jump_to_target`), record `session_id` + timestamp to `~/.local/state/xtmux/frecency`.\n- Compute a frecency score (recent + frequency) and use it to break ties below attention rank.\n- Compact the log periodically (cap N entries).\n\n## Acceptance criteria\n\n- [ ] Frequently/recently switched sessions rank higher among non-attention rows.\n- [ ] Log file bounded (no unbounded growth).\n- [ ] Degrades gracefully if state dir unwritable.\n- [ ] Contract tests pass (sort change).\n\n## Approach notes\n\n- Score: recency-decayed count (e.g. last 100 switches, weight by age).\n- Keep the attention-ranked head untouched (WAIT/RUN first), frecency only orders the rest.\n- Layer: core (score) + boundary (state file). Depends-on: t0.\n",
+        "id": "xtmux-rib.14",
+        "issue_type": "task",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 4,
+        "status": "open",
+        "title": "Frecency: persist last-used + count for idle-tail ranking",
+        "updated_at": "2026-06-30T04:05:18Z"
+      }
+    },
+    "xtmux-rib.15": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "comment_count": 0,
+        "created_at": "2026-06-29T22:56:35Z",
+        "created_by": "jaggerxtrm",
+        "dependencies": [
+          {
+            "created_at": "2026-07-03T16:19:52Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "xtmux-amn",
+            "issue_id": "xtmux-rib.15",
+            "metadata": "{}",
+            "type": "relates-to"
+          },
+          {
+            "created_at": "2026-06-30T00:56:35Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "xtmux-rib",
+            "issue_id": "xtmux-rib.15",
+            "metadata": "{}",
+            "type": "parent-child"
+          }
+        ],
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "description": "## Context\n\nThe border-label hint is cramped; discoverability is low once binds multiply.\n\n## What to build\n\n- `?` → swap the preview pane content to a binds cheatsheet (all current keys), `?` again to restore.\n- Generate the cheatsheet from a single source of truth (a `docs/keys.md` or an env-driven table) so it never drifts from actual binds.\n\n## Acceptance criteria\n\n- [ ] `?` toggles a cheatsheet in the preview area.\n- [ ] Cheatsheet reflects all implemented binds (auto-derived, not hand-maintained).\n- [ ] No key collisions with existing binds.\n- [ ] README updated.\n\n## Approach notes\n\n- Land after the control-surface binds (t4/t5/t6/t7/t9/t10/t11/t12) are finalized so the cheatsheet is accurate.\n- Layer: shell.\n",
+        "id": "xtmux-rib.15",
+        "issue_type": "task",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 4,
+        "status": "open",
+        "title": "Help overlay: ? swaps preview pane to a binds cheatsheet",
+        "updated_at": "2026-06-29T22:56:35Z"
+      }
+    }
+  },
+  "relations": [
+    {
+      "raw": {
+        "created_at": "2026-06-30T00:56:33Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "xtmux-rib",
+        "issue_id": "xtmux-rib.13",
+        "metadata": "{}",
+        "type": "parent-child"
+      },
+      "source": "xtmux-rib.13",
+      "source_field": "dependencies",
+      "target": "xtmux-rib",
+      "type": "parent-child"
+    },
+    {
+      "raw": {
+        "created_at": "2026-06-30T00:56:34Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "xtmux-rib",
+        "issue_id": "xtmux-rib.14",
+        "metadata": "{}",
+        "type": "parent-child"
+      },
+      "source": "xtmux-rib.14",
+      "source_field": "dependencies",
+      "target": "xtmux-rib",
+      "type": "parent-child"
+    },
+    {
+      "raw": {
+        "created_at": "2026-06-30T00:56:35Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "xtmux-rib",
+        "issue_id": "xtmux-rib.15",
+        "metadata": "{}",
+        "type": "parent-child"
+      },
+      "source": "xtmux-rib.15",
+      "source_field": "dependencies",
+      "target": "xtmux-rib",
+      "type": "parent-child"
+    }
+  ],
+  "repository": "Jaggerxtrm/xtmux",
+  "root_id": "xtmux-rib",
+  "root_title": "xtmux picker v0.2: actionable control surface + specialist awareness",
+  "schema_version": "xtrm.board-audit.work-package.v1",
+  "scope": "open"
+}

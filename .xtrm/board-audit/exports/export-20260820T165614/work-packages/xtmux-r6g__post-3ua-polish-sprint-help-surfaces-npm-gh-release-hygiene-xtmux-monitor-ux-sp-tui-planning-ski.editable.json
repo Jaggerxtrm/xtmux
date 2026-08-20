@@ -1,0 +1,131 @@
+{
+  "content_sha256": "681a49a77b4cfcdeded1ebebc7df3f0f93ea23ec1b7d092e27a47e2fd04783a2",
+  "desired_issues": {
+    "xtmux-r6g.8": {
+      "_type": "issue",
+      "comment_count": 0,
+      "created_at": "2026-07-17T00:45:38Z",
+      "created_by": "jaggerxtrm",
+      "dependencies": [
+        {
+          "created_at": "2026-07-17T02:45:38Z",
+          "created_by": "jaggerxtrm",
+          "depends_on_id": "xtmux-r6g",
+          "issue_id": "xtmux-r6g.8",
+          "metadata": "{}",
+          "type": "parent-child"
+        }
+      ],
+      "dependency_count": 0,
+      "dependent_count": 0,
+      "description": "Finish the release deliverable from xtmux-r6g.1: publish @jaggerxtrm/xtmux to npm. Deferred out of sprint because it needs one-time npmjs.com configuration (not a repo change).\n\n## Context\n\n- v0.1.0 tagged and GH-released 2026-07-17: https://github.com/Jaggerxtrm/xtmux/releases/tag/v0.1.0\n- release.yml (main) already contains `npm publish --access public --provenance`; the last run failed with `404 The requested resource '@jaggerxtrm/xtmux@0.1.0' could not be found or you do not have permission to access it.` The package has never actually been published — curl on the registry returns `{\"error\":\"Not found\"}`; PR#20 shipped the tarball infra but no tag ever fired the workflow before.\n- Failed run for reference: https://github.com/Jaggerxtrm/xtmux/actions/runs/29545471622\n\n## Two paths (pick one)\n\n### Path A — OIDC Trusted Publisher (matches current workflow, keeps provenance)\n\n1. On npmjs.com, log in as the `@jaggerxtrm` scope owner.\n2. Navigate to the org/scope settings → Trusted Publishers.\n3. Add a publisher: repo `Jaggerxtrm/xtmux`, workflow file `.github/workflows/release.yml`, environment blank.\n4. Re-run https://github.com/Jaggerxtrm/xtmux/actions/runs/29545471622 (or move v0.1.0 tag to head to trigger a fresh run).\n\nNo repo changes required.\n\n### Path B — Classic token (fastest, drops provenance for now)\n\n1. `npm token create --type automation` (or the modern granular equivalent) on the `@jaggerxtrm` scope.\n2. Repo → Settings → Secrets and variables → Actions → New repository secret: `NPM_TOKEN`.\n3. In `.github/workflows/release.yml`, replace the publish step:\n   ```yaml\n   - env: { NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }} }\n     run: npm publish --access public\n   ```\n4. Re-run the failed release (as above).\n\nPath A is preferred long-term because provenance stays.\n\n## Acceptance\n\n- `npm view @jaggerxtrm/xtmux versions` returns `[ '0.1.0' ]`.\n- `.github/workflows/release.yml` publishes cleanly on the NEXT tag push without manual intervention.\n- Bead xtmux-r6g.1 already documents the release cadence; no doc changes needed here unless Path B is chosen (add a comment on why provenance was skipped).",
+      "id": "xtmux-r6g.8",
+      "issue_type": "task",
+      "owner": "jagger.xtrm@gmail.com",
+      "priority": 2,
+      "status": "open",
+      "title": "task",
+      "updated_at": "2026-07-17T00:45:38Z"
+    }
+  },
+  "diagnostics": {
+    "dangling_relations": [],
+    "derived_dotted_parent_links": [],
+    "multiple_parent_nodes": []
+  },
+  "external_relations": [],
+  "hierarchy": {
+    "children": [
+      {
+        "children": [],
+        "id": "xtmux-r6g.8"
+      }
+    ],
+    "id": "xtmux-r6g"
+  },
+  "issues": {
+    "xtmux-r6g": {
+      "selection_state": "context-only",
+      "source": {
+        "_type": "issue",
+        "close_reason": "All 9 initial requirements delivered. Follow-ups: xtmux-r6g.8 (npm publish setup, your NPM_TOKEN), xtmux-r6g.9.2 (docs/ exclusion cross-repo verify), plus xtrm-fk6i5 / xtrm-mgp47 / PR #437 for the multiplexing docs+bug work discovered late.",
+        "closed_at": "2026-07-18T00:22:19Z",
+        "comment_count": 0,
+        "created_at": "2026-07-16T23:19:35Z",
+        "created_by": "jaggerxtrm",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "description": "Post-3ua polish sprint: help surfaces, npm/GitHub release hygiene, xtmux monitor UX, sp console TUI aggregation, /planning library-first pipeline, memory-processor overhaul.\n\n## Motivation\n\nThe two recent epics (xtmux-j46 runtime contracts + xtmux-3ua SQLite reply/wake SSOT, 42 merged PRs on xtmux; parallel work on core+specialists) shipped fast. User-facing surfaces have drifted:\n- Help output, README, skill docs may not represent everything that landed\n- npm packages ship internal docs (plans/design under docs/) that don't belong in distribution\n- No `repository`/`homepage`/`bugs` fields on `xtrm-cli` and `@jaggerxtrm/specialists`\n- xtmux has zero GitHub releases despite v0.10-era features\n- git-cliff config in core+specialists inlines full commit bodies — noisy CHANGELOG\n- xtmux monitor/logging surfaces got great JSON but the human-view is missing\n- sp console TUI is slow on aggregated view; opportunity to unify with xtmux pane/monitor state\n- /planning skill lets agents invent instead of surfacing existing deps first\n- memory-processor skill+specialist is broken: 500+ memories → runs fail, when they pass ~50 memories are forgotten. It doesn't anchor cleaning to landed PRs/releases\n\n## Workstreams (child beads)\n\nW1 xtmux (Claude Opus, worker in xt claude worktree)\nW2 core (pi codex-sol, worker in xt pi worktree)\nW3 specialists+sp-TUI (pi codex-sol, worker in xt pi worktree)\nW4 /planning skill library-first pipeline (Claude Opus, design-only worker)\nW5 memory-processor overhaul (pi codex-sol, design + patch)\n\n## Cross-cutting rules\n\n- Cardinal multiplexing rules apply (never multi-line send-keys, never $() in send-keys, use safe-send-pointer, never send to working pane)\n- Every worker's first action is `bd show <epic>` AND `bd show <own child>` — written verbatim into /tmp prompt file\n- Each worker owns exactly one repo path; do not push outside SCOPE\n- Model budget: Claude Opus for W1+W4 (design-heavy), pi codex/gpt-5.6-sol for W2/W3/W5 (implementation)\n- RAM: 2.3Gi free at start, 12 cores, load avg 7-12. Stagger workers. Kill on completion.\n- No new npm deps for W2/W3 unless already in package.json\n- Ponytail: shortest working diff, no speculative abstractions\n\n## Done when\n\nAll child beads closed with clean handoff notes. New GH releases visible for all three repos. Aggregated monitor/TUI proposal reviewed by user. Memory-processor and planning-skill diffs ready to apply.\n",
+        "id": "xtmux-r6g",
+        "issue_type": "epic",
+        "notes": "\n## Addendum: automation + release semver rules (added by orchestrator mid-turn per user)\n\n- After the manual regeneration and cleanup, WIRE `git-cliff` so subsequent regenerations are automated at the right step. Prefer whichever fits: a `release` GitHub Action, a pre-tag git hook, or an `xt end`/release script step. Pick one; document it in the repo.\n- Cut a **npm publish** (for repos with a package.json) AND a **GitHub release** at the end.\n- Version bumps: **minors and patches only** — no majors this sprint. Choose minor when this batch adds user-facing features (both epics land features), patch for pure fix/cleanup batches.\n- xtmux (no npm) — GitHub release only.",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 1,
+        "status": "closed",
+        "title": "Post-3ua polish sprint: help surfaces, npm/GH release hygiene, xtmux monitor UX, sp TUI, planning skill, memory-processor",
+        "updated_at": "2026-07-18T00:22:19Z"
+      }
+    },
+    "xtmux-r6g.8": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "comment_count": 0,
+        "created_at": "2026-07-17T00:45:38Z",
+        "created_by": "jaggerxtrm",
+        "dependencies": [
+          {
+            "created_at": "2026-07-17T02:45:38Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "xtmux-r6g",
+            "issue_id": "xtmux-r6g.8",
+            "metadata": "{}",
+            "type": "parent-child"
+          }
+        ],
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "description": "Finish the release deliverable from xtmux-r6g.1: publish @jaggerxtrm/xtmux to npm. Deferred out of sprint because it needs one-time npmjs.com configuration (not a repo change).\n\n## Context\n\n- v0.1.0 tagged and GH-released 2026-07-17: https://github.com/Jaggerxtrm/xtmux/releases/tag/v0.1.0\n- release.yml (main) already contains `npm publish --access public --provenance`; the last run failed with `404 The requested resource '@jaggerxtrm/xtmux@0.1.0' could not be found or you do not have permission to access it.` The package has never actually been published — curl on the registry returns `{\"error\":\"Not found\"}`; PR#20 shipped the tarball infra but no tag ever fired the workflow before.\n- Failed run for reference: https://github.com/Jaggerxtrm/xtmux/actions/runs/29545471622\n\n## Two paths (pick one)\n\n### Path A — OIDC Trusted Publisher (matches current workflow, keeps provenance)\n\n1. On npmjs.com, log in as the `@jaggerxtrm` scope owner.\n2. Navigate to the org/scope settings → Trusted Publishers.\n3. Add a publisher: repo `Jaggerxtrm/xtmux`, workflow file `.github/workflows/release.yml`, environment blank.\n4. Re-run https://github.com/Jaggerxtrm/xtmux/actions/runs/29545471622 (or move v0.1.0 tag to head to trigger a fresh run).\n\nNo repo changes required.\n\n### Path B — Classic token (fastest, drops provenance for now)\n\n1. `npm token create --type automation` (or the modern granular equivalent) on the `@jaggerxtrm` scope.\n2. Repo → Settings → Secrets and variables → Actions → New repository secret: `NPM_TOKEN`.\n3. In `.github/workflows/release.yml`, replace the publish step:\n   ```yaml\n   - env: { NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }} }\n     run: npm publish --access public\n   ```\n4. Re-run the failed release (as above).\n\nPath A is preferred long-term because provenance stays.\n\n## Acceptance\n\n- `npm view @jaggerxtrm/xtmux versions` returns `[ '0.1.0' ]`.\n- `.github/workflows/release.yml` publishes cleanly on the NEXT tag push without manual intervention.\n- Bead xtmux-r6g.1 already documents the release cadence; no doc changes needed here unless Path B is chosen (add a comment on why provenance was skipped).",
+        "id": "xtmux-r6g.8",
+        "issue_type": "task",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 2,
+        "status": "open",
+        "title": "task",
+        "updated_at": "2026-07-17T00:45:38Z"
+      }
+    }
+  },
+  "new_comments": {},
+  "relations": [
+    {
+      "raw": {
+        "created_at": "2026-07-17T02:45:38Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "xtmux-r6g",
+        "issue_id": "xtmux-r6g.8",
+        "metadata": "{}",
+        "type": "parent-child"
+      },
+      "source": "xtmux-r6g.8",
+      "source_field": "dependencies",
+      "target": "xtmux-r6g",
+      "type": "parent-child"
+    }
+  ],
+  "repository": "Jaggerxtrm/xtmux",
+  "root_id": "xtmux-r6g",
+  "root_title": "Post-3ua polish sprint: help surfaces, npm/GH release hygiene, xtmux monitor UX, sp TUI, planning skill, memory-processor",
+  "roundtrip": {
+    "base_package_sha256": "681a49a77b4cfcdeded1ebebc7df3f0f93ea23ec1b7d092e27a47e2fd04783a2",
+    "base_record_sha256": {
+      "xtmux-r6g": "bd9f8a4fe4b2002b6df735ab2fa512b78a944056ceabd8f9c6d93e5e3e1639ea",
+      "xtmux-r6g.8": "f82e3c855910b757dc4f26858d2bcd433f8be9332f165518869a5314d85b1de8"
+    },
+    "edit_contract": "modify desired_issues and new_comments only; issues.*.source is immutable base state",
+    "prepared_at": "2026-08-20T14:56:17Z",
+    "schema_version": "xtrm.board-audit.roundtrip.v1"
+  },
+  "schema_version": "xtrm.board-audit.work-package.v1",
+  "scope": "open"
+}

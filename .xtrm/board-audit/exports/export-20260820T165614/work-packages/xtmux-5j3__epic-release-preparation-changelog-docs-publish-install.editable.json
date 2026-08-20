@@ -1,0 +1,135 @@
+{
+  "content_sha256": "669f6d700fc5c8b76a18899d3d193db93a1b64082e59d6dbc04c3c4760f98494",
+  "desired_issues": {
+    "xtmux-5j3.7": {
+      "_type": "issue",
+      "comment_count": 0,
+      "created_at": "2026-07-13T04:48:39Z",
+      "created_by": "jaggerxtrm",
+      "dependencies": [
+        {
+          "created_at": "2026-07-13T06:48:39Z",
+          "created_by": "jaggerxtrm",
+          "depends_on_id": "xtmux-5j3",
+          "issue_id": "xtmux-5j3.7",
+          "metadata": "{}",
+          "type": "parent-child"
+        }
+      ],
+      "dependency_count": 0,
+      "dependent_count": 0,
+      "description": "Follow-up to xtmux-5j3.6. My xtmux-3xs inline callout to /using-specialists SKILL.md was reverted from core (879282e2) because that file is vendor-tracked from the specialists repo per commit 36539725 'fix(skills): vendor canonical specialists orchestration skill'. Editing it in ~/dev/core breaks the vendor-parity gate.\n\nTO SHIP: open a PR against ~/dev/specialists adding the same _[xtmux-3xs]_ callout to .xtrm/skills/default/using-specialists/SKILL.md (or wherever the specialists repo owns it now). Payload verbatim from xtmux .xtrm/skills-patches-5j3-6/apply-secondary.sh US_PAYLOAD (removed in this session, preserved in git history if needed).\n\nAnchor line to insert AFTER: 'live in `/multiplexing` Pattern 7 — do not re-derive them here.'\n\nPayload: '_[xtmux-3xs]_ Under V2 (default 2026-07-13), the coordinator's `message-send --bead` implicitly sets `--expects-reply=true`. A pi parent surfaces coordinator escalations as reply obligations via the `pi-inbox-reply` extension — the parent will wake itself and respond, no operator prod needed. Mechanism in `/multiplexing` § V2 SQLite runtime; delegated-pane side in `/multiplexing-team` § Auto-wake.'\n\nVerified by pi () in message msg-1783918011-3210862 (2026-07-13 06:46). Non-blocking for xtmux-5j3 release.",
+      "id": "xtmux-5j3.7",
+      "issue_type": "task",
+      "notes": "Explicit release checklist disposition: blocked from this xtmux package by the specialists vendor ownership boundary. Requires a separate PR/release in ~/dev/specialists and re-vendor in core; local edits here would fail the vendor hash gate. Non-blocking for @jaggerxtrm/xtmux installer, as the bead already states.",
+      "owner": "jagger.xtrm@gmail.com",
+      "priority": 3,
+      "status": "open",
+      "title": "Release-prep: upstream V2 coordination callout to specialists repo",
+      "updated_at": "2026-07-13T23:19:37Z"
+    }
+  },
+  "diagnostics": {
+    "dangling_relations": [],
+    "derived_dotted_parent_links": [],
+    "multiple_parent_nodes": []
+  },
+  "external_relations": [],
+  "hierarchy": {
+    "children": [
+      {
+        "children": [],
+        "id": "xtmux-5j3.7"
+      }
+    ],
+    "id": "xtmux-5j3"
+  },
+  "issues": {
+    "xtmux-5j3": {
+      "selection_state": "context-only",
+      "source": {
+        "_type": "issue",
+        "assignee": "jaggerxtrm",
+        "close_reason": "Publishable @jaggerxtrm/xtmux 0.1.0 implementation complete and independently verified; npm publication intentionally not performed. Non-blocking upstream specialists follow-up xtmux-5j3.7 remains separately tracked.",
+        "closed_at": "2026-07-13T23:46:58Z",
+        "comment_count": 0,
+        "created_at": "2026-07-13T00:28:16Z",
+        "created_by": "jaggerxtrm",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "description": "## GOAL\n\nPrepare xtmux for release + public consumption. Currently solo-dev, direct-to-main\nFF workflow; when this ships, others will need to install, upgrade, and read\nwhat changed.\n\n## OUT-OF-SCOPE (deferred to release-time)\n\n- Actual v1.0 tag + release publish action.\n- Branch protection + PR-required rules on main (operator's flip once ready).",
+        "id": "xtmux-5j3",
+        "issue_type": "epic",
+        "notes": "IMPLEMENTATION READY (not published): @jaggerxtrm/xtmux 0.1.0 installer, global Pi/Claude integration, reusable git-cliff/aicommit2 assets, docs, MIT metadata, npm provenance workflow, and strict package contents implemented. Validation: npm test PASS (183 Bun + 179 shell contract + 2 installer); typecheck PASS; npm audit --omit=dev 0 vulnerabilities; final packed artifact smoke PASS from /tmp artifact with clean global install, 11 Claude wrappers, grouped Pi package, idempotent reinstall, live backend, no browser, external-repo changelog; package 68 files/~120KB/no dev dotdirs. Live ~/.pi and ~/.claude installation applied and idempotency verified; 12 xtrm-global wrappers plus unrelated settings preserved. Epic remains open only for xtmux-5j3.7, a non-blocking upstream specialists-repo callout that cannot be vendored here without violating its hash ownership gate. Full mapping: docs/RELEASE-CHECKLIST.md.\nFinal real-user install: installed the tested tarball globally with npm (not published). npm list -g shows @jaggerxtrm/xtmux@0.1.0; ~/.local/bin targets the stable npm global package, live V2 JSON query succeeds, Pi lists the grouped package, Claude has 11 xtmux wrappers while all 12 xtrm-global wrappers remain.\nPane 1 follow-up xtmux-qa0 integrated and closed: shell prefilters registered (10.69ms vs 58.64ms direct Node no-match), stale .xtrm auto-monitor duplicates deleted, expanded settings merge tests green, final packed + real global install refreshed, and xt update survival re-verified.\nP0 E integrated: xtmux-obs uses a Node shim resolving vendored Bun, not /usr/bin/env bun. Packed and real global installs pass direct/picker JSON commands with system Bun excluded from PATH. qa0 reclosed after 193+179+5 tests and typecheck.\nCoverage-completion commit 772b595 pushed to PR #20: existing Codex installs get agent-state hooks without installing Codex CLI; npm ships keys.md and INSTALL includes required tmux binding; README skill claim corrected.",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 2,
+        "started_at": "2026-07-13T23:00:06Z",
+        "status": "closed",
+        "title": "[epic] Release preparation: changelog, docs, publish/install",
+        "updated_at": "2026-07-13T23:54:06Z"
+      }
+    },
+    "xtmux-5j3.7": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "comment_count": 0,
+        "created_at": "2026-07-13T04:48:39Z",
+        "created_by": "jaggerxtrm",
+        "dependencies": [
+          {
+            "created_at": "2026-07-13T06:48:39Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "xtmux-5j3",
+            "issue_id": "xtmux-5j3.7",
+            "metadata": "{}",
+            "type": "parent-child"
+          }
+        ],
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "description": "Follow-up to xtmux-5j3.6. My xtmux-3xs inline callout to /using-specialists SKILL.md was reverted from core (879282e2) because that file is vendor-tracked from the specialists repo per commit 36539725 'fix(skills): vendor canonical specialists orchestration skill'. Editing it in ~/dev/core breaks the vendor-parity gate.\n\nTO SHIP: open a PR against ~/dev/specialists adding the same _[xtmux-3xs]_ callout to .xtrm/skills/default/using-specialists/SKILL.md (or wherever the specialists repo owns it now). Payload verbatim from xtmux .xtrm/skills-patches-5j3-6/apply-secondary.sh US_PAYLOAD (removed in this session, preserved in git history if needed).\n\nAnchor line to insert AFTER: 'live in `/multiplexing` Pattern 7 — do not re-derive them here.'\n\nPayload: '_[xtmux-3xs]_ Under V2 (default 2026-07-13), the coordinator's `message-send --bead` implicitly sets `--expects-reply=true`. A pi parent surfaces coordinator escalations as reply obligations via the `pi-inbox-reply` extension — the parent will wake itself and respond, no operator prod needed. Mechanism in `/multiplexing` § V2 SQLite runtime; delegated-pane side in `/multiplexing-team` § Auto-wake.'\n\nVerified by pi () in message msg-1783918011-3210862 (2026-07-13 06:46). Non-blocking for xtmux-5j3 release.",
+        "id": "xtmux-5j3.7",
+        "issue_type": "task",
+        "notes": "Explicit release checklist disposition: blocked from this xtmux package by the specialists vendor ownership boundary. Requires a separate PR/release in ~/dev/specialists and re-vendor in core; local edits here would fail the vendor hash gate. Non-blocking for @jaggerxtrm/xtmux installer, as the bead already states.",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 3,
+        "status": "open",
+        "title": "Release-prep: upstream V2 coordination callout to specialists repo",
+        "updated_at": "2026-07-13T23:19:37Z"
+      }
+    }
+  },
+  "new_comments": {},
+  "relations": [
+    {
+      "raw": {
+        "created_at": "2026-07-13T06:48:39Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "xtmux-5j3",
+        "issue_id": "xtmux-5j3.7",
+        "metadata": "{}",
+        "type": "parent-child"
+      },
+      "source": "xtmux-5j3.7",
+      "source_field": "dependencies",
+      "target": "xtmux-5j3",
+      "type": "parent-child"
+    }
+  ],
+  "repository": "Jaggerxtrm/xtmux",
+  "root_id": "xtmux-5j3",
+  "root_title": "[epic] Release preparation: changelog, docs, publish/install",
+  "roundtrip": {
+    "base_package_sha256": "669f6d700fc5c8b76a18899d3d193db93a1b64082e59d6dbc04c3c4760f98494",
+    "base_record_sha256": {
+      "xtmux-5j3": "7f144453e9088341c3a2eb57ed379870b445ecccd3f376b889b3ec7616d9b903",
+      "xtmux-5j3.7": "4121a17f2d8be4e550fa49e530d90f089c95421abb338175bbc963d751e7207d"
+    },
+    "edit_contract": "modify desired_issues and new_comments only; issues.*.source is immutable base state",
+    "prepared_at": "2026-08-20T14:56:16Z",
+    "schema_version": "xtrm.board-audit.roundtrip.v1"
+  },
+  "schema_version": "xtrm.board-audit.work-package.v1",
+  "scope": "open"
+}
