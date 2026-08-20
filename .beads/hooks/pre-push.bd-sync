@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Beads/Dolt sync chained from the pre-push hook.
+# Default the Dolt pre-push fsck timeout: 30s is too tight for large stores.
+: "${BEADS_FSCK_TIMEOUT:=600}"
+#
+# Synchronizes Beads data with the GitHub-backed Dolt remote (refs/dolt/data):
+#   1. commit pending Beads changes (idempotent)
+#   2. pull the Dolt remote (pull before push, per Beads concurrency policy)
+#   3. push the Dolt remote
+#
+# A non-zero exit aborts the Git push, so the push cannot succeed while Beads
+# state is unsynced.
+set -uo pipefail
+
+if ! command -v bd >/dev/null 2>&1 || ! bd where >/dev/null 2>&1; then
+  echo "beads-sync: no beads database in this checkout — skipping Dolt sync" >&2
+  exit 0
+fi
+
+echo "beads-sync: commit pending Beads changes"
+if ! bd dolt commit; then
+  echo "beads-sync: ERROR: 'bd dolt commit' failed — aborting Git push" >&2
+  exit 1
+fi
+
+echo "beads-sync: pull Dolt remote"
+if ! bd dolt pull; then
+  echo "beads-sync: ERROR: 'bd dolt pull' failed — aborting Git push" >&2
+  exit 1
+fi
+
+echo "beads-sync: push Dolt remote"
+if ! bd dolt push; then
+  echo "beads-sync: ERROR: 'bd dolt push' failed — aborting Git push" >&2
+  exit 1
+fi
+
+echo "beads-sync: Dolt sync OK"
+exit 0
