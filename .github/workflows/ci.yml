@@ -37,3 +37,55 @@ jobs:
         with:
           name: json-api-gate-artifacts
           path: /tmp/xtmux-json-gate-*/
+
+  pr108-final-dispatch-patch:
+    if: github.event_name == 'pull_request' && github.head_ref == 'xt/xjif'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: xt/xjif
+          fetch-depth: 0
+      - name: Reconcile snapshot dispatch and final ADR literals
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          picker = Path('bin/tmux-session-picker')
+          s = picker.read_text()
+          old = '''  nav-snapshot-view)\n  shift\n  [ "$#" -eq 3 ] || die_usage "nav-snapshot-view requires <flat> <chain> <query>"\n  nav_snapshot_view "$@"\n  exit $?\n  ;;\nnav-snapshot-refresh)\n  shift\n  [ "$#" -eq 5 ] || die_usage "nav-snapshot-refresh requires <flat> <chain> <single|multi> <active|all|waiting|running> <query>"\n  nav_snapshot_refresh "$@"\n  exit $?\n  ;;\n'''
+          new = '''  nav-snapshot-view)\n    shift\n    [ "$#" -eq 3 ] || die_usage "nav-snapshot-view requires <flat> <chain> <query>"\n    nav_snapshot_view "$@"\n    exit $?\n    ;;\n  nav-snapshot-refresh)\n    shift\n    [ "$#" -eq 5 ] || die_usage "nav-snapshot-refresh requires <flat> <chain> <single|multi> <active|all|waiting|running> <query>"\n    nav_snapshot_refresh "$@"\n    exit $?\n    ;;\n'''
+          if old not in s:
+              raise SystemExit('snapshot dispatch block did not match expected branch state')
+          picker.write_text(s.replace(old, new, 1))
+
+          adr = Path('docs/design/adr/adr001-xtmux-nav.md')
+          a = adr.read_text()
+          replacements = {
+              'Pane location (repo, `repo · relative-path`, worktree → canonical repo': 'Pane location (repo, filesystem-style `repo/path`, worktree → canonical repo',
+              'subtracts eight cells for fzf border/selection chrome': 'subtracts four cells for the borderless fzf selection/marker gutter',
+              '› current fzf selection': '> current fzf selection',
+          }
+          for before, after in replacements.items():
+              if before not in a:
+                  raise SystemExit(f'ADR expected text missing: {before}')
+              a = a.replace(before, after, 1)
+          adr.write_text(a)
+          PY
+          bash -n bin/tmux-session-picker
+          git diff --check
+          bash test/contract.sh
+      - name: Commit patch and remove temporary coordinator workflow state
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git checkout origin/main -- .github/workflows/ci.yml
+          rm -f .github/workflows/pr108-final-patch.yml
+          git config user.name 'xtrm web coordinator'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix(nav): reconcile snapshot dispatch and final docs'
+          git push origin HEAD:xt/xjif
