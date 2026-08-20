@@ -254,14 +254,15 @@ memory growth (proven in `test/nav-contract.sh`).
 Finalized-head remeasurement with `NAV_PANE_LINES=1`: expanded private nav is
 **1420 B total / 7 NUL records / 226 B max record** (89 B max after ANSI
 stripping) for the deterministic 1-session / 2-window / 4-pane fixture.
-A normal live refresh uses **3 tmux calls total**: the existing two bulk
+A normal live projection uses **3 tmux calls total**: the existing two bulk
 inventory calls (`list-sessions`, `list-panes -a`) plus one bounded
 client-scoped `display-message` used only to place the occurrence-correct
-current marker; warm git remains 0 and process probes remain 0. Ordinary
-fzf query changes execute **0 tmux / 0 git / 0 process-probe calls**: the
-launcher derives one ancestry projection from the initial flat snapshot
-and switches between the two local NUL files until an explicit refresh,
-filter/mode change, or mutating action asks for fresh live state.
+current marker. Ordinary fzf query changes use that same fixed-cost live
+projection: **3 tmux / 0 warm git / 0 process-probe calls per reload**. This
+deliberately rereads pane options and current client location so badges,
+attention ordering, and waiting/running membership cannot stale while the
+operator types. An active query changes only the ancestry presentation; fields
+1–5 remain byte-identical.
 
 | report | expanded total | max record | records | warm tmux/git | cold tmux/git |
 |---|---|---|---|---|---|

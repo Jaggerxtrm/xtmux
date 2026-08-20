@@ -3715,9 +3715,23 @@ nav_snapshot_path_ok() {
   [ -f "$path" ] && [ ! -L "$path" ] && [ -O "$path" ]
 }
 
-# Per-keystroke path: local file read only. Query text selects flat vs
-# ancestry snapshot and never reaches tmux/git/eval.
+# Query projection. The fzf change path uses --live so rendered rows, agent
+# state, attention order, and waiting/running membership are rebuilt from tmux
+# for every query change. File mode remains the atomic handoff used by explicit
+# refresh and deterministic projection tests; it is not the interactive query
+# path.
 nav_snapshot_view() {
+  if [ "${1:-}" = '--live' ]; then
+    local lines="${2:-}" query="${3:-}" spec list_mode projection=flat
+    case "$lines" in single|multi) ;; *) return 2 ;; esac
+    picker_state_read filter || true
+    spec="$REPLY"
+    read_list_mode; list_mode="$REPLY"
+    [ -n "$query" ] && projection=chain
+    build_list "$spec" "$list_mode" nav "$lines" "$projection"
+    return
+  fi
+
   local flat="${1:-}" chain="${2:-}" query="${3:-}"
   nav_snapshot_path_ok "$flat" || return 1
   nav_snapshot_path_ok "$chain" || return 1
@@ -3779,8 +3793,10 @@ pick_nav() {
     chain_file="$(mktemp "${TMPDIR:-/tmp}/xtmux-nav.chain.XXXXXX")" || { rm -f "$flat_file"; exit 1; }
     trap 'rm -f "$flat_file" "$chain_file"' EXIT INT TERM
 
-    # Initial open performs one ordinary live projection. Query changes below
-    # never return to live inventory; they switch between local snapshots.
+    # Initial open is one live projection. Every query change below enters the
+    # live projection again; only expensive near-static git metadata may reuse
+    # its cache. Explicit refresh/filter/mode actions still replace both handoff
+    # files atomically for deterministic highlight tracking.
     if [ "$lines" = single ]; then
       "$self" list-active-nav-single > "$flat_file"
     else
@@ -3794,7 +3810,7 @@ pick_nav() {
     lwait="$self_q nav-snapshot-refresh $flat_q $chain_q $lines waiting '{q}'"
     lrun="$self_q nav-snapshot-refresh $flat_q $chain_q $lines running '{q}'"
     lactive="$self_q nav-snapshot-refresh $flat_q $chain_q $lines active '{q}'"
-    lchain="$self_q nav-snapshot-view $flat_q $chain_q '{q}'"
+    lchain="$self_q nav-snapshot-view --live $lines '{q}'"
 
     while IFS= read -r -d '' record; do
       index=$((index + 1))
@@ -6073,17 +6089,20 @@ case "${1:-}" in
     exit 0
     ;;
   nav-snapshot-view)
-  shift
-  [ "$#" -eq 3 ] || die_usage "nav-snapshot-view requires <flat> <chain> <query>"
-  nav_snapshot_view "$@"
-  exit $?
-  ;;
-nav-snapshot-refresh)
-  shift
-  [ "$#" -eq 5 ] || die_usage "nav-snapshot-refresh requires <flat> <chain> <single|multi> <active|all|waiting|running> <query>"
-  nav_snapshot_refresh "$@"
-  exit $?
-  ;;
+    shift
+    case "${1:-}" in
+      --live) [ "$#" -eq 3 ] || die_usage "nav-snapshot-view --live requires <single|multi> <query>" ;;
+      *) [ "$#" -eq 3 ] || die_usage "nav-snapshot-view requires <flat> <chain> <query>" ;;
+    esac
+    nav_snapshot_view "$@"
+    exit $?
+    ;;
+  nav-snapshot-refresh)
+    shift
+    [ "$#" -eq 5 ] || die_usage "nav-snapshot-refresh requires <flat> <chain> <single|multi> <active|all|waiting|running> <query>"
+    nav_snapshot_refresh "$@"
+    exit $?
+    ;;
   list-active-nav-chain|list-active-nav-single-chain)
     # Ancestry-preserving fuzzy projection, bound to fzf's `change` event. An
     # empty query re-emits the flat tree verbatim (the drawer's browse view);

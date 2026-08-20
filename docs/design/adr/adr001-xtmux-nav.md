@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-08-14
 **Repository:** `Jaggerxtrm/xtmux`
-**Decision scope:** local tmux session/pane navigation and picker presentation
+**Decision scope:** local tmux session/window/pane navigation and picker presentation
 **Out of scope:** xtmux runtime authority, persistence redesign, Herdr runtime adoption, native TUI implementation
 
 ## Topology model (amended 2026-08-17 — NAV-T8)
@@ -32,8 +32,9 @@ $ = session identity
 
 - Window index and window name are presentation only. Display text never
 determines action identity: every action resolves the hidden token
-(`s:$N`, `w:$N:@N`, `p:$N:%N`) and revalidates ownership against live tmux
-before mutation (window → its live owning session; pane → its live session).
+(`s:$N`, `w:$N:@N`, `p:$N:%N`) and revalidates the encoded occurrence
+against live tmux before mutation (the encoded session must contain the exact
+`@window` or `%pane` occurrence).
 - Windows are independently selectable rows (`Enter` selects the exact
 `@window_id`); panes are grouped under their real windows.
 - Pane location (repo, `repo · relative-path`, worktree → canonical repo
@@ -231,6 +232,8 @@ The initial command family is:
 xtmux nav
 xtmux nav next
 xtmux nav prev
+xtmux nav window-next
+xtmux nav window-prev
 xtmux nav attention-next
 xtmux nav attention-prev
 xtmux nav back
@@ -240,6 +243,9 @@ xtmux nav help
 `xtmux nav` opens the interactive navigator.
 
 `next` and `prev` wrap native tmux session order.
+
+`window-next` and `window-prev` wrap native tmux window order within the invoking
+client's current session.
 
 `attention-next` and `attention-prev` cycle the existing xtmux attention ordering.
 
@@ -261,7 +267,7 @@ bind s display-popup -E -x 0 -y 0 -w 40% -h 75% 'XTMUX_NAV_WIDTH=$(tput cols) $H
 
 This syntax was verified with tmux 3.5a. The intended sidebar is 38–40%; widen
 to 44–50% for long session names or 55–60% on a small terminal. The launcher
-subtracts eight cells for fzf border/selection chrome before bounding rows.
+subtracts four cells for borderless fzf selection chrome before bounding rows.
 The popup is 75% of the viewport height, and the `#222222` background uses a
 terminal-dependent alpha (`@200`) so supported terminals render it slightly
 transparent. The palette is restrained: a neutral primary for most rows, one

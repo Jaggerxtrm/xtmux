@@ -925,14 +925,12 @@ if grep -qF '?:change-preview(' "$WORK/nav-fzf-args" && grep -qF ')+show-preview
 else
   nok "nav help: ? explicitly reveals the hidden details pane"
 fi
-# §36 wiring: ordinary typing switches between prebuilt local snapshots.
-# No query character may invoke list-active-nav-chain/build_list.
-if grep -qF "change:reload-sync(" "$WORK/nav-fzf-args" \
-  && grep -qF "nav-snapshot-view" "$WORK/nav-fzf-args" \
-  && ! grep -qF "list-active-nav-chain '{q}'" "$WORK/nav-fzf-args"; then
-  ok "nav chrome: query change reads local ancestry snapshot (no live rebuild)"
+# §36 wiring: ordinary typing uses the explicit live query projection.
+# The snapshot helper remains only for the atomic explicit-refresh handoff.
+if grep -qF "change:reload-sync(" "$WORK/nav-fzf-args" && grep -qF "nav-snapshot-view --live multi '{q}'" "$WORK/nav-fzf-args" && ! grep -qF "list-active-nav-chain '{q}'" "$WORK/nav-fzf-args"; then
+  ok "nav chrome: query change rebuilds live ancestry (no rendered-state cache)"
 else
-  nok "nav chrome: query change is not snapshot-backed"
+  nok "nav chrome: query change is not wired to the live projection"
 fi
 if grep -qF "nav-snapshot-refresh" "$WORK/nav-fzf-args"; then
   ok "nav chrome: explicit reload/filter/mode actions refresh both snapshots"
@@ -945,11 +943,10 @@ fi
   self="$WORK/nav-list-stub"
   XTMUX_NAV_WIDTH=40 pick_nav
 )
-if grep -qF "nav-snapshot-view" "$WORK/nav-fzf-args-oneline" \
-  && ! grep -qF "list-active-nav-single-chain '{q}'" "$WORK/nav-fzf-args-oneline"; then
-  ok "nav chrome: oneline fallback also uses the local snapshot source"
+if grep -qF "nav-snapshot-view --live single '{q}'" "$WORK/nav-fzf-args-oneline" && ! grep -qF "list-active-nav-single-chain '{q}'" "$WORK/nav-fzf-args-oneline"; then
+  ok "nav chrome: oneline fallback also uses the live query projection"
 else
-  nok "nav chrome: oneline fallback is not snapshot-backed"
+  nok "nav chrome: oneline fallback is not wired to the live projection"
 fi
 assert_eq "nav filter: initial list uses persisted filter state" list-active-nav "$(cat "$WORK/nav-stub-command")"
 assert_eq "nav width: fzf selection chrome is reserved" 36 "$(cat "$WORK/nav-stub-width")"
@@ -2173,9 +2170,9 @@ cp "$WORK/s36-snapshot-chain" "$WORK/xtmux-nav.chain.s36"
 TMPDIR="$WORK" PATH="$WORK/bin-snapshot:$PATH" "$PICKER" nav-snapshot-view \
   "$WORK/xtmux-nav.flat.s36" "$WORK/xtmux-nav.chain.s36" '%875' > "$WORK/s36-snapshot-query"
 if [ ! -s "$WORK/s36-snapshot-calls" ] && cmp -s "$WORK/s36-snapshot-query" "$WORK/s36-snapshot-chain"; then
-  ok "§36: per-keystroke snapshot view performs zero tmux/git calls"
+  ok "§36: atomic snapshot handoff reads local files without tmux/git calls"
 else
-  nok "§36: per-keystroke snapshot view touched live state ($(tr '\n' ';' < "$WORK/s36-snapshot-calls"))"
+  nok "§36: atomic snapshot handoff touched live state ($(tr '\n' ';' < "$WORK/s36-snapshot-calls"))"
 fi
 TMPDIR="$WORK" PATH="$WORK/bin-snapshot:$PATH" "$PICKER" nav-snapshot-view \
   "$WORK/xtmux-nav.flat.s36" "$WORK/xtmux-nav.chain.s36" '' > "$WORK/s36-snapshot-empty"
@@ -2248,12 +2245,13 @@ done < "$WORK/s36-single"
 mkdir -p "$WORK/bin-chain"
 cat > "$WORK/bin-chain/tmux" <<'CHAINSIM'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "${XTMUX_TMUX_LOG:-/dev/null}"
 case "$1" in
   list-sessions) printf '%b\n' '$42\talpha\t%17\t/a\t1000' '$43\tbeta\t%18\t/b\t1000' ;;
-  list-panes) printf '%b\n' \
-    '$42\t@17\t0\tcoord\t0\t%553\t0\t1\tclaude\t/a\t-\t553\t-\t-\t-\t-' \
-    '$42\t@31\t1\tresearch\t0\t%875\t0\t1\tpi\t/a\t-\t875\t-\t-\t-\t-' \
-    '$43\t@31\t1\tresearch\t0\t%875\t0\t1\tpi\t/a\t-\t875\t-\t-\t-\t-' ;;
+  list-panes)
+    state="${XTMUX_LIVE_STATE:--}"
+    printf '%b\n' '$42\t@17\t0\tcoord\t0\t%553\t0\t1\tclaude\t/a\t-\t553\t-\t-\t-\t-' '$42\t@31\t1\tresearch\t0\t%875\t0\t1\tpi\t/a\t'"$state"'\t875\t-\t-\t-\t-' '$43\t@31\t1\tresearch\t0\t%875\t0\t1\tpi\t/a\t'"$state"'\t875\t-\t-\t-\t-'
+    ;;
   display-message) printf '$42\n' ;;
 esac
 exit 0
@@ -2293,6 +2291,24 @@ done < "$WORK/s36-d-query"
 [ "$_s36_dq_nl" -ge 2 ] \
   && ok "§36: active query re-emits ancestry chains at the dispatcher" \
   || nok "§36: dispatcher did not switch to chains (multiline panes=$_s36_dq_nl flat_bytes=$(wc -c < "$WORK/s36-d-flat") empty_bytes=$(wc -c < "$WORK/s36-d-empty") query_bytes=$(wc -c < "$WORK/s36-d-query") query_head=$(head -c 80 "$WORK/s36-d-query" | tr '\0' '|'))"
+# Live query regression: two consecutive change projections must observe a
+# pane-state transition. Each attached-client reload retains the bounded
+# three-call topology shape (list-sessions, list-panes, current-session query).
+: > "$WORK/s36-live.calls"
+TMPDIR="$_s36_tmp" PATH="$WORK/bin-chain:$PATH" TMUX_PANE='%553' XTMUX_TMUX_LOG="$WORK/s36-live.calls" XTMUX_LIVE_STATE=running "$PICKER" nav-snapshot-view --live multi '%875' > "$WORK/s36-live-running" 2>/dev/null
+TMPDIR="$_s36_tmp" PATH="$WORK/bin-chain:$PATH" TMUX_PANE='%553' XTMUX_TMUX_LOG="$WORK/s36-live.calls" XTMUX_LIVE_STATE=needs-input "$PICKER" nav-snapshot-view --live multi '%875' > "$WORK/s36-live-wait" 2>/dev/null
+_s36_live_running="$(_strip_nav_ansi "$(tr '\0' '\n' < "$WORK/s36-live-running")")"
+_s36_live_wait="$(_strip_nav_ansi "$(tr '\0' '\n' < "$WORK/s36-live-wait")")"
+_s36_live_run_seen=0; _s36_live_wait_seen=0
+case "$_s36_live_running" in *run*) _s36_live_run_seen=1 ;; esac
+case "$_s36_live_wait" in *wait*) _s36_live_wait_seen=1 ;; esac
+_s36_live_calls="$(wc -l < "$WORK/s36-live.calls" | tr -d ' ')"
+if [ "$_s36_live_run_seen" -eq 1 ] && [ "$_s36_live_wait_seen" -eq 1 ] && [ "$_s36_live_calls" -eq 6 ] && ! cmp -s "$WORK/s36-live-running" "$WORK/s36-live-wait"; then
+  ok "§36: query reload observes live agent-state changes (3 bounded tmux calls each)"
+else
+  nok "§36: live query freshness/call shape (run=$_s36_live_run_seen wait=$_s36_live_wait_seen calls=$_s36_live_calls)"
+fi
+
 # real fuzzy-query behavior: feed chain records to fzf --filter and prove the
 # surviving records carry the ancestors. Gated on a multiline-capable fzf.
 if command -v fzf >/dev/null 2>&1; then
