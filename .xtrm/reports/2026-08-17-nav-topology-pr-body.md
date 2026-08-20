@@ -1,198 +1,91 @@
 # feat(nav): session → window → pane topology-correct sidebar + pane location
 
-**Head:** branch `xt/xjif` (rebased onto `origin/main` `0af90e55`; last code head
-with full gate evidence: `21afd41`; final commit is this body sync)
-**Base:** `main` · **CI: ALL GREEN on `21afd41`** — CodeQL, analyze,
-pr-review-gate, `test`, `smoke` all success.
-
 > **DO NOT MERGE — external/web coordinator final review.**
+
+This file is the durable source for PR #108's architectural summary. It deliberately does not hard-code a transient head SHA or CI status; use the live PR checks for exact-head gate state.
 
 ## What this changes
 
-The nav picker now models tmux's real hierarchy as three first-class navigation
-levels:
+`xtmux nav` now models tmux's real hierarchy as first-class navigation entities:
 
-```
+```text
 session $N
   ↳ window @N
       ↳ pane %N
 ```
 
-replacing the earlier flattened `session → pane` model. This is the bounded
-follow-up to the existing nav implementation — no runtime redesign, no fzf
-replacement, no new persistence authority.
+Stable tmux object identities remain `$session`, `@window`, `%pane`. Structural occurrence identity is the hierarchy path, so a linked window/pane may appear under multiple sessions without being globally deduplicated. Private action tokens remain machine-only: `s:$N`, `w:$sid:@wid`, `p:$sid:%pid`; display text is never parsed for routing or mutation.
 
-## PR #108 remediation (blocking-review round)
+## Pane location
 
-- **Rebased onto current `origin/main`** (`0af90e55`); nav files do not overlap
-  the view-package commits, rebase clean.
-- **Occurrence-aware pane validation**: `p:$sid:%pane` no longer validates via a
-  bare `%pane` lookup (ambiguous for linked windows). The resolver issues ONE
-  session-scoped `display-message -t "$sid:%pane"` reading
-  `#{session_id}`+`#{pane_id}` and requires BOTH to match the encoded claim —
-  tmux silently falls back to the session's current pane when the pane is not
-  under that session, so the pair check is what rejects foreign occurrences.
-  Each real linked occurrence passes independently; a foreign claim refuses
-  with no partial state (TEST D).
-- **Ancestry-preserving fuzzy search**: ordinary fzf filtering previously
-  dropped a pane's window and session the moment a query matched the pane row.
-  The picker now binds fzf's `change` event to a chain projection
-  (`list-active-nav-chain` / `-single-chain`): while a query is active each
-  record's display carries the full `session → window → pane` chain (pane match
-  retains parent window + session; window match retains parent session); the
-  empty query re-emits the flat tree verbatim. Fields 1-5 (machine identity +
-  action token) are byte-identical in both projections, so enter/kill/popup
-  still act on exactly the matched node. Tested with REAL `fzf --filter`
-  (contract §36 + TEST E), not mocked argv.
-- **Lockfile wiring** (`c504f335`): see CI status below.
-- **Cold-state robustness** (`42e3e7da`): `picker_state_read` crashed under
-  `set -euo pipefail` whenever a state file did not exist — `REPLY="$(<missing)"`
-  raises a redirection error that exits the script even under a caller's
-  `|| true`. On a cold host (fresh runner, first-use user) every
-  `list-active-nav*` projection died before rendering. Now guarded with
-  `[ -f ]`; §36 adds a cold-state-dir regression guard that reproduces the
-  exact failure against the unfixed picker.
-- **CI-terminal robustness** (`21afd41`): real-tmux suite pins
-  `TERM=xterm-256color` for the attached client — CI jobs have no TERM and
-  tmux attach refuses an unqueryable terminal; attach logs now surface on
-  timeout.
+Expanded nav keeps `%pane-id` permanently visible and adds bounded filesystem context inline. A pane at a repo root renders the repo label; an in-repo cwd renders filesystem-style `repo/path` with deep middles elided; worktrees use the canonical parent-repo label; non-git paths become bounded `~/…` or trailing-path projections. Full absolute cwd remains details-only.
 
-## Identity: stable objects vs structural occurrences
+Pane rows are exactly one visual line (`NAV_PANE_LINES=1`). Width priority is `%pane-id` > runtime > exact state > repo/path > task. Records remain explicitly bounded.
 
-Two distinct notions of identity:
+## Topology and current location
 
-- **Stable tmux object identity**: session `$N`, window `@N`, pane `%N` —
-  operator-visible, stable where tmux guarantees them.
-- **Structural occurrence identity** (used for linked windows): a window linked
-  into more than one session participates in more than one occurrence.
+The picker derives session → window → pane topology from the existing bulk pane inventory. Linked windows are modeled as `$sid|@wid` occurrences and pane placement as `$sid|@wid|%pid`. Current session/window/pane follows the invoking client's actual session plus `$TMUX_PANE`, not first enumeration order or display state.
 
-```
-session occurrence       $sid
-window occurrence        $sid | @wid
-pane occurrence          $sid | @wid | %pid
-```
+State aggregates through one canonical priority: pane → window → session. Window rows show stable `@window-id`, truncatable `index:name`, aggregate state, and pane count. Compact mode emits sessions only; expanded mode emits session → window → pane.
 
-A window `@W` linked into sessions A and B is modeled as two independent
-occurrences `$A|@W` and `$B|@W`, each with its own per-session index, name,
-pane count, and children — never globally deduped by `%pane`/`@window`. Hidden
-action tokens carry the occurrence: `s:$N`, `w:$sid:@wid`, `p:$sid:%pid`.
-`parse_nav_token` accepts exactly those forms and rejects `w:@17`, `w:$42:coord`,
-`w:$42:0`, `w:program:@17`, `w:$42:@x`, trailing/control text. Display text
-never enters the validation or routing path.
+## Navigation correctness
 
-## Current location is client-aware and occurrence-correct
+Cross-session window navigation validates the encoded `$sid/@wid` occurrence, records the exact previous pane, switches the invoking client to the target session, and selects the exact window. `nav back` restores the previous exact session+pane.
 
-`current_session` comes from the invoking client's actual session; `current_pane`
-is `$TMUX_PANE` validated against the occurrence inventory; `current_window` is
-the occurrence containing that pane inside that session. For a linked window,
-the current marker follows the attached client's session (A vs B), not first
-inventory match — via a single bounded client-scoped query (explicitly allowed
-by review). Display/fzf state is never location truth.
+Pane occurrence validation does **not** construct `session:%pane`. That tmux target form is ambiguous because `%N` is parsed in the window position and may fall back to the session's current pane. For encoded `p:$sid:%pane`, action-time validation instead enumerates that session's panes once (`list-panes -s -t "$sid" -F '#{pane_id}'`) and requires exact `%pane_id` membership. This accepts valid non-current panes and linked occurrences while rejecting foreign/stale claims.
 
-## Cross-session navigation moves the invoking client
+Direct `nav next|prev|window-next|window-prev|attention-next|attention-prev|back` remains outside the picker renderer. Window-next/window-prev use native tmux window traversal.
 
-`nav-go w:$B:@W` validates `$B` exists and contains the `@W` occurrence, records
-the client's exact current `$session:%pane`, then `switch-client` to `$B` and
-selects the exact `@W`. `nav back` restores the exact prior session and pane.
+## Fuzzy ancestry without per-keystroke live rebuilds
 
-## One-line pane contract
+Ordinary fzf filtering must not orphan a pane from its window/session. The final implementation solves this without rebuilding live tmux topology on every query character:
 
-`NAV_PANE_LINES=1`: every pane renders on exactly ONE bounded visual line with
-the filesystem-style location inline. Width priority: `%pane-id` > runtime >
-exact state > repo/path > task. Task yields first; then location; `%pane-id`,
-runtime and exact state always survive. No continuation lines.
+1. initial nav open builds one normal flat NUL-delimited live snapshot;
+2. `nav_snapshot_project_stream` derives an ancestry-bearing snapshot from those same bytes, preserving fields 1–5 byte-for-byte and changing only display field 6;
+3. fzf query changes use `nav-snapshot-view` to switch between the two local files — empty query → flat browse tree, non-empty query → ancestry projection;
+4. explicit refresh, structured filters, topology-mode changes, and mutating actions use `nav-snapshot-refresh` to rebuild one fresh flat snapshot and derive its matching ancestry snapshot.
 
-## Filesystem-style location
+Therefore ordinary typing performs 0 tmux / 0 git / 0 process-probe inventory calls. Live state still refreshes on explicit state-changing/reload operations.
 
-`/work/market-data` → `market-data`; `/work/market-data/docs` →
-`market-data/docs`; deep paths middle-elided `market-data/…/jct5k/regression`;
-linked worktree root/bin → canonical repo label; non-git under `$HOME` →
-`~/…`. Full absolute cwd is details-inspector-only. No new git subprocess on
-the hot path.
+## Real tmux regressions
 
-## Hierarchy and palette
+`test/nav-real-tmux.sh` is wired into the required `scripts/verify-json-api.sh` gate and covers:
 
-- Single `↳` ancestry glyph for all window and pane rows, invariant to sibling
-  position (no `├ └ ▸ ●`). Session keeps `▎` for current.
-- Restrained professional palette: neutral primary; one desaturated cool accent
-  for current/focus/pointer; one desaturated amber attention for
-  wait/needs-input/stale/urgent; restrained red only for hard failure.
-  `run`/`done`/`idle` are neutral (NO rainbow / green/blue lifecycle coloring);
-  no bold.
+- cross-session window go/back with a real attached client;
+- linked-window occurrences with different per-session indices;
+- current occurrence following the attached client;
+- linked pane occurrences, including a valid pane deliberately made **non-current** before validation/jump, plus foreign occurrence rejection;
+- real fzf filtering over the ancestry projection.
 
-## Real isolated tmux regressions (hermetic, required CI gate)
+The deterministic nav contract also verifies snapshot identity preservation, bounded records, location projection, compact/expanded topology, machine-token safety, and zero tmux/git calls on the per-keystroke snapshot-view path.
 
-`test/nav-real-tmux.sh` (38 pass, 0 fail) on an isolated `tmux -L` server with a
-real attached client:
-- **TEST A** cross-session window go/back: client A→B→`@W`, then `nav back` to
-  exact original pane.
-- **TEST B** linked window: same `@W`/`%P` render as both `A|@W|%P` and
-  `B|@W|%P`, per-session index/count/placement, both occurrences action-valid,
-  foreign pair rejected.
-- **TEST C** current occurrence follows the attached client (flips A↔B for one
-  linked window; fails under first-match location).
-- **TEST D** linked-window PANE occurrences: `p:$A:%P` and `p:$B:%P` each
-  validate and act (real cross-session pane jumps land on the exact pane);
-  a foreign `p:$C:%P` claim refuses nonzero and leaves the client unmoved
-  (proves the session-scoped `#{session_id}`+`#{pane_id}` pair check against
-  tmux's silent `-t $sid:%pane` fallback).
-- **TEST E** fuzzy query retains ancestry: real `fzf --filter` over the live
-  chain projection returns BOTH linked pane occurrences, each with ITS OWN
-  session ancestor; empty query re-emits the flat tree verbatim.
+## Performance contract
 
-## Contract/gates
+Final one-line fixture evidence recorded in `docs/perf-audit.md` and the final remediation report:
 
-- `test/nav-contract.sh` — **308 pass / 0 fail** (incl. §36 ancestry projection
-  + cold-state-dir guard + real-fzf fuzzy assertions)
-- `test/contract.sh` — **292 pass / 0 fail**
-- `bun test` — **457 pass / 0 fail**
-- `test/nav-real-tmux.sh` — **38 pass / 0 fail** (TEST A-E, real attached client)
-- `typecheck`, `build`, `scripts/verify-json-api.sh` (full gate PASS),
-  `git diff --check` — green
-- bash -n clean against `bin/tmux-session-picker` and every test file
+- expanded private nav: 1420 B total / 7 NUL records / 226 B max record (89 B ANSI-stripped max);
+- normal live refresh: 3 tmux calls total (2 bulk inventory + 1 bounded client-session lookup), warm git 0, process probes 0;
+- ordinary fzf query changes: 0 tmux / 0 git / 0 process probes;
+- no per-session, per-window, or per-pane tmux/git fanout;
+- public `xtmux list` TSV and `topology --json` contracts remain unchanged.
 
-## Performance (hermetic §29 fixture, finalized head)
+## CI robustness remediations retained in the branch
 
-Expanded private-nav: **1420 B total / 7 records / max record 226 B** (89 B
-ANSI-stripped; 1 session + 2 windows + 4 panes, every pane one NUL record).
-Subprocess counts: **tmux = 3** (2 bulk inventory: `list-sessions`,
-`list-panes -a`; + 1 bounded client-scoped `display-message -p #{session_id}`
-for occurrence-correct current location), **warm git = 0**, **process probes
-= 0**. No per-window/session/pane fanout. Public `xtmux list` TSV and
-`topology --json` unchanged.
+The workstream also root-caused three gate failures encountered while making the nav regressions required-CI quality:
 
+- root workspace/lockfile wiring for `packages/xtmux-view` / `beautiful-mermaid`;
+- cold-state `picker_state_read` guard for a missing state file under `set -e`;
+- `TERM=xterm-256color` for the real attached tmux client on TERM-less CI runners.
 
-## CI status on this head — fully green
+These are regression-guarded. The live PR checks are authoritative for the current head.
 
-All five checks (CodeQL, analyze, pr-review-gate, test, smoke) are **success**
-on `21afd41`. The earlier red states were each root-caused and fixed on this
-branch:
+## Retained boundaries
 
-1. **Pre-existing origin/main lockfile break** (fixed `c504f335`):
-   `packages/xtmux-view` declares `beautiful-mermaid` but was never wired into
-   the root install, so `bun.lock` never contained it and every `bun install
-   --frozen-lockfile && bun test` failed at the renderer import (A/B-proven
-   against clean main before this remediation). Fix: `"workspaces":
-   ["packages/*"]` in the root `package.json` + regenerated `bun.lock` —
-   dependency wiring only, zero code change; `bun test` 457/0 with it.
-2. **Cold-state crash** (fixed `42e3e7da`): `picker_state_read` exited the
-   picker under `set -e` on missing state files (see remediation list).
-3. **TERM-less CI attach** (fixed `21afd41`): real-tmux suite pins TERM for
-   the attached client.
-
-Local gate evidence on `21afd41`: `verify-json-api.sh` full gate PASS (build,
-bun tests 457/0, typecheck, harness selftest, shell contracts 292/0, nav
-contracts 308/0, real tmux 38/0, v1 fixtures, live smoke), also PASS under
-`env -u TERM` (CI-like).
-
-
-## Retained invariants
-
-tmux remains topology authority; fzf remains navigator; classic picker remains
-a rollback path; no new daemon/database; bounded records enforced (session ≤3,
-window ≤2, pane ==1 visual lines; pathological several-KB metadata stays
-bounded, machine tokens intact).
-
----
+- tmux remains topology authority;
+- fzf remains the v1 navigator;
+- no new daemon/database or persistence authority;
+- classic picker remains available as rollback;
+- private nav transport stays separate from public list/JSON surfaces;
+- machine identity never comes from rendered names, paths, tasks, window indexes, or fzf text.
 
 > **DO NOT MERGE — external/web coordinator final review.**
