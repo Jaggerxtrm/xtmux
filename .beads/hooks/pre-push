@@ -72,3 +72,13 @@ if [ -x "$(dirname "$0")/pre-push.bd-sync" ]; then
     if [ $rc -ne 0 ]; then exit $rc; fi
 fi
 # --- END custom ---
+# --- BEGIN custom: board-audit pr-checkpoint before push ---
+# Publishes a FRESH PR-checkpoint handoff for every push to a PR branch: the
+# adapter performs the code push itself (--no-verify), then binds the
+# checkpoint to the now-remote PR head, so the handoff is current, not stale.
+# Never blocks the code push: adapter failures only warn. Any agent in the
+# repository can verify the evidence via board-audit pr-status <pr> --check.
+if [ -x "/home/dawid/dev/xtmux/.beads/hooks/board-audit-pr-adapter.sh" ]; then
+    "/home/dawid/dev/xtmux/.beads/hooks/board-audit-pr-adapter.sh" "$@" || true
+fi
+# --- END custom ---

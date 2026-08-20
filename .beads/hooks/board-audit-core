@@ -1,0 +1,753 @@
+#!/usr/bin/env bash
+# board-audit — bd board/work-package exporter + merged-PR audit bundle.
+#
+# Audit mode (backwards compatible):
+#   board-audit [--no-pr] [--epic <id>]
+#
+# Structured export mode:
+#   board-audit --export (--open | --all | --epic <id> | --bead <id>)
+#
+# Export mode performs exactly one canonical `bd export --all` acquisition and
+# derives deterministic, lossless work-package projections from that snapshot.
+# User-visible artifacts default to the repository-local `.xtrm/board-audit/`
+# tree so they can be versioned and shared through GitHub.
+
+set -euo pipefail
+
+NO_PR=0
+EPIC=""
+BEAD=""
+EXPORT_MODE=0
+EXPORT_SCOPE=""
+OUTPUT_DIR=""
+FROM_RAW=""
+
+_usage() {
+  cat <<'EOF'
+board-audit — Beads work-package export and board audit bundle
+
+Audit mode:
+  board-audit [--no-pr] [--epic <id>]
+
+Structured export mode:
+  board-audit --export --open
+  board-audit --export --all
+  board-audit --export --epic <id>
+  board-audit --export --bead <id>
+
+Flags:
+  --no-pr             Audit mode only: skip merged-PR export.
+  --epic <id>         Audit mode: scope audit to epic subtree.
+                      Export mode: export the selected epic/subtree as one package.
+  --bead <id>         Export mode only: export selected bead/subtree as one package.
+  --export            Emit structured JSON snapshot projections; no audit prompt/PRs.
+  --open              Export mode: all non-terminal work packages.
+  --all               Export mode: all work packages, including closed-only packages.
+  --output-dir <path> Override artifact root. Relative paths resolve from repo root.
+                      Default: .xtrm/board-audit (or BOARD_AUDIT_OUTDIR).
+  --from-raw <path>   Export mode only: derive packages from an existing
+                      bd export --all acquisition instead of acquiring a new
+                      one. Keeps one canonical acquisition per snapshot when
+                      multiple derivations share it.
+  -h, --help          Show this help.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --no-pr) NO_PR=1; shift ;;
+    --export) EXPORT_MODE=1; shift ;;
+    --open) EXPORT_SCOPE="open"; shift ;;
+    --all) EXPORT_SCOPE="all"; shift ;;
+    --epic)
+      [ $# -ge 2 ] || { echo "error: --epic needs a bead id" >&2; exit 2; }
+      EPIC="$2"; shift 2 ;;
+    --epic=*) EPIC="${1#--epic=}"; shift ;;
+    --bead)
+      [ $# -ge 2 ] || { echo "error: --bead needs a bead id" >&2; exit 2; }
+      BEAD="$2"; shift 2 ;;
+    --bead=*) BEAD="${1#--bead=}"; shift ;;
+    --output-dir)
+      [ $# -ge 2 ] || { echo "error: --output-dir needs a path" >&2; exit 2; }
+      OUTPUT_DIR="$2"; shift 2 ;;
+    --output-dir=*) OUTPUT_DIR="${1#--output-dir=}"; shift ;;
+    --from-raw)
+      [ $# -ge 2 ] || { echo "error: --from-raw needs a path" >&2; exit 2; }
+      FROM_RAW="$2"; shift 2 ;;
+    --from-raw=*) FROM_RAW="${1#--from-raw=}"; shift ;;
+    -h|--help) _usage; exit 0 ;;
+    *) echo "error: unknown arg '$1'" >&2; _usage >&2; exit 2 ;;
+  esac
+done
+
+if [ "$EXPORT_MODE" -eq 1 ]; then
+  [ "$NO_PR" -eq 0 ] || { echo "error: --no-pr is audit-mode only" >&2; exit 2; }
+  [ -z "$EPIC" ] || [ -z "$BEAD" ] || { echo "error: --epic and --bead are mutually exclusive" >&2; exit 2; }
+  if [ -n "$FROM_RAW" ] && [ ! -f "$FROM_RAW" ]; then
+    echo "error: --from-raw acquisition not found: $FROM_RAW" >&2
+    exit 2
+  fi
+  if [ -n "$EPIC" ]; then
+    [ -z "$EXPORT_SCOPE" ] || { echo "error: --epic cannot be combined with --open/--all" >&2; exit 2; }
+    EXPORT_SCOPE="epic"
+  elif [ -n "$BEAD" ]; then
+    [ -z "$EXPORT_SCOPE" ] || { echo "error: --bead cannot be combined with --open/--all" >&2; exit 2; }
+    EXPORT_SCOPE="bead"
+  fi
+  [ -n "$EXPORT_SCOPE" ] || EXPORT_SCOPE="open"
+else
+  [ -z "$BEAD" ] || { echo "error: --bead requires --export" >&2; exit 2; }
+  [ -z "$EXPORT_SCOPE" ] || { echo "error: --open/--all require --export" >&2; exit 2; }
+  [ -z "$FROM_RAW" ] || { echo "error: --from-raw requires --export" >&2; exit 2; }
+fi
+
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "error: not inside a git working tree" >&2
+  exit 1
+fi
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+REPO_SLUG="$(basename "$REPO_ROOT")"
+GH_REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
+[ -n "$GH_REPO" ] || GH_REPO="$REPO_SLUG"
+
+for cmd in bd python3; do
+  command -v "$cmd" >/dev/null || { echo "error: '$cmd' not on PATH" >&2; exit 1; }
+done
+if [ "$EXPORT_MODE" -eq 0 ]; then
+  command -v gh >/dev/null || { echo "error: 'gh' not on PATH" >&2; exit 1; }
+fi
+
+ARTIFACT_ROOT="$OUTPUT_DIR"
+[ -n "$ARTIFACT_ROOT" ] || ARTIFACT_ROOT="${BOARD_AUDIT_OUTDIR:-.xtrm/board-audit}"
+case "$ARTIFACT_ROOT" in
+  /*) OUTDIR="$ARTIFACT_ROOT" ;;
+  *) OUTDIR="$REPO_ROOT/$ARTIFACT_ROOT" ;;
+esac
+mkdir -p "$OUTDIR"
+TODAY="$(date +%Y-%m-%d)"
+
+_export_all() {
+  local out="$1"
+  bd export --all -o "$out" >/dev/null 2>&1 || bd export --all > "$out"
+}
+
+# ----------------------------------------------------------------------
+# Structured export mode
+# ----------------------------------------------------------------------
+if [ "$EXPORT_MODE" -eq 1 ]; then
+  SNAPSHOT_DIR="$OUTDIR/exports/export-$(date +%Y%m%dT%H%M%S)"
+  RAW_OUT="$SNAPSHOT_DIR/raw-beads.jsonl"
+  PACKAGES_DIR="$SNAPSHOT_DIR/work-packages"
+  MANIFEST_OUT="$SNAPSHOT_DIR/manifest.json"
+  mkdir -p "$PACKAGES_DIR"
+
+  echo "→ acquiring canonical Beads snapshot with bd export --all..."
+  if [ -n "$FROM_RAW" ]; then
+    cp -f "$FROM_RAW" "$RAW_OUT"
+    echo "→ reusing provided acquisition: $FROM_RAW"
+  else
+    _export_all "$RAW_OUT"
+  fi
+  [ -s "$RAW_OUT" ] || echo "warning: Beads export is empty" >&2
+  BD_VERSION="$(bd version 2>/dev/null | head -n1 || true)"
+
+  python3 - "$RAW_OUT" "$PACKAGES_DIR" "$MANIFEST_OUT" "$GH_REPO" "$EXPORT_SCOPE" "$EPIC" "$BEAD" "$BD_VERSION" <<'PY'
+import hashlib
+import json
+import os
+import re
+import sys
+import unicodedata
+from collections import defaultdict
+from datetime import datetime, timezone
+
+raw_path, packages_dir, manifest_path, repo, scope, epic_id, bead_id, bd_version = sys.argv[1:]
+TERMINAL = {"closed", "done", "completed", "cancelled", "canceled", "tombstone", "deleted"}
+PARENT_TYPES = {"parent-child", "parent", "child-of"}
+
+
+def read_rows(path):
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read().strip()
+    if not text:
+        return []
+    if text.startswith("[") or text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return [r for r in parsed if isinstance(r, dict)]
+            if isinstance(parsed, dict):
+                for key in ("issues", "beads", "records"):
+                    if isinstance(parsed.get(key), list):
+                        return [r for r in parsed[key] if isinstance(r, dict)]
+                return [parsed]
+        except json.JSONDecodeError:
+            pass
+    rows = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def entity_id(value):
+    """ID of an issue-like value, used for explicit parent/discovery fields."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("id", "issue_id", "bead_id", "parent_id", "target_id", "target"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate:
+                return candidate
+    return None
+
+
+def dependency_target(value):
+    """Target of a Beads dependency record.
+
+    Current Beads Dependency has its own surrogate row `id`; the target is
+    `depends_on_id`. Never interpret the edge row ID as the issue target.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("depends_on_id", "depends_on_issue_id", "target_id", "target", "parent_id", "bead_id"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate:
+                return candidate
+    return None
+
+
+def relation_type(value):
+    if not isinstance(value, dict):
+        return "unknown"
+    return str(value.get("type") or value.get("dependency_type") or value.get("relation_type") or value.get("kind") or "unknown")
+
+
+def collect_relations(row):
+    rid = str(row.get("id"))
+    out = []
+    for key in ("deps", "dependencies", "relations"):
+        vals = row.get(key)
+        if not isinstance(vals, list):
+            continue
+        for value in vals:
+            target = dependency_target(value)
+            if target:
+                out.append({
+                    "source": rid,
+                    "target": target,
+                    "type": relation_type(value),
+                    "source_field": key,
+                    "raw": value,
+                })
+    for key in ("parents", "parent"):
+        vals = row.get(key)
+        if vals is None:
+            continue
+        if not isinstance(vals, list):
+            vals = [vals]
+        for value in vals:
+            target = entity_id(value)
+            if target:
+                typ = relation_type(value)
+                if typ == "unknown":
+                    typ = "parent-child"
+                out.append({"source": rid, "target": target, "type": typ, "source_field": key, "raw": value})
+    discovered = row.get("discovered_from")
+    if discovered:
+        vals = discovered if isinstance(discovered, list) else [discovered]
+        for value in vals:
+            target = entity_id(value)
+            if target:
+                out.append({"source": rid, "target": target, "type": "discovered-from", "source_field": "discovered_from", "raw": value})
+    return out
+
+
+def explicit_parent_ids(row, relations):
+    rid = str(row.get("id"))
+    out = []
+    for key in ("parents", "parent"):
+        vals = row.get(key)
+        if vals is None:
+            continue
+        if not isinstance(vals, list):
+            vals = [vals]
+        for value in vals:
+            parent = entity_id(value)
+            if parent and parent not in out:
+                out.append(parent)
+    for rel in relations:
+        if rel["source"] == rid and rel["type"] in PARENT_TYPES and rel["target"] not in out:
+            out.append(rel["target"])
+    return out
+
+
+def slug(title):
+    value = unicodedata.normalize("NFKD", str(title or "untitled"))
+    value = value.encode("ascii", "ignore").decode("ascii").lower()
+    value = re.sub(r"[^a-z0-9]+", "-", value).strip("-")
+    return value[:96].rstrip("-") or "untitled"
+
+
+def canonical_bytes(obj):
+    return (json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+rows = read_rows(raw_path)
+by_id = {str(row["id"]): row for row in rows if row.get("id") is not None}
+all_relations = []
+for row in by_id.values():
+    all_relations.extend(collect_relations(row))
+
+# Match Beads' own tree semantics: explicit parent-child edges first; if an
+# issue has no known explicit parent, fall back to immediate dotted-ID ancestry
+# (`parent.1`, `parent.1.2`) when that parent exists in the snapshot.
+parents = {}
+children = defaultdict(list)
+derived_dotted_links = []
+for rid, row in by_id.items():
+    ps = [p for p in explicit_parent_ids(row, all_relations) if p != rid]
+    known_explicit = [p for p in ps if p in by_id]
+    if not known_explicit and "." in rid:
+        dotted_parent = rid.rsplit(".", 1)[0]
+        if dotted_parent in by_id and dotted_parent != rid and dotted_parent not in ps:
+            ps.append(dotted_parent)
+            derived_dotted_links.append({"child": rid, "parent": dotted_parent})
+    parents[rid] = ps
+    for parent in ps:
+        children[parent].append(rid)
+for parent in children:
+    children[parent] = sorted(set(children[parent]))
+
+
+def is_terminal(row):
+    return str(row.get("status", "")).lower() in TERMINAL
+
+
+def ancestors(rid):
+    seen = set()
+    stack = list(parents.get(rid, []))
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        stack.extend(parents.get(current, []))
+    return seen
+
+
+def descendants(rid):
+    seen = set()
+    stack = list(children.get(rid, []))
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        stack.extend(children.get(current, []))
+    return seen
+
+
+def highest_known_root(rid):
+    current = rid
+    seen = {rid}
+    while True:
+        known = sorted(p for p in parents.get(current, []) if p in by_id and p not in seen)
+        if not known:
+            return current
+        current = known[0]
+        seen.add(current)
+
+
+if scope in {"epic", "bead"}:
+    requested = epic_id if scope == "epic" else bead_id
+    if requested not in by_id:
+        raise SystemExit(f"error: bead '{requested}' not found in bd export --all snapshot")
+    roots = [requested]
+    selected = {requested} | descendants(requested)
+    context_only = ancestors(requested)
+elif scope == "all":
+    selected = set(by_id)
+    context_only = set()
+    roots = sorted({highest_known_root(rid) for rid in selected})
+else:
+    active = {rid for rid, row in by_id.items() if not is_terminal(row)}
+    selected = set(active)
+    context_only = set()
+    for rid in active:
+        context_only |= {a for a in ancestors(rid) if a in by_id and a not in active}
+    selected |= context_only
+    roots = sorted({highest_known_root(rid) for rid in active})
+
+package_entries = []
+written_ids = set()
+
+
+def build_hierarchy(rid, package_ids, trail=None):
+    trail = set(trail or ())
+    if rid in trail:
+        return {"id": rid, "cycle": True, "children": []}
+    trail.add(rid)
+    kids = [child for child in children.get(rid, []) if child in package_ids]
+    return {"id": rid, "children": [build_hierarchy(child, package_ids, trail) for child in sorted(kids)]}
+
+
+for root in roots:
+    if scope in {"epic", "bead"}:
+        package_ids = {root} | {d for d in descendants(root) if d in selected}
+        package_ids |= {a for a in context_only if a in by_id}
+    else:
+        package_ids = ({root} | descendants(root)) & selected
+    if not package_ids:
+        continue
+
+    package_relations = []
+    external_relations = []
+    dangling = []
+    for rel in all_relations:
+        if rel["source"] not in package_ids:
+            continue
+        if rel["target"] in package_ids:
+            package_relations.append(rel)
+        else:
+            enriched = dict(rel)
+            enriched["target_present_in_snapshot"] = rel["target"] in by_id
+            if rel["target"] in by_id:
+                enriched["target_title"] = by_id[rel["target"]].get("title")
+            else:
+                dangling.append({"source": rel["source"], "target": rel["target"], "type": rel["type"]})
+            external_relations.append(enriched)
+
+    multiple_parents = [
+        {"id": rid, "parents": sorted(p for p in parents.get(rid, []) if p in by_id)}
+        for rid in sorted(package_ids)
+        if len([p for p in parents.get(rid, []) if p in by_id]) > 1
+    ]
+    issue_map = {
+        rid: {
+            "selection_state": "context-only" if rid in context_only else "selected",
+            "source": by_id[rid],
+        }
+        for rid in sorted(package_ids)
+    }
+    package_dotted_links = [
+        link for link in derived_dotted_links
+        if link["child"] in package_ids and link["parent"] in package_ids
+    ]
+
+    payload = {
+        "schema_version": "xtrm.board-audit.work-package.v1",
+        "repository": repo,
+        "scope": scope,
+        "root_id": root,
+        "root_title": by_id.get(root, {}).get("title"),
+        "issues": issue_map,
+        "hierarchy": build_hierarchy(root, package_ids),
+        "relations": sorted(package_relations, key=lambda r: (str(r["source"]), str(r["type"]), str(r["target"]))),
+        "external_relations": sorted(external_relations, key=lambda r: (str(r["source"]), str(r["type"]), str(r["target"]))),
+        "diagnostics": {
+            "dangling_relations": sorted(dangling, key=lambda r: (r["source"], r["type"], r["target"])),
+            "multiple_parent_nodes": multiple_parents,
+            "derived_dotted_parent_links": sorted(package_dotted_links, key=lambda x: (x["parent"], x["child"])),
+        },
+    }
+    digest = hashlib.sha256(canonical_bytes(payload)).hexdigest()
+    payload["content_sha256"] = digest
+    filename = f"{root}__{slug(by_id.get(root, {}).get('title'))}.json"
+    path = os.path.join(packages_dir, filename)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
+        f.write("\n")
+    written_ids |= package_ids
+    package_entries.append({
+        "root_id": root,
+        "title": by_id.get(root, {}).get("title"),
+        "file": f"work-packages/{filename}",
+        "issue_count": len(package_ids),
+        "selected_issue_count": sum(1 for rid in package_ids if rid not in context_only),
+        "context_only_issue_count": sum(1 for rid in package_ids if rid in context_only),
+        "content_sha256": digest,
+    })
+
+raw_sha = hashlib.sha256(open(raw_path, "rb").read()).hexdigest()
+manifest = {
+    "schema_version": "xtrm.board-audit.snapshot-manifest.v1",
+    "generated_at": datetime.now(timezone.utc).isoformat(),
+    "repository": repo,
+    "bd_version": bd_version,
+    "source": {
+        "command": "bd export --all",
+        "raw_file": "raw-beads.jsonl",
+        "raw_sha256": raw_sha,
+        "raw_record_count": len(by_id),
+    },
+    "selection": {
+        "scope": scope,
+        "requested_id": epic_id or bead_id or None,
+        "selected_record_count": len(selected - context_only),
+        "context_only_record_count": len(context_only),
+    },
+    "packages": sorted(package_entries, key=lambda p: p["root_id"]),
+    "diagnostics": {
+        "unpackaged_selected_ids": sorted(selected - written_ids),
+        "unknown_parent_refs": sorted({p for rid in by_id for p in parents.get(rid, []) if p not in by_id}),
+        "derived_dotted_parent_links": sorted(derived_dotted_links, key=lambda x: (x["parent"], x["child"])),
+    },
+}
+with open(manifest_path, "w", encoding="utf-8") as f:
+    json.dump(manifest, f, ensure_ascii=False, indent=2, sort_keys=True)
+    f.write("\n")
+print(f"exported {len(package_entries)} work package(s), {len(selected - context_only)} selected bead(s), {len(context_only)} context-only ancestor(s)")
+PY
+
+  echo "✓ structured export: $SNAPSHOT_DIR"
+  echo "  raw:      $RAW_OUT"
+  echo "  manifest: $MANIFEST_OUT"
+  echo "  packages: $PACKAGES_DIR"
+  if [[ "$SNAPSHOT_DIR" == "$REPO_ROOT/"* ]]; then
+    echo "  git add:  ${SNAPSHOT_DIR#$REPO_ROOT/}"
+  fi
+  exit 0
+fi
+
+# ----------------------------------------------------------------------
+# Legacy audit mode — retained for compatibility.
+# ----------------------------------------------------------------------
+AUDIT_DIR="$OUTDIR/audits/audit-$(date +%Y%m%dT%H%M%S)"
+mkdir -p "$AUDIT_DIR"
+BD_OUT="$AUDIT_DIR/beads.jsonl"
+PR_OUT="$AUDIT_DIR/prs.md"
+PROMPT_OUT="$AUDIT_DIR/audit-prompt.md"
+STATE_OUT="$AUDIT_DIR/current-state.md"
+BUNDLE_OUT="$AUDIT_DIR/audit-bundle.md"
+RAW_AUDIT_OUT="$AUDIT_DIR/raw-beads.jsonl"
+
+echo "→ acquiring canonical Beads snapshot with bd export --all..."
+_export_all "$RAW_AUDIT_OUT"
+
+python3 - "$RAW_AUDIT_OUT" "$BD_OUT" "$EPIC" <<'PY'
+import json
+import sys
+
+raw_path, out_path, epic = sys.argv[1:]
+TERMINAL = {"closed", "done", "completed", "cancelled", "canceled", "tombstone", "deleted"}
+PARENT_TYPES = {"parent-child", "parent", "child-of"}
+
+
+def rows(path):
+    text = open(path, encoding="utf-8").read().strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, dict):
+            for key in ("issues", "beads", "records"):
+                if isinstance(parsed.get(key), list):
+                    return parsed[key]
+    except json.JSONDecodeError:
+        pass
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def entity_id(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("id", "issue_id", "bead_id", "parent_id", "target_id", "target"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate:
+                return candidate
+    return None
+
+
+def dependency_target(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("depends_on_id", "depends_on_issue_id", "target_id", "target", "parent_id", "bead_id"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate:
+                return candidate
+    return None
+
+
+def parent_ids(row):
+    out = []
+    vals = row.get("parents", row.get("parent", []))
+    if not isinstance(vals, list):
+        vals = [vals] if vals else []
+    for value in vals:
+        parent = entity_id(value)
+        if parent and parent not in out:
+            out.append(parent)
+    for key in ("deps", "dependencies", "relations"):
+        vals = row.get(key, [])
+        if not isinstance(vals, list):
+            continue
+        for value in vals:
+            if not isinstance(value, dict):
+                continue
+            typ = str(value.get("type") or value.get("dependency_type") or value.get("relation_type") or "")
+            if typ in PARENT_TYPES:
+                parent = dependency_target(value)
+                if parent and parent not in out:
+                    out.append(parent)
+    return out
+
+
+records = [row for row in rows(raw_path) if isinstance(row, dict) and row.get("id") is not None]
+by_id = {str(row["id"]): row for row in records}
+children = {rid: [] for rid in by_id}
+for rid, row in by_id.items():
+    ps = [p for p in parent_ids(row) if p != rid]
+    known_explicit = [p for p in ps if p in by_id]
+    if not known_explicit and "." in rid:
+        dotted_parent = rid.rsplit(".", 1)[0]
+        if dotted_parent in by_id and dotted_parent != rid and dotted_parent not in ps:
+            ps.append(dotted_parent)
+    for parent in ps:
+        children.setdefault(parent, []).append(rid)
+
+if epic:
+    if epic not in by_id:
+        raise SystemExit(f"error: epic '{epic}' not found")
+    keep = {epic}
+    stack = [epic]
+    while stack:
+        current = stack.pop()
+        for child in children.get(current, []):
+            if child not in keep:
+                keep.add(child)
+                stack.append(child)
+else:
+    keep = {rid for rid, row in by_id.items() if str(row.get("status", "")).lower() not in TERMINAL}
+
+with open(out_path, "w", encoding="utf-8") as f:
+    for rid in sorted(keep):
+        f.write(json.dumps(by_id[rid], ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n")
+PY
+BEAD_COUNT=$(wc -l < "$BD_OUT" | tr -d ' ')
+
+PR_LIMIT="${BOARD_AUDIT_PR_LIMIT:-500}"
+if [ "$NO_PR" -eq 1 ]; then
+  echo "→ --no-pr: skipping PR export"
+  PR_COUNT=0
+  PR_SINCE="n/a (--no-pr)"
+  PR_WINDOW_SOURCE="skipped via --no-pr"
+  : > "$PR_OUT"
+else
+  if [ -n "${BOARD_AUDIT_PR_SINCE:-}" ]; then
+    PR_SINCE="$BOARD_AUDIT_PR_SINCE"
+    PR_WINDOW_SOURCE="env override"
+  else
+    PR_SINCE="$(python3 - "$BD_OUT" <<'PY'
+import json
+import sys
+from datetime import date, datetime, timedelta
+oldest = None
+for line in open(sys.argv[1], encoding="utf-8"):
+    if not line.strip():
+        continue
+    row = json.loads(line)
+    created = row.get("created") or row.get("created_at")
+    if not created:
+        continue
+    current = datetime.fromisoformat(created.replace("Z", "+00:00")).date()
+    oldest = current if oldest is None or current < oldest else oldest
+print(((oldest - timedelta(days=7)) if oldest else (date.today() - timedelta(days=90))).isoformat())
+PY
+)"
+    PR_WINDOW_SOURCE="oldest bead minus 7d buffer"
+  fi
+
+  echo "→ exporting merged PRs since ${PR_SINCE} (${PR_WINDOW_SOURCE}; cap ${PR_LIMIT})..."
+  mapfile -t PR_NUMBERS < <(
+    gh pr list --state=merged --limit "$PR_LIMIT" \
+      --search "merged:>=${PR_SINCE} sort:updated-asc" \
+      --json number,mergedAt \
+      --jq 'sort_by(.mergedAt) | .[] | .number' 2>/dev/null
+  )
+  PR_COUNT="${#PR_NUMBERS[@]}"
+  [ "$PR_COUNT" -ne "$PR_LIMIT" ] || echo "warning: hit ${PR_LIMIT} PR cap; raise BOARD_AUDIT_PR_LIMIT" >&2
+  : > "$PR_OUT"
+  for N in "${PR_NUMBERS[@]}"; do
+    gh pr view "$N" \
+      --json number,mergedAt,title,body,files,commits,author,url \
+      --template '## PR #{{.number}} — {{.title}}
+
+- **merged:** {{.mergedAt}}
+- **author:** @{{.author.login}}
+- **url:** {{.url}}
+- **files ({{len .files}}):** {{range $i, $f := .files}}{{if $i}}, {{end}}`{{$f.path}}` (+{{$f.additions}}/-{{$f.deletions}}){{end}}
+
+### Body
+{{.body}}
+
+### Commits ({{len .commits}})
+{{range .commits}}- `{{slice .oid 0 8}}` {{.messageHeadline}}
+{{end}}
+
+---
+
+' >> "$PR_OUT" 2>/dev/null || echo "warning: gh pr view $N failed" >&2
+  done
+fi
+
+BD_STATS="$(bd stats 2>/dev/null | grep -v Warning || true)"
+cat > "$STATE_OUT" <<EOF
+# Board state — ${GH_REPO} @ ${TODAY}
+
+\`\`\`
+${BD_STATS}
+\`\`\`
+
+Non-closed beads exported: ${BEAD_COUNT}
+Merged PRs exported: ${PR_COUNT}
+EOF
+
+cat > "$PROMPT_OUT" <<EOF
+# Board audit — ${GH_REPO}
+
+Audit date: ${TODAY}
+$([ -n "$EPIC" ] && printf '**Scope:** bead `%s` and descendants.\n' "$EPIC")
+
+Use the embedded Beads and merged-PR corpus to perform the established board-audit workflow: classify each active bead as live, silently shipped, superseded, stale, blocked-in-fact, or ambiguous; verify testable claims with GitHub/Jira/observability tools; inspect dependency wiring, codebase drift, stale epics, duplicate scope, validation/no-regression coverage, and existing-library reuse. Do not mutate the board. Cite concrete evidence and finish with proposed mechanical `bd` commands.
+
+The Beads corpus is a projection from a single lossless `bd export --all` snapshot; every source record is preserved verbatim at the JSON-object level.
+EOF
+
+{
+  cat "$PROMPT_OUT"
+  echo
+  echo "---"
+  echo
+  echo "## Attached data (embedded)"
+  echo
+  echo "### beads.jsonl (${BEAD_COUNT} beads)"
+  echo '```jsonl'
+  cat "$BD_OUT"
+  echo '```'
+  echo
+  if [ "$NO_PR" -eq 1 ]; then
+    echo "### prs.md — SKIPPED (--no-pr)"
+  else
+    echo "### prs.md (${PR_COUNT} merged PRs)"
+    echo
+    cat "$PR_OUT"
+  fi
+} > "$BUNDLE_OUT"
+
+BUNDLE_SIZE="$(du -h "$BUNDLE_OUT" | cut -f1)"
+echo "✓ audit bundle: $BUNDLE_OUT ($BUNDLE_SIZE)"
+echo "  beads: $BEAD_COUNT | PRs: $PR_COUNT"
+if [[ "$AUDIT_DIR" == "$REPO_ROOT/"* ]]; then
+  echo "  git add: ${AUDIT_DIR#$REPO_ROOT/}"
+fi
