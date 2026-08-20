@@ -6073,17 +6073,17 @@ case "${1:-}" in
     exit 0
     ;;
   nav-snapshot-view)
-  shift
-  [ "$#" -eq 3 ] || die_usage "nav-snapshot-view requires <flat> <chain> <query>"
-  nav_snapshot_view "$@"
-  exit $?
-  ;;
-nav-snapshot-refresh)
-  shift
-  [ "$#" -eq 5 ] || die_usage "nav-snapshot-refresh requires <flat> <chain> <single|multi> <active|all|waiting|running> <query>"
-  nav_snapshot_refresh "$@"
-  exit $?
-  ;;
+    shift
+    [ "$#" -eq 3 ] || die_usage "nav-snapshot-view requires <flat> <chain> <query>"
+    nav_snapshot_view "$@"
+    exit $?
+    ;;
+  nav-snapshot-refresh)
+    shift
+    [ "$#" -eq 5 ] || die_usage "nav-snapshot-refresh requires <flat> <chain> <single|multi> <active|all|waiting|running> <query>"
+    nav_snapshot_refresh "$@"
+    exit $?
+    ;;
   list-active-nav-chain|list-active-nav-single-chain)
     # Ancestry-preserving fuzzy projection, bound to fzf's `change` event. An
     # empty query re-emits the flat tree verbatim (the drawer's browse view);

@@ -36,7 +36,7 @@ determines action identity: every action resolves the hidden token
 before mutation (window → its live owning session; pane → its live session).
 - Windows are independently selectable rows (`Enter` selects the exact
 `@window_id`); panes are grouped under their real windows.
-- Pane location (repo, `repo · relative-path`, worktree → canonical repo
+- Pane location (repo, filesystem-style `repo/path`, worktree → canonical repo
 label) is first-class sidebar context in expanded mode; full absolute paths
 remain details-only behind the inspector.
 - Occurrence identity: `$`/`@`/`%` are stable object identities. Where a window
@@ -261,7 +261,7 @@ bind s display-popup -E -x 0 -y 0 -w 40% -h 75% 'XTMUX_NAV_WIDTH=$(tput cols) $H
 
 This syntax was verified with tmux 3.5a. The intended sidebar is 38–40%; widen
 to 44–50% for long session names or 55–60% on a small terminal. The launcher
-subtracts eight cells for fzf border/selection chrome before bounding rows.
+subtracts four cells for the borderless fzf selection/marker gutter before bounding rows.
 The popup is 75% of the viewport height, and the `#222222` background uses a
 terminal-dependent alpha (`@200`) so supported terminals render it slightly
 transparent. The palette is restrained: a neutral primary for most rows, one
@@ -318,7 +318,7 @@ The navigator shows both:
 ```text
 ▎ current session       (the pane the operator is attached to)
   cool accent            on the current window row and current pane row
-› current fzf selection
+> current fzf selection
 ```
 
 The current target should be derived from live invocation identity, preferably
