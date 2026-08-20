@@ -172,6 +172,26 @@ agent_rank() {
   esac
 }
 
+# nav_state_max <best> <candidate> -> REPLY = the stronger attention state.
+#
+# ONE canonical priority for the whole hierarchy (pane -> window -> session,
+# prompt 14). Reuses agent_rank, so the order is stale > needs-input > done >
+# running > idle (lower rank wins) and there is no second ranking table; every
+# level folds with this same function. Ties keep the incumbent.
+#
+# 14 example holds exactly:
+#   @17 (%553 running + %621 idle)        => running      (3 beats 4)
+#   @31 (%875 needs-input + %901 running) => needs-input (1 beats 3)
+#   $42 (@17 running + @31 needs-input)   => needs-input (1 beats 3)
+# i.e. the strongest pane/window state wins at each level.
+nav_state_max() {
+  [ -n "$1" ] || { REPLY="$2"; return 0; }
+  local br cr
+  agent_rank "$1"; br="$REPLY"
+  agent_rank "$2"; cr="$REPLY"
+  if [ "$cr" -lt "$br" ]; then REPLY="$2"; else REPLY="$1"; fi
+}
+
 agent_state_is_working() {
   case "${1:-}" in
     running|working|busy|thinking|tool) return 0 ;;
@@ -462,6 +482,9 @@ render_list_status() {
 }
 
 pane_location_hint() {
+  # Public-list (TSV) location hint — kept byte-compatible for the classic
+  # picker. The nav renderer uses the bounded nav_pane_location projection
+  # (§3/§17) instead; this helper only services the public pane line.
   local pane_path="${1:-}"
   local root="${2:-}"
   local repo rel out
@@ -487,7 +510,97 @@ session_meta() {
 }
 
 pane_meta() {
-  tmux list-panes -a -F $'#{session_id}\t#{window_index}\t#{s/\n/ /:#{s/\t/ /:window_name}}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{s/\n/ /:#{s/\t/ /:pane_current_command}}\t#{s/\n/ /:#{s/\t/ /:pane_current_path}}\t#{?@agent_state,#{s/\n/ /:#{s/\t/ /:@agent_state}},-}\t#{pane_pid}\t#{?@agent_bead,#{s/\n/ /:#{s/\t/ /:@agent_bead}},-}\t#{?@agent_task,#{s/\n/ /:#{s/\t/ /:@agent_task}},-}\t#{?@agent_parent_session,#{s/\n/ /:#{s/\t/ /:@agent_parent_session}},-}\t#{?@agent_last_transition,#{s/\n/ /:#{s/\t/ /:@agent_last_transition}},-}'
+  # window_id (@N) and window_active flow on every pane row so windows become
+  # first-class entities keyed by machine window_id (never index/name). Still
+  # exactly one bulk tmux list-panes call — no per-window/per-session fanout.
+  tmux list-panes -a -F $'#{session_id}\t#{window_id}\t#{window_index}\t#{s/\n/ /:#{s/\t/ /:window_name}}\t#{window_active}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{s/\n/ /:#{s/\t/ /:pane_current_command}}\t#{s/\n/ /:#{s/\t/ /:pane_current_path}}\t#{?@agent_state,#{s/\n/ /:#{s/\t/ /:@agent_state}},-}\t#{pane_pid}\t#{?@agent_bead,#{s/\n/ /:#{s/\t/ /:@agent_bead}},-}\t#{?@agent_task,#{s/\n/ /:#{s/\t/ /:@agent_task}},-}\t#{?@agent_parent_session,#{s/\n/ /:#{s/\t/ /:@agent_parent_session}},-}\t#{?@agent_last_transition,#{s/\n/ /:#{s/\t/ /:@agent_last_transition}},-}'
+}
+
+# Normalized session→window→pane projection built from ONE bulk pane inventory
+# pass (the rows pane_meta() already emitted) — no per-window/per-session tmux
+# fanout. tmux stays the topology authority; this only regroups the single
+# inventory read in a later phase.
+#
+# OCCURRENCE IDENTITY: tmux lets one window be LINKED into several sessions, even
+# at different indexes, and list-panes -a emits one row per session/winlink
+# occurrence. Identity is therefore the hierarchy PATH, not the object id:
+#   session occurrence : $sid
+#   window occurrence  : $sid|$wid           (a @window linked into two sessions
+#                                             yields two window occurrences)
+#   pane occurrence    : $sid|$wid|$pane_id   (placement of a %pane within an
+#                                             occurrence)
+# The stable object ids ($/@/% from tmux) are preserved and never derived from
+# display text; they are simply NOT the associative-array key. Every structural
+# array is keyed by an occurrence path, never globally by pane_id, so $A|@W|%P
+# and $B|@W|%P stay distinct rows with their own index/name/count/pane list.
+#
+# Populates the global associative arrays (reset on each call):
+#   NAV_SESS_ORDER[]          first-seen session ids (sessions[] order)
+#   NAV_SESS_WINDOWS[sid]     space-joined window ids, first-seen occurrence
+#   NAV_WIN_INDEX/NAME/ACTIVE/COUNT/PANES[sid|wid]    per WINDOW OCCURRENCE; PANES
+#                           and COUNT are the pane_id list / size for that
+#                           occurrence (each linked window gets its own)
+#   NAV_PANE_WIN[sid|pane]    the @window that %pane belongs to WITHIN $sid; lets
+#                           a client-scoped current pane resolve its window in the
+#                           actual attached session, not a first-match pane map
+#
+# The pane/window/session STATE aggregates (NAV_PANE_STATE / NAV_WIN_STATE /
+# NAV_SESS_STATE) are folded in build_list's single pane loop, where the state
+# is already normalize_agent_state'd — never normalized twice, no capture-pane
+# on the hot path. build_nav_inventory owns the structural projection only.
+build_nav_inventory() {
+  local k sid wid
+  NAV_SESS_ORDER=()
+  declare -g -A NAV_SESS_SEEN=() NAV_SESS_WINDOWS=() NAV_WIN_INDEX=() NAV_WIN_NAME=() NAV_WIN_ACTIVE=() NAV_WIN_COUNT=() NAV_WIN_PANES=() NAV_PANE_WIN=() NAV_PANE_STATE=() NAV_WIN_STATE=() NAV_SESS_STATE=()
+  local windex wname wactive pane_id
+  while IFS=$'\t' read -r sid wid windex wname wactive pane_id __; do
+    [ -n "$sid" ] || continue
+    k="$sid|$wid"                 # window occurrence (per session/winlink)
+    NAV_PANE_WIN["$sid|$pane_id"]="$wid"   # %pane's window within THIS session
+    if [ -z "${NAV_WIN_INDEX["$k"]+x}" ]; then
+      NAV_WIN_INDEX["$k"]="$(tsv_clean "$windex")"
+      NAV_WIN_NAME["$k"]="$(tsv_clean "$wname")"
+      NAV_WIN_ACTIVE["$k"]="$(tsv_clean "$wactive")"
+      NAV_WIN_COUNT["$k"]=0
+      NAV_WIN_PANES["$k"]=''
+      NAV_SESS_WINDOWS["$sid"]+="${NAV_SESS_WINDOWS["$sid"]:+ }$wid"
+    fi
+    NAV_WIN_COUNT["$k"]=$(( ${NAV_WIN_COUNT["$k"]} + 1 ))
+    NAV_WIN_PANES["$k"]+="${NAV_WIN_PANES["$k"]:+ }$pane_id"
+    if [ -z "${NAV_SESS_SEEN["$sid"]+x}" ]; then
+      NAV_SESS_SEEN["$sid"]=1; NAV_SESS_ORDER+=("$sid")
+    fi
+  done
+}
+
+# nav_current_location — client-aware current pane/window/session.
+#
+# A pane can live in several sessions via a linked window, so current location
+# cannot come from a first-match pane->session map. Instead:
+#   cur_session = the INVOKING CLIENT's actual tmux session (one bounded
+#                 client-scoped query, consolidated on current_tmux_session_id);
+#   cur_pane    = $TMUX_PANE, but only when that pane has an occurrence inside
+#                 the client's session;
+#   cur_window  = the @window occurrence of cur_pane within cur_session
+#                 (NAV_PANE_WIN["$cs|$pane"]).
+# So when the same @W/%P is linked into sessions A and B, the marker follows the
+# attached client's session (A vs B), never the first inventory row. Display/fzf
+# state is never location truth (prompt 13).
+#
+# Sets globals: cur_pane, cur_window, cur_session (all empty when TMUX_PANE is
+# absent, the client session is unresolvable, or the pane has no occurrence in
+# that session).
+nav_current_location() {
+  local pane="${TMUX_PANE:-}" cs win
+  cur_pane='' cur_window='' cur_session=''
+  [ -n "$pane" ] || return 0
+  current_tmux_session_id; cs="$REPLY"   # bounded client-scoped query
+  [ -n "$cs" ] || return 0
+  win="${NAV_PANE_WIN["$cs|$pane"]:-}"
+  [ -n "$win" ] || return 0
+  cur_pane="$pane"
+  cur_session="$cs"
+  cur_window="$win"
 }
 
 agent_meta_value() {
@@ -2267,11 +2380,10 @@ IDENTITY & LAST TURN — who a pane is, and what it last said.
     agent-last/agent-episode  turnId, ..., completedAt (OMITTED when absent); episode:
                    episodeId, openedAtMs, closedAtMs, primary, followUps[], collapsed[]
 
-SESSIONS & DASHBOARD — inventory for orchestrators. — inventory for orchestrators.
+SESSIONS & DASHBOARD — inventory for orchestrators.
   dashboard [sessions-only|expanded] [json]   agent-readable inventory
   topology --json                            complete host/session/window/pane snapshot
-  list [all|waiting|running|repo:<x>|branch:<x>|cmd:<x>|grep:<x>]
-  list-active                                 list under the active filter
+  list [all|waiting|running|repo:<x>|branch:<x>|cmd:<x>|grep:<x>]   list-active  same list under the active filter
 
 NAVIGATION — operator traversal over sessions and attention targets.
   nav [next|prev|attention-next|attention-prev|back|help]
@@ -2353,7 +2465,8 @@ HYGIENE — end-of-session cleanup.
 PICKER INTERNALS — invoked by the fzf UI. Agents do not normally call these.
   preview, popup, jump, kill, act, attn-jump, jump-back, kill-confirm, bulk-kill, bulk-kill-targets
   bulk-kill-confirm, rename, rename-apply, mode-toggle, filter-menu, filter-clear, filter-preset, prompt-label, border-label, nav-go, nav-act
-  nav-border-label, nav-key-help, list-nav, list-nav-single, list-active-nav, list-active-nav-single
+  nav-border-label, nav-key-help, list-nav, list-nav-single, list-active-nav,
+  list-active-nav-single, list-active-nav-chain, list-active-nav-single-chain, nav-snapshot-view, nav-snapshot-refresh
 
 Errors are `exit 2` with a usage line; under --json they are
 {"code":"XTMUX_...","message":...}. See docs/json-command-api.md.
@@ -2562,6 +2675,10 @@ picker_state_file() {
 picker_state_read() {
   local file
   picker_state_file "$1" || { REPLY=''; return 1; }; file="$REPLY"
+  # A missing state file is the normal cold-start case: return empty instead
+  # of letting $(<missing) raise a redirection error, which exits the script
+  # under `set -e` even when the caller guards with `|| true`.
+  [ -f "$file" ] || { REPLY=''; return 1; }
   REPLY="$(<"$file")"
 }
 
@@ -2828,12 +2945,166 @@ fzf_multiline_probe() {
 
 # nav_card_width -> REPLY: bounded card width. XTMUX_NAV_WIDTH pins it for
 # tests (32/44/60); otherwise the invoking client's columns (52 default).
+# Hard-capped at NAV_MAX_CARD_WIDTH so a hostile XTMUX_NAV_WIDTH can never
+# widen a record beyond the byte budget (§19/§32).
 nav_card_width() {
   local w="${XTMUX_NAV_WIDTH:-${COLUMNS:-52}}"
   case "$w" in ''|*[!0-9]*) w=52 ;; esac
   [ "$w" -gt 0 ] || w=52
+  [ "$w" -gt "$NAV_MAX_CARD_WIDTH" ] && w=$NAV_MAX_CARD_WIDTH
   REPLY="$w"
 }
+
+# ── NAV-T4: bounded-record budgets (prompt §19/§32, epic xtmux-w5i) ───────
+# Per-type VISUAL line budgets are explicit and authoritative; the default nav
+# list never exceeds them. Overflow content is truncated with an ellipsis and
+# remains available behind details (^/ preview), never stored unbounded in an
+# fzf record.
+#   session record: ≤ NAV_SESSION_LINES visual lines
+#   window record:  ≤ NAV_WINDOW_LINES visual lines
+#   pane record:    ≤ NAV_PANE_LINES visual lines
+# The record byte bound is guaranteed BY CONSTRUCTION (every free-text input
+# and every display line is capped below, so the widest possible record —
+# 160-char name + 3×120-char lines of 4-byte UTF-8 — still lands well under
+# NAV_MAX_RECORD_BYTES) and defended by a cheap char guard at emission.
+readonly NAV_SESSION_LINES=3
+readonly NAV_WINDOW_LINES=2
+readonly NAV_PANE_LINES=1
+readonly NAV_MAX_RECORD_BYTES=4096
+readonly NAV_MAX_RECORD_CHARS=2048
+readonly NAV_MAX_NAME_CHARS=160      # record field-3 (presentation name) cap
+readonly NAV_MAX_LOC_CHARS=80        # bounded location-projection cap (§3/§31)
+readonly NAV_MAX_CARD_WIDTH=120      # hard cap on any drawer width
+
+# nav_line_budget <record-type> -> REPLY = the §19 visual line budget.
+nav_line_budget() {
+  case "$1" in
+    session) REPLY=$NAV_SESSION_LINES ;;
+    window)  REPLY=$NAV_WINDOW_LINES ;;
+    pane)    REPLY=$NAV_PANE_LINES ;;
+    *)       REPLY=1 ;;
+  esac
+}
+
+# nav_bounded_name <text> -> REPLY: cap a record field-3 presentation name.
+# Machine identity never comes from this field, so hard-cutting is safe. The
+# display cards make their own (finer) truncation.
+nav_bounded_name() {
+  local text="${1:-}"
+  [ "${#text}" -le "$NAV_MAX_NAME_CHARS" ] || text="${text:0:$NAV_MAX_NAME_CHARS}"
+  REPLY="$text"
+}
+
+# nav_bounded_rel <rel-path> -> REPLY: bounded relative path. Shallow paths
+# stay intact; deep middles elide to the trailing two components and the whole
+# is hard-fitted to the location cap (a single hostile component cannot grow
+# the record, §32).
+nav_bounded_rel() {
+  local rel="${1:-}" parts n out
+  [ -n "$rel" ] || { REPLY=''; return 0; }
+  IFS='/' read -r -a parts <<< "$rel"
+  n=${#parts[@]}
+  if [ "$n" -le 2 ]; then out="$rel"; else out="…/${parts[$((n-2))]}/${parts[$((n-1))]}"; fi
+  fit_width "$out" "$NAV_MAX_LOC_CHARS"
+}
+
+# nav_bounded_norepo <abs-path> -> REPLY: §3/§31 no-repo projection. Never a
+# full absolute path: ~-relative under $HOME, otherwise the trailing ≤2
+# components with an eliding prefix; always fitted to the location cap.
+nav_bounded_norepo() {
+  local p="${1:-}" rel parts n out=''
+  p="${p:-$HOME}"
+  if [[ "$p" == "$HOME"* ]]; then
+    rel="${p#"$HOME"}"; rel="${rel#/}"
+    if [ -z "$rel" ]; then out='~'
+    else
+      IFS='/' read -r -a parts <<< "$rel"; n=${#parts[@]}
+      if [ "$n" -le 2 ]; then out="~/$rel"; else out="~/…/${parts[$((n-2))]}/${parts[$((n-1))]}"; fi
+    fi
+  else
+    IFS='/' read -r -a parts <<< "$p"; n=${#parts[@]}
+    if [ "$n" -le 2 ]; then out="$p"; else out="…/${parts[$((n-2))]}/${parts[$((n-1))]}"; fi
+  fi
+  fit_width "$out" "$NAV_MAX_LOC_CHARS"
+}
+
+# nav_pane_location <pane_path> <git_root> -> REPLY: bounded paneLocation
+# projection (§3/§17/§31), the inline repo/path shown on the pane row (PART VII).
+#   path == root        -> canonical repo label
+#   path inside root    -> filesystem repo/path, middle elided to …/
+#   worktree pane       -> parent-repo label / bounded worktree-relative path
+#                          (never a long .xtrm/worktrees/… wall)
+#   no repo             -> shortened user-relative path (never full absolute)
+# Reuses the already-collected pane cwd, the existing path→git-root cache, and
+# the canonical worktree/root grouping: zero git subprocesses, zero filesystem
+# traversal on the hot path. Full absolute path is details-only (§18).
+nav_pane_location() {
+  local pane_path="${1:-}" root="${2:-}" group repo rel
+  pane_path="${pane_path:-$HOME}"
+  if [ -n "$root" ]; then
+    group_root_for_path "$pane_path" "$root"; group="$REPLY"
+    repo="${group##*/}"
+    [ -n "$repo" ] || repo="${root##*/}"
+    if [ "$pane_path" = "$root" ]; then REPLY="$repo"; return 0; fi
+    rel="${pane_path#"$root"/}"
+    if [ "$rel" != "$pane_path" ] && [ -n "$rel" ]; then
+      nav_bounded_rel "$rel"; rel="$REPLY"
+      # filesystem-style repo/path projection (§3/§17 PART VII): the repo
+      # prefix and the useful trailing components survive; deep middles elide
+      # to …/ (nav_bounded_rel already collapses to the last two components).
+      REPLY="$repo/$rel"
+      fit_width "$REPLY" "$NAV_MAX_LOC_CHARS"
+    else
+      REPLY="$repo"
+    fi
+    return 0
+  fi
+  nav_bounded_norepo "$pane_path"
+}
+
+# nav_lines_cap <text> <max-lines> <width> -> REPLY: at most <max-lines>
+# newline-joined lines; when the wrapped text exceeds the budget, the last
+# retained line is refitted to <width>-1 and gains a terminal ellipsis. This
+# is the §19 overflow policy: truncate, never grow the record.
+nav_lines_cap() {
+  local text="${1:-}" max="${2:-1}" width="${3:-0}" line out='' count=0 last
+  local -a _lc=()
+  [ "$max" -lt 1 ] && max=1
+  [ "$width" -lt 1 ] && width=1
+  while IFS= read -r line; do _lc+=("$line"); done <<< "$text"
+  count=${#_lc[@]}
+  if [ "$count" -le "$max" ]; then REPLY="$text"; return 0; fi
+  local i
+  last="${_lc[$((max-1))]}"
+  fit_width "$last" $((width - 1)); last="$REPLY"
+  case "$last" in *…*) ;; *) last+='…' ;; esac
+  if [ "$max" -eq 1 ]; then REPLY="$last"; return 0; fi
+  out="${_lc[0]}"
+  for ((i=1; i<max-1; i++)); do out+=$'\n'"${_lc[$i]}"; done
+  REPLY="$out"$'\n'"$last"
+}
+
+# nav_enforce_bounded <record> -> REPLY ≤ NAV_MAX_RECORD_CHARS: defense-in-
+# depth emission guard. The input/display caps make this unreachable for real
+# data; it exists so an unforeseen pathological input can never grow a record
+# past the bound (§19). Machine fields 1..5 are preserved verbatim (identity
+# safety), only the display tail (field 6) is refitted.
+nav_enforce_bounded() {
+  local rec="${1:-}" rest f prefix='' i keep
+  if [ "${#rec}" -le "$NAV_MAX_RECORD_CHARS" ]; then REPLY="$rec"; return 0; fi
+  rest="$rec"
+  for ((i=0; i<5; i++)); do
+    f="${rest%%$'\t'*}"
+    prefix+="$f"
+    [ "$i" -lt 4 ] && prefix+=$'\t'
+    rest="${rest#*$'\t'}"
+  done
+  keep=$(( NAV_MAX_RECORD_CHARS - ${#prefix} - 1 ))
+  [ "$keep" -lt 0 ] && keep=0
+  fit_width "$rest" "$keep"
+  REPLY="$prefix"$'\t'"$REPLY"
+}
+
 
 # nav_text_clean removes control bytes that could alter record framing or ANSI
 # presentation. Structural newlines are added only by the card renderers.
@@ -2841,6 +3112,18 @@ nav_text_clean() {
   local text="${1:-}"
   while [[ "$text" == *[[:cntrl:]]* ]]; do text="${text/[[:cntrl:]]/ }"; done
   REPLY="$text"
+}
+
+# nav_window_label <index> <name> -> REPLY=presentation "index:name" label,
+# control-clean and bounded to the card width. Presentation only: the machine
+# identity of a window row is its @N target, which never derives from this
+# label (§30 — hostile characters in a window name/index cannot affect it).
+nav_window_label() {
+  local index="${1:-}" name="${2:-}" label
+  nav_text_clean "$name"; name="$REPLY"
+  label="${index}${name:+:$name}"
+  nav_card_width
+  fit_width "$label" "$REPLY"
 }
 
 # nav_state_tag <normalized-state> -> REPLY=plain badge text ('' if none).
@@ -2927,37 +3210,103 @@ nav_state_label() {
 
 # nav_style <role> <text> -> REPLY. Truecolor is presentation-only and is
 # applied after width calculation so ANSI bytes never affect truncation.
+# SEMANTIC PALETTE (PART VIII): one PRIMARY neutral off-white, one MUTED
+# medium gray, one desaturated cool ACCENT (current/focus/pointer), one
+# desaturated ATTENTION amber (urgent/wait/stale/needs-input), and a
+# restrained DANGER red reserved for hard failure only. Lifecycle states
+# run/done/idle are NEUTRAL, never green/blue/rainbow. No bold anywhere.
 nav_style() {
   local role="$1" text="${2:-}" code
   case "$role" in
-    session) code='38;2;240;242;243' ;;
-    pane-id) code='38;2;215;219;221' ;;
-    runtime) code='38;2;159;168;171' ;;
-    context|task) code='38;2;133;141;145' ;;
-    section) code='38;2;101;112;117' ;;
-    age) code='38;2;133;141;145' ;;
-    stale) code='38;2;216;141;141' ;;
-    needs-input|wait) code='38;2;232;200;120' ;;
-    running|run) code='38;2;143;205;160' ;;
-    done) code='38;2;141;169;199' ;;
-    idle) code='38;2;120;130;135' ;;
-    current) code='38;2;240;242;243' ;;
+    # PRIMARY — neutral off-white: identity and important names
+    session) code='38;2;232;234;237' ;;
+    window-id) code='38;2;232;234;237' ;;
+    pane-id) code='38;2;232;234;237' ;;
+    primary) code='38;2;232;234;237' ;;
+    # MUTED — medium gray: task, path, age, group labels, separators, secondary
+    # runtime, non-current/non-attention lifecycle state
+    runtime) code='38;2;122;128;134' ;;
+    context|task) code='38;2;122;128;134' ;;
+    section) code='38;2;122;128;134' ;;
+    age) code='38;2;122;128;134' ;;
+    idle) code='38;2;122;128;134' ;;      # neutral, not grey-poisoned, just muted
+    running|run) code='38;2;122;128;134' ;; # NEUTRAL — never green
+    done) code='38;2;122;128;134' ;;       # NEUTRAL — never blue
+    active) code='38;2;122;128;134' ;;    # muted parent group
+    other) code='38;2;122;128;134' ;;     # muted parent group
+    muted) code='38;2;122;128;134' ;;
+    # ACCENT — one desaturated cool steel-blue: current row emphasis
+    current) code='38;2;104;168;196' ;;
+    accent) code='38;2;104;168;196' ;;
+    # ATTENTION — one desaturated amber: urgent / wait / needs-input / stale
+    stale) code='38;2;205;165;95' ;;
+    needs-input|wait) code='38;2;205;165;95' ;;
+    urgent) code='38;2;205;165;95' ;;
+    attention) code='38;2;205;165;95' ;;
+    # DANGER — restrained red: hard failure / unreachable / destructive only
+    danger) code='38;2;196;92;92' ;;
     *) REPLY="$text"; return 0 ;;
   esac
   REPLY=$'\033['"$code"'m'"$text"$'\033[0m'
 }
 
+# nav_group_label <normalized-state> -> REPLY=urgent|active|other.
+# PROMPT 14 (option B, documented): the visual group is a relevance bucket,
+# NOT a claim of full attention membership. stale+needs-input = `urgent` (the
+# waiting preset, rank ≤1); `attention-next` traverses the BROADER canonical
+# cycle set (rank ≤2, stale+needs-input+done). The label was renamed away from
+# `attn` so it cannot overclaim; done/idle sessions sit in `other` yet remain
+# attention-cycle targets. The hierarchy aggregation stays the one
+# nav_state_max order; only the visible label changed.
 nav_group_label() {
   case "$1" in
-    stale|needs-input|wait) REPLY='attn' ;;
+    stale|needs-input|wait) REPLY='urgent' ;;
     running|run) REPLY='active' ;;
     *) REPLY='other' ;;
   esac
 }
 
+# nav_window_card <marker> <window-id> <label> <state> <count> <lines>
+# [<current>] -> REPLY (§15): compact independently-selectable window row
+#   `↳ @17  0:coord  run · 2`
+# The ancestry glyph is ALWAYS `↳` (uniform, invariant to sibling position). The
+# current window is distinguished by ACCENT styling on the `↳` and @id, never by
+# replacing the glyph (§ PART V/VIII). @window-id is machine identity and is
+# NEVER truncated (§15 priority 1); index:name truncates; state = aggregate;
+# count = pane count. ≤ NAV_WINDOW_LINES lines.
+nav_window_card() {
+  local marker="${1:- }" wid="${2:-}" label="$3" state="$4" count="$5" lines="${6:-multi}" current="${7:-0}"
+  local w sep suffix label_budget out id_styled label_styled state_styled count_styled marker_styled
+  nav_card_width; w="$REPLY"
+  nav_state_label "$state"; state="$REPLY"
+  nav_text_clean "$label"; label="$REPLY"
+  sep='  '
+  [ "$w" -lt 32 ] && sep=' '
+  suffix="$state"
+  [ -n "$count" ] && suffix="${suffix:+$suffix }· $count"
+  label_budget=$(( w - ${#marker} - 1 - ${#wid} - ${#sep} - ${#suffix} - ${#sep} ))
+  [ "$label_budget" -lt 0 ] && label_budget=0
+  fit_width "$label" "$label_budget"; label="$REPLY"
+  if [ "$current" = 1 ]; then
+    nav_style current "$marker"; marker_styled="$REPLY"
+    nav_style current "$wid"; id_styled="$REPLY"
+  else
+    nav_style section "$marker"; marker_styled="$REPLY"
+    nav_style window-id "$wid"; id_styled="$REPLY"
+  fi
+  nav_style session "$label"; label_styled="$REPLY"
+  nav_style "$state" "$state"; state_styled="$REPLY"
+  nav_style age "$count"; count_styled="$REPLY"
+  out="$marker_styled $id_styled$sep$label_styled$sep$state_styled"
+  [ -n "$count" ] && out+=" · $count_styled"
+  REPLY="$out"
+}
+
 # nav_session_card <marker> <name> <state> <age> <context> <lines>
 # Every session carries its compact group label, so fuzzy filtering cannot remove
 # the only heading for retained rows. Pane rows retain the precise state label.
+# §19: ≤3 visual lines — name up to 2 wrapped lines, context exactly 1 fitted
+# line; overflow is ellipsized, never wrapped past the budget.
 nav_session_card() {
   local marker="${1:- }" name="$2" state="$3" age="$4" context="$5" lines="${6:-multi}" w
   local label group exact suffix prefix name_budget head body marker_styled name_styled age_styled state_styled context_styled
@@ -2968,7 +3317,7 @@ nav_session_card() {
   nav_state_label "$state"; exact="$REPLY"
   nav_card_width; w="$REPLY"
   if [ "$w" -lt 32 ]; then
-    case "$group" in attn) group='a' ;; active) group='r' ;; *) group='o' ;; esac
+    case "$group" in urgent) group='w' ;; active) group='r' ;; *) group='o' ;; esac
     label="$group${exact:+/$exact}"
   else
     label="$group${exact:+ $exact}"
@@ -2992,13 +3341,17 @@ nav_session_card() {
     return 0
   fi
 
-  # Multi: wrap instead of cut. Continuation lines align under the name.
-  nav_wrap_text "$name" "$name_budget"
+  # Multi: wrap instead of cut, but bounded to the §19 name budget (≤2 of the
+  # 3 session lines; context takes the third as one fitted line).
+  nav_wrap_text "$name" "$name_budget"; local _wname="$REPLY"
+  local _maxlines=1
+  nav_line_budget session; _maxlines="$REPLY"
+  nav_lines_cap "$_wname" $((_maxlines - 1)) "$name_budget"; name="$REPLY"
   local -a _name_lines=()
-  if [[ "$REPLY" == *$'\n'* ]]; then
-    while IFS= read -r _nl; do _name_lines+=("$_nl"); done <<< "$REPLY"
+  if [[ "$name" == *$'\n'* ]]; then
+    while IFS= read -r _nl; do _name_lines+=("$_nl"); done <<< "$name"
   else
-    _name_lines=("$REPLY")
+    _name_lines=("$name")
   fi
   local _first="${_name_lines[0]}"
   nav_style current "$marker"; marker_styled="$REPLY"
@@ -3017,94 +3370,87 @@ nav_session_card() {
 
   body="$head"
   if [ -n "$context" ]; then
-    nav_wrap_styled "$context" $(( w - 4 )) context '    '
-    body+=$'\n'"$REPLY"
+    # context is exactly one bounded line (§19 line 3); it never wraps past it
+    fit_width "$context" $(( w - 4 )); context="$REPLY"
+    nav_style context "$context"; body+=$'\n'"    $REPLY"
   fi
   REPLY="$body"
   return 0
 }
 
-# nav_pane_card <branch> <pane-id> <runtime> <state> <task> <session-state> <lines>
-# Multi: pane id, group and exact state anchor line 1; runtime and task wrap
-# onto continuation lines rather than being cut. Single keeps deterministic
-# truncation (one physical line cannot hold more than the width).
+# nav_pane_card <branch> <pane-id> <runtime> <state> <task> <session-state>
+# <lines> [<location>] [<current>]
+# §3/§16/§19/§20 (PART V/VI): EVERY pane renders on exactly ONE visual line,
+# for both the multiline-capable expanded path and the single-line fallback
+# (NAV_PANE_LINES=1). There is no second location line — the bounded
+# repo/path location rides inline. Row order and width priority:
+#   %pane-id > runtime > exact state > location > task
+# Task yields first, then location; %pane-id, runtime and exact state are never
+# given up. The ancestry glyph is ALWAYS `↳`; the current pane is distinguished
+# by ACCENT styling on the `↳` and %pane-id, never by replacing the glyph.
 nav_pane_card() {
-  local branch="$1" pane="$2" runtime="$3" state="$4" task="$5" session_state="$6" lines="${7:-multi}" w label group indent runtime_sep base prefix suffix sep runtime_budget task_budget
-  local branch_styled pane_styled runtime_styled task_styled group_styled state_styled
+  local branch="${1:-}" pane="${2:-}" runtime="$3" state="$4" task="$5" session_state="$6" lines="${7:-multi}" location="${8:-}" current="${9:-0}" w label group grole
+  local indent runtime_sep sep suffix bare state_on used fixed loc_budget task_budget loc_len _loc_reserve
+  local branch_styled pane_styled runtime_styled task_styled group_styled state_styled loc_styled
   nav_text_clean "$runtime"; runtime="$REPLY"
   nav_text_clean "$task"; task="$REPLY"
+  nav_text_clean "$location"; location="$REPLY"
   nav_state_label "$state"; label="$REPLY"
   nav_group_label "$session_state"; group="$REPLY"
   nav_card_width; w="$REPLY"
-  if [ "$w" -lt 32 ]; then
-    case "$group" in attn) group='a' ;; active) group='r' ;; *) group='o' ;; esac
-    group="$group${label:+/$label}"; label=''; indent=''; runtime_sep=' '; sep=' '
-    suffix="$sep$group"
-    base="$indent$branch $pane$runtime_sep"
-  else
-    indent='    '; runtime_sep='  '; sep='  '
-    suffix="$sep$group${label:+  $label}"
-    base="$indent$branch $pane$runtime_sep"
+  indent='    '; runtime_sep='  '; sep='  '
+  if [ "$w" -lt 32 ]; then indent=''; runtime_sep=' '; sep=' '; fi
+  fixed=$(( ${#indent} + ${#branch} + 1 + ${#pane} + ${#runtime_sep} ))
+  # runtime budget reserves the minimal parent-group suffix so %id+runtime
+  # always fit first (§16); runtime shrinks before exact state is dropped.
+  runtime_budget=$(( w - fixed - ${#sep} - 1 ))
+  [ "$runtime_budget" -lt 0 ] && runtime_budget=0
+  fit_width "$runtime" "$runtime_budget"; runtime="$REPLY"
+  used=$(( fixed + ${#runtime} ))
+  # parent group: full word when it fits, else its letter; always muted except
+  # the urgent bucket (amber). Emphasise exact state, not the grouping.
+  case "$group" in urgent) grole='urgent' ;; *) grole='section' ;; esac
+  bare="$sep$group"
+  [ $(( used + ${#bare} )) -gt "$w" ] && { bare="$sep${group:0:1}"; grole='section'; }
+  suffix="$bare"
+  state_on=0
+  if [ -n "$label" ] && [ $(( used + ${#suffix} + 2 + ${#label} )) -le "$w" ]; then
+    suffix+="  $label"; state_on=1
   fi
-
-  if [ "$lines" = single ]; then
-    runtime_budget=$(( w - ${#base} - ${#suffix} ))
-    if [ "$w" -lt 32 ] && [ "$runtime_budget" -gt 4 ]; then runtime_budget=4; fi
-    [ "$runtime_budget" -gt 11 ] && runtime_budget=11
-    [ "$runtime_budget" -lt 1 ] && runtime_budget=1
-    fit_width "$runtime" "$runtime_budget"; runtime="$REPLY"
-    prefix="$base$runtime"
-    task_budget=$(( w - ${#prefix} - ${#suffix} - 2 ))
-    [ "$task_budget" -gt 24 ] && task_budget=24
-    [ "$task_budget" -lt 0 ] && task_budget=0
-    fit_width "$task" "$task_budget"; task="$REPLY"
+  # location rides inline before task; yields before task only ever squeezes
+  # task — never a continuation line, never id/runtime/state.
+  loc_len=0
+  if [ -n "$location" ]; then
+    loc_budget=$(( w - used - ${#suffix} - 1 ))
+    [ "$loc_budget" -gt 24 ] && loc_budget=24
+    [ "$loc_budget" -lt 1 ] && loc_budget=0
+    fit_width "$location" "$loc_budget"; location="$REPLY"
+    loc_len=${#location}
+  fi
+  # reserve the inline location width (loc + leading space) only when it rendered
+  _loc_reserve=0
+  [ "$loc_len" -gt 0 ] && _loc_reserve=$(( loc_len + 1 ))
+  task_budget=$(( w - used - ${#suffix} - _loc_reserve - 2 ))
+  [ "$task_budget" -lt 3 ] && task_budget=0
+  fit_width "$task" "$task_budget"; task="$REPLY"
+  if [ "$current" = 1 ]; then
+    nav_style current "$branch"; branch_styled="$REPLY"
+    nav_style current "$pane"; pane_styled="$REPLY"
+  else
     nav_style section "$branch"; branch_styled="$REPLY"
     nav_style pane-id "$pane"; pane_styled="$REPLY"
-    nav_style runtime "$runtime"; runtime_styled="$REPLY"
-    nav_style task "$task"; task_styled="$REPLY"
-    nav_style "$session_state" "$group"; group_styled="$REPLY"
-    nav_style "$state" "$label"; state_styled="$REPLY"
-    REPLY="$indent$branch_styled $pane_styled$runtime_sep$runtime_styled"
-    [ -n "$task" ] && REPLY+="  $task_styled"
-    REPLY+="$sep$group_styled"
-    [ -n "$label" ] && REPLY+="  $state_styled"
-    return 0
   fi
-
-  # Multi: line 1 = id + runtime + group/state; task and long runtimes wrap.
-  runtime_budget=$(( w - ${#base} - ${#suffix} ))
-  nav_wrap_text "$runtime" "$runtime_budget"
-  local -a _rt=()
-  if [[ "$REPLY" == *$'\n'* ]]; then
-    while IFS= read -r _rl; do _rt+=("$_rl"); done <<< "$REPLY"
-  else
-    _rt=("$REPLY")
-  fi
-  nav_style section "$branch"; branch_styled="$REPLY"
-  nav_style pane-id "$pane"; pane_styled="$REPLY"
-  nav_style "$session_state" "$group"; group_styled="$REPLY"
-  nav_style "$state" "$label"; state_styled="$REPLY"
-  local _first="${_rt[0]}" _card="" _r _task_inline=0
-  nav_style runtime "$_first"; runtime_styled="$REPLY"
-  [ -n "$task" ] && [ $(( ${#base} + ${#_first} + 2 + ${#task} + ${#suffix} )) -le "$w" ] && _task_inline=1
-  _card="$indent$branch_styled $pane_styled$runtime_sep$runtime_styled"
-  if [ "$_task_inline" = 1 ]; then
-    nav_style task "$task"; task_styled="$REPLY"
-    _card+="  $task_styled"
-  fi
-  for _r in "${_rt[@]:1}"; do
-    [ -n "$_r" ] || continue
-    nav_style runtime "$_r"; _card+=$'\n'"$indent  $REPLY"
-  done
-  _card+="$sep$group_styled"
-  [ -n "$label" ] && _card+="  $state_styled"
-  if [ -n "$task" ] && [ "$_task_inline" = 0 ]; then
-    local _ti="$indent  "
-    [ "$w" -lt 32 ] && _ti=' '
-    nav_wrap_styled "$task" $(( w - ${#_ti} )) task "$_ti"
-    _card+=$'\n'"$REPLY"
-  fi
-  REPLY="$_card"
+  nav_style runtime "$runtime"; runtime_styled="$REPLY"
+  nav_style "$grole" "${bare#"$sep"}"; group_styled="$REPLY"
+  [ "$state_on" = 1 ] && nav_style "$state" "$label"; state_styled="$REPLY"
+  nav_style task "$location"; loc_styled="$REPLY"
+  nav_style task "$task"; task_styled="$REPLY"
+  out="$indent$branch_styled $pane_styled$runtime_sep$runtime_styled"
+  out+="$sep$group_styled"
+  [ "$state_on" = 1 ] && out+="  $state_styled"
+  [ -n "$location" ] && [ "$loc_len" -gt 0 ] && out+=" $loc_styled"
+  [ -n "$task" ] && out+="  $task_styled"
+  REPLY="$out"
   return 0
 }
 
@@ -3126,14 +3472,22 @@ nav_route() {
 # never reaches any tmux command. The nav renderer never emits header records,
 # and an empty/malformed token is rejected here, so no fzf row is a dead,
 # closable selection.
+#
+# Action table (§22): actions apply by record type.
+#   session: go(nav_go) popup kill-session rename-session
+#   window:  go(record+select @N) popup(attach+select-window @N) kill-window
+#            rename-window; approve/interrupt/message are pane-only and get a
+#            bounded operator message, never a silent pane action
+#   pane:    go(nav_go) popup kill-pane rename-window(its own window)
+#            approve/interrupt/message (act_on_target)
 nav_act() {
-  local token="${1:-}" action="${2:-}" parsed type sid pane
+  local token="${1:-}" action="${2:-}" parsed type sid target
   if [ -z "$token" ] || ! parse_nav_token "$token"; then
     tmux display-message 'tmux-picker: riga non azionabile' 2>/dev/null || true
     return 1
   fi
   parsed="$REPLY"
-  IFS=$'\t' read -r type sid pane <<< "$parsed"
+  IFS=$'\t' read -r type sid target <<< "$parsed"
   [ "$sid" = - ] && sid=''
   case "$type" in
     session)
@@ -3147,14 +3501,35 @@ nav_act() {
           ;;
       esac
       ;;
-    pane)
-      resolve_nav_pane_session "$sid" "$pane" || return 1
+    window)
+      # ownership revalidated against live tmux before ANY window mutation
+      resolve_nav_window_session "$sid" "$target" || return 1
       sid="$REPLY"
       case "$action" in
-        popup)  open_popup_client pane "$sid" "$pane" ;;
-        kill)   kill_target pane "$sid" "$pane" ;;
-        rename) rename_target pane "$sid" "$pane" ;;
-        approve|interrupt|message) act_on_target pane "$sid" "$pane" "$action" ;;
+        go)     record_prev; jump_to_target window "$sid" "$target" ;;
+        popup)  open_popup_client window "$sid" "$target" ;;
+        kill)   kill_target window "$sid" "$target" ;;
+        rename) rename_target window "$sid" "$target" ;;
+        approve|interrupt|message)
+          # pane-only actions: a bounded non-error operator message, never a
+          # guessed pane target (§22)
+          tmux display-message "tmux-picker: '$action' agisce solo sui riquadri (riga finestra)" 2>/dev/null || true
+          return 0
+          ;;
+        *)
+          tmux display-message "tmux-picker: azione non valida su riga finestra: $action" 2>/dev/null || true
+          return 1
+          ;;
+      esac
+      ;;
+    pane)
+      resolve_nav_pane_session "$sid" "$target" || return 1
+      sid="$REPLY"
+      case "$action" in
+        popup)  open_popup_client pane "$sid" "$target" ;;
+        kill)   kill_target pane "$sid" "$target" ;;
+        rename) rename_target pane "$sid" "$target" ;;
+        approve|interrupt|message) act_on_target pane "$sid" "$target" "$action" ;;
         *)
           tmux display-message "tmux-picker: azione sconosciuta: $action" 2>/dev/null || true
           return 1
@@ -3165,11 +3540,12 @@ nav_act() {
 }
 
 # nav_border_label — fzf transform-border-label source for the nav launcher.
+# Tab toggles compact <-> expanded TOPOLOGY (§5), not merely hide/show panes.
 nav_border_label() {
   read_list_mode
   case "$REPLY" in
-    sessions-only) printf '%s' ' ↵ open · Tab panes · ^/ details · ? help · compact ' ;;
-    *) printf '%s' ' ↵ open · Tab panes · ^/ details · ? help · expanded ' ;;
+    sessions-only) printf '%s' ' ↵ open · Tab expanded · ^/ details · ? help · compact ' ;;
+    *) printf '%s' ' ↵ open · Tab compact · ^/ details · ? help · expanded ' ;;
   esac
 }
 
@@ -3179,9 +3555,9 @@ nav_key_help() {
   cat <<'EOF'
 xtmux nav — keys
 
-  Enter          go to the highlighted session/pane
+  Enter          go to the highlighted session/window/pane
   Alt-Enter      open it in a popup (detached client)
-  Tab            compact <-> expanded list
+  Tab            compact <-> expanded topology (sessions <-> session/window/pane)
   Space          mark rows (multi-select)
   Alt-X          bulk-kill marked rows (multi-select only)
   Alt-x          kill the highlighted row
@@ -3211,19 +3587,19 @@ pick_classic() {
     tmux display-message 'fzf non trovato'
     exit 1
   fi
-  local preview_window='right,62%,border-left,wrap,follow'
-  local preview_window_max='right,94%,border-left,wrap,follow'
+  local preview_window='right,62%,wrap,follow'
+  local preview_window_max='right,94%,wrap,follow'
   local border_label=' Enter switch · Tab mark · Alt-R rename · Alt-X bulk kill · Alt-x kill · ^Y ok · Alt-I int · ^O msg · ^A all ^W wait ^E run · ^F filter · Ctrl-r refresh · ? help · Ctrl-/ preview '
   local choice type sid name target _
   case "$mode" in
     compact-wrap)
-      preview_window='right,68%,border-left,wrap,follow'
-      preview_window_max='right,94%,border-left,wrap,follow'
+      preview_window='right,68%,wrap,follow'
+      preview_window_max='right,94%,wrap,follow'
       border_label=' compact wrap · Enter switch · Alt-Enter popup · Alt-x kill · ^Y approve · Alt-I interrupt · ^O msg · ^A/^W/^E filtri · ^F filter · Ctrl-r refresh · ? help '
       ;;
     compact-nowrap)
-      preview_window='right,68%,border-left,follow'
-      preview_window_max='right,94%,border-left,follow'
+      preview_window='right,68%,follow'
+      preview_window_max='right,94%,follow'
       border_label=' compact no-wrap · Enter switch · Alt-Enter popup · Alt-x kill · ^Y approve · Alt-I interrupt · ^O msg · ^A/^W/^E filtri · ^F filter · Ctrl-r refresh · ? help '
       ;;
   esac
@@ -3235,9 +3611,11 @@ pick_classic() {
     --with-nth=5 \
     --layout=reverse-list \
     --height=100% \
-    --border=sharp \
-    --border-label "$border_label" \
-    --border-label-pos='3:bottom' \
+    --margin=1,2 \
+    --border=none \
+    --list-border=none \
+    --header "$border_label" \
+    --header-first \
     --no-scrollbar \
     --cycle \
     --no-bold \
@@ -3248,7 +3626,7 @@ pick_classic() {
     --info=inline-right \
     --color='fg:#b8bcc0,bg:-1,hl:#ffffff,fg+:#ffffff,bg+:#222222,hl+:#ffffff,info:#8a8f94,prompt:#8a8f94,pointer:#c6cacf,marker:#c6cacf,label:#8a8f94,border:#303030,gutter:-1' \
     --preview-window="$preview_window" \
-    --bind="load:transform-prompt($self prompt-label)+transform-border-label($self border-label)" \
+    --bind="load:transform-prompt($self prompt-label)" \
     --bind="ctrl-/:toggle-preview" \
     --bind="?:change-preview($self mux-help)" \
     --bind="ctrl-r:reload(TMUX_PICKER_NO_CACHE=1 $self list-active)" \
@@ -3256,7 +3634,7 @@ pick_classic() {
     --bind="ctrl-w:execute-silent($self filter-preset waiting)+change-prompt(wait> )+reload($self list waiting)" \
     --bind="ctrl-e:execute-silent($self filter-preset running)+change-prompt(run> )+reload($self list running)" \
     --bind="ctrl-f:execute($self filter-menu)+reload($self list-active)+transform-prompt($self prompt-label)" \
-    --bind="tab:execute($self mode-toggle)+reload($self list-active)+transform-prompt($self prompt-label)+transform-border-label($self border-label)" \
+    --bind="tab:execute($self mode-toggle)+reload($self list-active)+transform-prompt($self prompt-label)" \
     --bind="space:toggle+down" \
     --bind="alt-p:change-preview-window($preview_window_max|$preview_window)" \
     --bind="alt-x:execute-silent($self kill {1} {2} {4})+reload($self list-active)" \
@@ -3273,15 +3651,100 @@ pick_classic() {
   jump_to_target "$type" "$sid" "$target"
 }
 
-# nav_reserve_fzf_width — convert popup columns into usable row columns. fzf's
-# border plus multi-select pointer/marker gutter consume eight terminal cells.
+# nav_reserve_fzf_width — convert popup columns into usable row columns. With
+# the borderless rendering the multi-select pointer/marker gutter still consumes
+# four terminal cells (no fzf border anymore; was eight with one).
 nav_reserve_fzf_width() {
   local w="${XTMUX_NAV_WIDTH:-${COLUMNS:-52}}"
   case "$w" in ''|*[!0-9]*) w=52 ;; esac
-  w=$(( w - 8 ))
+  w=$(( w - 4 ))
   [ "$w" -lt 1 ] && w=1
   XTMUX_NAV_WIDTH="$w"
   export XTMUX_NAV_WIDTH
+}
+
+# nav_snapshot_project_stream <flat-file> <single|multi>
+# Pure ancestry projection over an already-rendered NUL nav snapshot.
+# Fields 1-5 remain byte-identical; only display field 6 gains parent
+# cards. No tmux/git/fzf calls occur here.
+nav_snapshot_project_stream() {
+  local input="${1:-}" lines="${2:-multi}" record type sid name target token display prefix out
+  local sdisp='' sname='' wdisp='' wname=''
+  [ -f "$input" ] || return 1
+  case "$lines" in single|multi) ;; *) return 2 ;; esac
+  while IFS= read -r -d '' record; do
+    IFS=$'\t' read -r type sid name target token _ <<< "$record"
+    prefix="$type"$'\t'"$sid"$'\t'"$name"$'\t'"$target"$'\t'"$token"$'\t'
+    display="${record#"$prefix"}"
+    out="$record"
+    case "$type" in
+      session)
+        sdisp="$display"; sname="$name"; wdisp=''; wname=''
+        ;;
+      window)
+        wdisp="$display"; wname="$name"
+        if [ "$lines" = single ]; then
+          display="${sname}  $display"
+        else
+          display="${sdisp}"$'\n'"$display"
+        fi
+        out="$prefix$display"
+        ;;
+      pane)
+        if [ "$lines" = single ]; then
+          display="${sname}  ${wname}  $display"
+        elif [ -n "$wdisp" ]; then
+          display="${sdisp}"$'\n'"${wdisp}"$'\n'"$display"
+        else
+          display="${sdisp}"$'\n'"$display"
+        fi
+        out="$prefix$display"
+        ;;
+    esac
+    if [ "${#out}" -gt "$NAV_MAX_RECORD_CHARS" ]; then
+      nav_enforce_bounded "$out"; out="$REPLY"
+    fi
+    printf '%s\0' "$out"
+  done < "$input"
+}
+
+nav_snapshot_path_ok() {
+  local path="${1:-}" prefix="${TMPDIR:-/tmp}/xtmux-nav."
+  [ -n "$path" ] || return 1
+  case "$path" in "$prefix"*) ;; *) return 1 ;; esac
+  [ -f "$path" ] && [ ! -L "$path" ] && [ -O "$path" ]
+}
+
+# Per-keystroke path: local file read only. Query text selects flat vs
+# ancestry snapshot and never reaches tmux/git/eval.
+nav_snapshot_view() {
+  local flat="${1:-}" chain="${2:-}" query="${3:-}"
+  nav_snapshot_path_ok "$flat" || return 1
+  nav_snapshot_path_ok "$chain" || return 1
+  if [ -n "$query" ]; then cat -- "$chain"; else cat -- "$flat"; fi
+}
+
+# Explicit live refresh. Build one flat snapshot, derive ancestry from
+# those exact bytes, then replace both temp-backed files before output.
+nav_snapshot_refresh() {
+  local flat="${1:-}" chain="${2:-}" lines="${3:-}" requested="${4:-active}" query="${5:-}"
+  local spec mode flat_tmp chain_tmp
+  nav_snapshot_path_ok "$flat" || return 1
+  nav_snapshot_path_ok "$chain" || return 1
+  case "$lines" in single|multi) ;; *) return 2 ;; esac
+  case "$requested" in
+    active) picker_state_read filter || true; spec="$REPLY" ;;
+    all|waiting|running) spec="$requested" ;;
+    *) return 2 ;;
+  esac
+  read_list_mode; mode="$REPLY"
+  flat_tmp="${flat}.tmp.$$"; chain_tmp="${chain}.tmp.$$"
+  rm -f -- "$flat_tmp" "$chain_tmp"
+  build_list "$spec" "$mode" nav "$lines" > "$flat_tmp" || { rm -f -- "$flat_tmp" "$chain_tmp"; return 1; }
+  nav_snapshot_project_stream "$flat_tmp" "$lines" > "$chain_tmp" || { rm -f -- "$flat_tmp" "$chain_tmp"; return 1; }
+  mv -f -- "$chain_tmp" "$chain" || { rm -f -- "$flat_tmp" "$chain_tmp"; return 1; }
+  mv -f -- "$flat_tmp" "$flat" || { rm -f -- "$flat_tmp"; return 1; }
+  nav_snapshot_view "$flat" "$chain" "$query"
 }
 
 # pick_nav — the drawer launcher for bare `xtmux nav`. Routes on the capability
@@ -3295,101 +3758,84 @@ pick_nav() {
     tmux display-message 'fzf non trovato'
     exit 1
   fi
-  local layout navmode
+  local layout navmode lines self_q
   layout="${XTMUX_NAV_LAYOUT:-}"
-  if [ "$layout" = classic ]; then
-    pick_classic
-    return $?
-  fi
+  if [ "$layout" = classic ]; then pick_classic; return $?; fi
   nav_route; navmode="$REPLY"
   case "$navmode" in
-    classic)
-      pick_classic
-      return $?
-      ;;
+    classic) pick_classic; return $? ;;
+    oneline) lines='single' ;;
+    *) lines='multi' ;;
   esac
   nav_reserve_fzf_width
-  local footer=' ↵ open · Tab panes · ^/ details · ? help '
-  local inspector='hidden,bottom,7,border-top,wrap,follow'
-  local inspector_max='bottom,50%,border-top,wrap,follow'
-  local lall lwait lrun lactive self_q
+  local footer=' ↵ open · Tab compact · ^/ details · ? help '
+  local inspector='hidden,bottom,7,wrap,follow'
+  local inspector_max='bottom,50%,wrap,follow'
   printf -v self_q '%q' "$self"
-  if [ "$navmode" = oneline ]; then
-    lall="$self_q list-nav-single all"
-    lwait="$self_q list-nav-single waiting"
-    lrun="$self_q list-nav-single running"
-    lactive="$self_q list-active-nav-single"
-  else
-    lall="$self_q list-nav all"
-    lwait="$self_q list-nav waiting"
-    lrun="$self_q list-nav running"
-    lactive="$self_q list-active-nav"
-  fi
-  local -a initial_list
-  if [ "$navmode" = oneline ]; then
-    initial_list=("$self" list-active-nav-single)
-  else
-    initial_list=("$self" list-active-nav)
-  fi
   (
-    local initial_file record type sid name target token display prefix pos=1 index=0
-    initial_file="$(mktemp "${TMPDIR:-/tmp}/xtmux-nav.XXXXXX")" || exit 1
-    trap 'rm -f "$initial_file"' EXIT INT TERM
-    "${initial_list[@]}" > "$initial_file"
+    local flat_file chain_file flat_q chain_q lall lwait lrun lactive lchain
+    local record type sid name target token display prefix pos=1 index=0 spec
+    flat_file="$(mktemp "${TMPDIR:-/tmp}/xtmux-nav.flat.XXXXXX")" || exit 1
+    chain_file="$(mktemp "${TMPDIR:-/tmp}/xtmux-nav.chain.XXXXXX")" || { rm -f "$flat_file"; exit 1; }
+    trap 'rm -f "$flat_file" "$chain_file"' EXIT INT TERM
+
+    # Initial open performs one ordinary live projection. Query changes below
+    # never return to live inventory; they switch between local snapshots.
+    if [ "$lines" = single ]; then
+      "$self" list-active-nav-single > "$flat_file"
+    else
+      "$self" list-active-nav > "$flat_file"
+    fi
+    nav_snapshot_project_stream "$flat_file" "$lines" > "$chain_file"
+
+    printf -v flat_q '%q' "$flat_file"
+    printf -v chain_q '%q' "$chain_file"
+    lall="$self_q nav-snapshot-refresh $flat_q $chain_q $lines all '{q}'"
+    lwait="$self_q nav-snapshot-refresh $flat_q $chain_q $lines waiting '{q}'"
+    lrun="$self_q nav-snapshot-refresh $flat_q $chain_q $lines running '{q}'"
+    lactive="$self_q nav-snapshot-refresh $flat_q $chain_q $lines active '{q}'"
+    lchain="$self_q nav-snapshot-view $flat_q $chain_q '{q}'"
+
     while IFS= read -r -d '' record; do
       index=$((index + 1))
       IFS=$'\t' read -r type sid name target token _ <<< "$record"
       prefix="$type"$'\t'"$sid"$'\t'"$name"$'\t'"$target"$'\t'"$token"$'\t'
       display="${record#"$prefix"}"
       case "$display" in '▎ '*|*$'\n''▎ '*) pos="$index"; break ;; esac
-    done < "$initial_file"
+    done < "$flat_file"
+
     fzf \
-    --ansi \
-    --read0 \
-    --track \
-    --delimiter=$'\t' \
-    --with-nth=6 \
-    --layout=reverse-list \
-    --height=100% \
-    --border=sharp \
-    --border-label "$footer" \
-    --border-label-pos='3:bottom' \
-    --no-scrollbar \
-    --cycle \
-    --no-bold \
-    --multi \
-    --header=' xtmux nav · state groups · type to filter ' \
-    --header-first \
-    --prompt='all> ' \
-    --pointer='>' \
-    --marker='✓ ' \
-    --info=inline-right \
-    --color='fg:#b8bcc0,bg:-1,hl:#ffffff,fg+:#ffffff,bg+:#222222,hl+:#ffffff,info:#8a8f94,prompt:#8a8f94,pointer:#c6cacf,marker:#c6cacf,label:#8a8f94,border:#303030,gutter:-1' \
-    --preview-window="$inspector" \
-    --bind="load:pos($pos)+transform-prompt($self_q prompt-label nav)+transform-border-label($self_q nav-border-label)" \
-    --bind="ctrl-/:toggle-preview" \
-    --bind="?:change-preview($self_q nav-key-help)+show-preview" \
-    --bind="ctrl-r:reload-sync(TMUX_PICKER_NO_CACHE=1 $lactive)+track-current" \
-    --bind="ctrl-a:execute-silent($self_q filter-preset all)+change-prompt(all> )+reload-sync($lall)+track-current" \
-    --bind="ctrl-w:execute-silent($self_q filter-preset waiting)+change-prompt(wait> )+reload-sync($lwait)+track-current" \
-    --bind="ctrl-e:execute-silent($self_q filter-preset running)+change-prompt(run> )+reload-sync($lrun)+track-current" \
-    --bind="ctrl-f:execute($self_q filter-menu)+reload-sync($lactive)+track-current+transform-prompt($self_q prompt-label nav)" \
-    --bind="tab:execute($self_q mode-toggle)+reload-sync($lactive)+track-current+transform-prompt($self_q prompt-label nav)+transform-border-label($self_q nav-border-label)" \
-    --bind="space:toggle+down" \
-    --bind="alt-p:change-preview-window($inspector_max|$inspector)" \
-    --bind="enter:become($self_q nav-go {5})" \
-    --bind="alt-enter:become($self_q nav-act {5} popup)" \
-    --bind="alt-x:execute-silent($self_q nav-act {5} kill)+reload-sync($lactive)+track-current" \
-    --bind="alt-X:execute-silent($self_q bulk-kill {+5})+reload-sync($lactive)+track-current" \
-    --bind="alt-r:execute($self_q nav-act {5} rename)+reload-sync($lactive)+track-current" \
-    --bind="ctrl-y:execute-silent($self_q nav-act {5} approve)+reload-sync($lactive)+track-current" \
-    --bind="alt-i:execute-silent($self_q nav-act {5} interrupt)+reload-sync($lactive)+track-current" \
-    --bind="ctrl-o:execute($self_q nav-act {5} message)+reload-sync($lactive)+track-current" \
-    --preview "$self_q preview {1} {2} {3} {4}" < "$initial_file" || true
+      --ansi --read0 --track --delimiter=$'\t' --with-nth=6 \
+      --layout=reverse-list --height=100% --margin=1,2 \
+      --border=none --list-border=none --no-scrollbar --cycle --no-bold --multi \
+      --header=" xtmux nav · state groups · type to filter $footer" --header-first \
+      --prompt='all> ' --pointer='>' --marker='✓ ' --info=inline-right \
+      --color='fg:#b8bcc0,bg:-1,hl:#68a8c4,fg+:#ffffff,bg+:#222222,hl+:#68a8c4,info:#8a8f94,prompt:#8a8f94,pointer:#68a8c4,marker:#68a8c4,label:#8a8f94,border:#303030,gutter:-1' \
+      --preview-window="$inspector" \
+      --bind="load:pos($pos)+transform-prompt($self_q prompt-label nav)" \
+      --bind="change:reload-sync($lchain)" \
+      --bind="ctrl-/:toggle-preview" \
+      --bind="?:change-preview($self_q nav-key-help)+show-preview" \
+      --bind="ctrl-r:reload-sync(TMUX_PICKER_NO_CACHE=1 $lactive)+track-current" \
+      --bind="ctrl-a:execute-silent($self_q filter-preset all)+change-prompt(all> )+reload-sync($lall)+track-current" \
+      --bind="ctrl-w:execute-silent($self_q filter-preset waiting)+change-prompt(wait> )+reload-sync($lwait)+track-current" \
+      --bind="ctrl-e:execute-silent($self_q filter-preset running)+change-prompt(run> )+reload-sync($lrun)+track-current" \
+      --bind="ctrl-f:execute($self_q filter-menu)+reload-sync($lactive)+track-current+transform-prompt($self_q prompt-label nav)" \
+      --bind="tab:execute($self_q mode-toggle)+reload-sync($lactive)+track-current+transform-prompt($self_q prompt-label nav)" \
+      --bind="space:toggle+down" \
+      --bind="alt-p:change-preview-window($inspector_max|$inspector)" \
+      --bind="enter:become($self_q nav-go {5})" \
+      --bind="alt-enter:become($self_q nav-act {5} popup)" \
+      --bind="alt-x:execute-silent($self_q nav-act {5} kill)+reload-sync($lactive)+track-current" \
+      --bind="alt-X:execute-silent($self_q bulk-kill {+5})+reload-sync($lactive)+track-current" \
+      --bind="alt-r:execute($self_q nav-act {5} rename)+reload-sync($lactive)+track-current" \
+      --bind="ctrl-y:execute-silent($self_q nav-act {5} approve)+reload-sync($lactive)+track-current" \
+      --bind="alt-i:execute-silent($self_q nav-act {5} interrupt)+reload-sync($lactive)+track-current" \
+      --bind="ctrl-o:execute($self_q nav-act {5} message)+reload-sync($lactive)+track-current" \
+      --preview "$self_q preview {1} {2} {3} {4}" < "$flat_file" || true
   )
   return 0
 }
-
 # parse_filter <spec> -> sets FF_ATTN FF_REPO FF_BRANCH FF_CMD FF_GREP
 # grammar (comma-separated clauses, ANDed):
 #   all | waiting | running          attention presets
@@ -3515,11 +3961,13 @@ cmd_filter_menu() {
 # lines: multi (session primary/context plus one-line panes) | single (bounded one-line cards,
 # the fzf-multiline off fallback; same token architecture)
 build_list() (
-  local filter="${1:-all}" list_mode="${2:-expanded}" emit="${3:-tsv}" lines="${4:-multi}"
-  local tmp_sessions tmp_panes sid sname pane_id pane_path session_activity root sort_key group_key display root_status name_width=12 session_col
-  local window_index window_name pane_index pane_active pane_cmd pane_row_path pane_col pane_state pane_pid pane_bead pane_task pane_parent pane_rank cur_rank _cls
+  local filter="${1:-all}" list_mode="${2:-expanded}" emit="${3:-tsv}" lines="${4:-multi}" chain="${5:-}"
+  local tmp_sessions tmp_panes pane_rows sid sname pane_id pane_path session_activity root sort_key group_key display root_status name_width=12 session_col
+  local window_id window_index window_name window_active pane_index pane_active pane_cmd pane_row_path pane_col pane_state pane_pid pane_bead pane_task pane_parent pane_rank cur_rank _cls
   local psid pwi ppi ppid pcol attn idle stale_bucket section last_section=-1 header_label now
-  local cur_pane='' cur_sid='' _sstate _stag _marker _sctx _scard _pblock _pline
+  local cur_pane='' cur_sid='' cur_window='' cur_session='' _sstate _stag _marker _sctx _scard _pblock _pline
+  local nav_win_key=''
+  local _last_wsid='' _last_wid='' _wlabel='' _wname='' _wtag='' _wcard='' _wmarker='' _wk='' _ploc='' _pname='' _wcur=0 _pcur=0
   local pcmd pstate pbead ptask ppath proot pctx pstate_tag pdisp _nav_group _nav_state _branch _seen
   local -a _prow=()
   declare -A root_cache=()
@@ -3532,7 +3980,6 @@ build_list() (
   declare -A sess_root=()
   declare -A sess_group_root=()
   declare -A sess_root_status=()
-  declare -A sess_nav_rank=()
   declare -A sess_nav_state=()
   declare -A sess_pane_count=()
   declare -A sess_pane_seen=()
@@ -3613,16 +4060,19 @@ build_list() (
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$section" "$sort_key" "$stale_bucket" "$sid" "$sname" "$display" >> "$tmp_sessions"
   done < <(session_meta)
 
-  while IFS=$'\t' read -r sid window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_state pane_pid pane_bead pane_task pane_parent pane_transition; do
+  # Single bulk pane inventory -> derived session→window→pane projection in one
+  # list-panes pass (structural gate: no per-window/per-session tmux fanout).
+  pane_rows="$(pane_meta)"
+  build_nav_inventory <<< "$pane_rows"
+
+  # Current location derives from the enumerated inventory (NAV-2/NAV-T2):
+  # current pane/window/session are proven present, not inferred from text.
+  nav_current_location
+  cur_sid="$cur_session"
+
+  while IFS=$'\t' read -r sid window_id window_index window_name window_active pane_id pane_index pane_active pane_cmd pane_row_path pane_state pane_pid pane_bead pane_task pane_parent pane_transition; do
     [ -n "$sid" ] || continue
     pane_row_path="${pane_row_path:-$HOME}"
-
-    # NAV-2 current target: TMUX_PANE is honoured ONLY when it exactly matches an
-    # enumerated pane; the current session is derived from that same inventory.
-    # No extra tmux query (ADR Decision 9).
-    if [ "$emit" = nav ] && [ -n "${TMUX_PANE:-}" ] && [ "$pane_id" = "$TMUX_PANE" ]; then
-      cur_pane="$pane_id"; cur_sid="$sid"
-    fi
 
     if [[ -v root_cache["$pane_row_path"] ]]; then
       root="${root_cache[$pane_row_path]}"
@@ -3636,19 +4086,23 @@ build_list() (
     fi
 
     normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd" "$pane_transition"; pane_state="$REPLY"
+
+    # NAV-T2: fold the normalized pane state up through window and session with
+    # the ONE canonical priority (nav_state_max over agent_rank). Exposed to both
+    # renderers via the shared normalized inventory (prompt 7/8); no extra tmux.
+    # Session folds each window's aggregate, so the session = strongest window.
+    NAV_PANE_STATE["$pane_id"]="$pane_state"
+    nav_win_key="$sid|$window_id"
+    if [ -z "${NAV_WIN_STATE["$nav_win_key"]+x}" ]; then
+      NAV_WIN_STATE["$nav_win_key"]="$pane_state"
+    else
+      nav_state_max "${NAV_WIN_STATE["$nav_win_key"]}" "$pane_state"; NAV_WIN_STATE["$nav_win_key"]="$REPLY"
+    fi
+    nav_state_max "${NAV_SESS_STATE["$sid"]:-}" "${NAV_WIN_STATE["$nav_win_key"]}"; NAV_SESS_STATE["$sid"]="$REPLY"
+
     if [ "$emit" = nav ]; then
       sess_pane_count["$sid"]=$(( ${sess_pane_count[$sid]:-0} + 1 ))
-      case "$pane_state" in
-        stale) _nav_group=0 ;;
-        needs-input) _nav_group=1 ;;
-        running) _nav_group=2 ;;
-        done) _nav_group=3 ;;
-        *) _nav_group=4 ;;
-      esac
-      if [ "$_nav_group" -lt "${sess_nav_rank[$sid]:-5}" ]; then
-        sess_nav_rank["$sid"]="$_nav_group"
-        sess_nav_state["$sid"]="$pane_state"
-      fi
+      sess_nav_state["$sid"]="${NAV_SESS_STATE[$sid]}"
     fi
     # specialist state takes precedence when tracked: a waiting specialist should
     # rank for attention like a waiting agent pane (xtmux-rib.4).
@@ -3675,25 +4129,64 @@ build_list() (
 
     if [ "$emit" = nav ]; then
       # NAV-2 card inputs ride in the temp row (never used by the tsv path).
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$sid" "$window_index" "$pane_index" "$pane_id" "$pane_cmd" "${pane_state:--}" "${pane_bead:--}" "${pane_task:--}" "$pane_row_path" "$root" >> "$tmp_panes"
+      # window_id/window_name ride along so NAV-T3 can emit the interim window
+      # record (token proof) without a second inventory pass. Empty values are
+      # written as '-' because bash `read -a` collapses consecutive IFS-whitespace
+      # delimiters: an empty middle field would silently shift every later field
+      # (the emit loop below maps '-' back to '').
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$sid" "$window_index" "$pane_index" "$pane_id" "$pane_cmd" "${pane_state:--}" "${pane_bead:--}" "${pane_task:--}" "$pane_row_path" "${root:--}" "${window_id:--}" "${window_name:--}" >> "$tmp_panes"
     else
       render_pane_line "$window_index" "$window_name" "$pane_id" "$pane_active" "$pane_cmd" "$pane_row_path" "$root" "$pane_state" "${sess_name[$sid]:-}" "$pane_pid" "$pane_bead" "$pane_task" "$pane_parent"; pane_col="$REPLY"
       printf '%s\t%s\t%s\t%s\t%s\n' "$sid" "$window_index" "$pane_index" "$pane_id" "$pane_col" >> "$tmp_panes"
     fi
-  done < <(pane_meta)
+  done <<< "$pane_rows"
 
   if [ -s "$tmp_panes" ]; then
     if [ "$emit" = nav ]; then
       while IFS=$'\t' read -r -a _prow; do
         [ -n "${_prow[0]:-}" ] || continue
         psid="${_prow[0]}"; ppid="${_prow[3]}"
-        pcmd="${_prow[4]:-}"; pstate="${_prow[5]:-}"; pbead="${_prow[6]:-}"; ptask="${_prow[7]:-}"; ppath="${_prow[8]:-}"; proot="${_prow[9]:-}"
+        pcmd="${_prow[4]:-}"; pstate="${_prow[5]:-}"; pbead="${_prow[6]:-}"; ptask="${_prow[7]:-}"; ppath="${_prow[8]:-}"
+        proot="${_prow[9]:-}"; [ "$proot" = - ] && proot=''
+        pwid="${_prow[10]:-}"; pwname="${_prow[11]:-}"; [ "$pwname" = - ] && pwname=''
+        # NAV-T4 window row (§15): one per (session, window), emitted right
+        # before that window's panes so the block reads session -> window ->
+        # panes. Machine identity is the @N target and the w:$sid:@N token;
+        # index:name is presentation only. The card is compact and
+        # independently selectable (already from NAV-T3) — @id never truncated,
+        # index:name truncates, aggregate state + pane count from the folded
+        # inventory. The ancestry glyph is ALWAYS `↳` (uniform, invariant to
+        # sibling position, PART V); the current window is distinguished by
+        # ACCENT styling on `↳`/@id inside nav_window_card, never by a `▸`.
+        if [ -n "$pwid" ] && { [ "$psid" != "$_last_wsid" ] || [ "$pwid" != "$_last_wid" ]; }; then
+          nav_window_label "${_prow[1]}" "$pwname"; _wlabel="$REPLY"
+          _wmarker='↳'
+          _wcur=0
+          [ -n "$cur_sid" ] && [ -n "$cur_window" ] && [ "$psid" = "$cur_sid" ] && [ "$pwid" = "$cur_window" ] && _wcur=1
+          _wk="$psid|$pwid"
+          nav_state_tag "${NAV_WIN_STATE["$_wk"]:-idle}"; _wtag="$REPLY"
+          nav_window_card "$_wmarker" "$pwid" "$_wlabel" "$_wtag" "${NAV_WIN_COUNT["$_wk"]:-0}" "$lines" "$_wcur"; _wcard="$REPLY"
+          nav_bounded_name "$_wlabel"; _wname="$REPLY"
+          pane_block["$psid"]+="$(printf 'window\t%s\t%s\t%s\tw:%s:%s\t%s' "$psid" "$_wname" "$pwid" "$psid" "$pwid" "$_wcard")"$'\x1f'
+          _last_wsid="$psid"; _last_wid="$pwid"
+        fi
         nav_pane_context "$pbead" "$ptask" "$ppath" "$proot"; pctx="$REPLY"
         nav_state_tag "$pstate"; pstate_tag="$REPLY"
+        # NAV-T4 pane location: bounded paneLocation projection from the
+        # already-collected pane cwd + cached git root — zero new subprocesses
+        # on the hot path (§3/§17/§31). Rides inline on the single pane line;
+        # full path is details-only.
+        nav_pane_location "$ppath" "$proot"; _ploc="$REPLY"
         _seen=$(( ${sess_pane_seen[$psid]:-0} + 1 )); sess_pane_seen["$psid"]="$_seen"
-        if [ "$_seen" -eq "${sess_pane_count[$psid]:-1}" ]; then _branch='└'; else _branch='├'; fi
-        nav_pane_card "$_branch" "$ppid" "${pcmd:-shell}" "$pstate_tag" "$pctx" "${sess_nav_state[$psid]:-idle}" "$lines"; pdisp="$REPLY"
-        pane_block["$psid"]+="$(printf 'pane\t%s\t%s\t%s\tp:%s:%s\t%s' "$psid" "${sess_name[$psid]:-}" "$ppid" "$psid" "$ppid" "$pdisp")"$'\x1f'
+        # Uniform `↳` ancestry glyph for every pane, invariant to sibling
+        # position (§ PART V — no more ●/└/├). The current pane is distinguished
+        # by ACCENT styling on `↳`/%pane-id inside nav_pane_card, never by a ●.
+        _branch='↳'
+        _pcur=0
+        [ -n "$cur_pane" ] && [ "$psid" = "$cur_sid" ] && [ "$ppid" = "$cur_pane" ] && _pcur=1
+        nav_pane_card "$_branch" "$ppid" "${pcmd:-shell}" "$pstate_tag" "$pctx" "${sess_nav_state[$psid]:-idle}" "$lines" "$_ploc" "$_pcur"; pdisp="$REPLY"
+        nav_bounded_name "${sess_name[$psid]:-}"; _pname="$REPLY"
+        pane_block["$psid"]+="$(printf 'pane\t%s\t%s\t%s\tp:%s:%s\t%s' "$psid" "$_pname" "$ppid" "$psid" "$ppid" "$pdisp")"$'\x1f'
       done < <(sort -t $'\t' -k1,1 -k2,2n -k3,3n "$tmp_panes")
     else
       while IFS=$'\t' read -r psid pwi ppi ppid pcol; do
@@ -3737,6 +4230,14 @@ build_list() (
   while IFS=$'\t' read -r section sort_key stale_bucket sid sname display; do
     if [ "$emit" = nav ]; then
       _nav_state="${sess_nav_state[$sid]:-idle}"
+      # PROMPT 14 (option B documented): the visible group label is a NARROW
+      # attention-relevance bucket (stale + needs-input -> `urgent`, the waiting
+      # preset, rank ≤1) while the authoritative attention-next traversal
+      # (attn_list, agent_rank ≤2) also includes finished/done panes. The label
+      # was renamed from `attn` to `urgent` precisely so it cannot overclaim
+      # full attention membership; the hierarchy aggregation behind both stays
+      # the single nav_state_max order. Done sessions sit in `other` and remain
+      # attention-cycle targets.
       case "$_nav_state" in stale|needs-input) _nav_group=0 ;; running) _nav_group=1 ;; *) _nav_group=2 ;; esac
       section="$_nav_group"
     else
@@ -3790,7 +4291,14 @@ build_list() (
         [ -n "$cur_sid" ] && [ "$sid" = "$cur_sid" ] && _marker='▎'
         nav_session_context "${sess_group_root[$sid]:-${sess_root[$sid]:-}}" "${sess_root_status[$sid]:-}" "${sess_idle_plain[$sid]:-}" "${sess_shared_wt[$sid]:-0}"; _sctx="$REPLY"
         nav_session_card "$_marker" "$sname" "$_stag" "${sess_idle_plain[$sid]:-}" "$_sctx" "$lines"; _scard="$REPLY"
-        printf 'session\t%s\t%s\t%s\ts:%s\t%s\0' "$sid" "$sname" "$sid" "$sid" "$_scard"
+        # §19: session record field-3 name is hard-capped; the emission guard
+        # defends the record byte bound against unforeseen hostile input.
+        nav_bounded_name "$sname"; _sname="$REPLY"
+        _srec="$(printf 'session\t%s\t%s\t%s\ts:%s\t%s' "$sid" "$_sname" "$sid" "$sid" "$_scard")"
+        if [ "${#_srec}" -gt "$NAV_MAX_RECORD_CHARS" ]; then
+          nav_enforce_bounded "$_srec"; _srec="$REPLY"
+        fi
+        printf '%s\0' "$_srec"
       else
         if [ "${sess_shared_wt[$sid]:-0}" = 1 ]; then
           paint "$c_stale" "[shared-wt]"; display+=" $REPLY"
@@ -3803,8 +4311,55 @@ build_list() (
           # internally and each row is re-terminated with NUL at emit time.
           _pblock="${pane_block[$sid]:-}"
           if [ -n "$_pblock" ]; then
+            _cur_wdisp=''; _cur_wflat=''
             while IFS= read -r -d $'\x1f' _pline; do
               [ -n "$_pline" ] || continue
+              if [ "$chain" = chain ]; then
+                # Ancestry-preserving projection (PART: fuzzy search must never
+                # orphan a match). fzf filters records independently, so a flat
+                # pane row loses its window and session the moment a query
+                # matches it. Here each record's DISPLAY carries the full
+                # session -> window -> pane chain while fields 1-5 (machine
+                # identity + action token) stay byte-identical to the flat
+                # stream: enter/kill/popup still act on exactly the matched
+                # node. multi stacks the chain lines (same cards, same order as
+                # the unfiltered tree); single inlines them bounded on one
+                # line. Window rows carry the session line; pane rows carry
+                # session + window.
+                _rtype="${_pline%%$'\t'*}"
+                _rest="$_pline"; _hdr=''; _fname=''
+                for _i in 1 2 3 4 5; do
+                  _f="${_rest%%$'\t'*}"
+                  [ "$_i" = 3 ] && _fname="$_f"
+                  _hdr+="$_f"; [ "$_i" -lt 5 ] && _hdr+=$'\t'
+                  _rest="${_rest#*$'\t'}"
+                done
+                case "$_rtype" in
+                  window)
+                    _cur_wdisp="$_rest"; _cur_wflat="$_fname"
+                    if [ "$lines" = single ]; then
+                      _rest="${_sname}  $_rest"
+                    else
+                      _rest="${_scard}"$'\n'"$_rest"
+                    fi
+                    ;;
+                  pane)
+                    if [ "$lines" = single ]; then
+                      _rest="${_sname}  ${_cur_wflat}  $_rest"
+                    elif [ -n "$_cur_wdisp" ]; then
+                      _rest="${_scard}"$'\n'"${_cur_wdisp}"$'\n'"$_rest"
+                    else
+                      _rest="${_scard}"$'\n'"$_rest"
+                    fi
+                    ;;
+                esac
+                _pline="$_hdr"$'\t'"$_rest"
+              fi
+              # §19: emission guard — hostile input cannot grow a record past
+              # the byte budget; the display tail yields, machine fields never.
+              if [ "${#_pline}" -gt "$NAV_MAX_RECORD_CHARS" ]; then
+                nav_enforce_bounded "$_pline"; _pline="$REPLY"
+              fi
               printf '%s\0' "$_pline"
             done <<< "$_pblock"
           fi
@@ -3903,8 +4458,9 @@ jump_back() {
 
 # ── nav verb family (xtmux-rib.25) ────────────────────────────────────────
 # Direct commands: never build inventory, never call git/fzf. Session cycling
-# uses tmux's OWN session order (switch-client -n/-p); attention cycling
-# reuses attn_list; back reuses the previous-target mechanism.
+# uses tmux's OWN session order (switch-client -n/-p); window cycling uses the
+# native next-window/previous-window operations; attention cycling reuses
+# attn_list; back reuses the previous-target mechanism.
 
 # nav_session_cycle <next|prev> — record the current target, then switch to
 # the next/previous tmux session in tmux's own order.
@@ -3914,6 +4470,24 @@ nav_session_cycle() {
   case "$dir" in
     next) tmux switch-client -n ;;
     prev) tmux switch-client -p ;;
+  esac
+}
+
+# nav_window_cycle <next|prev> — record the current target, then move to the
+# next/previous window in tmux's OWN window order within the current session.
+# Syntax verified against tmux 3.5a (man tmux): both commands take an optional
+# [-a] (move to the next window WITH AN ALERT) and [-t target-session]; with
+# NO arguments they operate on the current client's session and wrap around
+# ("Move to the next window in the session"). [-a] requires an alert-bearing
+# window and errors otherwise, so the positional default is used here. This is
+# a single native tmux call — it never builds the nav list, never runs git or
+# fzf, and never enumerates sessions (§21).
+nav_window_cycle() {
+  local dir="${1:-next}"
+  record_prev
+  case "$dir" in
+    next) tmux next-window ;;
+    prev) tmux previous-window ;;
   esac
 }
 
@@ -3935,13 +4509,32 @@ nav_attention_cycle() {
   jump_to_target pane "$sid" "$pane"
 }
 
-# parse_nav_token <token> -> REPLY='type<TAB>sid<TAB>pane'. IDs use tmux's
-# immutable machine forms only; names and general tmux target syntax are rejected.
+# parse_nav_token <token> -> REPLY='type<TAB>sid<TAB>target'. IDs use tmux's
+# immutable machine forms only; window names, indexes and general tmux target
+# syntax never enter this path (§10/§11 — display text is not identity).
+# Accepted grammar (anchored, no trailing junk):
+#   s:$N            session
+#   w:$N:@N         window (@N claimed to belong to $N; ownership revalidated
+#                   against live tmux before any action)
+#   p:$N:%N         pane (same ownership claim)
+#   p:%N            legacy bare-pane shorthand: claims NO session, so the live
+#                   owning session resolved at action time is the authority —
+#                   ownership is still verified against tmux, there is just
+#                   nothing to compare against (see resolve_nav_pane_session).
+#                   Kept for the classic bulk-kill path and pre-existing
+#                   contract tests; it cannot weaken safety because the pane
+#                   must still resolve live.
 parse_nav_token() {
   local tok="${1:-}"
   REPLY=''
+  # machine tokens are pure printable ASCII — any control byte (tab, newline,
+  # the rest of [:cntrl:]) is structurally rejected, independent of the regex
+  # anchors, so an appended delimiter can never smuggle a partial match in.
+  case "$tok" in *[[:cntrl:]]*) return 1 ;; esac
   if [[ "$tok" =~ ^s:(\$[0-9]+)$ ]]; then
     REPLY="session"$'\t'"${BASH_REMATCH[1]}"$'\t'
+  elif [[ "$tok" =~ ^w:(\$[0-9]+):(@[0-9]+)$ ]]; then
+    REPLY="window"$'\t'"${BASH_REMATCH[1]}"$'\t'"${BASH_REMATCH[2]}"
   elif [[ "$tok" =~ ^p:(\$[0-9]+):(%[0-9]+)$ ]]; then
     REPLY="pane"$'\t'"${BASH_REMATCH[1]}"$'\t'"${BASH_REMATCH[2]}"
   elif [[ "$tok" =~ ^p:(%[0-9]+)$ ]]; then
@@ -3951,54 +4544,117 @@ parse_nav_token() {
   fi
 }
 
-# resolve_nav_pane_session <encoded-sid-or-empty> <pane> -> REPLY=live sid.
-# A paired token is rejected if the pane no longer belongs to that session.
-resolve_nav_pane_session() {
-  local encoded="${1:-}" pane="$2" live
-  live="$(tmux display-message -p -t "$pane" '#{session_id}' 2>/dev/null || true)"
-  [ -n "$live" ] || return 1
-  [ -z "$encoded" ] || [ "$encoded" = "$live" ] || return 1
+# resolve_nav_window_session <encoded-sid-or-empty> <window> -> REPLY=live sid.
+# Resolves the exact @window_id occurrence against live tmux and proves the
+# encoded session+window PAIR, not a bare @id (a window LINKED into several
+# sessions makes a bare @id's owning session ambiguous). tmux `-t "$sid:@wid"`
+# falls back to the session's current window when that winlink does NOT exist,
+# so a single display-message reads BOTH #{session_id} and #{window_id} and both
+# must match the claim (live session == encoded AND live window == claimed
+# @wid). This rejects a link present elsewhere while accepting each real
+# occurrence. Refuses (nonzero, no partial state) on any mismatch — a stale
+# record must fail safely. Machine identity only: names/indexes never influence
+# resolution. One display-message per action, never on the hot path.
+resolve_nav_window_session() {
+  local encoded="${1:-}" window="$2" live tgt
+  if [ -n "$encoded" ]; then
+    tgt="$encoded:$window"
+    live="$(tmux display-message -p -t "$tgt" $'#{session_id}\t#{window_id}' 2>/dev/null || true)"
+    local livewin
+    IFS=$'\t' read -r live livewin <<< "$live"
+    [ -n "$live" ] || return 1
+    [ "$live" = "$encoded" ] || return 1
+    [ "$livewin" = "$window" ] || return 1
+  else
+    live="$(tmux display-message -p -t "$window" '#{session_id}' 2>/dev/null || true)"
+    live="${live%%$'\t'*}"
+    [ -n "$live" ] || return 1
+  fi
   REPLY="$live"
 }
 
+# resolve_nav_pane_session <encoded-sid-or-empty> <pane> -> REPLY=live sid.
+# Proves the encoded session+pane occurrence without constructing
+# `session:%pane`: tmux parses %N there as a window target and may
+# silently fall back to the session's current pane. That can reject a
+# valid NON-CURRENT pane. For an encoded session, enumerate that
+# session's panes once and require exact %pane_id membership. This is
+# action-time validation only; it is never part of the nav hot path.
+resolve_nav_pane_session() {
+  local encoded="${1:-}" pane="$2" live
+  if [ -n "$encoded" ]; then
+    live="$(tmux list-panes -s -t "$encoded" -F '#{pane_id}' 2>/dev/null || true)"
+    case $'\n'"$live"$'\n' in
+      *$'\n'"$pane"$'\n'*) REPLY="$encoded"; return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+  live="$(tmux display-message -p -t "$pane" '#{session_id}' 2>/dev/null || true)"
+  live="${live%%$'\t'*}"
+  [ -n "$live" ] || return 1
+  REPLY="$live"
+}
 # nav_go <token> acts on hidden machine identity and records the previous target.
+# §12: session -> record previous exact pane -> switch session. window ->
+# validate @N belongs to $N -> record previous exact pane -> select exact @N.
+# pane -> validate %N belongs to $N -> record previous exact pane -> select %N.
+# Validation precedes record_prev so a stale token leaves no partial state.
 nav_go() {
-  local parsed type sid pane
+  local parsed type sid target
   parse_nav_token "${1:-}" || return 1
   parsed="$REPLY"
-  IFS=$'\t' read -r type sid pane <<< "$parsed"
+  IFS=$'\t' read -r type sid target <<< "$parsed"
   [ "$sid" = - ] && sid=''
   case "$type" in
     session)
       record_prev
       jump_to_target session "$sid" "$sid"
       ;;
-    pane)
-      resolve_nav_pane_session "$sid" "$pane" || return 1
+    window)
+      resolve_nav_window_session "$sid" "$target" || return 1
       sid="$REPLY"
       record_prev
-      jump_to_target pane "$sid" "$pane"
+      jump_to_target window "$sid" "$target"
+      ;;
+    pane)
+      resolve_nav_pane_session "$sid" "$target" || return 1
+      sid="$REPLY"
+      record_prev
+      jump_to_target pane "$sid" "$target"
       ;;
   esac
 }
 
 nav_help() {
   cat <<'EOF'
-xtmux nav — operator navigation over tmux sessions and attention targets.
+xtmux nav — operator navigation over tmux sessions, windows and attention targets.
 
 usage:  xtmux nav                      open the interactive navigator (fzf)
         xtmux nav next                 switch to the next tmux session
         xtmux nav prev                 switch to the previous tmux session
+        xtmux nav window-next          move to the next window of the current session
+        xtmux nav window-prev          move to the previous window of the current session
         xtmux nav attention-next       cycle to the next attention target
         xtmux nav attention-prev       cycle to the previous attention target
         xtmux nav back                 return to the target recorded before the last jump
         xtmux nav help                 this reference
 
 next/prev follow tmux's own session order (switch-client -n / -p) and
-record the previous target so `back` can return. attention-next/prev cycle
+record the previous target so `back` can return. window-next/window-prev
+invoke the native tmux next-window/previous-window operations (single tmux
+call, no inventory, no fzf/git — verified syntax: no -t needed, current
+client's session, wraps around). attention-next/prev cycle
 the authoritative attention ordering (stale, needs-input, done); an empty
 attention list is a non-error. back reuses the existing @picker_prev
 mechanism. The nav family is interactive-only: --json is refused.
+
+Machine tokens (hidden per record, never display text): s:$N session,
+w:$N:@N window, p:$N:%N pane. Before any jump or action the claimed
+$session_id is revalidated against live tmux (window: its live owning session;
+pane: its live session); a stale or moved target fails safely with no state
+change. In the drawer, window rows support go (Enter selects the exact
+@window_id), rename window and kill window; pane-only actions (approve /
+interrupt / message) on a window row are refused with a bounded message.
 EOF
 }
 
@@ -4998,6 +5654,47 @@ preview_pane_row() {
   capture_pane_safe "$target_pane" -48
 }
 
+preview_window_row() {
+  local sid="$1" name="$2" wid="$3"
+  local panes_raw line window_id window_index window_name window_active pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state pane_pid
+  local wname windex wactive wcount state rank best=4 best_line=''
+  local meta_bead meta_task meta_prompt meta_parent meta_last
+  panes_raw="$(tmux list-panes -s -t "$sid" -F $'#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_prompt_file,#{@agent_prompt_file},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}' 2>/dev/null || true)"
+  wcount=0
+  while IFS= read -r line; do
+    IFS=$'\t' read -r window_id window_index window_name window_active pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state pane_pid meta_bead meta_task meta_prompt meta_parent meta_last <<< "$line"
+    [ -n "$pane_id" ] || continue
+    [ "$window_id" = "$wid" ] || continue
+    wcount=$((wcount + 1)); windex="$window_index"; wname="$window_name"; wactive="$window_active"
+    normalize_agent_state "$pane_id" "$pane_state" "$pane_cmd" "$meta_last"; pane_state="$REPLY"
+    agent_rank "$pane_state"; rank="$REPLY"
+    if [ -z "$best_line" ] || [ "$rank" -lt "$best" ]; then best="$rank"; best_line="$line"; fi
+  done <<< "$panes_raw"
+  attn_state_name "$best"; state="$REPLY"
+
+  printf 'WINDOW\n'
+  preview_field id "$wid"
+  preview_field index "${windex:-?}"
+  preview_field name "$wname"
+  preview_field active "${wactive:-0}"
+  preview_field panes "$wcount"
+  preview_field state "$state"
+  printf '\nSESSION\n'
+  preview_field name "$name"
+
+  local pane_line
+  while IFS= read -r pane_line; do
+    IFS=$'\t' read -r _window_id _ _ _ pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state pane_pid meta_bead meta_task meta_prompt meta_parent meta_last <<< "$pane_line"
+    [ -n "$pane_id" ] || continue
+    [ "$_window_id" = "$wid" ] || continue
+    printf '\nPANE %s  %s:%s.%s\n' "$pane_id" "${windex:-?}" "${wname:-?}" "$pane_index"
+    printf '  %-9s %s\n' runtime "${pane_cmd:-shell}"
+    printf '  %-9s %s\n' path "${pane_row_path:-}"
+    capture_pane_safe "$pane_id" -8
+    printf '\n'
+  done <<< "$panes_raw"
+}
+
 preview_row() {
   local type="${1:-}"
   local sid="${2:-}"
@@ -5011,6 +5708,7 @@ preview_row() {
   [ -n "$sid" ] || return 0
   case "$type" in
     pane) preview_pane_row "$sid" "$name" "$target" ;;
+    window) preview_window_row "$sid" "$name" "$target" ;;
     *) preview_session_row "$sid" "$name" ;;
   esac
 }
@@ -5022,6 +5720,12 @@ open_popup_client() {
 
   if [ "$type" = 'header' ] || [ -z "$sid" ]; then
     return 0
+  fi
+
+  # the detached-client popup selects the exact @window_id / %pane_id with the
+  # same attach+select machinery every row type already uses
+  if [ "$type" = 'window' ] && [ -n "$target" ]; then
+    exec env -u TMUX tmux attach-session -t "$sid" \; select-window -t "$target"
   fi
 
   if [ "$type" = 'pane' ] && [ -n "$target" ]; then
@@ -5038,6 +5742,15 @@ jump_to_target() {
 
   if [ "$type" = 'header' ] || [ -z "$sid" ]; then
     return 0
+  fi
+
+  # window: MOVE THE INVOKING CLIENT to the encoded session and select the exact
+  # @window occurrence there. select-window alone only picks the target session's
+  # current winlink without reattaching the operator, so a cross-session row would
+  # leave them behind; switch-client first, then select the exact @wid in that
+  # session (ownership was already validated against live tmux by the caller).
+  if [ "$type" = 'window' ] && [ -n "$target" ]; then
+    exec tmux switch-client -t "$sid" \; select-window -t "$target"
   fi
 
   if [ "$type" = 'pane' ] && [ -n "$target" ]; then
@@ -5080,24 +5793,28 @@ bulk_kill_confirm() {
 }
 
 bulk_kill() {
-  local tok parsed type sid pane i panes=0
-  local -a sessions=() pane_targets=() confirm_cmd=()
+  local tok parsed type sid target i panes=0 _sep
+  local -a sessions=() windows=() pane_targets=() confirm_cmd=()
 
   # Validate the complete selection before any mutation. One malformed or stale
   # token rejects the request instead of producing a partial destructive action.
   for tok in "$@"; do
     parse_nav_token "$tok" || return 1
     parsed="$REPLY"
-    IFS=$'\t' read -r type sid pane <<< "$parsed"
+    IFS=$'\t' read -r type sid target <<< "$parsed"
     [ "$sid" = - ] && sid=''
     case "$type" in
       session)
         tmux has-session -t "$sid" 2>/dev/null || return 1
         sessions+=("$sid")
         ;;
+      window)
+        resolve_nav_window_session "$sid" "$target" || return 1
+        windows+=("$target")
+        ;;
       pane)
-        resolve_nav_pane_session "$sid" "$pane" || return 1
-        pane_targets+=("$pane")
+        resolve_nav_pane_session "$sid" "$target" || return 1
+        pane_targets+=("$target")
         ;;
     esac
   done
@@ -5105,13 +5822,18 @@ bulk_kill() {
   for pane in "${pane_targets[@]}"; do
     tmux kill-pane -t "$pane" 2>/dev/null && panes=$((panes + 1))
   done
-  if [ "${#sessions[@]}" -gt 0 ]; then
-    # confirm-before executes tmux commands directly. Session IDs never cross a
-    # shell or command-prompt substitution boundary.
-    confirm_cmd=(confirm-before -p "kill ${#sessions[@]} session(s)? [y/N]")
-    for ((i = 0; i < ${#sessions[@]}; i++)); do
-      confirm_cmd+=(kill-session -t "${sessions[$i]}")
-      [ "$i" -eq $(( ${#sessions[@]} - 1 )) ] || confirm_cmd+=(';')
+  if [ "${#sessions[@]}" -gt 0 ] || [ "${#windows[@]}" -gt 0 ]; then
+    # confirm-before executes tmux commands directly. Session/window IDs never
+    # cross a shell or command-prompt substitution boundary.
+    confirm_cmd=(confirm-before -p "kill ${#sessions[@]} session(s) and ${#windows[@]} window(s)? [y/N]")
+    _sep=1
+    for _sid in "${sessions[@]}"; do
+      [ "$_sep" = 0 ] && confirm_cmd+=(';')
+      confirm_cmd+=(kill-session -t "$_sid"); _sep=0
+    done
+    for _wid in "${windows[@]}"; do
+      [ "$_sep" = 0 ] && confirm_cmd+=(';')
+      confirm_cmd+=(kill-window -t "$_wid"); _sep=0
     done
     tmux "${confirm_cmd[@]}"
   elif [ "$panes" -gt 0 ]; then
@@ -5147,6 +5869,13 @@ kill_target() {
     return 0
   fi
 
+  # a window holds multiple panes, so it is confirmed like a session, never
+  # killed silently. The exact @window_id is the target; the name never is.
+  if [ "$type" = 'window' ] && [ -n "$target" ]; then
+    tmux confirm-before -p "kill window $target? [y/N]" kill-window -t "$target"
+    return 0
+  fi
+
   [ -n "$sid" ] || return 1
   sname="$(tmux display-message -p -t "$sid" '#S' 2>/dev/null || printf '%s' "$sid")"
   tmux confirm-before -p "kill session ${sname:-$sid}? [y/N]" kill-session -t "$sid"
@@ -5171,8 +5900,9 @@ rename_apply() {
 
   case "$type" in
     session) tmux rename-session -t "$handle" "$name" ;;
-    # a pane row renames the window that holds it — panes have no name of their own
-    pane)    tmux rename-window -t "$handle" "$name" ;;
+    # a pane row renames the window that holds it — panes have no name of their
+    # own; a window row renames the exact @window_id directly
+    pane|window) tmux rename-window -t "$handle" "$name" ;;
     *)       return 1 ;;
   esac
 }
@@ -5195,8 +5925,8 @@ rename_prompt_command() {
   local type="${1:-}" handle="${2:-}"
   [ -n "$handle" ] || return 1
   case "$type" in
-    # a pane row renames the window that holds it
-    pane)    printf "rename-window -t '%s' '%%1'" "$handle" ;;
+    # a pane row renames the window that holds it; a window row renames itself
+    pane|window) printf "rename-window -t '%s' '%%1'" "$handle" ;;
     session) printf "rename-session -t '%s' '%%1'" "$handle" ;;
     *) return 1 ;;
   esac
@@ -5212,7 +5942,7 @@ prompt_line() {
 rename_target() {
   local type="${1:-}" sid="${2:-}" target="${3:-}" handle current
   case "$type" in
-    pane) handle="$target"; current="$(tmux display-message -p -t "$target" '#W' 2>/dev/null || true)" ;;
+    pane|window) handle="$target"; current="$(tmux display-message -p -t "$target" '#W' 2>/dev/null || true)" ;;
     session) handle="$sid"; current="$(tmux display-message -p -t "$sid" '#S' 2>/dev/null || true)" ;;
     *) return 1 ;;
   esac
@@ -5342,6 +6072,47 @@ case "${1:-}" in
     build_list "$_spec" "$REPLY" nav single
     exit 0
     ;;
+  nav-snapshot-view)
+    shift
+    [ "$#" -eq 3 ] || die_usage "nav-snapshot-view requires <flat> <chain> <query>"
+    nav_snapshot_view "$@"
+    exit $?
+    ;;
+  nav-snapshot-refresh)
+    shift
+    [ "$#" -eq 5 ] || die_usage "nav-snapshot-refresh requires <flat> <chain> <single|multi> <active|all|waiting|running> <query>"
+    nav_snapshot_refresh "$@"
+    exit $?
+    ;;
+  list-active-nav-chain|list-active-nav-single-chain)
+    # Ancestry-preserving fuzzy projection, bound to fzf's `change` event. An
+    # empty query re-emits the flat tree verbatim (the drawer's browse view);
+    # any active query re-emits records whose display carries the full
+    # session -> window -> pane chain, so ordinary fuzzy filtering can never
+    # orphan a pane from its window and session. $1 carries fzf's {q} and is
+    # used ONLY for the emptiness test — it is data, never reaches tmux or
+    # eval, and is not part of any record.
+    _chain_single=0
+    [ "${1:-}" = list-active-nav-single-chain ] && _chain_single=1
+    shift
+    _chain_q="${1:-}"
+    picker_state_read filter || true; _spec="$REPLY"
+    read_list_mode
+    if [ -n "$_chain_q" ]; then
+      if [ "$_chain_single" = 1 ]; then
+        build_list "$_spec" "$REPLY" nav single chain
+      else
+        build_list "$_spec" "$REPLY" nav multi chain
+      fi
+    else
+      if [ "$_chain_single" = 1 ]; then
+        build_list "$_spec" "$REPLY" nav single
+      else
+        build_list "$_spec" "$REPLY" nav multi
+      fi
+    fi
+    exit 0
+    ;;
   nav-go)
     # fzf Enter binding: act on the hidden action token {5} directly.
     shift
@@ -5378,6 +6149,8 @@ case "${1:-}" in
       help|-h|--help) [ "$#" -eq 1 ] || { printf 'usage: xtmux nav help\n' >&2; exit 2; }; nav_help; exit 0 ;;
       next) [ "$#" -eq 1 ] || { printf 'usage: xtmux nav next\n' >&2; exit 2; }; nav_session_cycle next; exit 0 ;;
       prev) [ "$#" -eq 1 ] || { printf 'usage: xtmux nav prev\n' >&2; exit 2; }; nav_session_cycle prev; exit 0 ;;
+      window-next) [ "$#" -eq 1 ] || { printf 'usage: xtmux nav window-next\n' >&2; exit 2; }; nav_window_cycle next; exit 0 ;;
+      window-prev) [ "$#" -eq 1 ] || { printf 'usage: xtmux nav window-prev\n' >&2; exit 2; }; nav_window_cycle prev; exit 0 ;;
       attention-next) [ "$#" -eq 1 ] || { printf 'usage: xtmux nav attention-next\n' >&2; exit 2; }; nav_attention_cycle next; exit 0 ;;
       attention-prev) [ "$#" -eq 1 ] || { printf 'usage: xtmux nav attention-prev\n' >&2; exit 2; }; nav_attention_cycle prev; exit 0 ;;
       back) [ "$#" -eq 1 ] || { printf 'usage: xtmux nav back\n' >&2; exit 2; }; jump_back; exit 0 ;;

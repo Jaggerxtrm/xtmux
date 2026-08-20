@@ -42,6 +42,11 @@ run_check typecheck bun run typecheck
 run_check harness-selftest bash test/harness-selftest.sh
 run_check shell-contracts bash test/contract.sh
 run_check nav-contracts bash test/nav-contract.sh
+# Real isolated tmux-server regression (bead xtmux-4ie.3): proves the P1 nav
+# topology behaviors against a real tmux server + real attached client on an
+# isolated socket. tmux is installed for this job; the suite hermetic-skips if
+# a runner ever lacks tmux or util-linux `script`.
+run_check nav-real-tmux bash test/nav-real-tmux.sh
 run_check v1-fixtures bash scripts/capture-v1-fixtures.sh --check
 run_check live-smoke bash scripts/smoke-json-api.sh
 

@@ -18,11 +18,12 @@
     --muted: #858d91;
     --muted-2: #657075;
     --bright: #f0f2f3;
-    --wait: #e8c878;
-    --run: #8fcda0;
-    --done: #8da9c7;
-    --idle: #788287;
-    --danger: #d88d8d;
+    --wait: #e8c878;    /* amber attention */
+    --run: #b8bfc2;     /* neutral */
+    --done: #b8bfc2;    /* neutral */
+    --idle: #6f787b;    /* neutral dim */
+    --danger: #d88d8d;  /* restrained red */
+    --accent: #7fb3c9;  /* one cool accent: current/focus/pointer */
   }
 
   * { box-sizing: border-box; }
@@ -140,6 +141,7 @@
   }
   .selector { color: #bfc5c7; }
   .selector.dim { color: transparent; }
+  .selector.current-mark { color: var(--accent); }
   .session-name {
     min-width: 0;
     white-space: nowrap;
@@ -182,7 +184,7 @@
     gap: 6px;
     align-items: baseline;
     min-width: 0;
-    padding: 1px 0 1px 8px;
+    padding: 1px 0 1px 16px;
     color: #aeb5b8;
   }
   .pane .branch { color: #687175; }
@@ -190,7 +192,7 @@
     color: #d1d7da;
     font-weight: 600;
   }
-  .pane.current-pane .pane-id { color: #ffffff; }
+  .pane.current-pane .pane-id { color: var(--accent); }
   .runtime { color: #9fa8ab; }
   .task {
     min-width: 0;
@@ -199,10 +201,31 @@
     text-overflow: ellipsis;
     color: #899296;
   }
+  .task .loc { color: var(--muted-2); }
+  .task .loc::before { content: " "; }
   .pane-state { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
   .pane-state.wait { color: var(--wait); }
   .pane-state.run { color: var(--run); }
   .pane-state.done { color: var(--done); }
+
+  .window {
+    display: grid;
+    grid-template-columns: 50px minmax(0, 1fr) auto auto;
+    gap: 6px;
+    align-items: baseline;
+    min-width: 0;
+    padding: 3px 0 1px 8px;
+    color: #b8bfc2;
+  }
+  .win-id { color: #d1d7da; font-weight: 600; }
+  .window.current-window .win-id { color: var(--accent); }
+  .win-label { color: #9fa8ab; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .win-state { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+  .win-state.wait { color: var(--wait); }
+  .win-state.run { color: var(--run); }
+  .win-state.done { color: var(--done); }
+  .win-state.idle { color: var(--idle); }
+  .win-count { color: #687175; font-size: 11px; }
 
   .footer {
     height: 36px;
@@ -285,15 +308,18 @@
 
           <div class="session selected current">
             <div class="primary">
-              <span class="selector">&gt;</span>
+              <span class="selector current-mark">▎</span>
               <span class="session-name">claude-jct5k-coord8</span>
               <span class="age">3d</span>
               <span class="state wait">WAIT</span>
             </div>
             <div class="context"><span class="repo">market-data</span> · docs/jct5k-coord8-regression-fixes</div>
             <div class="panes">
+              <div class="window current-window">
+                <span class="win-id">@17</span><span class="win-label">0:coord</span><span class="win-state wait">wait</span><span class="win-count">1</span>
+              </div>
               <div class="pane current-pane">
-                <span class="branch">└</span><span class="pane-id">%553</span><span class="runtime">claude</span><span class="task">coordinator · regression fixes</span><span class="pane-state wait">wait</span>
+                <span class="branch">↳</span><span class="pane-id">%553</span><span class="runtime">claude</span><span class="task">coordinator · regression fixes<span class="loc">· market-data/docs</span></span><span class="pane-state wait">wait</span>
               </div>
             </div>
           </div>
@@ -307,8 +333,11 @@
             </div>
             <div class="context"><span class="repo">specialists</span> · xt/dolt-migration-tpafe</div>
             <div class="panes">
+              <div class="window">
+                <span class="win-id">@18</span><span class="win-label">0:migrate</span><span class="win-state wait">wait</span><span class="win-count">1</span>
+              </div>
               <div class="pane">
-                <span class="branch">└</span><span class="pane-id">%907</span><span class="runtime">claude</span><span class="task">dolt migration · coordinator</span><span class="pane-state wait">wait</span>
+                <span class="branch">↳</span><span class="pane-id">%907</span><span class="runtime">claude</span><span class="task">dolt migration · coordinator<span class="loc">· specialists/xt</span></span><span class="pane-state wait">wait</span>
               </div>
             </div>
           </div>
@@ -326,8 +355,11 @@
             </div>
             <div class="context"><span class="repo">program</span> · master</div>
             <div class="panes">
+              <div class="window">
+                <span class="win-id">@19</span><span class="win-label">0:prog</span><span class="win-state run">run</span><span class="win-count">1</span>
+              </div>
               <div class="pane">
-                <span class="branch">└</span><span class="pane-id">%141</span><span class="runtime">claude</span><span class="task">programme coordination</span><span class="pane-state run">run</span>
+                <span class="branch">↳</span><span class="pane-id">%141</span><span class="runtime">claude</span><span class="task">programme coordination<span class="loc">· program</span></span><span class="pane-state run">run</span>
               </div>
             </div>
           </div>
@@ -341,11 +373,14 @@
             </div>
             <div class="context"><span class="repo">core</span> · main · <span class="shared">shared-wt</span></div>
             <div class="panes">
-              <div class="pane">
-                <span class="branch">├</span><span class="pane-id">%875</span><span class="runtime">claude</span><span class="task">core review</span><span class="pane-state run">run</span>
+              <div class="window">
+                <span class="win-id">@20</span><span class="win-label">0:core</span><span class="win-state run">run</span><span class="win-count">2</span>
               </div>
               <div class="pane">
-                <span class="branch">└</span><span class="pane-id">%962</span><span class="runtime">node</span><span class="task">local helper</span><span class="pane-state run">run</span>
+                <span class="branch">↳</span><span class="pane-id">%875</span><span class="runtime">claude</span><span class="task">core review<span class="loc">· core/src</span></span><span class="pane-state run">run</span>
+              </div>
+              <div class="pane">
+                <span class="branch">↳</span><span class="pane-id">%962</span><span class="runtime">node</span><span class="task">local helper<span class="loc">· core/packages</span></span><span class="pane-state run">run</span>
               </div>
             </div>
           </div>
@@ -359,8 +394,11 @@
             </div>
             <div class="context"><span class="repo">darth-feedor</span> · fix/ws008-p3g-deploy-specialist-path</div>
             <div class="panes">
+              <div class="window">
+                <span class="win-id">@21</span><span class="win-label">0:deploy</span><span class="win-state run">run</span><span class="win-count">1</span>
+              </div>
               <div class="pane">
-                <span class="branch">└</span><span class="pane-id">%640</span><span class="runtime">pi</span><span class="task">session:research-papers-gcp</span><span class="pane-state run">run</span>
+                <span class="branch">↳</span><span class="pane-id">%640</span><span class="runtime">pi</span><span class="task">session:research-papers-gcp<span class="loc">· darth-feedor</span></span><span class="pane-state run">run</span>
               </div>
             </div>
           </div>
@@ -378,8 +416,11 @@
             </div>
             <div class="context"><span class="repo">core/transcripts</span> · education/issue-78-exp013-student-derivative-pilot</div>
             <div class="panes">
+              <div class="window">
+                <span class="win-id">@22</span><span class="win-label">0:transcripts</span><span class="win-state done">done</span><span class="win-count">1</span>
+              </div>
               <div class="pane">
-                <span class="branch">└</span><span class="pane-id">%103</span><span class="runtime">claude</span><span class="task">transcript work</span><span class="pane-state done">done</span>
+                <span class="branch">↳</span><span class="pane-id">%103</span><span class="runtime">claude</span><span class="task">transcript work<span class="loc">· core/transcripts</span></span><span class="pane-state done">done</span>
               </div>
             </div>
           </div>
@@ -393,8 +434,11 @@
             </div>
             <div class="context"><span class="repo">core</span> · xt/spike-read-line-numbers</div>
             <div class="panes">
+              <div class="window">
+                <span class="win-id">@23</span><span class="win-label">0:spike</span><span class="win-state done">done</span><span class="win-count">1</span>
+              </div>
               <div class="pane">
-                <span class="branch">└</span><span class="pane-id">%887</span><span class="runtime">pi</span><span class="task">session:spike-read-line-numbers</span><span class="pane-state done">done</span>
+                <span class="branch">↳</span><span class="pane-id">%887</span><span class="runtime">pi</span><span class="task">session:spike-read-line-numbers<span class="loc">· core</span></span><span class="pane-state done">done</span>
               </div>
             </div>
           </div>
@@ -403,7 +447,7 @@
 
       <footer class="footer">
         <span><kbd>↵</kbd> open</span>
-        <span><kbd>Tab</kbd> panes</span>
+        <span><kbd>Tab</kbd> compact/expanded</span>
         <span><kbd>A</kbd> attention</span>
         <span><kbd>^/</kbd> details</span>
         <span><kbd>?</kbd> help</span>
@@ -419,8 +463,28 @@
         <p><code>%553</code>, <code>%141</code>, <code>%875</code> remain first-class because they are operational handles for multiplexing and communication.</p>
       </div>
       <div class="rule">
+        <b>Windows are rows too.</b>
+        <p>Each window renders as its own selectable row (<code>@17</code> with <code>0:coord</code>). The <code>@window-id</code> is machine identity and never truncates; the <code>index:name</code> pair is presentation only.</p>
+      </div>
+      <div class="rule">
         <b>One line per pane.</b>
-        <p>No second metadata line under every pane. Runtime and short task share one bounded row.</p>
+        <p>No second metadata line under every pane. Runtime, short task, and the bounded filesystem location (<code>repo · relative</code>, worktree → canonical repo label, shortened <code>~/…</code>) share one bounded row (<code>NAV_PANE_LINES=1</code>); the full absolute path stays in the details inspector.</p>
+      </div>
+      <div class="rule">
+        <b>Single ancestor glyph.</b>
+        <p>All three levels use the same <code>↳</code> glyph at a fixed sibling indent — no <code>├</code>/<code>└</code>/<code>▸</code>/<code>●</code> tree-branch rows.</p>
+      </div>
+      <div class="rule">
+        <b>Current location vs selection.</b>
+        <p><code>▎</code> marks the current session (the pane the operator is attached to); the current window and pane get the cool accent. <code>&gt;</code> is the fzf selection; running state is independent.</p>
+      </div>
+      <div class="rule">
+        <b>Stable identity + occurrences.</b>
+        <p><code>$</code>/<code>@</code>/<code>%</code> are stable object identities. When a window or pane is linked into several sessions, each structural occurrence is the full hierarchy path (<code>$sid@wid</code>, <code>$sid@wid%pane</code>); a stored token is always the encoded session+window/pane pair.</p>
+      </div>
+      <div class="rule">
+        <b>Restrained palette.</b>
+        <p>Neutral primary; one cool accent for current/focus/pointer; one amber for attention; a restrained red for danger. Run/done/idle are neutral (no rainbow) and nothing is bold.</p>
       </div>
       <div class="rule">
         <b>No ambient inspector.</b>

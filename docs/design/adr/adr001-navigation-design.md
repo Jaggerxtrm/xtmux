@@ -4,6 +4,49 @@
 **Date:** 2026-08-14
 **Related decision:** `ADR-0001 — Retain FZF and Introduce Sidebar-Style xtmux nav`
 
+## Topology model (NAV-T8 amendment, 2026-08-17)
+
+The shipped navigator models tmux's real hierarchy. This explicitly corrects the
+two-level view used in the original mockups:
+
+```text
+previous:
+session
+  pane
+
+new:
+session
+  window
+    pane
+```
+
+Machine identity at every level:
+
+```text
+$ = session identity
+@ = window identity
+% = pane identity
+```
+
+- Window index and window name are presentation only; display text never
+determines action identity. Every action resolves the hidden machine token
+(`s:$N`, `w:$N:@N`, `p:$N:%N`) and ownership is revalidated against live tmux
+before mutation.
+- Windows are independently selectable; panes are grouped under their real
+windows.
+- Pane location (repo / `repo · relative-path` / worktree → canonical repo
+label) is first-class sidebar context in expanded mode; full absolute paths
+stay in the inspector (details-only).
+- Occurrence identity: `$`/`@`/`%` are stable object identities. Where a window
+or pane is linked into more than one session, each structural occurrence is the
+full hierarchy path (`$sid@wid`, `$sid@wid%pane`); a stored token is the
+encoded `$session`+`@window` (resp. `%pane`) pair, never a bare object id.
+- Restrained palette: neutral primary, one cool accent for current/focus/pointer,
+one amber attention, one restrained red for danger; run/done/idle are neutral and
+nothing is bold (no rainbow).
+- Compact mode is session rows only; expanded mode is session → window → pane.
+The sections below are corrected in place to match this amendment.
+
 ## 1. Product role
 
 `xtmux nav` is the human navigation surface for a host containing many tmux sessions, panes and agent processes.
@@ -52,18 +95,21 @@ Expanded drawer:
  xtmux nav · state groups · type to filter
  all›
 
-   xtmux-ui                  2m  attn wait
+   xtmux-ui                  2m  urgent wait
      xtmux · nav sidebar · +2
-     ├ %17  claude  picker UX  attn wait
-     └ %19  shell             attn
+     ↳ @17  0:coord  wait · 2
+        ↳ %17  claude  picker UX … · xtmux/src · wait
+        ↳ %19  shell  … · xtmux · wait
 >▎ sp-reviewer-a91f         <1m  active run
      specialists · nav review
-     └ %23  pi  reviewer     active run
+     ↳ @23  0:main  run · 1
+        ↳ %23  pi  reviewer … · specialists/nav · run
    quant                    18m  other idle
      quant · main
-     └ %31  shell             other idle
+     ↳ @31  0:main  idle · 1
+        ↳ %31  shell  … · quant · idle
 
- ─ ↵ open · Tab panes · ^/ details · ? help
+ ─ ↵ open · Tab compact · ^/ details · ? help
 ```
 
 Compact view:
@@ -96,7 +142,13 @@ The current target marker and selection pointer intentionally differ:
       <SessionRow>
         <IdentityLine />
         <ContextLine />
-        <PaneRows />              # expanded mode only
+        <WindowRows />          # expanded mode only
+          <WindowRow>
+            <WindowLine />      # @window-id + index:name + state + count
+            <PaneRows />        # expanded mode only
+              <PaneRow>
+                <PaneLine />    # %pane-id + runtime + state
+                <LocationLine /># bounded repo/location projection
       <SectionHeader />
     <Inspector>                   # hidden/bottom in drawer
       <SessionMetadata />
@@ -176,7 +228,33 @@ branch
 terse dirty/shared indicators
 ```
 
-### Level 3 — expanded child pane
+### Level 3 — window row
+
+A window row answers:
+
+```text
+Which window?
+What state and how many panes?
+```
+
+Display:
+
+```text
+  ↳ @17  0:coord              run · 2
+```
+
+Single `↳` ancestry glyph, fixed sibling indent (sibling-position invariant).
+
+Candidate tokens:
+
+```text
+@window-id (machine identity, never truncated)
+window index:name (presentation only)
+pane→window aggregate state
+pane count
+```
+
+### Level 4 — expanded child pane
 
 A pane row answers:
 
@@ -184,12 +262,14 @@ A pane row answers:
 Which process?
 Which agent state?
 Which bounded work item?
+Where is it?
 ```
 
-Display:
+Panes render one line each (`NAV_PANE_LINES=1`), with the bounded filesystem
+location appended inline:
 
 ```text
-  └ %17  claude  picker UX            WAIT
+  ↳ %17  claude  picker UX … · xtmux/src · WAIT
 ```
 
 Candidate tokens:
@@ -200,7 +280,13 @@ runtime/command
 state
 Bead
 short task
+bounded repo/location projection (inline)
 ```
+
+Pane location is first-class sidebar context in expanded mode: the same repo,
+`repo · relative-path` inside a repo, the canonical repo label for worktrees
+(never a long `.xtrm/worktrees/…` wall), or a shortened `~/…` path when there is
+no repo. The full absolute path remains inspector-only.
 
 ### Inspector-only information
 
@@ -250,7 +336,7 @@ ranking; it only places running sessions before completed sessions in the defaul
 
 ### Expanded
 
-Shows session rows and pane children.
+Shows session rows, window rows, and pane children.
 
 Use when actively supervising agents.
 
@@ -260,7 +346,9 @@ Shows session rows only.
 
 Use when switching quickly across many repositories.
 
-The existing `sessions-only` state should map naturally to compact mode.
+The existing `sessions-only` state maps to compact mode. Compact mode is not
+"hide pane records"; it is the sessions-only projection of the same
+session → window → pane inventory.
 
 ### Inspector
 
@@ -300,6 +388,14 @@ xtmux nav attention-prev
 Cycle attention targets.
 
 ```text
+xtmux nav window-next
+xtmux nav window-prev
+```
+
+Move to the next/previous window of the current session (native tmux
+next-window/previous-window).
+
+```text
 xtmux nav back
 ```
 
@@ -329,6 +425,10 @@ xtmux nav prev
   recordPrev
   tmux switch-client -> previous session
 ```
+
+Window cycling is likewise native: `window-next`/`window-prev` invoke tmux's
+`next-window`/`previous-window` for the current client's session — a single tmux
+call, no inventory, no fzf/git, wraps around (verified syntax: no `-t` needed).
 
 Do not enumerate and sort session names merely to reproduce something tmux already defines.
 
@@ -399,9 +499,9 @@ The interactive navigator needs a private transport format.
 record
 ├── type
 ├── session_id
-├── session_name
-├── target
-├── action_token
+├── name            (bounded; session, window, or pane name)
+├── target          ($N / @N / %N)
+├── action token
 └── display
 ```
 
@@ -428,6 +528,7 @@ Example tokens:
 
 ```text
 s:$42
+w:$42:@17
 p:$42:%17
 ```
 
@@ -595,14 +696,17 @@ or global key installation is required in v1.
 Default drawer footer:
 
 ```text
-↵ open · Tab panes · ^/ details · ? help
+↵ open · Tab compact · ^/ details · ? help
 ```
 
 When compact:
 
 ```text
-↵ open · Tab panes · ^/ details · ? help · compact
+↵ open · Tab expanded · ^/ details · ? help · compact
 ```
+
+`Tab` toggles topology, not pane visibility: compact = sessions-only;
+expanded = session → window → pane.
 
 When a structured filter is active, the prompt itself should communicate that state.
 

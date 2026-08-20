@@ -6,6 +6,49 @@
 **Decision scope:** local tmux session/pane navigation and picker presentation
 **Out of scope:** xtmux runtime authority, persistence redesign, Herdr runtime adoption, native TUI implementation
 
+## Topology model (amended 2026-08-17 — NAV-T8)
+
+The shipped navigator projects tmux's real hierarchy, explicitly correcting the
+earlier two-level model:
+
+```text
+previous:
+session
+  pane
+
+new:
+session
+  window
+    pane
+```
+
+Identity is machine-owned and stable at every level:
+
+```text
+$ = session identity
+@ = window identity
+% = pane identity
+```
+
+- Window index and window name are presentation only. Display text never
+determines action identity: every action resolves the hidden token
+(`s:$N`, `w:$N:@N`, `p:$N:%N`) and revalidates ownership against live tmux
+before mutation (window → its live owning session; pane → its live session).
+- Windows are independently selectable rows (`Enter` selects the exact
+`@window_id`); panes are grouped under their real windows.
+- Pane location (repo, filesystem-style `repo/path`, worktree → canonical repo
+label) is first-class sidebar context in expanded mode; full absolute paths
+remain details-only behind the inspector.
+- Occurrence identity: `$`/`@`/`%` are stable object identities. Where a window
+or pane is linked into more than one session, each structural occurrence is the
+full hierarchy path (`$sid@wid`, `$sid@wid%pane`); a stored token is always the
+encoded `$session`+`@window` (resp. `%pane`) pair, never a bare object id.
+- Restrained palette: neutral primary, one cool accent for current/focus/pointer,
+one amber attention, one restrained red for danger; run/done/idle are neutral and
+nothing is bold (no rainbow).
+- Compact mode emits session rows only; expanded mode emits session → window →
+pane. This amendment supersedes any two-level session → pane wording below.
+
 ## Context
 
 xtmux has evolved from a small tmux picker into a coordination runtime with live agent-state awareness, durable messages, monitors, handoffs, runtime identity, topology, audit and recovery surfaces.
@@ -122,6 +165,8 @@ Example:
 
 ```text
 pane    $42    xtmux-ui    %17    p:$42:%17    <multi-line display>
+window  $42    coord        @17   w:$42:@17    <multi-line display>
+session $42    xtmux-ui    $42    s:$42       <multi-line display>
 ```
 
 The first fields are machine-owned.
@@ -132,7 +177,14 @@ This rule applies to single-row actions and multi-select/bulk actions.
 
 ## Decision 4 — Multi-line fzf records are capability-gated
 
-Multi-line records are desirable because they permit:
+> Superseded in favor of the one-line pane contract (xtmux-4ie): the final nav
+> always renders each pane on ONE visual line (`NAV_PANE_LINES=1`) with the
+> bounded repository/worktree location appended inline; full multi-line detail
+> surfaces only in the details inspector. The capability-gating rationale below
+> is retained as historical decision context only.
+
+Historically, multi-line records were considered desirable because they
+permitted:
 
 ```text
 line 1: identity + state
@@ -209,11 +261,15 @@ bind s display-popup -E -x 0 -y 0 -w 40% -h 75% 'XTMUX_NAV_WIDTH=$(tput cols) $H
 
 This syntax was verified with tmux 3.5a. The intended sidebar is 38–40%; widen
 to 44–50% for long session names or 55–60% on a small terminal. The launcher
-subtracts eight cells for fzf border/selection chrome before bounding rows.
+subtracts four cells for the borderless fzf selection/marker gutter before bounding rows.
 The popup is 75% of the viewport height, and the `#222222` background uses a
 terminal-dependent alpha (`@200`) so supported terminals render it slightly
-transparent. Nothing is bold: rows, `%pane-id`, and agent state labels
-differ by color only.
+transparent. The palette is restrained: a neutral primary for most rows, one
+cool accent for the current/focus/pointer, one amber for attention, and a single
+restrained red for danger. Run/done/idle states are neutral (`c_run`/`c_done`/
+`c_idle` are grayscale, not rainbow) and nothing is bold — rows, `%pane-id`, and
+agent state labels differ by color and weight sparingly, never by bold or a
+multi-color wash.
 
 A classic/full-width binding remains available, and `XTMUX_NAV_LAYOUT=classic`
 selects it without changing runtime behavior.
@@ -222,24 +278,34 @@ selects it without changing runtime behavior.
 
 `../mockups/xtmux-nav-sidebar-target.html` is the visual-direction reference, not
 an implementation technology. Sessions sort as attention, active, then other.
-Every selectable record carries compact `attn`, `active`, or `other` group
+Every selectable record carries compact `urgent`, `active`, or `other` group
 identity; no heading record can disappear under fuzzy filtering. Session and
-pane rows also retain the exact state. Rows wrap onto continuation lines
-rather than being cut: the default drawer never emits an ellipsis. The
-one-line fallback (fzf builds without multiline records) keeps deterministic
-truncation because a single physical line cannot exceed the terminal width.
-A session renders as:
+pane rows also retain the exact state. Records are resource-bounded: every
+record has a hard byte budget (`NAV_MAX_RECORD_BYTES=4096` plus a char guard) and
+a per-type visual-line budget (session ≤3, window/one-line panel ≤2), so
+overflow is truncated/ellipsized deterministically rather than allowed to grow
+unbounded — machine identity always survives, and the full value stays in the
+inspector. Pane rows are one line each (`NAV_PANE_LINES=1`) with the bounded
+filesystem location appended inline. A session renders as:
 
 ```text
-▎ xtmux-ui                    2m  attn wait
+▎ xtmux-ui                    2m  urgent wait
     xtmux · nav sidebar · +2
+  ↳ @17  0:coord  wait · 2
+      ↳ %17  claude  sidebar picker … · xtmux/src · wait
+      ↳ %19  shell                 … · xtmux · wait
 ```
 
-Each expanded child pane uses one bounded line and keeps its operational id visible:
+Each window is an independently selectable row under its session. Each pane uses
+one bounded line (single `↳` glyph, fixed sibling indent) and keeps its
+operational `%pane-id` visible plus its filesystem location.
 
-```text
-    └ %17  claude  sidebar picker  attn wait
-```
+Fuzzy filtering is ancestry-preserving. While a query is active the picker
+re-projects records so each match carries its full chain (a pane match retains
+parent window + session; a window match retains its parent session); the empty
+query re-emits the flat tree verbatim. Fields 1-5 (machine identity + action
+token) stay byte-identical in both projections, so enter/kill/popup always act
+on the matched node, never on display text.
 
 The primary list should not display every known metadata field.
 
@@ -250,11 +316,13 @@ Full paths, prompt files, parent identity, timestamps, pane geometry, long task 
 The navigator shows both:
 
 ```text
-▎ current tmux target
-› current fzf selection
+▎ current session       (the pane the operator is attached to)
+  cool accent            on the current window row and current pane row
+> current fzf selection
 ```
 
-The current target should be derived from live invocation identity, preferably `TMUX_PANE` plus the already-collected pane inventory.
+The current target should be derived from live invocation identity, preferably
+`TMUX_PANE` plus the already-collected pane inventory.
 
 It must not require another persistent state record.
 
@@ -322,9 +390,11 @@ Rollback changes presentation, not semantics.
     <SessionRow>
       identity + state
       repo + branch + dirty + age
-    <PaneRow>
-      pane + runtime + state
-      bead + short task
+      <WindowRow>
+        @window-id + index:name + aggregate state + pane count
+        <PaneRow>
+          %pane-id + runtime + state
+          location line
     <SectionHeader>
   <FzfNavigator>
     fuzzy search
