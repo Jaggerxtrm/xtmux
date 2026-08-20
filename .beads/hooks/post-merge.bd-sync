@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Beads/Dolt sync chained from the post-merge hook.
+: "${BEADS_FSCK_TIMEOUT:=600}"
+# Pulls Beads data from the GitHub-backed Dolt remote (refs/dolt/data) after a
+# Git pull/merge. A failed pull is reported loudly: the Git pull/merge command
+# reports failure (post-merge exit code) and the operator sees the message.
+set -uo pipefail
+
+if ! command -v bd >/dev/null 2>&1 || ! bd where >/dev/null 2>&1; then
+  exit 0
+fi
+
+echo "beads-sync: pull Dolt remote"
+if ! bd dolt pull; then
+  echo "beads-sync: ERROR: 'bd dolt pull' failed after Git merge." >&2
+  echo "beads-sync: Beads data may be stale. Run 'bd dolt pull' manually." >&2
+  exit 1
+fi
+exit 0
