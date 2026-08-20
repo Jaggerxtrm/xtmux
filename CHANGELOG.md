@@ -4,14 +4,28 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+# Changelog
+
+All notable changes to this project are documented here.
+
+## [0.2.4] - 2026-08-20
+
+Lands the response-episodes projection — a durable one-prompt-plus-continuations model for `agent_turns` (`xtmux-gdk`) — plus a nav-sidebar redesign and the K3 Codex runtime adapter. Response-episodes replaces the per-turn `LIMIT 1` view with a stable episode row, so continuations, re-issues, and correlated replies stay grouped across restarts. The K3 Codex adapter rides existing authorities (no new auth surface) and ships with distribution smoke + Codex lifecycle recovery + terminal cleanup. Nav sidebar gets a hierarchy redesign: safe tmux navigator, wrap rows instead of cutting, lowercase labels + classic chrome + 75% drawer. Also new: Mermaid fence rendering with an `mdcat` backend, the `board-audit` hook feature (mirroring core), and the bd v1.2.1 hooks upgrade + `bd-sync` install landed via [#111](https://github.com/Jaggerxtrm/xtmux/pull/111) / [#112](https://github.com/Jaggerxtrm/xtmux/pull/112).
+
 ### Added
 - Add K3 Codex runtime adapter over existing authorities (xtmux-s96.2) ([d8edb1e](https://github.com/Jaggerxtrm/xtmux/commit/d8edb1ebaf8ce5f70f95d4696f37acb9af9ec712))
 - Add distribution smoke, dry-run plan, and correct false S7 label (xtmux-s96.4) ([c67bcde](https://github.com/Jaggerxtrm/xtmux/commit/c67bcde3dac44a966dc79033134c30411f7aff77))
 - Complete Codex lifecycle, recovery, and terminal cleanup (xtmux-s96.4) ([0aa2f6b](https://github.com/Jaggerxtrm/xtmux/commit/0aa2f6b97201d738bb424cbf4ec2ccc306f68edc))
+- Add safe sidebar tmux navigator ([f1500f0](https://github.com/Jaggerxtrm/xtmux/commit/f1500f053afecdca8d6afeae3dc7f1c441043b13))
+- Redesign nav sidebar hierarchy ([35c6f25](https://github.com/Jaggerxtrm/xtmux/commit/35c6f250e8d2c1a7aac3e4410ffaa363e55e5f38))
+- Wrap nav rows instead of cutting ([5189d25](https://github.com/Jaggerxtrm/xtmux/commit/5189d2534186f74fbba1fbd4421d4a4d9ca63475))
+- Nav lowercase labels, classic chrome, 75% drawer ([513bd86](https://github.com/Jaggerxtrm/xtmux/commit/513bd8672ad3443c435df0c430ce568dbe789bbf))
+- Response episodes — durable one-prompt-plus-continuations model for agent_turns (xtmux-gdk) (#105) ([51a54bd](https://github.com/Jaggerxtrm/xtmux/commit/51a54bd00f25e42d2a6468c3fe5fc413ebf233d9))
+- Consume the response-episode projection instead of LIMIT 1 (xtmux-it6) (#103) ([df00b5d](https://github.com/Jaggerxtrm/xtmux/commit/df00b5dd9c1603cdd1aaf08e884d269aa2213448))
+- Render Mermaid fences and add mdcat renderer backend ([a8b516a](https://github.com/Jaggerxtrm/xtmux/commit/a8b516a04f21f84a16123c6a7b95a6020b6ccd99))
+- Board-audit — bd exporter + PR-checkpoint hook adapter (xtmux-wjr) (#112) ([ac60165](https://github.com/Jaggerxtrm/xtmux/commit/ac601658927db00b0c14520a2a287d427fca4676))
 
 ### Fixed
-- Survive deleted-cwd teardown in the obs launcher; message-send no longer fails after `xt end` removes the session worktree (xtmux-tml) ([471c49d9](https://github.com/Jaggerxtrm/xtmux/commit/471c49d9))
-- Honor the pane suffix in `session:%pane` message-send targets instead of delivering to the session's active pane (xtmux-tml) ([471c49d9](https://github.com/Jaggerxtrm/xtmux/commit/471c49d9))
 - K3 review-1 corrections — Core K3 fixtures, full v1 boundary, honest dedupe (xtmux-s96.2) ([45f039d](https://github.com/Jaggerxtrm/xtmux/commit/45f039da59686a6ccb68499bd4fcf8bd84384b75))
 - K3 review-2 corrections — Stop type guards, honest degraded-dedupe scope (xtmux-s96.2) ([599f01b](https://github.com/Jaggerxtrm/xtmux/commit/599f01b5632d097dacc45ff1ffa9ccb2468d69bb))
 - Strict per-identifier failure classifier for the EVAL-01 gate (xtmux-s96.3) ([08ab7ae](https://github.com/Jaggerxtrm/xtmux/commit/08ab7aee25a881834083e8f3ac3160f2157316e4))
@@ -27,6 +41,16 @@ All notable changes to this project are documented here.
 - Never touch a stale ctx after session replacement or reload ([a176909](https://github.com/Jaggerxtrm/xtmux/commit/a176909f882e2c9797e08519f907e3bc648f6623))
 - Prune terminal monitors on every monitor-list read ([d635e6e](https://github.com/Jaggerxtrm/xtmux/commit/d635e6e41eff1f1544e6db317d7672ebc38c48b4))
 - Make stale ctx non-fatal even when session_shutdown never ran ([8c65780](https://github.com/Jaggerxtrm/xtmux/commit/8c65780cad3f0dd8d0c0a6434a1e31d48dd13d1b))
+- Harden nav redesign review gates ([a32957b](https://github.com/Jaggerxtrm/xtmux/commit/a32957b07f17fb72808b3c818d737cf4afbfe49a))
+- Survive deleted-cwd teardown and honor session:%pane targets (#106) ([5df145f](https://github.com/Jaggerxtrm/xtmux/commit/5df145f604d8f4bbaa3b030dc463061bac876eff))
+- Monotonic capture anchor — same-text earlier records can never absorb a lagging stop (xtmux-gdk post-merge P1) (#107) ([82cc854](https://github.com/Jaggerxtrm/xtmux/commit/82cc85489d4607b67410cb303794ed4ccd276f81))
+- Keep mdcat popup open by paginating ([06f8b72](https://github.com/Jaggerxtrm/xtmux/commit/06f8b7260b5e70ab9f9f55187d2bc513a6b2bcc0))
+- Clamp and center popup to client size ([a16fc97](https://github.com/Jaggerxtrm/xtmux/commit/a16fc9727e3ba9d92839b433086ff9b292cc3002))
+
+### Other changes
+- Include this commit in whatever next pr lands. ([8f17470](https://github.com/Jaggerxtrm/xtmux/commit/8f174703be820cd03b8e2323fba8533ac658c291))
+- This documentation must land in any next pr ([a188095](https://github.com/Jaggerxtrm/xtmux/commit/a1880953f2854f38d2fdf95cdc2bcd5adb42e020))
+- Drop mdcat renderer backend, restore glow ([c6fc118](https://github.com/Jaggerxtrm/xtmux/commit/c6fc1188ffd35e937e6e5544fdce0bf3e2fda9f9))
 
 ### Project maintenance
 - Characterize Codex 0.146.0 seams (xtmux-s96.1) ([50a95fa](https://github.com/Jaggerxtrm/xtmux/commit/50a95fa32fa0b029d6b096bd1ecec9b8102a913a))
@@ -41,6 +65,8 @@ All notable changes to this project are documented here.
 - Refresh CHANGELOG [Unreleased] ([44d8e1b](https://github.com/Jaggerxtrm/xtmux/commit/44d8e1bc02a80be781e60dd9de939353e051c3c3))
 - Sync managed assets to xtrm-tools 0.11.4 and ignore runtime skill links ([65f5544](https://github.com/Jaggerxtrm/xtmux/commit/65f5544d49b6197a45d062a740bb5973d96def3c))
 - Ignore post-migration per-repo skill and hook residue ([6543e70](https://github.com/Jaggerxtrm/xtmux/commit/6543e70aa9992f0b1248088bd676256ad60c2794))
+- Mark renderer design incomplete, resume point ([0af90e5](https://github.com/Jaggerxtrm/xtmux/commit/0af90e55f9fac71f3768d83947666d67e2578503))
+- Sync managed hooks to bd v1.2.1 + install bd-sync (xtmux-71c) (#111) ([aabd012](https://github.com/Jaggerxtrm/xtmux/commit/aabd012aa529b3ba180c798991b30dfc9a77242b))
 <!-- generated by xtmux-changelog; edit commit messages or cliff.toml, not generated rows -->
 
 ## [0.2.3] - 2026-07-28
