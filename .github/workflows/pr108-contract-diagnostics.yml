@@ -1,0 +1,81 @@
+name: PR 108 contract diagnostics
+
+on:
+  push:
+    branches:
+      - automation/pr108-live-fix-diagnostics-20260820
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux jq
+          bun install --frozen-lockfile
+
+      - name: Capture failing contracts
+        id: tests
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .xtrm/reports/pr108-contract-diagnostics
+          bash test/nav-contract.sh > .xtrm/reports/pr108-contract-diagnostics/nav-contract.log 2>&1
+          nav_rc=$?
+          bash test/contract.sh > .xtrm/reports/pr108-contract-diagnostics/shell-contract.log 2>&1
+          shell_rc=$?
+          printf 'candidate=%s\nnav_rc=%s\nshell_rc=%s\n' \
+            '78ccf8b2fa370927e59e5c4d095bbd659a8966db' "$nav_rc" "$shell_rc" \
+            > .xtrm/reports/pr108-contract-diagnostics/status.txt
+          {
+            printf '%s\n' '=== nav failure markers ==='
+            grep -En '(^|[[:space:]])(not ok|FAIL|failed|phantom|mismatch|expected|got)([[:space:]:]|$)' \
+              .xtrm/reports/pr108-contract-diagnostics/nav-contract.log || true
+            printf '%s\n' '=== nav tail ==='
+            tail -n 120 .xtrm/reports/pr108-contract-diagnostics/nav-contract.log
+            printf '%s\n' '=== shell failure markers ==='
+            grep -En '(^|[[:space:]])(not ok|FAIL|failed|phantom|mismatch|expected|got)([[:space:]:]|$)' \
+              .xtrm/reports/pr108-contract-diagnostics/shell-contract.log || true
+            printf '%s\n' '=== shell tail ==='
+            tail -n 120 .xtrm/reports/pr108-contract-diagnostics/shell-contract.log
+          } > .xtrm/reports/pr108-contract-diagnostics/summary.txt
+          echo "nav_rc=$nav_rc" >> "$GITHUB_OUTPUT"
+          echo "shell_rc=$shell_rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Retain diagnostics without retaining workflow
+        id: retain
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          rm -f .github/workflows/pr108-contract-diagnostics.yml
+          git add -A
+          git diff --cached --check
+          rc=$?
+          if [ "$rc" -eq 0 ]; then
+            git -c user.name='xtmux automation' \
+                -c user.email='actions@users.noreply.github.com' \
+                commit -m 'build(pr108): retain contract diagnostics'
+            rc=$?
+          fi
+          if [ "$rc" -eq 0 ]; then
+            git push origin HEAD:"refs/heads/$GITHUB_REF_NAME"
+            rc=$?
+          fi
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Enforce diagnostic completion
+        if: steps.retain.outputs.rc != '0'
+        run: exit 1
