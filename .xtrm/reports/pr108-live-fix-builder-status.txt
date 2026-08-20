@@ -1,0 +1,11 @@
+base=fdcc1208b01f55d03c972057d65dc2e877dfa2f6
+product_commit=78ccf8b2fa370927e59e5c4d095bbd659a8966db
+patch_rc=0
+materialize_rc=0
+bun_outcome=success
+deps_rc=0
+validation_status=1
+failures:
+nav-contract	1
+shell-contract	1
+json-api-gate	1
