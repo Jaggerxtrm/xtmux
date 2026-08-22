@@ -3671,9 +3671,12 @@ build_list() (
       display=''
       idle_label_plain "$session_activity" "$now"; sess_idle_plain["$sid"]="$REPLY"; stale_bucket="$IDLE_STALE"
     else
-      render_list_status "$pane_path" "$root" "$root_status"; display="$REPLY"
-      idle_badge "$session_activity" "$now"; idle="$REPLY"; stale_bucket="$IDLE_STALE"
-      [ -n "$idle" ] && display+=" $idle"
+      # Session header carries the name only (xtmux-rib.31): no git info, no
+      # path, no badges. Repo/branch/path stay available to filters and
+      # previews via sess_root/sess_root_status. idle_badge still runs for its
+      # IDLE_STALE side effect (staleness sort bucket).
+      display=''
+      idle_badge "$session_activity" "$now"; stale_bucket="$IDLE_STALE"
     fi
     section=0
     [[ "$sname" == sp-* ]] && section=1
@@ -3868,10 +3871,7 @@ build_list() (
         nav_session_card "$_marker" "$sname" "$_stag" "${sess_idle_plain[$sid]:-}" "$_sctx" "$lines"; _scard="$REPLY"
         printf 'session\t%s\t%s\t%s\ts:%s\t%s\0' "$sid" "$sname" "$sid" "$sid" "$_scard"
       else
-        if [ "${sess_shared_wt[$sid]:-0}" = 1 ]; then
-          paint "$c_stale" "[shared-wt]"; display+=" $REPLY"
-        fi
-        printf 'session\t%s\t%s\t%s\t  %s  %s\n' "$sid" "$sname" "$sid" "$session_col" "$display"
+        printf 'session\t%s\t%s\t%s\t  %s\n' "$sid" "$sname" "$sid" "$session_col"
       fi
       if [ "$list_mode" != 'sessions-only' ]; then
         if [ "$emit" = nav ]; then
