@@ -736,5 +736,34 @@ _meta_lines="$(wc -l < "$WORK/meta.tsv")"
 _meta_bad="$(awk -F '\t' 'NR==1&&NF!=5{bad=1} NR==2&&NF!=14{bad=1} END{print bad+0}' "$WORK/meta.tsv")"
 [ "$_meta_lines" -eq 2 ] && [ "$_meta_bad" -eq 0 ] && ok "metadata framing: control characters cannot create records" || nok "metadata framing: control characters cannot create records"
 
+# Cold-start guard (xtmux-rib.29): with an EMPTY picker state dir, a missing
+# list-mode/filter state file must read as empty, never raise the $(<missing)
+# redirection error that exits under set -e even through `|| true`. Point
+# TMPDIR at a clean dir so no ambient state can mask the crash. The shim
+# serves one live session/pane so the projection has records to render.
+mkdir -p "$WORK/bin-cold"
+cat > "$WORK/bin-cold/tmux" <<'SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${XTMUX_TMUX_LOG:-/dev/null}"
+case "${1:-}" in
+  list-sessions) printf '%b\n' '$1\tcold\t%7\t/tmp\t1000' ;;
+  list-panes)    printf '%b\n' '$1\t0\tw0\t%7\t0\t1\tbash\t/tmp\t-\t999\t-\t-\t-\t-' ;;
+  command-prompt|confirm-before) ;;
+esac
+exit 0
+SHIM
+chmod +x "$WORK/bin-cold/tmux"
+_cold_tmp="$WORK/tmp-cold"
+mkdir -p "$_cold_tmp"
+PATH="$WORK/bin-cold:$PATH" XTMUX_TMUX_LOG="$WORK/cold-tmux.log" TMPDIR="$_cold_tmp" \
+  TMUX_PICKER_NO_CACHE=1 "$PICKER" list-active-nav > "$WORK/cold-nav.out" 2> "$WORK/cold-nav.err"
+_nav_rc=$?
+if [ "$_nav_rc" -eq 0 ] && [ -s "$WORK/cold-nav.out" ] && ! grep -q 'No such file or directory' "$WORK/cold-nav.err"; then
+  ok "cold start: list-active-nav renders on an empty state dir"
+else
+  nok "cold start: list-active-nav renders on an empty state dir"
+  printf '      rc=%s out=%sB err=%s\n' "$_nav_rc" "$(wc -c < "$WORK/cold-nav.out")" "$(head -1 "$WORK/cold-nav.err")"
+fi
+
 harness_summary
 exit $?

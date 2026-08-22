@@ -2562,6 +2562,10 @@ picker_state_file() {
 picker_state_read() {
   local file
   picker_state_file "$1" || { REPLY=''; return 1; }; file="$REPLY"
+  # A missing state file is the normal cold-start case: return empty instead
+  # of letting $(<missing) raise a redirection error, which exits the script
+  # under `set -e` even when the caller guards with `|| true`.
+  [ -f "$file" ] || { REPLY=''; return 1; }
   REPLY="$(<"$file")"
 }
 
