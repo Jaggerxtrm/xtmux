@@ -3528,6 +3528,8 @@ build_list() (
   local -a _prow=()
   declare -A root_cache=()
   declare -A root_status_cache=()
+  local _gsmeta='' _gpmeta='' _gjobs=''
+  local -a _paths=() _pids=()
   declare -A sess_name=()
   declare -A sess_attn=()
   declare -A sess_stale=()
@@ -3569,7 +3571,77 @@ build_list() (
   tmp_sessions="$(mktemp)"
   tmp_panes="$(mktemp)"
   now="$(date +%s)"
-  trap 'rm -f "${tmp_sessions:-}" "${tmp_panes:-}" "${_gtmp:-}"' EXIT INT TERM
+  trap 'rm -f "${tmp_sessions:-}" "${tmp_panes:-}" "${_gtmp:-}" "${_gsmeta:-}" "${_gpmeta:-}"' EXIT INT TERM
+  rm -rf -- "${_gjobs:-}" 2>/dev/null || true
+
+  # Git prepass (xtmux-rib.30): buffer both tmux inventories once, then resolve
+  # roots concurrently (wave 1) and run git status per unique toplevel
+  # concurrently (wave 2). Status is inherently worktree-scoped (branch, index,
+  # and dirty state differ per linked worktree), so the only shared win is
+  # wall-clock overlap: all repos resolve in max(one call), not sum(calls).
+  # Paths already in a fresh git-table are skipped, so warm opens fork nothing.
+  _gsmeta="$(mktemp)"; _gpmeta="$(mktemp)"
+  session_meta > "$_gsmeta"
+  pane_meta > "$_gpmeta"
+  declare -A _path_seen=() _root_seen=()
+  local _gp _gr _gs _rowfile _pid
+  while IFS= read -r _gp; do
+    [ -n "$_gp" ] || continue
+    [[ -v _path_seen["$_gp"] ]] && continue
+    _path_seen["$_gp"]=1
+    [[ -v root_cache["$_gp"] ]] && continue
+    _paths+=("$_gp")
+  done < <({ cut -f4 "$_gsmeta"; cut -f8 "$_gpmeta"; })
+  if [ "${#_paths[@]}" -gt 0 ]; then
+    _gjobs="$(mktemp -d)"
+    # wave 1: path -> root (cheap rev-parses, fully parallel)
+    local _ji=0
+    for _gp in "${_paths[@]}"; do
+      (
+        _gr="$(run_git -C "$_gp" rev-parse --show-toplevel 2>/dev/null || true)"
+        printf '%s\t%s\n' "$_gp" "$_gr"
+      ) > "$_gjobs/$_ji" &
+      _pids+=("$!")
+      _ji=$((_ji+1))
+    done
+    for _pid in "${_pids[@]}"; do wait "$_pid" 2>/dev/null || true; done
+    _pids=()
+    # wave 2: one status per unique repo toplevel, parallel
+    local _roots_file="$_gjobs/roots"
+    : > "$_roots_file"
+    for _rowfile in "$_gjobs"/[0-9]*; do
+      [ -e "$_rowfile" ] || continue
+      while IFS=$'\t' read -r _gp _gr; do
+        root_cache["$_gp"]="$_gr"
+        [ -n "$_gr" ] || continue
+        [[ -v _root_seen["$_gr"] ]] && continue
+        _root_seen["$_gr"]=1
+        printf '%s\n' "$_gr" >> "$_roots_file"
+      done < "$_rowfile"
+    done
+    if [ -x "$git_status_script" ] && [ -s "$_roots_file" ]; then
+      local _ci=0
+      while IFS= read -r _gr; do
+        (
+          _gs="$(TMUX_GIT_TOPLEVEL="$_gr" "$git_status_script" "" "$_gr" 2>/dev/null)" \
+            || { short_path "$_gr"; _gs="$REPLY"; }
+          printf '%s\t%s\n' "$_gr" "$_gs"
+        ) > "$_gjobs/s$_ci" &
+        _pids+=("$!")
+        _ci=$((_ci+1))
+      done < "$_roots_file"
+      # ponytail: wait-all, no concurrency cap — one git call per job on a dev
+      # host is fine; add a semaphore only if a many-repo host shows load spikes.
+      for _pid in "${_pids[@]}"; do wait "$_pid" 2>/dev/null || true; done
+      for _rowfile in "$_gjobs"/s[0-9]*; do
+        [ -e "$_rowfile" ] || continue
+        while IFS=$'\t' read -r _gr _gs; do
+          [ -n "$_gr" ] && root_status_cache["$_gr"]="$_gs"
+        done < "$_rowfile"
+      done
+    fi
+    rm -rf -- "$_gjobs"; _gjobs=''
+  fi
 
   while IFS=$'\t' read -r sid sname pane_id pane_path session_activity; do
     [ -n "$sid" ] || continue
@@ -3615,7 +3687,7 @@ build_list() (
     [ "${#sname}" -gt "$name_width" ] && name_width="${#sname}"
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$section" "$sort_key" "$stale_bucket" "$sid" "$sname" "$display" >> "$tmp_sessions"
-  done < <(session_meta)
+  done < "$_gsmeta"
 
   while IFS=$'\t' read -r sid window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_state pane_pid pane_bead pane_task pane_parent pane_transition; do
     [ -n "$sid" ] || continue
@@ -3684,7 +3756,7 @@ build_list() (
       render_pane_line "$window_index" "$window_name" "$pane_id" "$pane_active" "$pane_cmd" "$pane_row_path" "$root" "$pane_state" "${sess_name[$sid]:-}" "$pane_pid" "$pane_bead" "$pane_task" "$pane_parent"; pane_col="$REPLY"
       printf '%s\t%s\t%s\t%s\t%s\n' "$sid" "$window_index" "$pane_index" "$pane_id" "$pane_col" >> "$tmp_panes"
     fi
-  done < <(pane_meta)
+  done < "$_gpmeta"
 
   if [ -s "$tmp_panes" ]; then
     if [ "$emit" = nav ]; then
