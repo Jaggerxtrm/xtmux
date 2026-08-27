@@ -75,7 +75,7 @@
     "test:codex-distribution": "bash scripts/verify-codex-distribution.sh"
   },
   "dependencies": {
-    "bun": "1.3.14",
+    "bun": "1.4.0",
     "git-cliff": "2.13.1"
   },
   "devDependencies": {
