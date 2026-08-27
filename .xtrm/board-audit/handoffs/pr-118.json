@@ -1,0 +1,43 @@
+{
+  "beads_root_ids": [
+    "xtmux-0bz",
+    "xtmux-0gf",
+    "xtmux-1fa",
+    "xtmux-30f",
+    "xtmux-5hv",
+    "xtmux-5j3",
+    "xtmux-71y",
+    "xtmux-amn",
+    "xtmux-bbc",
+    "xtmux-ck7",
+    "xtmux-cku",
+    "xtmux-kua",
+    "xtmux-lg8",
+    "xtmux-r6g",
+    "xtmux-rib",
+    "xtmux-ro1",
+    "xtmux-rs3",
+    "xtmux-s96"
+  ],
+  "generated_at": "2026-08-27T23:52:30Z",
+  "handoff": ".xtrm/board-audit/handoffs/pr-118.json",
+  "implementation_branch": "fix/ci-install-xtmux-view-deps",
+  "implementation_head_sha": "3772a87042fecec8e66045d594b946da3758f299",
+  "index": ".xtrm/board-audit/index.json",
+  "open_issue_count": 23,
+  "producer": {
+    "board_audit_source": "caller",
+    "git_sha": "3772a87042fecec8e66045d594b946da3758f299",
+    "package_sha256": "1a8448bc3423f1e2b1108d24fbf0cdf0bf0c255947d1010c12bf7ce30d58874b",
+    "repository": "Jaggerxtrm/xtmux"
+  },
+  "pull_request": 118,
+  "repository": "Jaggerxtrm/xtmux",
+  "schema_version": "xtrm.board-audit.pr-handoff.v1",
+  "snapshot_id": "7ace554f30e02d7ae494d9287044b37d102be5250c883beb48101667f99f5261",
+  "snapshot_sha256": "ea725f49562fdcb4032a18398500b580bf8e64569ea201f1abfd2437acb02d51",
+  "state": "prepared",
+  "transport_branch": "board-audit/pr-118",
+  "transport_head_sha": null,
+  "work_package_count": 18
+}

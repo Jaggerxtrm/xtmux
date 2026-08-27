@@ -1,0 +1,149 @@
+{
+  "content_sha256": "f8fedc37afd9f25ef47fc804a34002773ff575a6b4b45f4aac979cb71d1cb998",
+  "desired_issues": {
+    "xtmux-ro1": {
+      "_type": "issue",
+      "assignee": "jaggerxtrm",
+      "comment_count": 2,
+      "comments": [
+        {
+          "author": "jaggerxtrm",
+          "created_at": "2026-07-18T00:23:41Z",
+          "id": "19474404-5ee4-5bf0-916a-8c25c108ac07",
+          "issue_id": "xtmux-ro1",
+          "text": "2026-07-18 registry recheck: npm view @jaggerxtrm/xtmux returned E404 (not publicly resolvable or current credentials lack access). Local package.json still points repository/homepage/bugs to github.com/Jaggerxtrm/xtmux. Recheck registry visibility and npm metadata during this deferred publish task."
+        },
+        {
+          "author": "jaggerxtrm",
+          "created_at": "2026-07-18T00:30:07Z",
+          "id": "01abe2a9-7b61-545d-87f2-4508ff3ef843",
+          "issue_id": "xtmux-ro1",
+          "text": "Release preflight 2026-07-18: v0.1.0 tag and GitHub release already exist at HEAD e0efbff; there are 0 commits after the tag. All three release workflow attempts failed only at 'npm publish --access public --provenance': npm signed provenance, then registry PUT returned E404/permission denied. npm whoami succeeds as jaggerxtrm, while npm view @jaggerxtrm/xtmux remains E404. Recovery: publish the inspected v0.1.0 tarball once with local npm auth and --access public, then configure the package's GitHub trusted publisher for Jaggerxtrm/xtmux + release.yml; do not recut/move v0.1.0."
+        }
+      ],
+      "created_at": "2026-07-14T18:58:36Z",
+      "created_by": "jaggerxtrm",
+      "dependencies": [
+        {
+          "created_at": "2026-07-14T20:58:37Z",
+          "created_by": "jaggerxtrm",
+          "depends_on_id": "xtmux-j46.18",
+          "issue_id": "xtmux-ro1",
+          "metadata": "{}",
+          "type": "discovered-from"
+        }
+      ],
+      "dependency_count": 0,
+      "dependent_count": 0,
+      "description": "PROBLEM: the npm registry still has @jaggerxtrm/xtmux@0.1.0, published before the j46 runtime contracts (context --json, topology, bridge, etc.) existed. A FRESH npm install therefore gets a binary that silently lacks these commands. Local machines are unaffected — they run source-linked (npm link -> the source checkout). Operator decided 2026-07-14 that source-linked is the intended install mode for now; publishing to the registry is deferred to whenever external/fresh-install consumers are actually wanted.\nSCOPE: package version bump, CHANGELOG release section, npm publish (see /releasing).\nSUCCESS: a fresh 'npm i -g @jaggerxtrm/xtmux' answers context --current --json with xtrm.runtime-origin.v1 and carries the full j46 surface.\nNON_GOALS: changing any contract (all frozen/merged/tested).\nCONSTRAINTS: npm publish is operator-authorized; never publish autonomously. Verify vendored-bun rung + files: list before publishing (see vendored-bun-runtime-rung memory).\nVALIDATION: TBD — needs exploration.\nOUTPUT: TBD — needs exploration.",
+      "id": "xtmux-ro1",
+      "issue_type": "task",
+      "labels": [
+        "release"
+      ],
+      "notes": "INSTALL CURRENCY (found 2026-07-14): the source-linked install (~/.local/bin/xtmux -> npm global -> npm-link symlink -> /home/dawid/dev/xtmux) is only as current as that checkout. On 2026-07-14 that checkout sat on main at 4003abe, 6 commits BEHIND origin/main (d7c29ec) — so the installed binary lacked the bridge and the other post-.8 merges ('xtmux bridge' returned 'unknown command'). For source-linked mode to actually deliver the full epic, /home/dawid/dev/xtmux must 'git pull'. NOT done autonomously: it is the shared main checkout with other agents' live runtime state (dirty .beads/.specialists, a corrupt-* dir, bg-job files) — operator runs the pull when that checkout is safe to move. This is the source-linked analogue of the npm-registry staleness this bead tracks.",
+      "owner": "jagger.xtrm@gmail.com",
+      "priority": 4,
+      "started_at": "2026-07-18T00:33:15Z",
+      "status": "open",
+      "title": "Publish @jaggerxtrm/xtmux to npm when registry consumers are wanted",
+      "updated_at": "2026-08-07T15:41:18Z"
+    }
+  },
+  "diagnostics": {
+    "dangling_relations": [],
+    "derived_dotted_parent_links": [],
+    "multiple_parent_nodes": []
+  },
+  "external_relations": [
+    {
+      "raw": {
+        "created_at": "2026-07-14T20:58:37Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "xtmux-j46.18",
+        "issue_id": "xtmux-ro1",
+        "metadata": "{}",
+        "type": "discovered-from"
+      },
+      "source": "xtmux-ro1",
+      "source_field": "dependencies",
+      "target": "xtmux-j46.18",
+      "target_present_in_snapshot": true,
+      "target_title": "Deploy gap: xtmux context is on main but not in the installed binary (npm @jaggerxtrm/xtmux@0.1.0)",
+      "type": "discovered-from"
+    }
+  ],
+  "hierarchy": {
+    "children": [],
+    "id": "xtmux-ro1"
+  },
+  "issues": {
+    "xtmux-ro1": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "assignee": "jaggerxtrm",
+        "comment_count": 2,
+        "comments": [
+          {
+            "author": "jaggerxtrm",
+            "created_at": "2026-07-18T00:23:41Z",
+            "id": "19474404-5ee4-5bf0-916a-8c25c108ac07",
+            "issue_id": "xtmux-ro1",
+            "text": "2026-07-18 registry recheck: npm view @jaggerxtrm/xtmux returned E404 (not publicly resolvable or current credentials lack access). Local package.json still points repository/homepage/bugs to github.com/Jaggerxtrm/xtmux. Recheck registry visibility and npm metadata during this deferred publish task."
+          },
+          {
+            "author": "jaggerxtrm",
+            "created_at": "2026-07-18T00:30:07Z",
+            "id": "01abe2a9-7b61-545d-87f2-4508ff3ef843",
+            "issue_id": "xtmux-ro1",
+            "text": "Release preflight 2026-07-18: v0.1.0 tag and GitHub release already exist at HEAD e0efbff; there are 0 commits after the tag. All three release workflow attempts failed only at 'npm publish --access public --provenance': npm signed provenance, then registry PUT returned E404/permission denied. npm whoami succeeds as jaggerxtrm, while npm view @jaggerxtrm/xtmux remains E404. Recovery: publish the inspected v0.1.0 tarball once with local npm auth and --access public, then configure the package's GitHub trusted publisher for Jaggerxtrm/xtmux + release.yml; do not recut/move v0.1.0."
+          }
+        ],
+        "created_at": "2026-07-14T18:58:36Z",
+        "created_by": "jaggerxtrm",
+        "dependencies": [
+          {
+            "created_at": "2026-07-14T20:58:37Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "xtmux-j46.18",
+            "issue_id": "xtmux-ro1",
+            "metadata": "{}",
+            "type": "discovered-from"
+          }
+        ],
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "description": "PROBLEM: the npm registry still has @jaggerxtrm/xtmux@0.1.0, published before the j46 runtime contracts (context --json, topology, bridge, etc.) existed. A FRESH npm install therefore gets a binary that silently lacks these commands. Local machines are unaffected — they run source-linked (npm link -> the source checkout). Operator decided 2026-07-14 that source-linked is the intended install mode for now; publishing to the registry is deferred to whenever external/fresh-install consumers are actually wanted.\nSCOPE: package version bump, CHANGELOG release section, npm publish (see /releasing).\nSUCCESS: a fresh 'npm i -g @jaggerxtrm/xtmux' answers context --current --json with xtrm.runtime-origin.v1 and carries the full j46 surface.\nNON_GOALS: changing any contract (all frozen/merged/tested).\nCONSTRAINTS: npm publish is operator-authorized; never publish autonomously. Verify vendored-bun rung + files: list before publishing (see vendored-bun-runtime-rung memory).\nVALIDATION: TBD — needs exploration.\nOUTPUT: TBD — needs exploration.",
+        "id": "xtmux-ro1",
+        "issue_type": "task",
+        "labels": [
+          "release"
+        ],
+        "notes": "INSTALL CURRENCY (found 2026-07-14): the source-linked install (~/.local/bin/xtmux -> npm global -> npm-link symlink -> /home/dawid/dev/xtmux) is only as current as that checkout. On 2026-07-14 that checkout sat on main at 4003abe, 6 commits BEHIND origin/main (d7c29ec) — so the installed binary lacked the bridge and the other post-.8 merges ('xtmux bridge' returned 'unknown command'). For source-linked mode to actually deliver the full epic, /home/dawid/dev/xtmux must 'git pull'. NOT done autonomously: it is the shared main checkout with other agents' live runtime state (dirty .beads/.specialists, a corrupt-* dir, bg-job files) — operator runs the pull when that checkout is safe to move. This is the source-linked analogue of the npm-registry staleness this bead tracks.",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 4,
+        "started_at": "2026-07-18T00:33:15Z",
+        "status": "open",
+        "title": "Publish @jaggerxtrm/xtmux to npm when registry consumers are wanted",
+        "updated_at": "2026-08-07T15:41:18Z"
+      }
+    }
+  },
+  "new_comments": {},
+  "relations": [],
+  "repository": "Jaggerxtrm/xtmux",
+  "root_id": "xtmux-ro1",
+  "root_title": "Publish @jaggerxtrm/xtmux to npm when registry consumers are wanted",
+  "roundtrip": {
+    "base_package_sha256": "f8fedc37afd9f25ef47fc804a34002773ff575a6b4b45f4aac979cb71d1cb998",
+    "base_record_sha256": {
+      "xtmux-ro1": "1f0b1d9ff1fba49422ee9573f75ef8cfe9e3c2480c60212e2419d82f1247a638"
+    },
+    "edit_contract": "modify desired_issues and new_comments only; issues.*.source is immutable base state",
+    "prepared_at": "2026-08-27T23:52:36Z",
+    "schema_version": "xtrm.board-audit.roundtrip.v1"
+  },
+  "schema_version": "xtrm.board-audit.work-package.v1",
+  "scope": "open"
+}

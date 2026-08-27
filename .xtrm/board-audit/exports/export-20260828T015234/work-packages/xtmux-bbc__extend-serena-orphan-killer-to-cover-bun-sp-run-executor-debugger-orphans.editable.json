@@ -1,0 +1,68 @@
+{
+  "content_sha256": "980981ff3a7f0672a8db1aa95acf975fc1dcd6884df78ef2a759e2337a669e22",
+  "desired_issues": {
+    "xtmux-bbc": {
+      "_type": "issue",
+      "comment_count": 0,
+      "created_at": "2026-07-20T12:58:59Z",
+      "created_by": "jaggerxtrm",
+      "dependency_count": 0,
+      "dependent_count": 0,
+      "description": "## PROBLEM\n\nDiscovered 2026-07-20: 22 orphan bun processes running \\`sp run executor/debugger\\` from Jul 14 (r6g sprint), all with PPID=1 (parent tmux panes gone), consuming ~1Gi RAM. The existing reap cron script (\\`/home/dawid/projects/mercury/infra/scripts/serena_orphan_killer.sh\\`, cron */30) targets ONLY \\`serena start-mcp-server\\` processes — the bun sp orphans slip through and accumulate indefinitely.\n\nSame root cause as serena reap: specialist processes spawned inside a tmux pane don't get reaped when the pane/orchestrator dies. But sp children have different process signatures (\\`bun ... sp run executor|debugger --bead <id>\\`), so the serena-scoped script doesn't match them.\n\n## SUCCESS\n\n- A companion or extended reap script kills orphan \\`bun.*sp run (executor|debugger)\\` processes with PPID=1 and etime > threshold (e.g., 6h — same default as serena)\n- Cron entry runs it periodically (either extend the existing */30 slot or add a sibling entry)\n- Logged to \\`\\$HOME/.local/state/sp-orphan-killer.log\\` for observability\n\n## SCOPE\n\nTwo options:\n\n**A (small, additive)**: create \\`serena_orphan_killer_sp.sh\\` sibling in \\`mercury/infra/scripts/\\` mirroring serena_orphan_killer.sh structure; add cron line to run it \\`*/30\\`. ~40 LOC.\n\n**B (unify)**: refactor \\`serena_orphan_killer.sh\\` to a generic \\`orphan_killer.sh --pattern <regex>\\` that reads a config listing which patterns to reap; invoke twice (or from cron with different args). ~60 LOC + config file.\n\nOption A wins on ponytail (no abstraction until second reason to unify).\n\n## NON_GOALS\n\n- Do NOT reap active pane children (PPID != 1) — only orphans\n- Do NOT touch active worktrees/beads state — reaping is process-level only, storage/DB left alone\n- Do NOT enable dry-run by default — mirror serena script's ergonomics\n\n## VALIDATION\n\n- Manual: create 2 test orphan processes, run script with 0s threshold + dry-run, verify only matched patterns land\n- After 30-min cron cycle: log shows accurate report of what was reaped or \"no-op\"\n\n## Related\n\nDiscovered while cleaning up post-r6g sprint. Root cause of the accumulation: previous session did not kill children when killing tmux panes (that itself is a xtrm/xtmux behavior gap — separate bead: consider making \\`xt end\\` / worktree remove kill child sp processes too).",
+      "id": "xtmux-bbc",
+      "issue_type": "task",
+      "owner": "jagger.xtrm@gmail.com",
+      "priority": 2,
+      "status": "open",
+      "title": "extend serena_orphan_killer to cover 'bun sp run executor/debugger' orphans",
+      "updated_at": "2026-07-20T12:58:59Z"
+    }
+  },
+  "diagnostics": {
+    "dangling_relations": [],
+    "derived_dotted_parent_links": [],
+    "multiple_parent_nodes": []
+  },
+  "external_relations": [],
+  "hierarchy": {
+    "children": [],
+    "id": "xtmux-bbc"
+  },
+  "issues": {
+    "xtmux-bbc": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "comment_count": 0,
+        "created_at": "2026-07-20T12:58:59Z",
+        "created_by": "jaggerxtrm",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "description": "## PROBLEM\n\nDiscovered 2026-07-20: 22 orphan bun processes running \\`sp run executor/debugger\\` from Jul 14 (r6g sprint), all with PPID=1 (parent tmux panes gone), consuming ~1Gi RAM. The existing reap cron script (\\`/home/dawid/projects/mercury/infra/scripts/serena_orphan_killer.sh\\`, cron */30) targets ONLY \\`serena start-mcp-server\\` processes — the bun sp orphans slip through and accumulate indefinitely.\n\nSame root cause as serena reap: specialist processes spawned inside a tmux pane don't get reaped when the pane/orchestrator dies. But sp children have different process signatures (\\`bun ... sp run executor|debugger --bead <id>\\`), so the serena-scoped script doesn't match them.\n\n## SUCCESS\n\n- A companion or extended reap script kills orphan \\`bun.*sp run (executor|debugger)\\` processes with PPID=1 and etime > threshold (e.g., 6h — same default as serena)\n- Cron entry runs it periodically (either extend the existing */30 slot or add a sibling entry)\n- Logged to \\`\\$HOME/.local/state/sp-orphan-killer.log\\` for observability\n\n## SCOPE\n\nTwo options:\n\n**A (small, additive)**: create \\`serena_orphan_killer_sp.sh\\` sibling in \\`mercury/infra/scripts/\\` mirroring serena_orphan_killer.sh structure; add cron line to run it \\`*/30\\`. ~40 LOC.\n\n**B (unify)**: refactor \\`serena_orphan_killer.sh\\` to a generic \\`orphan_killer.sh --pattern <regex>\\` that reads a config listing which patterns to reap; invoke twice (or from cron with different args). ~60 LOC + config file.\n\nOption A wins on ponytail (no abstraction until second reason to unify).\n\n## NON_GOALS\n\n- Do NOT reap active pane children (PPID != 1) — only orphans\n- Do NOT touch active worktrees/beads state — reaping is process-level only, storage/DB left alone\n- Do NOT enable dry-run by default — mirror serena script's ergonomics\n\n## VALIDATION\n\n- Manual: create 2 test orphan processes, run script with 0s threshold + dry-run, verify only matched patterns land\n- After 30-min cron cycle: log shows accurate report of what was reaped or \"no-op\"\n\n## Related\n\nDiscovered while cleaning up post-r6g sprint. Root cause of the accumulation: previous session did not kill children when killing tmux panes (that itself is a xtrm/xtmux behavior gap — separate bead: consider making \\`xt end\\` / worktree remove kill child sp processes too).",
+        "id": "xtmux-bbc",
+        "issue_type": "task",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 2,
+        "status": "open",
+        "title": "extend serena_orphan_killer to cover 'bun sp run executor/debugger' orphans",
+        "updated_at": "2026-07-20T12:58:59Z"
+      }
+    }
+  },
+  "new_comments": {},
+  "relations": [],
+  "repository": "Jaggerxtrm/xtmux",
+  "root_id": "xtmux-bbc",
+  "root_title": "extend serena_orphan_killer to cover 'bun sp run executor/debugger' orphans",
+  "roundtrip": {
+    "base_package_sha256": "980981ff3a7f0672a8db1aa95acf975fc1dcd6884df78ef2a759e2337a669e22",
+    "base_record_sha256": {
+      "xtmux-bbc": "a027d2d5bb4dbdd44e9da0afa5478ae5e5b3d03e593b750c4ac3f194f52c8469"
+    },
+    "edit_contract": "modify desired_issues and new_comments only; issues.*.source is immutable base state",
+    "prepared_at": "2026-08-27T23:52:35Z",
+    "schema_version": "xtrm.board-audit.roundtrip.v1"
+  },
+  "schema_version": "xtrm.board-audit.work-package.v1",
+  "scope": "open"
+}

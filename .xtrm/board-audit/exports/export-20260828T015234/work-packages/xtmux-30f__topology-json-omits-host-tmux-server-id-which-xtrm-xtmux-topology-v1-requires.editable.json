@@ -1,0 +1,68 @@
+{
+  "content_sha256": "b3e1b786b8dc1be55e2ccbd00c8306e2f5a10e0e40a01bf32ed6e368b8522a06",
+  "desired_issues": {
+    "xtmux-30f": {
+      "_type": "issue",
+      "comment_count": 0,
+      "created_at": "2026-07-22T02:36:31Z",
+      "created_by": "jaggerxtrm",
+      "dependency_count": 0,
+      "dependent_count": 0,
+      "description": "Found while validating a live snapshot against the merged Core schema (xtrm-dev/core 92d64eeb) during xtmux #61.\n\nThe contract declares host.required = ['host_id','tmux_server_id']. topology_json emits only:\n  \"host\":{\"host_id\":\"...\"}\n\nSo every snapshot xtmux has ever produced fails schema validation on this one property — predates the lineage work and is unrelated to it. With the agent object now widened, this is the ONLY remaining validation error:\n  errors: 1\n   - ['host'] 'tmux_server_id' is a required property\n\ndocs/xtmux-gaps.md 5.4 already asks to 'make the tmux server identity explicit or derivable', so the intent exists; the emitter never caught up.\n\nFix options: derive from the tmux socket path/pid (tmux display-message -p '#{pid}' or the socket inode) and emit host.tmux_server_id, OR ask Core to relax it to optional. Prefer emitting — a topology aggregating multiple hosts wants to distinguish two tmux servers on one host.\n\nDeliberately NOT folded into #61, which is additive to the agent object only.",
+      "id": "xtmux-30f",
+      "issue_type": "bug",
+      "owner": "jagger.xtrm@gmail.com",
+      "priority": 2,
+      "status": "open",
+      "title": "topology --json omits host.tmux_server_id, which xtrm.xtmux.topology.v1 requires",
+      "updated_at": "2026-07-22T02:36:31Z"
+    }
+  },
+  "diagnostics": {
+    "dangling_relations": [],
+    "derived_dotted_parent_links": [],
+    "multiple_parent_nodes": []
+  },
+  "external_relations": [],
+  "hierarchy": {
+    "children": [],
+    "id": "xtmux-30f"
+  },
+  "issues": {
+    "xtmux-30f": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "comment_count": 0,
+        "created_at": "2026-07-22T02:36:31Z",
+        "created_by": "jaggerxtrm",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "description": "Found while validating a live snapshot against the merged Core schema (xtrm-dev/core 92d64eeb) during xtmux #61.\n\nThe contract declares host.required = ['host_id','tmux_server_id']. topology_json emits only:\n  \"host\":{\"host_id\":\"...\"}\n\nSo every snapshot xtmux has ever produced fails schema validation on this one property — predates the lineage work and is unrelated to it. With the agent object now widened, this is the ONLY remaining validation error:\n  errors: 1\n   - ['host'] 'tmux_server_id' is a required property\n\ndocs/xtmux-gaps.md 5.4 already asks to 'make the tmux server identity explicit or derivable', so the intent exists; the emitter never caught up.\n\nFix options: derive from the tmux socket path/pid (tmux display-message -p '#{pid}' or the socket inode) and emit host.tmux_server_id, OR ask Core to relax it to optional. Prefer emitting — a topology aggregating multiple hosts wants to distinguish two tmux servers on one host.\n\nDeliberately NOT folded into #61, which is additive to the agent object only.",
+        "id": "xtmux-30f",
+        "issue_type": "bug",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 2,
+        "status": "open",
+        "title": "topology --json omits host.tmux_server_id, which xtrm.xtmux.topology.v1 requires",
+        "updated_at": "2026-07-22T02:36:31Z"
+      }
+    }
+  },
+  "new_comments": {},
+  "relations": [],
+  "repository": "Jaggerxtrm/xtmux",
+  "root_id": "xtmux-30f",
+  "root_title": "topology --json omits host.tmux_server_id, which xtrm.xtmux.topology.v1 requires",
+  "roundtrip": {
+    "base_package_sha256": "b3e1b786b8dc1be55e2ccbd00c8306e2f5a10e0e40a01bf32ed6e368b8522a06",
+    "base_record_sha256": {
+      "xtmux-30f": "6954a3e3dc259738e5132d22c540f32d9a7ba80d4b3ce95dc92f908dc63f3660"
+    },
+    "edit_contract": "modify desired_issues and new_comments only; issues.*.source is immutable base state",
+    "prepared_at": "2026-08-27T23:52:34Z",
+    "schema_version": "xtrm.board-audit.roundtrip.v1"
+  },
+  "schema_version": "xtrm.board-audit.work-package.v1",
+  "scope": "open"
+}

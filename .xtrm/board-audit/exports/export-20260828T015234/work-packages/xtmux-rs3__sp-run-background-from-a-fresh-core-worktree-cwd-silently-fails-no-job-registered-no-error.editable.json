@@ -1,0 +1,68 @@
+{
+  "content_sha256": "5073ecb2de504737cd0bf38699e8c6b3d9fa252a2e8a20d250d7859ff1a790af",
+  "desired_issues": {
+    "xtmux-rs3": {
+      "_type": "issue",
+      "comment_count": 0,
+      "created_at": "2026-07-11T11:42:10Z",
+      "created_by": "jaggerxtrm",
+      "dependency_count": 0,
+      "dependent_count": 0,
+      "description": "PROBLEM: 'sp run executor --bead <id> --background' invoked from a fresh core worktree (in an xt-claude Claude Code pane, from within cwd /home/dawid/dev/core/.xtrm/worktrees/xtmux-1lb.5/) prints 'Warning: job started but ID not yet available.' but no job appears in sp ps / sp ps --all / .specialists/jobs/. Foreground bd checks confirm the bead exists and resolves via bd -C ~/dev/xtmux. Discovered while driving xtmux-1lb.5 (2026-07-11). Worked around by implementing inline; feels like an sp/pi environment issue rather than xtmux/core code.\n\nRepro: fresh core worktree, cd into it, sp run executor --bead xtmux-1lb.5 --background. Expected: job ID printed on stderr, job visible in sp ps. Actual: silent no-op with generic warning.\n\nSCOPE: unclear until bisected; sp process/subprocess spawn path OR cwd-reset from the CLAUDE hook environment competing with sp's fork.\n\nDISCOVERED_FROM: xtmux-1lb driver session (2026-07-11, jaggerxtrm).",
+      "id": "xtmux-rs3",
+      "issue_type": "bug",
+      "owner": "jagger.xtrm@gmail.com",
+      "priority": 2,
+      "status": "open",
+      "title": "sp run --background from a fresh core worktree cwd silently fails (no job registered, no error)",
+      "updated_at": "2026-07-11T11:42:10Z"
+    }
+  },
+  "diagnostics": {
+    "dangling_relations": [],
+    "derived_dotted_parent_links": [],
+    "multiple_parent_nodes": []
+  },
+  "external_relations": [],
+  "hierarchy": {
+    "children": [],
+    "id": "xtmux-rs3"
+  },
+  "issues": {
+    "xtmux-rs3": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "comment_count": 0,
+        "created_at": "2026-07-11T11:42:10Z",
+        "created_by": "jaggerxtrm",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "description": "PROBLEM: 'sp run executor --bead <id> --background' invoked from a fresh core worktree (in an xt-claude Claude Code pane, from within cwd /home/dawid/dev/core/.xtrm/worktrees/xtmux-1lb.5/) prints 'Warning: job started but ID not yet available.' but no job appears in sp ps / sp ps --all / .specialists/jobs/. Foreground bd checks confirm the bead exists and resolves via bd -C ~/dev/xtmux. Discovered while driving xtmux-1lb.5 (2026-07-11). Worked around by implementing inline; feels like an sp/pi environment issue rather than xtmux/core code.\n\nRepro: fresh core worktree, cd into it, sp run executor --bead xtmux-1lb.5 --background. Expected: job ID printed on stderr, job visible in sp ps. Actual: silent no-op with generic warning.\n\nSCOPE: unclear until bisected; sp process/subprocess spawn path OR cwd-reset from the CLAUDE hook environment competing with sp's fork.\n\nDISCOVERED_FROM: xtmux-1lb driver session (2026-07-11, jaggerxtrm).",
+        "id": "xtmux-rs3",
+        "issue_type": "bug",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 2,
+        "status": "open",
+        "title": "sp run --background from a fresh core worktree cwd silently fails (no job registered, no error)",
+        "updated_at": "2026-07-11T11:42:10Z"
+      }
+    }
+  },
+  "new_comments": {},
+  "relations": [],
+  "repository": "Jaggerxtrm/xtmux",
+  "root_id": "xtmux-rs3",
+  "root_title": "sp run --background from a fresh core worktree cwd silently fails (no job registered, no error)",
+  "roundtrip": {
+    "base_package_sha256": "5073ecb2de504737cd0bf38699e8c6b3d9fa252a2e8a20d250d7859ff1a790af",
+    "base_record_sha256": {
+      "xtmux-rs3": "8ca1d99ecf38b5869aadbe5b9aaad871b37a2a0696baa9cdf2a6532a4d84f275"
+    },
+    "edit_contract": "modify desired_issues and new_comments only; issues.*.source is immutable base state",
+    "prepared_at": "2026-08-27T23:52:36Z",
+    "schema_version": "xtrm.board-audit.roundtrip.v1"
+  },
+  "schema_version": "xtrm.board-audit.work-package.v1",
+  "scope": "open"
+}

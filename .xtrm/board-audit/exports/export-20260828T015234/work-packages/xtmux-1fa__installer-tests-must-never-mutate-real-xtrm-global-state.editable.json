@@ -1,0 +1,68 @@
+{
+  "content_sha256": "92ce8a2f62751db1704fcc18b64ab6f3e6786be8569a4ac20d47edd883a2f4d7",
+  "desired_issues": {
+    "xtmux-1fa": {
+      "_type": "issue",
+      "comment_count": 0,
+      "created_at": "2026-07-14T10:50:07Z",
+      "created_by": "jaggerxtrm",
+      "dependency_count": 0,
+      "dependent_count": 0,
+      "description": "P0 data-loss incident observed 2026-07-14 12:44 local: ~/.xtrm/skills/state.json was rewritten to installedVersion 0.0.0-test with empty enabledPacks and ~/.xtrm/skills/default was emptied, breaking all Pi/Claude global skill symlinks and hard-failing every skill-declaring specialist. Timing and 0.0.0-test fingerprint point to an xtmux installer test using the real HOME. Fix every installer/bootstrap test to require a disposable HOME/XDG root and add an invariant that refuses test-version writes under the real home. Recovery performed with `xt bootstrap --force`; verified state version 0.10.6 and 52 global skills. Cross-reference core incident xtrm-y86om.",
+      "id": "xtmux-1fa",
+      "issue_type": "bug",
+      "owner": "jagger.xtrm@gmail.com",
+      "priority": 0,
+      "status": "open",
+      "title": "Installer tests must never mutate real ~/.xtrm global state",
+      "updated_at": "2026-07-14T10:50:07Z"
+    }
+  },
+  "diagnostics": {
+    "dangling_relations": [],
+    "derived_dotted_parent_links": [],
+    "multiple_parent_nodes": []
+  },
+  "external_relations": [],
+  "hierarchy": {
+    "children": [],
+    "id": "xtmux-1fa"
+  },
+  "issues": {
+    "xtmux-1fa": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "comment_count": 0,
+        "created_at": "2026-07-14T10:50:07Z",
+        "created_by": "jaggerxtrm",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "description": "P0 data-loss incident observed 2026-07-14 12:44 local: ~/.xtrm/skills/state.json was rewritten to installedVersion 0.0.0-test with empty enabledPacks and ~/.xtrm/skills/default was emptied, breaking all Pi/Claude global skill symlinks and hard-failing every skill-declaring specialist. Timing and 0.0.0-test fingerprint point to an xtmux installer test using the real HOME. Fix every installer/bootstrap test to require a disposable HOME/XDG root and add an invariant that refuses test-version writes under the real home. Recovery performed with `xt bootstrap --force`; verified state version 0.10.6 and 52 global skills. Cross-reference core incident xtrm-y86om.",
+        "id": "xtmux-1fa",
+        "issue_type": "bug",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 0,
+        "status": "open",
+        "title": "Installer tests must never mutate real ~/.xtrm global state",
+        "updated_at": "2026-07-14T10:50:07Z"
+      }
+    }
+  },
+  "new_comments": {},
+  "relations": [],
+  "repository": "Jaggerxtrm/xtmux",
+  "root_id": "xtmux-1fa",
+  "root_title": "Installer tests must never mutate real ~/.xtrm global state",
+  "roundtrip": {
+    "base_package_sha256": "92ce8a2f62751db1704fcc18b64ab6f3e6786be8569a4ac20d47edd883a2f4d7",
+    "base_record_sha256": {
+      "xtmux-1fa": "1570b525179c2d9e4295cc07367286328ee30d6c33f28aa696582317a009a1a0"
+    },
+    "edit_contract": "modify desired_issues and new_comments only; issues.*.source is immutable base state",
+    "prepared_at": "2026-08-27T23:52:34Z",
+    "schema_version": "xtrm.board-audit.roundtrip.v1"
+  },
+  "schema_version": "xtrm.board-audit.work-package.v1",
+  "scope": "open"
+}
