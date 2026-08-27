@@ -637,7 +637,7 @@ fi
 # Integrated private transport: shared inventory -> bounded NUL cards/tokens.
 (
   session_meta() { printf '%b\n' '$42\talpha\x07bell\x08back\x1fbeta\x1egamma\x1bdelta\t%17\t'"$WORK"'/none\t1000'; }
-  pane_meta() { printf '%b\n' '$42\t0\tw0\t%17\t0\t1\tbash\t'"$WORK"'/none\tneeds-input\t999991\tbead.1\ta bounded task\t-\t-'; }
+  pane_meta() { printf '%b\n' '$42\t0\tw0\t%17\t0\t1\tbash\t'"$WORK"'/none\tneeds-input\t999991\tbead.1\ta bounded task\t-\t-\t-'; }
   TMUX_PANE='%17' XTMUX_NAV_WIDTH=32 TMUX_PICKER_NO_CACHE=1 build_list all expanded nav multi
 ) > "$WORK/nav-records"
 _count=0; _session_seen=0; _pane_seen=0; _header_seen=0; _wide=0; _framing_clean=1
@@ -704,7 +704,7 @@ assert_eq "nav grouping: attention then active then other" 'stale-session wait-s
 
 (
   session_meta() { printf '%b\n' '$42\talpha\t%17\t'"$WORK"'/none\t1000'; }
-  pane_meta() { printf '%b\n' '$42\t0\tw0\t%17\t0\t1\tbash\t'"$WORK"'/none\tneeds-input\t999991\tbead.1\ta bounded task\t-\t-'; }
+  pane_meta() { printf '%b\n' '$42\t0\tw0\t%17\t0\t1\tbash\t'"$WORK"'/none\tneeds-input\t999991\tbead.1\ta bounded task\t-\t-\t-'; }
   TMUX_PANE='%999' XTMUX_NAV_WIDTH=44 TMUX_PICKER_NO_CACHE=1 build_list all expanded nav single
 ) > "$WORK/nav-single"
 _single_newline=0; _false_marker=0
@@ -733,7 +733,7 @@ command tmux -L "$_sock" set-option -p -t "$_meta_pane" @agent_task $'task\nline
 ) > "$WORK/meta.tsv"
 command tmux -L "$_sock" kill-server
 _meta_lines="$(wc -l < "$WORK/meta.tsv")"
-_meta_bad="$(awk -F '\t' 'NR==1&&NF!=5{bad=1} NR==2&&NF!=14{bad=1} END{print bad+0}' "$WORK/meta.tsv")"
+_meta_bad="$(awk -F '\t' 'NR==1&&NF!=5{bad=1} NR==2&&NF!=15{bad=1} END{print bad+0}' "$WORK/meta.tsv")"
 [ "$_meta_lines" -eq 2 ] && [ "$_meta_bad" -eq 0 ] && ok "metadata framing: control characters cannot create records" || nok "metadata framing: control characters cannot create records"
 
 # Cold-start guard (xtmux-rib.29): with an EMPTY picker state dir, a missing
@@ -747,7 +747,7 @@ cat > "$WORK/bin-cold/tmux" <<'SHIM'
 printf '%s\n' "$*" >> "${XTMUX_TMUX_LOG:-/dev/null}"
 case "${1:-}" in
   list-sessions) printf '%b\n' '$1\tcold\t%7\t/tmp\t1000' ;;
-  list-panes)    printf '%b\n' '$1\t0\tw0\t%7\t0\t1\tbash\t/tmp\t-\t999\t-\t-\t-\t-' ;;
+  list-panes)    printf '%b\n' '$1\t0\tw0\t%7\t0\t1\tbash\t/tmp\t-\t999\t-\t-\t-\t-\t-' ;;
   command-prompt|confirm-before) ;;
 esac
 exit 0
