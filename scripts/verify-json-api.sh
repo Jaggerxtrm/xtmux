@@ -32,7 +32,7 @@ if find "$root/src" -type f -name '*.ts' -newer "$root/bin/xtmux-obs" -print -qu
   exit 1
 fi
 printf 'build-freshness\t%s\t0\t0\tmtime(src)<=mtime(binary)\t%s\n' "${XTMUX_OBS_V2:-default-on}" "$root/bin/xtmux-obs" >> "$summary"
-run_check bun-tests bun test
+run_check bun-tests bun test tests/ test/
 run_check typecheck bun run typecheck
 # Runs BEFORE the contract suite on purpose: it proves the suite can still fail.
 # The counters used to live in shell variables, so a failure inside a subshell

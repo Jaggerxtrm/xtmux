@@ -18,7 +18,7 @@ jobs:
         with:
           bun-version: 1.3.14
       - run: bun install --frozen-lockfile
-      - run: bun test
+      - run: bun test tests/ test/
       # packages/xtmux-view is a standalone package with its own lockfile; its
       # tests import beautiful-mermaid, which the root install does not provide.
       - run: bun install --frozen-lockfile
