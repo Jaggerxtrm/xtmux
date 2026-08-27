@@ -71,6 +71,18 @@ async function waitUntil(check: () => boolean, timeoutMs = 3000): Promise<void> 
   throw new Error("condition timed out");
 }
 
+// Hold a pane in the working state until the monitor poller has actually
+// sampled it (the row's state field reflects the last observed state). Flipping
+// working -> done inside one 10ms poll gap on a slow CI runner makes the poller
+// never see working, observedWorking stays false, and the wait times out (124).
+async function cycleState(pane: string, env = baseEnv()): Promise<void> {
+  setState(pane, "working");
+  // observe() normalizes working -> running, so the row's paneState is
+  // "running" while the pane is working.
+  await waitUntil(() => monitorRows(env).some((row) => row.paneId === pane && row.paneState === "running"));
+  setState(pane, "done");
+}
+
 beforeAll(() => {
   for (const dir of [BIN, STATE_DIR, "home", "config", "cache", "state", "runtime", "tmp", "tmux"].map((dir) => dir.startsWith("/") ? dir : join(TEST_ROOT, dir))) mkdirSync(dir, { recursive: true });
   writeFileSync(join(BIN, "tmux"), `#!/usr/bin/env bash
@@ -150,7 +162,7 @@ describe("Claude SQLite auto-monitor hooks", () => {
     child.stdout!.on("data", (chunk) => childOut += chunk); child.stderr!.on("data", (chunk) => childErr += chunk);
     await waitUntil(() => monitorRows().some((row) => row.requesterPaneId === "%100" && row.paneId === "%101" && row.terminalStatus === null));
     expect(stop().stdout).toBe("");
-    setState("%101", "working"); await Bun.sleep(80); setState("%101", "done");
+    await cycleState("%101");
     expect(await new Promise<number | null>((resolve) => child.on("close", resolve))).toBe(0);
     expect(childErr).toBe("");
     expect(JSON.parse(childOut)).toMatchObject({ terminalStatus: "done", wakeDelivered: true, wakeConsumed: true });
@@ -169,7 +181,7 @@ describe("Claude SQLite auto-monitor hooks", () => {
     const child = spawn("bun", [CLI, "wait-agent", "%201", "--wait-for-transition", "--timeout", "10s", "--interval", "10ms", "--json"], { cwd: ROOT, env: envB, stdio: ["ignore", "pipe", "pipe"] });
     let output = ""; child.stdout!.on("data", (chunk) => output += chunk);
     await waitUntil(() => monitorRows(envB).some((row) => row.requesterPaneId === "%200" && row.paneId === "%201"));
-    setState("%201", "working"); await Bun.sleep(80); setState("%201", "done");
+    await cycleState("%201", envB);
     expect(await new Promise<number | null>((resolve) => child.on("close", resolve))).toBe(0);
     expect(JSON.parse(output)).toMatchObject({ wakeDelivered: true, wakeConsumed: false });
     const input = { tool_name: "Bash", tool_input: { command: "xtmux wait-agent %201 --wait-for-transition" }, tool_response: { exitCode: 0, stdout: output } };
@@ -186,7 +198,7 @@ describe("Claude SQLite auto-monitor hooks", () => {
     const first = spawn("bun", [CLI, "wait-agent", "%104", "--wait-for-transition", "--consume", "--timeout", "10s", "--interval", "10ms", "--json"], { cwd: ROOT, env: baseEnv(), stdio: ["ignore", "pipe", "pipe"] });
     await waitUntil(() => monitorRows().some((row) => row.paneId === "%104" && row.terminalStatus === null));
     expect(stop().stdout).toBe("");
-    setState("%104", "working"); await Bun.sleep(80); setState("%104", "done");
+    await cycleState("%104");
     expect(await new Promise<number | null>((resolve) => first.on("close", resolve))).toBe(0);
     expect(stop().stdout).toBe("");
 
@@ -200,8 +212,11 @@ describe("Claude SQLite auto-monitor hooks", () => {
     await waitUntil(() => monitorRows().filter((row) => row.paneId === "%104").length > previousCount);
     expect(monitorRows().filter((row) => row.paneId === "%104").at(-1)).toMatchObject({ terminalStatus: null });
     expect(stop().stdout).toBe("");
-    setState("%104", "working"); await Bun.sleep(80); setState("%104", "done");
+    await cycleState("%104");
     expect(await new Promise<number | null>((resolve) => fresh.on("close", resolve))).toBe(0);
+    // The consume marks wakeConsumed in the DB; wait for it to be visible
+    // before asserting the Stop gate no longer blocks (CI runner write lag).
+    await waitUntil(() => monitorRows().filter((row) => row.paneId === "%104").at(-1)?.wakeConsumed === true);
     expect(later.createdAtMs).toBeLessThanOrEqual(Number(monitorRows().filter((row) => row.paneId === "%104").at(-1)?.startedAtMs));
   }, 15_000);
 
@@ -210,7 +225,7 @@ describe("Claude SQLite auto-monitor hooks", () => {
     const old = spawn("bun", [CLI, "wait-agent", "%105", "--wait-for-transition", "--timeout", "10s", "--interval", "10ms", "--json"], { cwd: ROOT, env: baseEnv(), stdio: ["ignore", "pipe", "pipe"] });
     let oldOutput = ""; old.stdout!.on("data", (chunk) => oldOutput += chunk);
     await waitUntil(() => monitorRows().some((row) => row.paneId === "%105" && row.terminalStatus === null));
-    setState("%105", "working"); await Bun.sleep(80); setState("%105", "done");
+    await cycleState("%105");
     expect(await new Promise<number | null>((resolve) => old.on("close", resolve))).toBe(0);
     expect(JSON.parse(oldOutput)).toMatchObject({ terminalStatus: "done", wakeConsumed: false });
 

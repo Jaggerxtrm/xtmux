@@ -38,9 +38,11 @@ describe("slow-query wrapper (xtmux-3xs.14)", () => {
       const db = openDb(cfg);
       try {
         // Non-trivial query so timing is > 0.001ms — a big cross join fits.
+        // Use a heavy enough recursion that even a fast CI runner exceeds the
+        // threshold; 5000 rows can complete in <1us and race the wrapper.
         db.raw
           .query<{ n: number }, []>(
-            `WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM t WHERE n < 5000)
+            `WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM t WHERE n < 500000)
              SELECT COUNT(*) AS n FROM t`,
           )
           .get();

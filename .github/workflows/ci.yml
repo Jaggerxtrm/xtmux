@@ -15,8 +15,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
       - run: bun install --frozen-lockfile
-      - run: bun test
+      # packages/xtmux-view is a standalone package with its own lockfile; its
+      # tests import beautiful-mermaid, which the root install does not provide.
+      # Install it BEFORE bun test: bun 1.3.14 collects packages/** regardless of
+      # explicit dir args, so the sub-package deps must be resolvable at that point.
+      - run: bun install --frozen-lockfile
+        working-directory: packages/xtmux-view
+      - run: bun test tests/ test/
       - run: node --test packages/xtmux-view/test/*.test.mjs
       - run: bun run test:installer
       - run: bun run typecheck
@@ -27,8 +35,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
       - run: sudo apt-get update && sudo apt-get install -y tmux jq
       - run: bun install --frozen-lockfile
+      # packages/xtmux-view is a standalone package with its own lockfile; its
+      # tests import beautiful-mermaid, which the root install does not provide.
+      - run: bun install --frozen-lockfile
+        working-directory: packages/xtmux-view
       # Project's own gate: build + binary-freshness + tests + typecheck
       # + shell contracts + v1 fixtures + live tmux smoke of the --json surface.
       - run: bash scripts/verify-json-api.sh
