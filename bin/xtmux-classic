@@ -25,10 +25,43 @@ resolve_core() {
 }
 
 core="$(resolve_core)"
+self="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
+
+strip_classic_ansi() {
+  # The legacy renderer uses SGR color sequences in field 5. The polished
+  # launcher keeps the exact TSV identity/action fields but lets fzf own the
+  # palette, preventing embedded cyan/violet/green from overriding the tmux-like
+  # yellow selection treatment.
+  sed -E $'s/\x1b\\[[0-9;]*m//g'
+}
+
+render_list() {
+  case "${1:-}" in
+    list)
+      shift
+      "$core" list "$@" | strip_classic_ansi
+      ;;
+    list-active)
+      "$core" list-active | strip_classic_ansi
+      ;;
+    *)
+      printf 'xtmux-classic: invalid internal list mode\n' >&2
+      return 2
+      ;;
+  esac
+}
+
+# Private presentation-only ingress used by fzf reload actions. Public CLI/API
+# behavior is still delegated to tmux-session-picker below.
+if [ "${1:-}" = '__list' ]; then
+  shift
+  render_list "$@"
+  exit $?
+fi
 
 # Keep this command useful as a drop-in xtmux entry point. Only the no-argument
-# interactive launcher changes presentation; all CLI/API behavior remains owned
-# by the legacy tmux-session-picker implementation.
+# interactive launcher changes presentation; all public CLI/API behavior remains
+# owned by the legacy tmux-session-picker implementation.
 if [ "$#" -gt 0 ]; then
   exec "$core" "$@"
 fi
@@ -56,17 +89,18 @@ case "$mode" in
 esac
 
 printf -v core_q '%q' "$core"
+printf -v self_q '%q' "$self"
 
 # Presentation contract:
 # - occupy the full available terminal canvas;
 # - no fzf outer border, margin, or padding;
 # - tmux-like yellow selection with black foreground;
+# - neutral list text; semantic state remains readable from labels;
 # - details are opt-in, not a permanently reserved right-hand pane;
 # - reuse every legacy machine field and action command unchanged.
 choice="$({
-  "$core" list all
+  "$self" __list list all
 } | fzf \
-  --ansi \
   --delimiter=$'\t' \
   --with-nth=5 \
   --layout=reverse-list \
@@ -89,20 +123,20 @@ choice="$({
   --bind="load:transform-prompt($core_q prompt-label)" \
   --bind="ctrl-/:toggle-preview" \
   --bind="?:change-preview($core_q mux-help)+show-preview" \
-  --bind="ctrl-r:reload(TMUX_PICKER_NO_CACHE=1 $core_q list-active)" \
-  --bind="ctrl-a:execute-silent($core_q filter-preset all)+change-prompt(all> )+reload($core_q list all)" \
-  --bind="ctrl-w:execute-silent($core_q filter-preset waiting)+change-prompt(wait> )+reload($core_q list waiting)" \
-  --bind="ctrl-e:execute-silent($core_q filter-preset running)+change-prompt(run> )+reload($core_q list running)" \
-  --bind="ctrl-f:execute($core_q filter-menu)+reload($core_q list-active)+transform-prompt($core_q prompt-label)" \
-  --bind="tab:execute($core_q mode-toggle)+reload($core_q list-active)+transform-prompt($core_q prompt-label)" \
+  --bind="ctrl-r:reload(TMUX_PICKER_NO_CACHE=1 $self_q __list list-active)" \
+  --bind="ctrl-a:execute-silent($core_q filter-preset all)+change-prompt(all> )+reload($self_q __list list all)" \
+  --bind="ctrl-w:execute-silent($core_q filter-preset waiting)+change-prompt(wait> )+reload($self_q __list list waiting)" \
+  --bind="ctrl-e:execute-silent($core_q filter-preset running)+change-prompt(run> )+reload($self_q __list list running)" \
+  --bind="ctrl-f:execute($core_q filter-menu)+reload($self_q __list list-active)+transform-prompt($core_q prompt-label)" \
+  --bind="tab:execute($core_q mode-toggle)+reload($self_q __list list-active)+transform-prompt($core_q prompt-label)" \
   --bind="space:toggle+down" \
   --bind="alt-p:change-preview-window($preview_window_max|$preview_window)" \
-  --bind="alt-x:execute-silent($core_q kill {1} {2} {4})+reload($core_q list-active)" \
-  --bind="alt-X:execute-silent($core_q bulk-kill-targets {+4})+reload($core_q list-active)" \
-  --bind="alt-r:execute($core_q rename {1} {2} {4})+reload($core_q list-active)" \
-  --bind="ctrl-y:execute-silent($core_q act {1} {2} {4} approve)+reload($core_q list-active)" \
-  --bind="alt-i:execute-silent($core_q act {1} {2} {4} interrupt)+reload($core_q list-active)" \
-  --bind="ctrl-o:execute($core_q act {1} {2} {4} message)+reload($core_q list-active)" \
+  --bind="alt-x:execute-silent($core_q kill {1} {2} {4})+reload($self_q __list list-active)" \
+  --bind="alt-X:execute-silent($core_q bulk-kill-targets {+4})+reload($self_q __list list-active)" \
+  --bind="alt-r:execute($core_q rename {1} {2} {4})+reload($self_q __list list-active)" \
+  --bind="ctrl-y:execute-silent($core_q act {1} {2} {4} approve)+reload($self_q __list list-active)" \
+  --bind="alt-i:execute-silent($core_q act {1} {2} {4} interrupt)+reload($self_q __list list-active)" \
+  --bind="ctrl-o:execute($core_q act {1} {2} {4} message)+reload($self_q __list list-active)" \
   --bind="alt-enter:become($core_q popup {1} {2} {4})" \
   --preview "$core_q preview {1} {2} {3} {4}"
 )" || true
