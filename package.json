@@ -22,6 +22,7 @@
   "bin": {
     "xtmux": "bin/tmux-session-picker",
     "tmux-session-picker": "bin/tmux-session-picker",
+    "xtmux-classic": "bin/xtmux-classic",
     "xtmux-obs": "scripts/xtmux-obs.mjs",
     "xtmux-monitor": "scripts/xtmux-monitor.sh",
     "xtmux-events": "scripts/test-session-events.sh",
@@ -40,6 +41,7 @@
   },
   "files": [
     "bin/tmux-session-picker",
+    "bin/xtmux-classic",
     "changelog/",
     "docs/INSTALL.md",
     "docs/keys.md",
@@ -66,8 +68,8 @@
     "changelog": "node scripts/changelog-update.mjs",
     "changelog:check": "node scripts/changelog-update.mjs --check",
     "changelog:raw": "node scripts/changelog.mjs",
-    "install:global": "node scripts/install.mjs",
-    "uninstall:global": "node scripts/install.mjs --uninstall",
+    "install:global": "bash install.sh",
+    "uninstall:global": "bash install.sh --uninstall",
     "postinstall": "node scripts/install.mjs --from-npm",
     "test": "bun test tests/ test/ && bash test/nav-contract.sh && bash test/contract.sh && node --test tests/installer/*.test.mjs && bash scripts/verify-codex-distribution.sh",
     "test:installer": "node --test tests/installer/*.test.mjs",

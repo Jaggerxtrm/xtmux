@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+resolve_core() {
+  if [ -n "${XTMUX_CLASSIC_CORE:-}" ]; then
+    printf '%s\n' "$XTMUX_CLASSIC_CORE"
+    return 0
+  fi
+
+  local here candidate
+  here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+  candidate="$here/tmux-session-picker"
+  if [ -x "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  if command -v tmux-session-picker >/dev/null 2>&1; then
+    command -v tmux-session-picker
+    return 0
+  fi
+
+  printf 'xtmux-classic: cannot locate tmux-session-picker\n' >&2
+  return 1
+}
+
+core="$(resolve_core)"
+self="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
+
+strip_classic_ansi() {
+  # The legacy renderer uses SGR color sequences in field 5. The polished
+  # launcher keeps the exact TSV identity/action fields but lets fzf own the
+  # palette, preventing embedded cyan/violet/green from overriding the tmux-like
+  # yellow selection treatment.
+  sed -E $'s/\x1b\\[[0-9;]*m//g'
+}
+
+render_list() {
+  case "${1:-}" in
+    list)
+      shift
+      "$core" list "$@" | strip_classic_ansi
+      ;;
+    list-active)
+      "$core" list-active | strip_classic_ansi
+      ;;
+    *)
+      printf 'xtmux-classic: invalid internal list mode\n' >&2
+      return 2
+      ;;
+  esac
+}
+
+# Private presentation-only ingress used by fzf reload actions. Public CLI/API
+# behavior is still delegated to tmux-session-picker below.
+if [ "${1:-}" = '__list' ]; then
+  shift
+  render_list "$@"
+  exit $?
+fi
+
+# Keep this command useful as a drop-in xtmux entry point. Only the no-argument
+# interactive launcher changes presentation; all public CLI/API behavior remains
+# owned by the legacy tmux-session-picker implementation.
+if [ "$#" -gt 0 ]; then
+  exec "$core" "$@"
+fi
+
+if ! command -v fzf >/dev/null 2>&1; then
+  if command -v tmux >/dev/null 2>&1; then
+    tmux display-message 'fzf non trovato' 2>/dev/null || true
+  fi
+  printf 'xtmux-classic: fzf not found\n' >&2
+  exit 1
+fi
+
+mode="${TMUX_PICKER_MODE:-default}"
+preview_window='hidden,bottom,40%,border-top,wrap,follow'
+preview_window_max='bottom,70%,border-top,wrap,follow'
+case "$mode" in
+  compact-wrap)
+    preview_window='hidden,bottom,40%,border-top,wrap,follow'
+    preview_window_max='bottom,70%,border-top,wrap,follow'
+    ;;
+  compact-nowrap)
+    preview_window='hidden,bottom,40%,border-top,follow'
+    preview_window_max='bottom,70%,border-top,follow'
+    ;;
+esac
+
+printf -v core_q '%q' "$core"
+printf -v self_q '%q' "$self"
+
+# Presentation contract:
+# - occupy the full available terminal canvas;
+# - no fzf outer border, margin, or padding;
+# - tmux-like yellow selection with black foreground;
+# - neutral list text; semantic state remains readable from labels;
+# - details are opt-in, not a permanently reserved right-hand pane;
+# - reuse every legacy machine field and action command unchanged.
+choice="$({
+  "$self" __list list all
+} | fzf \
+  --delimiter=$'\t' \
+  --with-nth=5 \
+  --layout=reverse-list \
+  --height=100% \
+  --border=none \
+  --margin=0 \
+  --padding=0 \
+  --no-scrollbar \
+  --cycle \
+  --no-bold \
+  --multi \
+  --header='Enter switch · Ctrl-/ details · ? help' \
+  --header-first \
+  --prompt='all> ' \
+  --pointer='>' \
+  --marker='✓ ' \
+  --info=inline-right \
+  --color='fg:-1,bg:-1,hl:yellow,fg+:black,bg+:yellow,hl+:black,info:8,prompt:yellow,pointer:yellow,marker:yellow,header:8,gutter:-1' \
+  --preview-window="$preview_window" \
+  --bind="load:transform-prompt($core_q prompt-label)" \
+  --bind="ctrl-/:toggle-preview" \
+  --bind="?:change-preview($core_q mux-help)+show-preview" \
+  --bind="ctrl-r:reload(TMUX_PICKER_NO_CACHE=1 $self_q __list list-active)" \
+  --bind="ctrl-a:execute-silent($core_q filter-preset all)+change-prompt(all> )+reload($self_q __list list all)" \
+  --bind="ctrl-w:execute-silent($core_q filter-preset waiting)+change-prompt(wait> )+reload($self_q __list list waiting)" \
+  --bind="ctrl-e:execute-silent($core_q filter-preset running)+change-prompt(run> )+reload($self_q __list list running)" \
+  --bind="ctrl-f:execute($core_q filter-menu)+reload($self_q __list list-active)+transform-prompt($core_q prompt-label)" \
+  --bind="tab:execute($core_q mode-toggle)+reload($self_q __list list-active)+transform-prompt($core_q prompt-label)" \
+  --bind="space:toggle+down" \
+  --bind="alt-p:change-preview-window($preview_window_max|$preview_window)" \
+  --bind="alt-x:execute-silent($core_q kill {1} {2} {4})+reload($self_q __list list-active)" \
+  --bind="alt-X:execute-silent($core_q bulk-kill-targets {+4})+reload($self_q __list list-active)" \
+  --bind="alt-r:execute($core_q rename {1} {2} {4})+reload($self_q __list list-active)" \
+  --bind="ctrl-y:execute-silent($core_q act {1} {2} {4} approve)+reload($self_q __list list-active)" \
+  --bind="alt-i:execute-silent($core_q act {1} {2} {4} interrupt)+reload($self_q __list list-active)" \
+  --bind="ctrl-o:execute($core_q act {1} {2} {4} message)+reload($self_q __list list-active)" \
+  --bind="alt-enter:become($core_q popup {1} {2} {4})" \
+  --preview "$core_q preview {1} {2} {3} {4}"
+)" || true
+
+[ -n "${choice:-}" ] || exit 0
+IFS=$'\t' read -r type sid name target _ <<< "$choice"
+exec "$core" jump "$type" "$sid" "$target"
