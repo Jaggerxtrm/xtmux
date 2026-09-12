@@ -14,6 +14,7 @@ in previews and multiplexing workflows.
 ### Interactive tmux picker
 
 - session and pane picker with fzf
+- polished full-screen `xtmux-classic` launcher with tmux-style yellow focus and no outer spacing
 - switch to a session/pane with `Enter`
 - open a target in a popup client with `Alt-Enter`
 - preview session/pane contents without attaching
@@ -149,6 +150,7 @@ comparison; neither mode makes runtime marker files authoritative.
 | path | role |
 |---|---|
 | `bin/tmux-session-picker` | picker, preview, CLI commands, orchestration helpers |
+| `bin/xtmux-classic` | full-screen tmux-style FZF presentation over the legacy picker core |
 | `scripts/git-pane-status.sh` | stable per-path git status line; also usable from tmux status bar |
 | `scripts/agent-state.sh` | shared hook target that writes `@agent_state` and optional `@agent_*` metadata |
 | `scripts/xtmux-monitor.sh` | opens a tmux monitoring terminal for dashboard/audit/events/messages/turns/telemetry |
@@ -166,10 +168,11 @@ repo rows, and the tmux status line can call it directly.
 npm install --global @jaggerxtrm/xtmux
 ```
 
-This installs the command suite, grouped Pi extensions under `~/.pi`, and owned
-Claude hooks under `~/.claude`, including Stop-time parent FYIs and bounded inbox
-reminders. Existing unrelated settings and xtrm-managed hooks are preserved. The
-installer is idempotent and never opens a browser.
+This installs the command suite, including `xtmux-classic`, grouped Pi
+extensions under `~/.pi`, and owned Claude hooks under `~/.claude`, including
+Stop-time parent FYIs and bounded inbox reminders. Existing unrelated settings
+and xtrm-managed hooks are preserved. The installer is idempotent and never
+opens a browser.
 
 For upgrade, uninstall, conflict behavior, optional aicommit2 setup, and the
 reusable changelog command, see [`docs/INSTALL.md`](docs/INSTALL.md).
@@ -187,7 +190,11 @@ same subcommands, same flags, byte-identical output. `xtmux` is the name to use 
 new docs, skills and hooks; `tmux-session-picker` keeps working indefinitely, so no
 existing call site, hook or live tmux pane needs to change.
 
-Both entries must live in the **same directory**. The picker derives its repo root
+`xtmux-classic` is a presentation-only launcher for the same legacy core. Its
+public subcommands delegate to `tmux-session-picker`; its no-argument interactive
+mode owns only the restrained full-screen FZF presentation.
+
+Both core entries must live in the **same directory**. The picker derives its repo root
 from its own path as `${self%/bin/*}` and does not resolve symlinks, so it looks for
 the observability backend beside the installed command as `xtmux-obs` — which only resolves when
 the entry sits in `~/.local/bin/` alongside `~/.local/bin/xtmux-obs`. An `xtmux` placed
@@ -214,12 +221,12 @@ Suggested tmux bindings:
 # recommended left drawer (tmux 3.5a syntax)
 bind s display-popup -E -x 0 -y 0 -w 40% -h 75% 'XTMUX_NAV_WIDTH=$(tput cols) $HOME/.local/bin/xtmux nav'
 
-# classic/full-size rollback
-bind S display-popup -E -w 99% -h 97% "$HOME/.local/bin/tmux-session-picker"
+# polished classic picker: full terminal, no popup border, no fzf outer spacing
+bind S display-popup -B -E -x 0 -y 0 -w 100% -h 100% 'xtmux-classic'
 
 # optional classic compact modes
-bind g display-popup -E -w 99% -h 97% "TMUX_PICKER_MODE=compact-wrap $HOME/.local/bin/tmux-session-picker"
-bind G display-popup -E -w 99% -h 97% "TMUX_PICKER_MODE=compact-nowrap $HOME/.local/bin/tmux-session-picker"
+bind g display-popup -B -E -x 0 -y 0 -w 100% -h 100% 'TMUX_PICKER_MODE=compact-wrap xtmux-classic'
+bind G display-popup -B -E -x 0 -y 0 -w 100% -h 100% 'TMUX_PICKER_MODE=compact-nowrap xtmux-classic'
 
 # optional root-level attention jumps
 bind -n M-1 run-shell '~/.local/bin/tmux-session-picker attn-jump 1'
@@ -233,7 +240,8 @@ bind -n M-` run-shell '~/.local/bin/tmux-session-picker jump-back'
 Choose popup width in tmux configuration: 38–40% for the intended sidebar,
 44–50% for long session names, or 55–60% on a small terminal. The drawer is
 75% of the viewport height by default. `tput cols` reads the actual
-popup width after tmux creates it. xtmux does not install or rewrite these global
+popup width after tmux creates it. The classic picker instead deliberately uses
+the full terminal canvas. xtmux does not install or rewrite these global
 bindings automatically.
 
 See [`docs/keys.md`](docs/keys.md) for copy-paste snippets and collision notes.
@@ -243,9 +251,9 @@ See [`docs/keys.md`](docs/keys.md) for copy-paste snippets and collision notes.
 | key | action |
 |---|---|
 | `prefix s` | open sidebar-style `xtmux nav` |
-| `prefix S` | open classic/full-size picker |
-| `prefix g` | open classic picker, compact-wrap mode |
-| `prefix G` | open picker, compact-nowrap mode |
+| `prefix S` | open polished full-screen classic picker |
+| `prefix g` | open full-screen classic picker, compact-wrap mode |
+| `prefix G` | open full-screen classic picker, compact-nowrap mode |
 | `Alt-1`..`Alt-5` | jump to the 1st..5th waiting/attention pane |
 | `` Alt-` `` | jump back to pane active before the last attention jump |
 
@@ -276,7 +284,9 @@ from `docs/keys.md`.
 | `Ctrl-/` | toggle preview pane |
 | `?` | nav: full key help; classic picker: multiplexing cheatsheet |
 
-The nav drawer keeps details hidden until `Ctrl-/` and uses the short footer
+The polished classic picker keeps details hidden until `Ctrl-/`, uses neutral
+row text, and reserves yellow for focus/selection. The nav drawer also keeps
+details hidden until `Ctrl-/` and uses the short footer
 `↵ open · Tab panes · ^/ details · ? help`. All actions above remain available.
 
 ## CLI reference
@@ -689,6 +699,7 @@ Completed major epics/work:
   - attention jump bindings
   - specialist section grouping
   - sidebar-style `xtmux nav`, strict action tokens, classic rollback, and direct traversal
+  - polished full-screen `xtmux-classic` presentation over the legacy picker core
 - `xtmux-mux` multiplexing-safe orchestration primitives:
   - `@agent_*` metadata
   - `wait-agent`
