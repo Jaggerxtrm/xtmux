@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test";
 
 const ROOT = join(import.meta.dir, "../..");
 const PICKER = join(ROOT, "bin/xtmux-classic");
+const INSTALL = join(ROOT, "install.sh");
 
 type Fixture = {
   root: string;
@@ -116,6 +117,44 @@ describe("xtmux-classic presentation contract", () => {
       expect(existsSync(fx.fzfLog)).toBe(false);
     } finally {
       rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  test("publishes the classic launcher and routes checkout install scripts through install.sh", () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    expect(pkg.bin["xtmux-classic"]).toBe("bin/xtmux-classic");
+    expect(pkg.files).toContain("bin/xtmux-classic");
+    expect(pkg.scripts["install:global"]).toBe("bash install.sh");
+    expect(pkg.scripts["uninstall:global"]).toBe("bash install.sh --uninstall");
+    expect(spawnSync("bash", ["-n", PICKER]).status).toBe(0);
+    expect(spawnSync("bash", ["-n", INSTALL]).status).toBe(0);
+  });
+
+  test("checkout install refuses a foreign classic launcher before mutating existing command links", () => {
+    const home = mkdtempSync(join(tmpdir(), "xtmux-classic-install-conflict-"));
+    const bin = join(home, ".local", "bin");
+    const foreign = join(bin, "xtmux-classic");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(foreign, "foreign\n");
+    try {
+      const result = spawnSync("bash", [INSTALL], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          HOME: home,
+          XDG_STATE_HOME: join(home, ".local", "state"),
+          XDG_RUNTIME_DIR: join(home, "runtime"),
+          TMPDIR: join(home, "tmp"),
+        },
+        encoding: "utf8",
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("refusing to replace existing file");
+      expect(readFileSync(foreign, "utf8")).toBe("foreign\n");
+      expect(existsSync(join(bin, "xtmux"))).toBe(false);
+      expect(existsSync(join(home, ".claude", "hooks", "xtmux"))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });
