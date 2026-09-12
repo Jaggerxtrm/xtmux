@@ -13,6 +13,7 @@ type Fixture = {
   core: string;
   coreLog: string;
   fzfLog: string;
+  fzfInputLog: string;
 };
 
 function fixture(): Fixture {
@@ -21,13 +22,14 @@ function fixture(): Fixture {
   const core = join(root, "tmux-session-picker");
   const coreLog = join(root, "core.log");
   const fzfLog = join(root, "fzf.log");
+  const fzfInputLog = join(root, "fzf-input.log");
   mkdirSync(bin);
 
   writeFileSync(core, `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >> "$CORE_LOG"
 case "\${1:-}" in
-  list) printf '%s\\n' $'session\\t$42\\talpha\\t$42\\talpha' ;;
+  list|list-active) printf '%s\\n' $'session\\t$42\\talpha\\t$42\\t\\033[38;5;81malpha\\033[0m' ;;
 esac
 `);
   chmodSync(core, 0o755);
@@ -35,12 +37,12 @@ esac
   writeFileSync(join(bin, "fzf"), `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$@" > "$FZF_LOG"
-cat >/dev/null
-printf '%s\\n' $'session\\t$42\\talpha\\t$42\\talpha'
+cat > "$FZF_INPUT_LOG"
+head -1 "$FZF_INPUT_LOG"
 `);
   chmodSync(join(bin, "fzf"), 0o755);
 
-  return { root, bin, core, coreLog, fzfLog };
+  return { root, bin, core, coreLog, fzfLog, fzfInputLog };
 }
 
 function run(fx: Fixture, args: string[] = [], extraEnv: NodeJS.ProcessEnv = {}) {
@@ -52,6 +54,7 @@ function run(fx: Fixture, args: string[] = [], extraEnv: NodeJS.ProcessEnv = {})
       XTMUX_CLASSIC_CORE: fx.core,
       CORE_LOG: fx.coreLog,
       FZF_LOG: fx.fzfLog,
+      FZF_INPUT_LOG: fx.fzfInputLog,
       ...extraEnv,
     },
     encoding: "utf8",
@@ -63,7 +66,7 @@ function fzfArgs(fx: Fixture): string[] {
 }
 
 describe("xtmux-classic presentation contract", () => {
-  test("uses the full canvas, tmux-yellow selection, and hidden on-demand details", () => {
+  test("uses the full canvas, tmux-yellow selection, neutral rows, and hidden details", () => {
     const fx = fixture();
     try {
       const result = run(fx);
@@ -80,6 +83,10 @@ describe("xtmux-classic presentation contract", () => {
       expect(args.some((arg) => arg.startsWith("--border-label"))).toBe(false);
       expect(args.some((arg) => arg.includes("transform-border-label"))).toBe(false);
       expect(args.some((arg) => arg.includes("?:change-preview(") && arg.includes("+show-preview"))).toBe(true);
+
+      const fzfInput = readFileSync(fx.fzfInputLog, "utf8");
+      expect(fzfInput).toContain("session\t$42\talpha\t$42\talpha");
+      expect(fzfInput).not.toContain("\u001b[");
 
       const coreCalls = readFileSync(fx.coreLog, "utf8");
       expect(coreCalls).toContain("list all\n");
