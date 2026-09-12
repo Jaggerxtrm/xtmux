@@ -28,15 +28,19 @@ reuses the legacy `tmux-session-picker` list, filter, preview, and action
 subcommands unchanged; only the fzf presentation layer differs.
 
 ```tmux
-bind S display-popup -B -E -x 0 -y 0 -w 100% -h 100% "$HOME/.local/bin/xtmux-classic"
-bind g display-popup -B -E -x 0 -y 0 -w 100% -h 100% "TMUX_PICKER_MODE=compact-wrap $HOME/.local/bin/xtmux-classic"
-bind G display-popup -B -E -x 0 -y 0 -w 100% -h 100% "TMUX_PICKER_MODE=compact-nowrap $HOME/.local/bin/xtmux-classic"
+bind S display-popup -B -E -x 0 -y 0 -w 100% -h 100% 'xtmux-classic'
+bind g display-popup -B -E -x 0 -y 0 -w 100% -h 100% 'TMUX_PICKER_MODE=compact-wrap xtmux-classic'
+bind G display-popup -B -E -x 0 -y 0 -w 100% -h 100% 'TMUX_PICKER_MODE=compact-nowrap xtmux-classic'
 ```
 
 The outer tmux popup uses `-B` and the fzf launcher uses no border, margin, or
 padding. The selected row uses the native-tmux convention of yellow background
 with black text. The details pane is hidden by default and opens at the bottom
 with `Ctrl-/`; it no longer reserves most of the terminal before it is needed.
+
+`xtmux-classic` is installed as a package bin and the checkout installer also
+links it into `~/.local/bin`; the binding deliberately resolves it through
+`PATH` so both installation modes use the same configuration.
 
 `tmux-session-picker` remains the legacy implementation and CLI authority, and
 `xtmux-classic <subcommand>` delegates directly to it. `XTMUX_NAV_LAYOUT=classic
