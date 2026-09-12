@@ -204,12 +204,24 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
 
   // pi coalesces nested user-facing prompts into one waiting span and does not
   // await these handlers, so reporting "waiting for user" costs no agent time.
-  pi.on("ui_prompt_start", async () => {
+  //
+  // Registered through a widened call on purpose: `ui_prompt_start`/`ui_prompt_end`
+  // are emitted by pi 0.85.1 (documented under Agent Events) but the version this
+  // repo pins for typechecking is 0.80.6, and its `on()` overload set is closed, so
+  // a literal event name fails `tsc --noEmit` even though the runtime dispatches it.
+  // An older runtime simply never fires an event it does not know. Drop the width
+  // once the pinned dependency reaches the version that declares them.
+  const onUnpinnedEvent = (
+    event: string,
+    handler: (event: unknown, ctx: ExtensionContext) => Promise<void> | void,
+  ): void => (pi.on as unknown as (name: string, fn: typeof handler) => void)(event, handler);
+
+  onUnpinnedEvent("ui_prompt_start", async () => {
     stateBeforePrompt = lastState && lastState !== "needs-input" ? lastState : "running";
     await setState("needs-input");
   });
 
-  pi.on("ui_prompt_end", async () => {
+  onUnpinnedEvent("ui_prompt_end", async () => {
     await setState(stateBeforePrompt ?? "running");
     stateBeforePrompt = undefined;
   });
