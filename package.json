@@ -22,6 +22,7 @@
   "bin": {
     "xtmux": "bin/tmux-session-picker",
     "tmux-session-picker": "bin/tmux-session-picker",
+    "xtmux-classic": "bin/xtmux-classic",
     "xtmux-obs": "scripts/xtmux-obs.mjs",
     "xtmux-monitor": "scripts/xtmux-monitor.sh",
     "xtmux-events": "scripts/test-session-events.sh",
@@ -40,6 +41,7 @@
   },
   "files": [
     "bin/tmux-session-picker",
+    "bin/xtmux-classic",
     "changelog/",
     "docs/INSTALL.md",
     "docs/keys.md",
