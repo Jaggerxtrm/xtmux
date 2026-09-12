@@ -23,16 +23,26 @@ onto continuation lines instead of being cut. The `#222222` background uses a
 terminal-dependent alpha (`@200`) for slight transparency on terminals that
 support it. Nothing is bold; `%pane-id` and agent state labels differ by color only.
 
-Keep a classic/full-screen rollback binding:
+The preferred classic picker is the full-screen `xtmux-classic` launcher. It
+reuses the legacy `tmux-session-picker` list, filter, preview, and action
+subcommands unchanged; only the fzf presentation layer differs.
 
 ```tmux
-bind S display-popup -E -w 99% -h 97% "$HOME/.local/bin/tmux-session-picker"
-bind g display-popup -E -w 99% -h 97% "TMUX_PICKER_MODE=compact-wrap $HOME/.local/bin/tmux-session-picker"
-bind G display-popup -E -w 99% -h 97% "TMUX_PICKER_MODE=compact-nowrap $HOME/.local/bin/tmux-session-picker"
+bind S display-popup -B -E -x 0 -y 0 -w 100% -h 100% "$HOME/.local/bin/xtmux-classic"
+bind g display-popup -B -E -x 0 -y 0 -w 100% -h 100% "TMUX_PICKER_MODE=compact-wrap $HOME/.local/bin/xtmux-classic"
+bind G display-popup -B -E -x 0 -y 0 -w 100% -h 100% "TMUX_PICKER_MODE=compact-nowrap $HOME/.local/bin/xtmux-classic"
 ```
 
-`XTMUX_NAV_LAYOUT=classic xtmux nav` also selects the classic renderer. These
-are optional prefix-table examples; xtmux does not install global bindings.
+The outer tmux popup uses `-B` and the fzf launcher uses no border, margin, or
+padding. The selected row uses the native-tmux convention of yellow background
+with black text. The details pane is hidden by default and opens at the bottom
+with `Ctrl-/`; it no longer reserves most of the terminal before it is needed.
+
+`tmux-session-picker` remains the legacy implementation and CLI authority, and
+`xtmux-classic <subcommand>` delegates directly to it. `XTMUX_NAV_LAYOUT=classic
+xtmux nav` still selects the in-script compatibility renderer rather than this
+polished launcher. These are optional prefix-table examples; xtmux does not
+install global bindings.
 
 Inside nav, `▎` is the live tmux target and `›` is the fzf selection. Sessions
 are grouped by attention, active, and other state. `Tab` toggles expanded/sessions-only,
