@@ -199,6 +199,53 @@ test("an unset bead/parent never emits the string 'undefined'", async () => {
   }
 });
 
+test("a prompt open before session_start keeps needs-input and dismisses to idle", async () => {
+  // Measured ordering (xtmux-cq2.5): a dialog opened by another extension during
+  // session start emits ui_prompt_start BEFORE this extension's session_start
+  // handler, so an unconditional idle write there clobbered needs-input.
+  const handlers = new Map<string, Function>();
+  const writes: string[][] = [];
+  xtmuxAgentState({
+    on(event: string, handler: Function) { handlers.set(event, handler); },
+    async exec(command: string, args: string[]) {
+      if (command.endsWith("agent-state.sh")) writes.push(args);
+      return { stdout: "" };
+    },
+  } as any);
+
+  await handlers.get("ui_prompt_start")?.({});
+  await handlers.get("session_start")?.({});
+  await handlers.get("ui_prompt_end")?.({});
+
+  expect(writes).toEqual([
+    ["needs-input"],
+    // the new-instance stamp must still land, but it must not downgrade the state
+    ["needs-input", "--new-instance"],
+    ["idle"],
+  ]);
+});
+
+test("a prompt after settle restores done, not running", async () => {
+  const handlers = new Map<string, Function>();
+  const states: string[] = [];
+  xtmuxAgentState({
+    on(event: string, handler: Function) { handlers.set(event, handler); },
+    async exec(command: string, args: string[]) {
+      if (command.endsWith("agent-state.sh")) states.push(args[0]!);
+      return { stdout: "" };
+    },
+  } as any);
+
+  const ctx = { sessionManager: { getEntries: () => [] } };
+  await handlers.get("session_start")?.({});
+  await handlers.get("agent_start")?.({});
+  await handlers.get("agent_settled")?.({}, ctx);
+  await handlers.get("ui_prompt_start")?.({});
+  await handlers.get("ui_prompt_end")?.({});
+
+  expect(states).toEqual(["idle", "running", "done", "needs-input", "done"]);
+});
+
 test("needs-input is reported while a UI prompt is open, then restored", async () => {
   const handlers = new Map<string, Function>();
   const states: string[] = [];

@@ -79,6 +79,12 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
   let lastState: AgentState | undefined;
   let lastStateAt = 0;
   let stateBeforePrompt: AgentState | undefined;
+  // True while a pi UI prompt span is open. Needed because the two events are NOT
+  // ordered relative to session_start: a dialog opened by another extension during
+  // session start emits ui_prompt_start BEFORE this extension's session_start
+  // handler runs (measured: 5ms earlier), so an unconditional idle write there
+  // erases needs-input while the operator is visibly being asked something.
+  let promptOpen = false;
 
   // State events are the settled set only (xtmux-cq2.1):
   //   session_start      -> idle (new instance)
@@ -194,8 +200,10 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async () => {
-    // One new agent instance per pi session — not per idle transition.
-    await setState("idle", true);
+    // One new agent instance per pi session — not per idle transition. The state
+    // may not be idle: if a prompt is already open, needs-input is the truth, and
+    // the new-instance stamp still has to land.
+    await setState(promptOpen ? "needs-input" : "idle", true);
   });
 
   pi.on("agent_start", async () => {
@@ -217,12 +225,16 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
   ): void => (pi.on as unknown as (name: string, fn: typeof handler) => void)(event, handler);
 
   onUnpinnedEvent("ui_prompt_start", async () => {
-    stateBeforePrompt = lastState && lastState !== "needs-input" ? lastState : "running";
+    // Restore target: whatever was true before, and idle when nothing was. Defaulting
+    // to running made a dismissed start-time dialog report running with no run.
+    stateBeforePrompt = lastState && lastState !== "needs-input" ? lastState : "idle";
+    promptOpen = true;
     await setState("needs-input");
   });
 
   onUnpinnedEvent("ui_prompt_end", async () => {
-    await setState(stateBeforePrompt ?? "running");
+    promptOpen = false;
+    await setState(stateBeforePrompt ?? "idle");
     stateBeforePrompt = undefined;
   });
 
