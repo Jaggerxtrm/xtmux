@@ -4,12 +4,22 @@ root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 classic_src="$root/bin/xtmux-classic"
 classic_dst="${HOME:?HOME is required}/.local/bin/xtmux-classic"
 
-install_classic() {
+classic_is_owned() {
+  [ -L "$classic_dst" ] && [ "$(readlink "$classic_dst" 2>/dev/null || true)" = "$classic_src" ]
+}
+
+preflight_classic() {
   if [ -e "$classic_dst" ] || [ -L "$classic_dst" ]; then
-    if [ ! -L "$classic_dst" ] || [ "$(readlink "$classic_dst" 2>/dev/null || true)" != "$classic_src" ]; then
+    if ! classic_is_owned; then
       printf 'refusing to replace existing file: %s\n' "$classic_dst" >&2
       return 1
     fi
+  fi
+}
+
+install_classic() {
+  preflight_classic
+  if classic_is_owned; then
     rm -f -- "$classic_dst"
   fi
   mkdir -p -- "${classic_dst%/*}"
@@ -17,17 +27,19 @@ install_classic() {
 }
 
 uninstall_classic() {
-  if [ -L "$classic_dst" ] && [ "$(readlink "$classic_dst" 2>/dev/null || true)" = "$classic_src" ]; then
+  if classic_is_owned; then
     rm -f -- "$classic_dst"
   fi
 }
 
 case "${1:-}" in
   "")
+    preflight_classic
     node "$root/scripts/install.mjs"
     install_classic
     ;;
   --tmux-hooks|--hooks)
+    preflight_classic
     node "$root/scripts/install.mjs" --tmux-hooks
     install_classic
     ;;
