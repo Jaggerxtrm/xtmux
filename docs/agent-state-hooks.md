@@ -98,7 +98,7 @@ Pi `extensions/pi-agent-state.ts` also publishes `agent.turn.done` on `agent_end
 
 ### full last-assistant-message capture (xtmux-avz)
 
-`agent.turn.done` carries two payloads: the compact `summary` (≤600 chars, one line, used for picker badges and previews — unchanged) and the **uncompacted full text**, stored in the `agent_turns.last_message_text` column. The full text is spilled to a temp file by the writer (the pi extension on `agent_end`, and the Claude Code `Stop` hook at `hooks/claude/claude-agent-turn-capture.mjs`) and passed as `last_message_file=<path>`; the obs reader consumes and unlinks it. A single argv field cannot hold a real turn (Linux caps one argv string at ~128 KB), so the path is the transport. The stored text is byte-capped at 256 KB (`XTMUX_LAST_MESSAGE_MAX`), well above the compact summary, and the cap is enforced once on the reader side as the single chokepoint. Both runtimes are symmetric.
+`agent.turn.done` carries two payloads: the compact `summary` (≤600 chars, one line, used for picker badges and previews — unchanged) and the **uncompacted full text**, stored in the `agent_turns.last_message_text` column. The full text is spilled to a temp file by the writer (the pi extension on `agent_settled`, and the Claude Code `Stop` hook at `hooks/claude/claude-agent-turn-capture.mjs`) and passed as `last_message_file=<path>`; the obs reader consumes and unlinks it. A single argv field cannot hold a real turn (Linux caps one argv string at ~128 KB), so the path is the transport. The stored text is byte-capped at 256 KB (`XTMUX_LAST_MESSAGE_MAX`), well above the compact summary, and the cap is enforced once on the reader side as the single chokepoint. Both runtimes are symmetric.
 
 Retrieve a pane's most recent conclusion with one command:
 
@@ -425,13 +425,21 @@ XTMUX_AGENT_STATE_SCRIPT=/custom/path/agent-state.sh pi
 
 | pi event | `@agent_state` |
 |---|---|
-| `session_start` | `idle` |
-| `before_agent_start` | `running` |
+| `session_start` | `idle` (new instance) |
 | `agent_start` | `running` |
-| `tool_execution_start` | `running` |
-| `agent_end` | `done` |
+| `ui_prompt_start` | `needs-input` |
+| `ui_prompt_end` | the state the prompt interrupted (`running` by default) |
+| `agent_settled` | `done` |
 | `session_shutdown` with reason `quit` | `off` |
 | `session_shutdown` with other reasons | `idle` |
+
+Only `agent_start` and `agent_settled` fire per turn. pi awaits extension
+handlers and this extension awaits a subprocess in each, so no handler sits on a
+per-tool, per-turn, or per-streamed-chunk path. "Not settled" **is** `running`:
+`agent_settled` is the documented event for status integrations that must know
+pi will not continue on its own, whereas `agent_end` can be followed by
+auto-retry, auto-compact-and-retry, or queued follow-ups — a pane marked `done`
+there reports done while pi is still working.
 
 ### debouncing repeat `@agent_state` writes
 
@@ -446,21 +454,26 @@ XTMUX_PI_STATE_DEBOUNCE_MS=1000 pi  # tighter window for high-freq observers
 ```
 
 Only same-state repeats are suppressed; any state transition (e.g. running
-→ done) writes through immediately regardless of window. `message_update`
-was previously mapped to `running` and dropped from the event list above
-because agent_start / tool_execution_start / turn_start already cover the
-'running' transitions.
+→ done) writes through immediately regardless of window. With the settled event
+set the window now suppresses genuine repeats rather than hot-path churn:
+`before_agent_start`, `tool_execution_start`, `tool_execution_end`,
+`turn_start`, `turn_end`, `message_update` and `agent_end` are no longer
+registered at all, so a turn costs one `running` write and one `done` write
+however many tools it runs.
 
-### known pi limitation: no documented `needs-input` event
+### pi `needs-input` (was: known pi limitation, now resolved)
 
-pi v0.80.1 extension docs expose lifecycle, agent, message, tool, user bash, and
-input events, but they do not document an event for "awaiting permission" or
-"awaiting user input". that means the shipped pi extension can accurately write
-`running`, `done`, `idle`, and `off`, but cannot currently emit `needs-input`
-without relying on undocumented internals or polling UI state.
-
-for now, use `TMUX_PICKER_AGENT=1` if you want heuristic WAIT detection for pi
-panes. claude code can emit `needs-input` via `Notification`.
+pi v0.80.1 documented no event for "awaiting user input", so this page recorded
+the extension as unable to emit `needs-input` and pointed at the
+`TMUX_PICKER_AGENT=1` heuristic. That limitation is closed: pi 0.85.1 documents
+`ui_prompt_start` / `ui_prompt_end` as "notification-only lifecycle events for
+blocking user-facing extension UI prompts ... so host/status integrations can
+report 'waiting for user' instead of just 'running'", and states that those
+handlers are invoked best-effort and are not awaited before the prompt appears
+or closes. The extension maps `ui_prompt_start` to `needs-input` and restores
+the interrupted state (usually `running`) on `ui_prompt_end`, so the state costs
+no agent time. claude code keeps emitting `needs-input` via `Notification`; the
+heuristic is no longer needed for pi.
 
 ## codex
 
@@ -618,9 +631,21 @@ event such as `git.commit`, `git.push`, `bd.claim`, `bd.close`, or
 `git.pr.create`, including exit code and pane/session/bead context when tmux
 metadata is available.
 
-## Activity spans (`agent.activity`)
+## Activity spans (`agent.activity`) — retired producer (xtmux-cq2.1)
 
-The pi extension records one **completed span** per streamed agent activity —
+The pi extension no longer records activity spans. Emitting them required
+handlers on `tool_execution_start` / `tool_execution_end` and on
+`message_update`: two subprocess calls per tool call plus one per streamed
+chunk, all on a path pi awaits, so the cost landed directly on agent execution
+time. Those handlers are gone and no span is produced.
+
+The event contract below is retained for consumers and for journals already
+written; `agent.activity` still pages back through the ordinary cursor. If spans
+are ever wanted again, they need a producer that does not sit on the hot path.
+
+### span contract (historical)
+
+The pi extension recorded one **completed span** per streamed agent activity —
 each thinking segment, each assistant text segment, and each tool execution —
 as an `agent.activity` event. It carries `activity` (`thinking` | `text` |
 `tool`), `segment_id`, `turn_index`, `started_at_ms`, `duration_ms`, and — for

@@ -514,7 +514,11 @@ fi
   fi
   exit 1
 ) && ok "message-send: session:%pane routes to named pane" || nok "message-send: session:%pane routes to named pane"
-grep -F '"turn_end"' extensions/pi-agent-state.ts >/dev/null && grep -F 'agent.turn.done' extensions/pi-agent-state.ts >/dev/null && grep -F 'last_message=' extensions/pi-agent-state.ts >/dev/null && ok "pi extension: publishes turn done" || nok "pi extension: publishes turn done"
+# xtmux-cq2.1: the publish moved from turn_end/agent_end to agent_settled, and the
+# last message is read from the session at settle time rather than captured on the
+# hot path. Pin the settled path plus the payload, and pin that no handler sits on
+# agent_end/turn_end any more — a hot-path re-addition must fail this gate.
+grep -F '"agent_settled"' extensions/pi-agent-state.ts >/dev/null && grep -F 'agent.turn.done' extensions/pi-agent-state.ts >/dev/null && grep -F 'last_message=' extensions/pi-agent-state.ts >/dev/null && ! grep -E '"(turn_end|agent_end|message_update|tool_execution_start|tool_execution_end)"' extensions/pi-agent-state.ts >/dev/null && ok "pi extension: publishes turn done on settle only" || nok "pi extension: publishes turn done on settle only"
 grep -F 'obligations' hooks/claude/auto-monitor-drain-stop.mjs >/dev/null \
   && grep -F 'monitor-list' hooks/claude/auto-monitor-drain-stop.mjs >/dev/null \
   && grep -F -- '--consume' hooks/claude/auto-monitor-drain-stop.mjs >/dev/null \

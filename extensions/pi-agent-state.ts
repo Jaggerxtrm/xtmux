@@ -1,4 +1,4 @@
-import type { AgentEndEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { mkdtempSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,68 +43,57 @@ function extractText(value: unknown): string {
   return "";
 }
 
-export type ActivityKind = "thinking" | "text" | "tool";
-
 /**
- * Format one COMPLETED activity span as flat log-emit args (xtmux-j46.11).
+ * Last assistant text, read from the session at settle time (xtmux-cq2.1).
  *
- * A completed span, not a start/end pair: it carries both `started_at_ms` and
- * `duration_ms`, so a consumer computes segment durations, time-to-first-activity
- * (first span's started_at_ms minus turn start), and segment counts from a SINGLE
- * event — half the emits of a start/end pair, and no correlation step. This is the
- * same "record the fact, not every observation" shape the monitor domain uses.
+ * The previous shape read it from agent_end's event.messages. agent_end is the
+ * wrong terminal event (pi may still auto-retry, auto-compact and retry, or run
+ * queued follow-ups) and keeping a handler on it — or on turn_end/message_update —
+ * put a subprocess on the hot path. Reading the settled session instead keeps the
+ * transcript write on agent_settled alone.
  *
- * `duration_ms` is OBSERVED STREAM DURATION — wall-clock between the provider's
- * *_start and *_end stream events as this host saw them. It is NOT provider
- * compute time and must never be presented as such. char_count is a length only;
- * no thinking/text/tool content is ever recorded.
+ * Entry shapes vary by pi version, so this accepts `entry.message`, `entry.msg`,
+ * or a message-shaped entry, and skips non-assistant roles.
  */
-export function activitySpanArgs(span: {
-  activity: ActivityKind;
-  segmentId: string;
-  turnIndex: number;
-  startedAtMs: number;
-  endedAtMs: number;
-  charCount?: number | undefined;
-}): string[] {
-  const args = [
-    "log",
-    "emit",
-    "agent.activity",
-    `activity=${span.activity}`,
-    `segment_id=${span.segmentId}`,
-    `turn_index=${span.turnIndex}`,
-    `started_at_ms=${span.startedAtMs}`,
-    `duration_ms=${Math.max(0, span.endedAtMs - span.startedAtMs)}`,
-  ];
-  // Omit char_count entirely when unknown (tool spans) — an emitted 0 would read
-  // as "measured zero characters" rather than "not a text-bearing activity".
-  if (span.charCount !== undefined) args.push(`char_count=${span.charCount}`);
-  return args;
-}
-
-function lastAssistantTextFromMessages(messages: unknown[] | undefined): string {
-  if (!messages) return "";
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const msg = messages[i];
-    if (msg && typeof msg === "object") {
-      const r = msg as Record<string, unknown>;
-      const role = typeof r.role === "string" ? r.role : "";
-      if (role && role !== "assistant") continue;
-      const text = extractText(r.content ?? r.message ?? r.text);
-      if (text) return text;
-    } else if (typeof msg === "string") {
-      return msg;
+export function lastAssistantTextFromEntries(entries: unknown[] | undefined): string {
+  if (!entries) return "";
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+    if (typeof entry === "string") {
+      if (entry) return entry;
+      continue;
     }
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const message = (record.message ?? record.msg ?? record) as Record<string, unknown> | undefined;
+    if (!message || typeof message !== "object") continue;
+    const role = typeof message.role === "string" ? message.role : "";
+    if (role && role !== "assistant") continue;
+    const text = extractText(message.content ?? message.message ?? message.text);
+    if (text) return text;
   }
   return "";
 }
 
 export default function xtmuxAgentState(pi: ExtensionAPI) {
-  let lastTurnMessage = "";
   let lastState: AgentState | undefined;
   let lastStateAt = 0;
+  let stateBeforePrompt: AgentState | undefined;
 
+  // State events are the settled set only (xtmux-cq2.1):
+  //   session_start      -> idle (new instance)
+  //   agent_start        -> running
+  //   ui_prompt_start    -> needs-input
+  //   ui_prompt_end      -> the state the prompt interrupted
+  //   agent_settled      -> done
+  //   session_shutdown   -> off (quit) | idle
+  //
+  // Anything derived from a per-tool, per-turn, or per-streamed-chunk event is
+  // deliberately absent: pi awaits extension handlers, and every handler here
+  // awaits a subprocess, so hot-path registration is agent-execution latency.
+  // "Not settled" is exactly what `running` means — pi documents agent_settled
+  // as the event for status integrations that must know pi will not continue on
+  // its own.
   async function setState(state: AgentState, newInstance = false) {
     const now = Date.now();
     // A new occupation must always reach the script: debouncing it away would
@@ -131,24 +120,37 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
     }
   }
 
-  async function publishTurnDone(event: AgentEndEvent) {
+  async function publishTurnDone(ctx: ExtensionContext) {
     // Without the client socket, tmux may return a bystander pane from its
     // default server. Agent turn/message writes need a real invocation context.
     if (!process.env.TMUX) return;
-    const pane = await tmuxValue(["display-message", "-p", "#{pane_id}"]);
+    // One tmux read, not five (xtmux-cq2.1): display-message resolves pane,
+    // session and user options from a single format string, and this whole
+    // handler is awaited by pi on the settle path.
+    const info = await tmuxValue([
+      "display-message",
+      "-p",
+      "#{pane_id}\t#{session_id}\t#S\t#{@agent_bead}\t#{@agent_parent_session}",
+    ]);
+    if (!info) return;
+    // Defaults are load-bearing: tmuxValue trims, and trailing tabs ARE trailing
+    // whitespace, so an unset @agent_bead/@agent_parent_session drops those fields
+    // entirely and the destructured tail is undefined — which stringifies into
+    // "bead=undefined" in the emitted row. Absent tail fields mean empty values.
+    const [pane, sessionId, sessionName, bead = "", parent = ""] = info.split("\t");
     if (!pane) return;
-    // Use #{session_id} (stable, per-instance, never recycled) rather than #S
-    // (mutable session name reused across attaches). See xtmux-7ob.
-    const sessionId = await tmuxValue(["display-message", "-p", "#{session_id}"]);
-    const sessionName = await tmuxValue(["display-message", "-p", "#S"]);
-    const bead = await tmuxValue(["show-options", "-p", "-qv", "@agent_bead"]);
-    const parent = await tmuxValue(["show-options", "-p", "-qv", "@agent_parent_session"]);
     // xtmux-avz: spill the UNCOMPACTED message to a temp file so the picker can
     // store the full text. A single argv field is capped at ~128KB by the kernel
     // (MAX_ARG_STRLEN), well under a real turn, so the path is the transport.
     // obs reads + unlinks; this finally unlinks the no-op case. The byte cap lives
     // on the obs reader side as the single chokepoint.
-    const fullText = lastAssistantTextFromMessages(event.messages) || lastTurnMessage;
+    let entries: unknown[] | undefined;
+    try {
+      entries = ctx.sessionManager?.getEntries?.();
+    } catch {
+      entries = undefined;
+    }
+    const fullText = lastAssistantTextFromEntries(entries);
     const text = compactText(fullText);
     let lastMessageDir = "";
     let lastMessageFile = "";
@@ -173,8 +175,7 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
         `session_name=${sessionName}`,
         `bead=${bead}`,
         `parent=${parent}`,
-        // xtmux-gdk: one pi run = one response episode (agent_end fires when
-        // control returns to the operator).
+        // xtmux-gdk: one settled run = one response episode.
         `episode_open=1`,
         `last_message=${text}`,
         ...(lastMessageFile ? [`last_message_file=${lastMessageFile}`] : []),
@@ -188,40 +189,8 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
       if (lastMessageDir) { try { rmSync(lastMessageDir, { recursive: true, force: true }); } catch { /* already removed */ } }
     }
 
-    if (parent && parent !== sessionId && parent !== pane && text) {
-      try {
-        await pi.exec(PICKER, [
-          "message-send",
-          "--from", sessionId || pane,
-          "--to", parent,
-          "--bead", bead,
-          "--expects-reply=false",
-          "--text", `turn done: ${text}`,
-        ], { timeout: 1500 });
-      } catch {
-        // Best-effort only.
-      }
-    }
-  }
-
-  // Activity-span telemetry (xtmux-j46.11). segmentStarts maps a segment key to
-  // the wall-clock ms at which its stream *_start fired; the matching *_end emits
-  // one completed span. Keyed by turn+contentIndex for thinking/text and by
-  // toolCallId for tools, so overlapping segments never collide.
-  let currentTurnIndex = 0;
-  const segmentStarts = new Map<string, number>();
-
-  async function emitActivity(activity: ActivityKind, segmentId: string, startedAtMs: number, charCount?: number): Promise<void> {
-    // Same identity guard as publishTurnDone: without a client socket tmux would
-    // resolve a bystander pane, and a span is journaled against pane/session.
-    if (!process.env.TMUX) return;
-    try {
-      await pi.exec(PICKER, activitySpanArgs({
-        activity, segmentId, turnIndex: currentTurnIndex, startedAtMs, endedAtMs: Date.now(), charCount,
-      }), { timeout: 1500 });
-    } catch {
-      // Best-effort telemetry: never fail a turn over a span write.
-    }
+    // xtmux-cq2.1: the pi->parent message-send is gone with the deprecated
+    // messaging surface. A settled run publishes its turn to obs and stops there.
   }
 
   pi.on("session_start", async () => {
@@ -229,69 +198,28 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
     await setState("idle", true);
   });
 
-  pi.on("before_agent_start", async () => {
-    await setState("running");
-  });
-
   pi.on("agent_start", async () => {
-    lastTurnMessage = "";
-    segmentStarts.clear();
     await setState("running");
   });
 
-  pi.on("tool_execution_start", async (event) => {
-    // A tool call is one segment, keyed by its own id so parallel tool calls
-    // within a turn each get a distinct span.
-    segmentStarts.set(`tool:${event.toolCallId}`, Date.now());
-    await setState("running");
+  // pi coalesces nested user-facing prompts into one waiting span and does not
+  // await these handlers, so reporting "waiting for user" costs no agent time.
+  pi.on("ui_prompt_start", async () => {
+    stateBeforePrompt = lastState && lastState !== "needs-input" ? lastState : "running";
+    await setState("needs-input");
   });
 
-  pi.on("tool_execution_end", async (event) => {
-    const key = `tool:${event.toolCallId}`;
-    const startedAtMs = segmentStarts.get(key);
-    if (startedAtMs === undefined) return;
-    segmentStarts.delete(key);
-    // No char_count for tools: the result is content, and content is a NON_GOAL.
-    await emitActivity("tool", event.toolCallId, startedAtMs);
+  pi.on("ui_prompt_end", async () => {
+    await setState(stateBeforePrompt ?? "running");
+    stateBeforePrompt = undefined;
   });
 
-  pi.on("turn_start", async (event) => {
-    currentTurnIndex = event.turnIndex;
-    await setState("running");
-  });
-
-  // Thinking/text spans come from the assistant stream's part boundaries. Only
-  // the *_start/*_end variants are acted on; the far more frequent *_delta events
-  // are ignored, so emission is bounded to one span per completed segment.
-  pi.on("message_update", async (event) => {
-    const ev = event.assistantMessageEvent;
-    if (!ev || typeof ev !== "object") return;
-    const kind: ActivityKind | undefined =
-      ev.type === "thinking_start" || ev.type === "thinking_end" ? "thinking"
-      : ev.type === "text_start" || ev.type === "text_end" ? "text"
-      : undefined;
-    if (!kind) return;
-    const key = `${kind}:${currentTurnIndex}:${(ev as { contentIndex: number }).contentIndex}`;
-    if (ev.type === "thinking_start" || ev.type === "text_start") {
-      segmentStarts.set(key, Date.now());
-      return;
-    }
-    const startedAtMs = segmentStarts.get(key);
-    if (startedAtMs === undefined) return;
-    segmentStarts.delete(key);
-    const content = (ev as { content?: unknown }).content;
-    const charCount = typeof content === "string" ? content.length : undefined;
-    await emitActivity(kind, `${currentTurnIndex}:${(ev as { contentIndex: number }).contentIndex}`, startedAtMs, charCount);
-  });
-
-  pi.on("turn_end", async (event) => {
-    const text = compactText(extractText(event.message));
-    if (text) lastTurnMessage = text;
-  });
-
-  pi.on("agent_end", async (event) => {
+  // The terminal transition. Deliberately NOT agent_end: pi may auto-retry,
+  // auto-compact and retry, or continue with queued follow-ups after agent_end,
+  // so a pane marked done there reports done while pi is still working.
+  pi.on("agent_settled", async (_event, ctx) => {
     await setState("done");
-    await publishTurnDone(event);
+    await publishTurnDone(ctx);
   });
 
   pi.on("session_shutdown", async (event) => {

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { expect, test } from "bun:test";
-import xtmuxAgentState from "../../extensions/pi-agent-state.ts";
+import xtmuxAgentState, { lastAssistantTextFromEntries } from "../../extensions/pi-agent-state.ts";
 import xtmuxAutoMonitor from "../../extensions/pi-auto-monitor.ts";
 
 const root = join(import.meta.dir, "../..");
@@ -67,6 +67,24 @@ test("pinned Pi API loads the two package entrypoints", () => {
 }, 20_000);
 
 
+test("settle-time transcript read tolerates entry shapes and skips non-assistant entries", () => {
+  // pi's session entries are version-shaped: message may sit on the entry, in
+  // entry.message, or be the entry itself. agent_settled carries no message
+  // payload, so this read is what replaces agent_end's event.messages.
+  expect(lastAssistantTextFromEntries(undefined)).toBe("");
+  expect(lastAssistantTextFromEntries([])).toBe("");
+  expect(lastAssistantTextFromEntries([
+    { role: "user", content: "prompt" },
+    { role: "assistant", content: [{ type: "text", text: "first" }] },
+  ])).toBe("first");
+  // A trailing non-assistant entry must not shadow the assistant turn.
+  expect(lastAssistantTextFromEntries([
+    { role: "assistant", message: { role: "assistant", content: "from entry.message" } },
+    { role: "toolResult", content: "noise" },
+  ])).toBe("from entry.message");
+  expect(lastAssistantTextFromEntries(["bare string entry"])).toBe("bare string entry");
+});
+
 test("pi-auto-monitor initializes inbox exactly once", () => {
   const events: string[] = [];
   const pi = { on(event: string) { events.push(event); } };
@@ -80,41 +98,121 @@ test("pi-auto-monitor initializes inbox exactly once", () => {
   expect(events.filter((event) => event === "tool_result")).toHaveLength(2);
 });
 
-test("turn-done FYIs skip root/self parents and use canonical false for a distinct parent", async () => {
+test("pi-agent-state registers only settled-based state events", () => {
+  const events: string[] = [];
+  xtmuxAgentState({ on(event: string) { events.push(event); }, async exec() { return { stdout: "" }; } } as any);
+
+  expect(events).toEqual([
+    "session_start",
+    "agent_start",
+    "ui_prompt_start",
+    "ui_prompt_end",
+    "agent_settled",
+    "session_shutdown",
+  ]);
+
+  // hot-path events must never come back: pi awaits extension handlers, and this
+  // extension awaits a subprocess in each, so these cost agent-execution time.
+  // Registering any one of them again is a regression, not a feature.
+  for (const hot of ["before_agent_start", "tool_execution_start", "tool_execution_end", "turn_start", "turn_end", "message_update", "agent_end"]) {
+    expect(events).not.toContain(hot);
+  }
+});
+
+test("one settled turn costs three subprocess calls, independent of tool count", async () => {
   const previousTmux = process.env.TMUX;
   process.env.TMUX = "/mock/tmux.sock,1,0";
 
-  async function messageArgs(parent: string): Promise<string[] | undefined> {
-    const handlers = new Map<string, Function>();
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const values = new Map([
-      ["display-message -p #{pane_id}", "%me"],
-      ["display-message -p #{session_id}", "$me"],
-      ["display-message -p #S", "root"],
-      ["show-options -p -qv @agent_bead", "xtmux-5xm"],
-      ["show-options -p -qv @agent_parent_session", parent],
-    ]);
-    xtmuxAgentState({
-      on(event: string, handler: Function) { handlers.set(event, handler); },
-      async exec(command: string, args: string[]) {
-        calls.push({ command, args });
-        return { stdout: command === "tmux" ? values.get(args.join(" ")) ?? "" : "" };
-      },
-    } as any);
-    await handlers.get("agent_end")?.({ messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
-    return calls.find((call) => call.args[0] === "message-send")?.args;
-  }
+  const handlers = new Map<string, Function>();
+  const calls: Array<{ command: string; args: string[] }> = [];
+  xtmuxAgentState({
+    on(event: string, handler: Function) { handlers.set(event, handler); },
+    async exec(command: string, args: string[]) {
+      calls.push({ command, args });
+      if (command === "tmux") {
+        // Include a configured parent: the deprecated pi->parent message-send must
+        // stay gone even when a distinct orchestrator parent is present.
+        return { stdout: ["%me", "$me", "root", "xtmux-cq2", "$parent"].join("\t") };
+      }
+      return { stdout: "" };
+    },
+  } as any);
 
+  const ctx = { sessionManager: { getEntries: () => [{ role: "assistant", content: [{ type: "text", text: "settled" }] }] } };
   try {
-    expect(await messageArgs("")).toBeUndefined();
-    expect(await messageArgs("$me")).toBeUndefined();
-    expect(await messageArgs("%me")).toBeUndefined();
-    expect(await messageArgs("$parent")).toEqual([
-      "message-send", "--from", "$me", "--to", "$parent", "--bead", "xtmux-5xm",
-      "--expects-reply=false", "--text", "turn done: done",
-    ]);
+    await handlers.get("session_start")?.({});
+    await handlers.get("agent_start")?.({});
+    await handlers.get("agent_settled")?.({}, ctx);
+
+    // The state script and the picker are invoked by resolved path (env override or
+    // $HOME default), so classify by suffix rather than by bare name.
+    const stateWrites = calls.filter((call) => call.command.endsWith("agent-state.sh"));
+    const tmuxReads = calls.filter((call) => call.command === "tmux");
+    const pickerCalls = calls.filter((call) => call.command.endsWith("tmux-session-picker"));
+
+    // idle (new instance) + running + done, and nothing per tool call: the
+    // extension no longer sees tool or streamed-chunk events at all.
+    expect(stateWrites.map((call) => call.args[0])).toEqual(["idle", "running", "done"]);
+    expect(tmuxReads).toHaveLength(1);
+    expect(pickerCalls).toHaveLength(1);
+    expect(calls).toHaveLength(5);
+
+    // The deprecated pi->parent messaging must not return with it, even though
+    // this settle carries a distinct parent session.
+    expect(calls.some((call) => call.args[0] === "message-send")).toBe(false);
+    expect(pickerCalls[0]!.args.slice(0, 3)).toEqual(["log", "emit", "agent.turn.done"]);
+    expect(pickerCalls[0]!.args).toContain("parent=$parent");
   } finally {
     if (previousTmux === undefined) delete process.env.TMUX;
     else process.env.TMUX = previousTmux;
   }
+});
+
+test("an unset bead/parent never emits the string 'undefined'", async () => {
+  const previousTmux = process.env.TMUX;
+  process.env.TMUX = "/mock/tmux.sock,1,0";
+
+  const handles: string[][] = [];
+  const handlers = new Map<string, Function>();
+  xtmuxAgentState({
+    on(event: string, handler: Function) { handlers.set(event, handler); },
+    async exec(command: string, args: string[]) {
+      if (command.endsWith("tmux-session-picker")) handles.push(args);
+      // Exactly what the real call returns when neither user option is set:
+      // tmux emits trailing tabs and tmuxValue trims them away.
+      if (command === "tmux") return { stdout: "%me\t$me\troot" };
+      return { stdout: "" };
+    },
+  } as any);
+
+  const ctx = { sessionManager: { getEntries: () => [{ role: "assistant", content: "ok" }] } };
+  try {
+    await handlers.get("agent_settled")?.({}, ctx);
+    expect(handles).toHaveLength(1);
+    expect(handles[0]).toContain("bead=");
+    expect(handles[0]).toContain("parent=");
+    expect(handles[0]!.join(" ")).not.toContain("undefined");
+    expect(handles[0]).toContain("last_message=ok");
+  } finally {
+    if (previousTmux === undefined) delete process.env.TMUX;
+    else process.env.TMUX = previousTmux;
+  }
+});
+
+test("needs-input is reported while a UI prompt is open, then restored", async () => {
+  const handlers = new Map<string, Function>();
+  const states: string[] = [];
+  xtmuxAgentState({
+    on(event: string, handler: Function) { handlers.set(event, handler); },
+    async exec(command: string, args: string[]) {
+      if (command !== "tmux") states.push(args[0]!);
+      return { stdout: "" };
+    },
+  } as any);
+
+  await handlers.get("agent_start")?.({});
+  await handlers.get("ui_prompt_start")?.({ kind: "confirm" });
+  await handlers.get("ui_prompt_end")?.({});
+
+  expect(states).toEqual(["running", "needs-input", "running"]);
 });
