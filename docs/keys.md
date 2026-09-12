@@ -35,8 +35,29 @@ bind G display-popup -B -E -x 0 -y 0 -w 100% -h 100% 'TMUX_PICKER_MODE=compact-n
 
 The outer tmux popup uses `-B` and the fzf launcher uses no border, margin, or
 padding. The selected row uses the native-tmux convention of yellow background
-with black text. The details pane is hidden by default and opens at the bottom
-with `Ctrl-/`; it no longer reserves most of the terminal before it is needed.
+with black text, and it is a bar across the whole viewport (`--highlight-line`):
+the fzf default paints the background over the item text only. The details pane
+is hidden by default and opens at the bottom with `Ctrl-/`; it no longer reserves
+most of the terminal before it is needed.
+
+Row tokens are ordered stable-first so identity keeps a fixed column and the
+moving payload trails:
+
+```text
+↳ * [run] %5 task:build 2:specialists claude  …/worktrees/specialists
+  │ │  │     │  └── agent meta (bead/task/parent)   └── command   └── location
+  │ │  │     └── pane id
+  │ │  └── state badge (status)
+  │ └── active marker (live tmux target)
+  └── nesting: the session the pane belongs to
+```
+
+Emphasis rides on SGR attributes only — status badge, active marker and session
+name bold, pane id, window index and location dim, agent meta italic. Colour
+belongs to the fzf palette: `xtmux-classic` deletes the legacy renderer's colour
+sequences and keeps its attributes, which is also why `--ansi` and `--no-bold`
+are both required (without `--no-bold`, fzf merges its own bold into the current
+line and flattens dim and italic).
 
 `xtmux-classic` is installed as a package bin and the checkout installer also
 links it into `~/.local/bin`; the binding deliberately resolves it through

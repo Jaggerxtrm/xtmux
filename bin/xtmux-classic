@@ -27,22 +27,36 @@ resolve_core() {
 core="$(resolve_core)"
 self="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
 
-strip_classic_ansi() {
-  # The legacy renderer uses SGR color sequences in field 5. The polished
-  # launcher keeps the exact TSV identity/action fields but lets fzf own the
-  # palette, preventing embedded cyan/violet/green from overriding the tmux-like
-  # yellow selection treatment.
-  sed -E $'s/\x1b\\[[0-9;]*m//g'
+strip_classic_colors() {
+  # The core emits colour and attribute SGR as separate sequences. This filter
+  # deletes the colour ones so the legacy palette cannot override the tmux-like
+  # yellow selection, and keeps the attribute ones (bold/dim/italic/underline)
+  # so the row still carries weight, which fzf renders because --ansi is on.
+  awk 'BEGIN { esc = sprintf("%c", 27) }
+    {
+      line = $0; out = ""
+      while (match(line, esc "\\[[0-9;]*m")) {
+        out = out substr(line, 1, RSTART - 1)
+        count = split(substr(line, RSTART + 2, RLENGTH - 3), parts, ";")
+        kept = ""
+        for (i = 1; i <= count; i++) {
+          if (parts[i] ~ /^(0|1|2|3|4|21|22|23|24)$/) kept = (kept == "" ? parts[i] : kept ";" parts[i])
+        }
+        if (kept != "") out = out esc "[" kept "m"
+        line = substr(line, RSTART + RLENGTH)
+      }
+      print out line
+    }'
 }
 
 render_list() {
   case "${1:-}" in
     list)
       shift
-      "$core" list "$@" | strip_classic_ansi
+      "$core" list "$@" | strip_classic_colors
       ;;
     list-active)
-      "$core" list-active | strip_classic_ansi
+      "$core" list-active | strip_classic_colors
       ;;
     *)
       printf 'xtmux-classic: invalid internal list mode\n' >&2
@@ -94,6 +108,15 @@ printf -v self_q '%q' "$self"
 # Presentation contract:
 # - occupy the full available terminal canvas;
 # - no fzf outer border, margin, or padding;
+# - the current row is a bar across the WHOLE viewport: --highlight-line fills
+#   bg+ to the last column, where the default only paints the item text;
+# - the gutter is the marker column alone. A pointer column is redundant once the
+#   whole row is the highlight, and every gutter column insets the item text from
+#   the left edge (pointer 1 + marker 2 put it at column 3);
+# - colour is fzf's (--color below); weight and emphasis are the core's,
+#   delivered as attribute-only SGR through --ansi. --no-bold is REQUIRED: with
+#   --ansi alone fzf merges its own bold into the current line, which would
+#   flatten bold/dim/italic into bold+dim and bold+italic;
 # - tmux-like yellow selection with black foreground;
 # - neutral list text; semantic state remains readable from labels;
 # - details are opt-in, not a permanently reserved right-hand pane;
@@ -101,6 +124,7 @@ printf -v self_q '%q' "$self"
 choice="$({
   "$self" __list list all
 } | fzf \
+  --ansi \
   --delimiter=$'\t' \
   --with-nth=5 \
   --layout=reverse-list \
@@ -112,13 +136,14 @@ choice="$({
   --cycle \
   --no-bold \
   --multi \
+  --highlight-line \
   --header='Enter switch · Ctrl-/ details · ? help' \
   --header-first \
   --prompt='all> ' \
-  --pointer='>' \
-  --marker='✓ ' \
+  --pointer='' \
+  --marker='✓' \
   --info=inline-right \
-  --color='fg:-1,bg:-1,hl:yellow,fg+:black,bg+:yellow,hl+:black,info:8,prompt:yellow,pointer:yellow,marker:yellow,header:8,gutter:-1' \
+  --color='fg:-1,bg:-1,hl:yellow,fg+:black,bg+:yellow,hl+:black,info:8:dim,prompt:yellow:bold,pointer:yellow,marker:yellow,header:8:dim,gutter:-1' \
   --preview-window="$preview_window" \
   --bind="load:transform-prompt($core_q prompt-label)" \
   --bind="ctrl-/:toggle-preview" \

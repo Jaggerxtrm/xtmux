@@ -46,6 +46,13 @@ c_repo=$'\033[38;5;81m'
 c_pane=$'\033[38;5;246m'
 c_sp=$'\033[38;5;141m'      # specialist (sp-*) badge: violet
 c_stale=$'\033[38;5;130m'   # orphan/finished-but-open specialist: dark amber
+# Attribute chrome (xtmux-mys). Emitted as SEPARATE sequences from the colours
+# above: xtmux-classic deletes colour SGR so fzf owns the palette, and keeps
+# attribute SGR so the row still carries weight. A combined sequence such as
+# \033[1;36m would lose its bold to that filter - keep them apart.
+a_bold=$'\033[1m'
+a_dim=$'\033[2m'
+a_italic=$'\033[3m'
 
 run_git() {
   if command -v timeout >/dev/null 2>&1; then
@@ -2532,25 +2539,35 @@ render_pane_line() {
   sp_is_specialist "$session_name" "$pane_pid"; sp_role="$REPLY"
   sp_bead=''; sp_state=''; sp_stale='' 
 
-  paint "$c_pane" "    ↳ $marker $window_index:$window_name $pane_id"; out="$REPLY"
-  if [ -n "$sp_role" ]; then
-    sp_badge; sp_badge_str="$REPLY"
-    out+=" $sp_badge_str"
+  # xtmux-mys stable-first row order:
+  #   ↳ <active> <state> <pane_id> <agent meta> <window> <cmd|role>  <location>
+  # The tokens that rarely change lead, so identity keeps a fixed column and the
+  # moving payload (command, path) trails. Emphasis rides on attributes only:
+  # status and the live marker bold, pane id and location dim, agent meta
+  # italic. Colour stays the palette's job (see a_bold/a_dim/a_italic above).
+  if [ -n "$sp_role" ]; then sp_badge; sp_badge_str="$REPLY"; else sp_badge_str=''; fi
+  agent_meta_label "$meta_bead" "$meta_task" "$meta_parent"; meta_label="$REPLY"
+
+  paint "$a_dim$c_pane" "    ↳"; out="$REPLY"
+  [ "$marker" = '*' ] && out+=" $a_bold*$c_reset" || out+=" $marker"
+  if [ -n "$badge" ]; then
     # show real state badges for specialists too (e.g. [wait] in the waiting
     # filter). do not show the synthetic [done] used only to rank stale cleanup.
-    if [ -n "$badge" ] && ! { [ "${sp_stale:-0}" = 1 ] && [ -z "$sp_state" ] && [ "$state" = 'done' ]; }; then
-      out+=" $badge"
+    if [ -z "$sp_role" ] || ! { [ "${sp_stale:-0}" = 1 ] && [ -z "$sp_state" ] && [ "$state" = 'done' ]; }; then
+      out+=" $a_bold$badge$c_reset"
     fi
+  fi
+  out+=" $a_dim$c_pane${pane_id}$c_reset"
+  [ -n "$meta_label" ] && out+="$a_italic$meta_label"
+  out+=" $a_dim$c_pane${window_index}$c_reset:$c_pane$window_name$c_reset"
+  if [ -n "$sp_role" ]; then
     paint "$c_sp" "$sp_role"; role_str="$REPLY"
     [ -n "$sp_bead" ] && role_str+=" $c_dim· $sp_bead$c_reset"
-    out+=" $role_str"
+    out+=" $sp_badge_str $role_str"
   else
-    [ -n "$badge" ] && out+=" $badge"
     paint "$c_dim" "$cmd"; out+=" $REPLY"
   fi
-  agent_meta_label "$meta_bead" "$meta_task" "$meta_parent"; meta_label="$REPLY"
-  [ -n "$meta_label" ] && out+="$meta_label"
-  [ -n "$loc" ] && out+="  $loc"
+  [ -n "$loc" ] && out+="  $a_dim$loc"
   REPLY="$out"
 }
 
@@ -3869,15 +3886,17 @@ build_list() (
         [ "${sess_grep_hit[$sid]:-0}" = 1 ] || continue
       fi
       if [ "$emit" != nav ] && [ "${section:-0}" = 1 ] && [ "$last_section" != 1 ]; then
-        paint "$c_sp" "── specialists (sp-*) ──"; header_label="$REPLY"
+        paint "$a_bold$c_sp" "── specialists (sp-*) ──"; header_label="$REPLY"
         printf 'header\t\tspecialists\t\t  %s\n' "$header_label"
         last_section=1
       fi
       printf -v session_col '%-*s' "$name_width" "$sname"
+      # Session name is a group header in the grouped list: bold it (attribute
+      # only - the colour still separates stale buckets).
       if [ "${stale_bucket:-0}" = 1 ] && [ "$attn" -gt 1 ]; then
-        paint "$c_dim" "$session_col"
+        paint "$a_bold$c_dim" "$session_col"
       else
-        paint "$c_session" "$session_col"
+        paint "$a_bold$c_session" "$session_col"
       fi
       session_col="$REPLY"
       if [ "$emit" = nav ]; then

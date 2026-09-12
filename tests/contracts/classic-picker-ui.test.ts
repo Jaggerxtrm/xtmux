@@ -30,7 +30,7 @@ function fixture(): Fixture {
 set -euo pipefail
 printf '%s\\n' "$*" >> "$CORE_LOG"
 case "\${1:-}" in
-  list|list-active) printf '%s\\n' $'session\\t$42\\talpha\\t$42\\t\\033[38;5;81malpha\\033[0m' ;;
+  list|list-active) printf '%s\\n' $'session\\t$42\\talpha\\t$42\\t\\033[1m\\033[38;5;81malpha\\033[0m' ;;
 esac
 `);
   chmodSync(core, 0o755);
@@ -78,6 +78,19 @@ describe("xtmux-classic presentation contract", () => {
       expect(args).toContain("--border=none");
       expect(args).toContain("--margin=0");
       expect(args).toContain("--padding=0");
+      // Full-width current row, flush-left item text: the default renderer paints
+      // bg+ over the item text only, and every gutter column (pointer, marker)
+      // insets the text from the left edge of the popup.
+      expect(args).toContain("--highlight-line");
+      expect(args).toContain("--pointer=");
+      expect(args).toContain("--marker=✓");
+      // Attribute SGR only reaches fzf if --ansi is on; without it the escapes
+      // render as literal text.
+      expect(args).toContain("--ansi");
+      // Chrome weight comes from the colour spec, which --no-bold does not
+      // cancel for an explicit attribute.
+      expect(args.some((arg) => arg.startsWith("--color=") && arg.includes("prompt:yellow:bold")
+        && arg.includes("header:8:dim") && arg.includes("info:8:dim"))).toBe(true);
       expect(args).toContain("--preview-window=hidden,bottom,40%,border-top,wrap,follow");
       expect(args).toContain("--header=Enter switch · Ctrl-/ details · ? help");
       expect(args.some((arg) => arg.startsWith("--color=") && arg.includes("bg+:yellow") && arg.includes("fg+:black"))).toBe(true);
@@ -86,8 +99,13 @@ describe("xtmux-classic presentation contract", () => {
       expect(args.some((arg) => arg.includes("?:change-preview(") && arg.includes("+show-preview"))).toBe(true);
 
       const fzfInput = readFileSync(fx.fzfInputLog, "utf8");
-      expect(fzfInput).toContain("session\t$42\talpha\t$42\talpha");
-      expect(fzfInput).not.toContain("\u001b[");
+      // Machine fields stay byte-identical, so every {1}/{2}/{4} action binding
+      // and the jump path keep working.
+      expect(fzfInput).toContain("session\t$42\talpha\t$42\t");
+      // Weight survives the filter (the launcher owns emphasis)...
+      expect(fzfInput).toContain("\u001b[1m");
+      // ...while the legacy palette's colour does not, so fzf owns colour.
+      expect(fzfInput).not.toContain("38;5;81");
 
       const coreCalls = readFileSync(fx.coreLog, "utf8");
       expect(coreCalls).toContain("list all\n");
