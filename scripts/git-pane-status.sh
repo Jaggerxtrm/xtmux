@@ -3,6 +3,7 @@ set -u
 
 PANE_ID="${1:-}"
 PANE_PATH="${2:-}"
+MODE="${3:-}"
 
 # Prefer resolving path from pane id (more reliable across focus/worktree changes)
 if [ -n "$PANE_ID" ] && command -v tmux >/dev/null 2>&1; then
@@ -57,6 +58,32 @@ command -v git >/dev/null 2>&1 || {
   path_segment
   exit 0
 }
+
+# Fast branch-only mode for per-pane borders: no status porcelain, no stash.
+if [ "$MODE" = "branch" ]; then
+  BR="$(run_git -C "$PANE_PATH" symbolic-ref --short HEAD)"
+  if [ -z "$BR" ]; then
+    TOP="$(run_git -C "$PANE_PATH" rev-parse --show-toplevel)"
+    [ -n "$TOP" ] && BR="$(basename "$TOP")"
+  fi
+  [ -n "$BR" ] && printf " %s" "$BR"
+  exit 0
+fi
+
+# Fast status-bar mode: "<repo or cwd> <branch-octicon> <branch>" - no full path,
+# no status porcelain, no stash.
+if [ "$MODE" = "short" ]; then
+  TOP="$(run_git -C "$PANE_PATH" rev-parse --show-toplevel)"
+  if [ -z "$TOP" ]; then
+    printf "%s" "$(basename "$PANE_PATH")"
+    exit 0
+  fi
+  NAME="$(basename "$TOP")"
+  BR="$(run_git -C "$PANE_PATH" symbolic-ref --short HEAD)"
+  [ -z "$BR" ] && BR="detached"
+  printf "%s  %s" "$NAME" "$BR"
+  exit 0
+fi
 
 # Resolve toplevel + git-dir together. If the caller already knows the
 # toplevel (the session picker resolves it first), trust it and save a
@@ -160,6 +187,11 @@ out="$REPO_NAME $I_BRANCH ${BRANCH:-?}"
 [ "$CONFLICT" -gt 0 ] && out+=" !$CONFLICT"
 [ "$STASH" -gt 0 ] && out+=" *$STASH"
 [ -n "$OP" ] && out+=" $OP"
+
+if [ "$MODE" = "compact" ]; then
+  printf "%s" "$(short_path "$PANE_PATH") $I_BRANCH ${BRANCH:-?}"
+  exit 0
+fi
 
 out+=" $I_PATH $(short_path "$PANE_PATH")"
 

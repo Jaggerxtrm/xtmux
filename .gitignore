@@ -61,3 +61,7 @@ dist/
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# Python bytecode from bead/hook helper scripts
+__pycache__/
+*.pyc
