@@ -19,6 +19,7 @@ import { runMigration } from "./migration/runner.ts";
 import { recordDivergence, summarizeDivergences, type DiffKind } from "./db/shadow.ts";
 import { applyRetention } from "./db/retention.ts";
 import { monitorCommand } from "./commands/monitors.ts";
+import { snapshotSessions, sessionsList } from "./commands/snapshot.ts";
 import { telemetryCommand } from "./commands/telemetry.ts";
 import { auditCommand } from "./commands/audit.ts";
 import { captureRuntimeContext } from "./domains/identity/runtime-context.ts";
@@ -68,6 +69,25 @@ commands:
   audit ingest [--partial]                               persist audit findings from stdin (3xs.8)
 
   obs-migrate --dry-run|--apply|--status  legacy JSONL/monitor import + idempotent marker reconciliation
+  snapshot-sessions [--json]   capture the live tmux inventory (XTMUX-491): every pane's
+                               session, window, pane id, current command, cwd, repo
+                               root, branch, raw @agent_state and xt attach slug →
+                                 \${XDG_STATE_HOME:-~/.local/state}/xtmux/sessions/snapshot.json
+                                                   canonical latest (atomic tmp+rename)
+                                 .../history/snapshot-<ts>.json
+                                                   timestamped trail, newest 20 kept
+                               tmux gone = empty pane list + serverAlive=false, still exit 0.
+                               Schedule it (cron, systemd timer) so state never outlives
+                               your memory of it: * * * * * xtmux-obs snapshot-sessions --json
+  sessions [--snapshot <path>|<flag>] [--json]
+                               ordered per-pane inventory + recovery hints — ends with
+                               one row per pane carrying BOTH attach paths:
+                                 xt attach <slug>       worktree + agent resume
+                                 tmux attach -t <s>:<w> raw pane
+                               Source: live tmux when a server answers, else the last
+                               durable snapshot (that fallback IS the post-crash path);
+                               --snapshot <path> forces a file (latest by default);
+                               --json prints the full xtmux.session-snapshot.v1 object.
   retention                                apply per-domain retention; prints RetentionReport
   shadow-summary                          shadow-mode divergence rollup
   shadow-record --domain X --command Y --diff-kind Z [--v1-snippet S --v2-snippet S]
@@ -141,6 +161,13 @@ async function main(argv: string[]): Promise<number> {
         } finally {
           db.close();
         }
+      }
+      case "snapshot-sessions":
+      case "sessions": {
+        // Filesystem + live-tmux only, no DB: the writer must also work when
+        // everything else just died (that is its purpose).
+        const rest = argv.slice(3);
+        return cmd === "snapshot-sessions" ? await snapshotSessions(rest) : await sessionsList(rest);
       }
       case "context": {
         // Read-only by contract: no DB is opened, no agent instance is lazily
