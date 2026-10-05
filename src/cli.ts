@@ -19,6 +19,7 @@ import { runMigration } from "./migration/runner.ts";
 import { recordDivergence, summarizeDivergences, type DiffKind } from "./db/shadow.ts";
 import { applyRetention } from "./db/retention.ts";
 import { monitorCommand } from "./commands/monitors.ts";
+import { snapshotSessions, sessionsList } from "./commands/snapshot.ts";
 import { telemetryCommand } from "./commands/telemetry.ts";
 import { auditCommand } from "./commands/audit.ts";
 import { captureRuntimeContext } from "./domains/identity/runtime-context.ts";
@@ -68,6 +69,9 @@ commands:
   audit ingest [--partial]                               persist audit findings from stdin (3xs.8)
 
   obs-migrate --dry-run|--apply|--status  legacy JSONL/monitor import + idempotent marker reconciliation
+  snapshot-sessions [--json]          durable tmux session snapshot -> XDG_STATE/xtmux/sessions/
+                                      (XTMUX-491: survives tmux server loss — schedule via cron)
+  sessions [--snapshot <path>] [--json] ordered pane inventory + xt attach hints (live tmux, else last snapshot)
   retention                                apply per-domain retention; prints RetentionReport
   shadow-summary                          shadow-mode divergence rollup
   shadow-record --domain X --command Y --diff-kind Z [--v1-snippet S --v2-snippet S]
@@ -141,6 +145,13 @@ async function main(argv: string[]): Promise<number> {
         } finally {
           db.close();
         }
+      }
+      case "snapshot-sessions":
+      case "sessions": {
+        // Filesystem + live-tmux only, no DB: the writer must also work when
+        // everything else just died (that is its purpose).
+        const rest = argv.slice(3);
+        return cmd === "snapshot-sessions" ? await snapshotSessions(rest) : await sessionsList(rest);
       }
       case "context": {
         // Read-only by contract: no DB is opened, no agent instance is lazily
