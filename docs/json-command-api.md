@@ -239,6 +239,8 @@ Compiled plumbing remains documented even when it is not exposed as a picker or 
 
 | Command | Category | Current format / decision | Owner |
 |---|---|---|---|
+| `obs:snapshot-sessions` | agent-json | durable tmux session snapshot (XTMUX-491); `--json` prints `{summary, panes, files}`; non-JSON prints the recovery table | 491 |
+| `obs:sessions` | agent-json | ordered pane inventory + xt attach hints from live tmux or `--snapshot <path>` | 491 |
 | `obs:health` | agent-json | existing `HealthReport` object | .4 |
 | `obs:migrate` | guarded-admin | schema mutation; existing migration object | .4 |
 | `obs:version` | agent-json | scalar text → `{ "schemaVersion" }` in JSON mode | .4 |
