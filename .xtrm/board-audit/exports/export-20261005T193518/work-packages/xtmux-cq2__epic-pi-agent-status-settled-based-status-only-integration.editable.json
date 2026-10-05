@@ -1,0 +1,179 @@
+{
+  "content_sha256": "80501a785e215b340cb378bcc737594a2033e134e38e80d3662da3c7f069cf63",
+  "desired_issues": {
+    "xtmux-cq2": {
+      "_type": "issue",
+      "comment_count": 0,
+      "created_at": "2026-09-12T07:08:30Z",
+      "created_by": "jaggerxtrm",
+      "dependency_count": 0,
+      "dependent_count": 0,
+      "description": "PROBLEM\npi agent panes carry no lifecycle status, and the extension that would provide it is both unloaded and, when loaded, wrong and expensive.\n\nThree distinct defects sit under one operator symptom (\"pi sessions stopped visualizing their status\"):\n1. Registration. pi loads no xtmux package at all. settings.json lost ../../dev/xtmux during the npm extension switch (present in settings.json.bak-npm-ext-switch on 2026-08-23, absent in settings.json.bak-pre-specialist-20260908T172343) and no npm:@jaggerxtrm/xtmux replaced it. pi list confirms no xtmux entry.\n2. Correctness. extensions/pi-agent-state.ts derives the terminal state from agent_end. pi's own docs (docs/extensions.md, Agent Events) state agent_end fires before auto-retry, auto-compact-and-retry, and queued follow-up messages, and direct: \"Use agent_settled for status integrations that need to know Pi will not continue running automatically.\" So pi panes report done while pi is still working.\n3. Cost. The extension registers 11 events including the hot ones and awaits a subprocess (pi.exec, 1000ms timeout) in each: 2 spawns per tool call (tool_execution_start/end) and 1 per streamed update (message_update -> emitActivity). pi awaits extension handlers, so this cost lands directly on agent execution time. The 5s state debounce reduces tmux writes, not handler work.\n\nAdditionally extensions/pi-agent-state.ts is not status-only: on agent_end it emits obs turn events (consumed by src/domains/agents/episode.ts, src/cli-log.ts, scripts/xtmux-monitor.sh) and calls picker message-send to the parent session, which is the messaging surface the operator has deprecated.\n\nSUCCESS\n- pi panes write @agent_state through a settled-based event set: session_start -> idle --new-instance, agent_start -> running, ui_prompt_start -> needs-input, ui_prompt_end -> running, agent_settled -> done, session_shutdown -> off (quit) or idle. Two awaited spawns per turn, four per session, and none per tool call or streamed chunk.\n- pi loads exactly ONE xtmux source, and from it only the status extension: pi-auto-monitor is never loaded, so no pi-inbox-reply handlers, no idle poll timer, no monitor rows.\n- pi never calls message-send.\n- needs-input is reachable from pi for the first time, closing the limitation recorded at docs/agent-state-hooks.md:454 (written against pi 0.80.1, superseded by ui_prompt_start/end in 0.85.1).\n- The picker renders the pi pane's state badge from the written option.\n\nSCOPE\n- extensions/pi-agent-state.ts (event set, telemetry, messaging).\n- tests/contracts/pi-extension-load.test.ts, tests/unit/activity-span.test.ts.\n- docs/agent-state-hooks.md (event table, needs-input limitation section, entrypoint text).\n- package.json pi.extensions, scripts/install.mjs PI_PACKAGE_MANIFEST, tests/installer/install.test.mjs, docs/INSTALL.md.\n- ~/.pi/agent/settings.json (single status-only registration).\n- Beads memory xtmux-pi-package-entrypoints.\n\nNON_GOALS\n- Restoring pi inbox, messaging, obligations, monitors, or the auto-monitor idle poll timer.\n- Deleting extensions/pi-inbox-reply.ts, extensions/pi-auto-monitor.ts, or extensions/coordination-json.ts source (they stay in the tree, just unloaded).\n- Any change to the claude or codex agent-state hook paths.\n- Re-running scripts/install.mjs (blocked by unrelated Claude-hooks ownership drift, and it recreates a duplicate package copy).\n- The picker presentation work landed earlier (row order, attribute chrome).\n\nCONSTRAINTS\n- Only documented pi 0.85.1 events. No undocumented internals, no UI-state polling.\n- No handler may sit on a per-tool, per-turn, or per-streamed-chunk path: pi awaits handlers, so hot-path work is the defect being fixed.\n- ~/.tmux/scripts/agent-state.sh stays the single writer of @agent_state; the state vocabulary stays running|needs-input|done|idle|off.\n- Exactly one registration; two registrations duplicate pi-auto-monitor's inbox handlers and idle timer (the reason for the 2026-08-15 prune recorded in settings.json.bak-prune-xtmux-dup).\n- Session identity guard stays: without a client socket, tmux resolves a bystander pane, so all tmux writes must be gated on TMUX being set.\n\nVALIDATION\n- Perf A/B, quantitative: point XTMUX_AGENT_STATE_SCRIPT at a logging wrapper, run one identical small pi task before and after, count invocations. Expect before ~= 2*(tool calls) + streamed chunks; after = 2 per turn.\n- Integrated state transitions in an isolated tmux server (unique -L socket, never the default server): idle on session start, running on prompt, done on settle, needs-input while a ctx.ui.confirm is open. Verified by tmux show-options -p and by capture-pane -e -N of the picker render.\n- Absence checks: no message-send from pi; no new monitors rows; pi list shows exactly one xtmux entry.\n- Repo gates: bun test tests/ test/, test/contract.sh, node --test tests/installer/*.test.mjs, bash -n on touched scripts.\n\nOUTPUT\nCommitted change set plus updated docs, tests, and the xtmux-pi-package-entrypoints memory; a short report naming the measured before/after spawn counts; beads closed with evidence.\n",
+      "id": "xtmux-cq2",
+      "issue_type": "epic",
+      "notes": "VALIDATION correction (2026-09-12, after CI went red on the first push): the epic's VALIDATION listed bun test + test/contract.sh + installer tests + bash -n, which is NOT the gate set CI enforces. CI also runs 'bun run typecheck' (tsc --noEmit) in the test job AND inside scripts/verify-json-api.sh in the smoke job, plus node --test packages/xtmux-view/test/*.test.mjs and the codex distribution script. The first push failed both jobs on tsc --noEmit alone, because extensions/pi-agent-state.ts registered ui_prompt_start/ui_prompt_end against a pinned 0.80.6 type surface whose on() overload set is closed while the runtime is 0.85.1. Any future contract under this epic must name typecheck, verify-json-api.sh, the xtmux-view node tests and verify-codex-distribution.sh in VALIDATION.",
+      "owner": "jagger.xtrm@gmail.com",
+      "priority": 1,
+      "status": "open",
+      "title": "epic: pi agent status — settled-based, status-only integration",
+      "updated_at": "2026-09-12T07:36:25Z"
+    },
+    "xtmux-cq2.3": {
+      "_type": "issue",
+      "comment_count": 0,
+      "created_at": "2026-09-12T07:08:50Z",
+      "created_by": "jaggerxtrm",
+      "dependencies": [
+        {
+          "created_at": "2026-09-12T07:08:50Z",
+          "created_by": "jaggerxtrm",
+          "depends_on_id": "xtmux-cq2",
+          "issue_id": "xtmux-cq2.3",
+          "metadata": "{}",
+          "type": "parent-child"
+        },
+        {
+          "created_at": "2026-09-12T07:08:55Z",
+          "created_by": "jaggerxtrm",
+          "depends_on_id": "xtmux-cq2.1",
+          "issue_id": "xtmux-cq2.3",
+          "metadata": "{}",
+          "type": "blocks"
+        }
+      ],
+      "dependency_count": 1,
+      "dependent_count": 0,
+      "description": "PROBLEM\npackage.json declares pi.extensions as the pair ./extensions/pi-agent-state.ts + ./extensions/pi-auto-monitor.ts. Every consumer installing the package therefore gets the deprecated inbox and monitor machinery, and the only way to avoid it is a settings filter object that most users will never write. The deprecation has been stated by the operator but is not expressed in the artifact.\n\nSUCCESS\n- package.json pi.extensions is [\"./extensions/pi-agent-state.ts\"], so a plain install source loads status only.\n- scripts/install.mjs PI_PACKAGE_MANIFEST matches, keeping the installer's ownership snapshot consistent with what it writes.\n- docs/INSTALL.md (Pi package grouping) and docs/agent-state-hooks.md describe one entrypoint and state that inbox/monitor integration is deprecated and unloaded by default.\n- Tests that assert the pair are updated or retired, and the suite passes with no new failures beyond the 2 pre-existing installer failures.\n- Beads memory xtmux-pi-package-entrypoints is rewritten to the new truth.\n\nSCOPE\n- package.json, scripts/install.mjs (PI_PACKAGE_MANIFEST), docs/INSTALL.md, docs/agent-state-hooks.md.\n- tests/installer/install.test.mjs:90 (asserts the manifest pair), tests/contracts/pi-extension-load.test.ts (asserts both entrypoints load and that pi-auto-monitor initializes inbox exactly once).\n- Beads memory xtmux-pi-package-entrypoints.\n\nNON_GOALS\n- Deleting extensions/pi-auto-monitor.ts, extensions/pi-inbox-reply.ts, or extensions/coordination-json.ts.\n- Retiring tests/contracts/pi-auto-monitor.test.ts or tests/contracts/eval-01-matrix.test.ts, which test the module itself and stay valid while the file exists.\n- Re-running the installer on the operator machine.\n\nCONSTRAINTS\n- The installer guards ownership by hashing PI_PACKAGE_MANIFEST, so manifest and installer must change together.\n- Existing installs whose recorded snapshot predates the change must not be silently overwritten; the assert path must keep refusing drifted directories.\n- Changing the shipped manifest changes behaviour for consumers: it must be documented, not silent.\n\nVALIDATION\n- node --test tests/installer/*.test.mjs and bun test tests/ test/ with no new failures.\n- A dry run of the installer path against a temporary HOME (the installer tests already do this) showing a single entrypoint written.\n- grep of package.json and docs for the removed second entrypoint returning only historical mentions.\n\nOUTPUT\nThe narrowed manifest, updated installer constant, updated docs, updated tests, rewritten memory, and a bead note naming the consumer-visible behaviour change.\n",
+      "id": "xtmux-cq2.3",
+      "issue_type": "task",
+      "owner": "jagger.xtrm@gmail.com",
+      "priority": 2,
+      "status": "open",
+      "title": "manifest: status-only pi entrypoint by default for every consumer",
+      "updated_at": "2026-09-12T07:08:50Z"
+    }
+  },
+  "diagnostics": {
+    "dangling_relations": [],
+    "derived_dotted_parent_links": [],
+    "multiple_parent_nodes": []
+  },
+  "external_relations": [
+    {
+      "raw": {
+        "created_at": "2026-09-12T07:08:55Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "xtmux-cq2.1",
+        "issue_id": "xtmux-cq2.3",
+        "metadata": "{}",
+        "type": "blocks"
+      },
+      "source": "xtmux-cq2.3",
+      "source_field": "dependencies",
+      "target": "xtmux-cq2.1",
+      "target_present_in_snapshot": true,
+      "target_title": "pi-agent-state: settled-based status, no hot-path handlers, no messaging",
+      "type": "blocks"
+    }
+  ],
+  "hierarchy": {
+    "children": [
+      {
+        "children": [],
+        "id": "xtmux-cq2.3"
+      }
+    ],
+    "id": "xtmux-cq2"
+  },
+  "issues": {
+    "xtmux-cq2": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "comment_count": 0,
+        "created_at": "2026-09-12T07:08:30Z",
+        "created_by": "jaggerxtrm",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "description": "PROBLEM\npi agent panes carry no lifecycle status, and the extension that would provide it is both unloaded and, when loaded, wrong and expensive.\n\nThree distinct defects sit under one operator symptom (\"pi sessions stopped visualizing their status\"):\n1. Registration. pi loads no xtmux package at all. settings.json lost ../../dev/xtmux during the npm extension switch (present in settings.json.bak-npm-ext-switch on 2026-08-23, absent in settings.json.bak-pre-specialist-20260908T172343) and no npm:@jaggerxtrm/xtmux replaced it. pi list confirms no xtmux entry.\n2. Correctness. extensions/pi-agent-state.ts derives the terminal state from agent_end. pi's own docs (docs/extensions.md, Agent Events) state agent_end fires before auto-retry, auto-compact-and-retry, and queued follow-up messages, and direct: \"Use agent_settled for status integrations that need to know Pi will not continue running automatically.\" So pi panes report done while pi is still working.\n3. Cost. The extension registers 11 events including the hot ones and awaits a subprocess (pi.exec, 1000ms timeout) in each: 2 spawns per tool call (tool_execution_start/end) and 1 per streamed update (message_update -> emitActivity). pi awaits extension handlers, so this cost lands directly on agent execution time. The 5s state debounce reduces tmux writes, not handler work.\n\nAdditionally extensions/pi-agent-state.ts is not status-only: on agent_end it emits obs turn events (consumed by src/domains/agents/episode.ts, src/cli-log.ts, scripts/xtmux-monitor.sh) and calls picker message-send to the parent session, which is the messaging surface the operator has deprecated.\n\nSUCCESS\n- pi panes write @agent_state through a settled-based event set: session_start -> idle --new-instance, agent_start -> running, ui_prompt_start -> needs-input, ui_prompt_end -> running, agent_settled -> done, session_shutdown -> off (quit) or idle. Two awaited spawns per turn, four per session, and none per tool call or streamed chunk.\n- pi loads exactly ONE xtmux source, and from it only the status extension: pi-auto-monitor is never loaded, so no pi-inbox-reply handlers, no idle poll timer, no monitor rows.\n- pi never calls message-send.\n- needs-input is reachable from pi for the first time, closing the limitation recorded at docs/agent-state-hooks.md:454 (written against pi 0.80.1, superseded by ui_prompt_start/end in 0.85.1).\n- The picker renders the pi pane's state badge from the written option.\n\nSCOPE\n- extensions/pi-agent-state.ts (event set, telemetry, messaging).\n- tests/contracts/pi-extension-load.test.ts, tests/unit/activity-span.test.ts.\n- docs/agent-state-hooks.md (event table, needs-input limitation section, entrypoint text).\n- package.json pi.extensions, scripts/install.mjs PI_PACKAGE_MANIFEST, tests/installer/install.test.mjs, docs/INSTALL.md.\n- ~/.pi/agent/settings.json (single status-only registration).\n- Beads memory xtmux-pi-package-entrypoints.\n\nNON_GOALS\n- Restoring pi inbox, messaging, obligations, monitors, or the auto-monitor idle poll timer.\n- Deleting extensions/pi-inbox-reply.ts, extensions/pi-auto-monitor.ts, or extensions/coordination-json.ts source (they stay in the tree, just unloaded).\n- Any change to the claude or codex agent-state hook paths.\n- Re-running scripts/install.mjs (blocked by unrelated Claude-hooks ownership drift, and it recreates a duplicate package copy).\n- The picker presentation work landed earlier (row order, attribute chrome).\n\nCONSTRAINTS\n- Only documented pi 0.85.1 events. No undocumented internals, no UI-state polling.\n- No handler may sit on a per-tool, per-turn, or per-streamed-chunk path: pi awaits handlers, so hot-path work is the defect being fixed.\n- ~/.tmux/scripts/agent-state.sh stays the single writer of @agent_state; the state vocabulary stays running|needs-input|done|idle|off.\n- Exactly one registration; two registrations duplicate pi-auto-monitor's inbox handlers and idle timer (the reason for the 2026-08-15 prune recorded in settings.json.bak-prune-xtmux-dup).\n- Session identity guard stays: without a client socket, tmux resolves a bystander pane, so all tmux writes must be gated on TMUX being set.\n\nVALIDATION\n- Perf A/B, quantitative: point XTMUX_AGENT_STATE_SCRIPT at a logging wrapper, run one identical small pi task before and after, count invocations. Expect before ~= 2*(tool calls) + streamed chunks; after = 2 per turn.\n- Integrated state transitions in an isolated tmux server (unique -L socket, never the default server): idle on session start, running on prompt, done on settle, needs-input while a ctx.ui.confirm is open. Verified by tmux show-options -p and by capture-pane -e -N of the picker render.\n- Absence checks: no message-send from pi; no new monitors rows; pi list shows exactly one xtmux entry.\n- Repo gates: bun test tests/ test/, test/contract.sh, node --test tests/installer/*.test.mjs, bash -n on touched scripts.\n\nOUTPUT\nCommitted change set plus updated docs, tests, and the xtmux-pi-package-entrypoints memory; a short report naming the measured before/after spawn counts; beads closed with evidence.\n",
+        "id": "xtmux-cq2",
+        "issue_type": "epic",
+        "notes": "VALIDATION correction (2026-09-12, after CI went red on the first push): the epic's VALIDATION listed bun test + test/contract.sh + installer tests + bash -n, which is NOT the gate set CI enforces. CI also runs 'bun run typecheck' (tsc --noEmit) in the test job AND inside scripts/verify-json-api.sh in the smoke job, plus node --test packages/xtmux-view/test/*.test.mjs and the codex distribution script. The first push failed both jobs on tsc --noEmit alone, because extensions/pi-agent-state.ts registered ui_prompt_start/ui_prompt_end against a pinned 0.80.6 type surface whose on() overload set is closed while the runtime is 0.85.1. Any future contract under this epic must name typecheck, verify-json-api.sh, the xtmux-view node tests and verify-codex-distribution.sh in VALIDATION.",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 1,
+        "status": "open",
+        "title": "epic: pi agent status — settled-based, status-only integration",
+        "updated_at": "2026-09-12T07:36:25Z"
+      }
+    },
+    "xtmux-cq2.3": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "comment_count": 0,
+        "created_at": "2026-09-12T07:08:50Z",
+        "created_by": "jaggerxtrm",
+        "dependencies": [
+          {
+            "created_at": "2026-09-12T07:08:50Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "xtmux-cq2",
+            "issue_id": "xtmux-cq2.3",
+            "metadata": "{}",
+            "type": "parent-child"
+          },
+          {
+            "created_at": "2026-09-12T07:08:55Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "xtmux-cq2.1",
+            "issue_id": "xtmux-cq2.3",
+            "metadata": "{}",
+            "type": "blocks"
+          }
+        ],
+        "dependency_count": 1,
+        "dependent_count": 0,
+        "description": "PROBLEM\npackage.json declares pi.extensions as the pair ./extensions/pi-agent-state.ts + ./extensions/pi-auto-monitor.ts. Every consumer installing the package therefore gets the deprecated inbox and monitor machinery, and the only way to avoid it is a settings filter object that most users will never write. The deprecation has been stated by the operator but is not expressed in the artifact.\n\nSUCCESS\n- package.json pi.extensions is [\"./extensions/pi-agent-state.ts\"], so a plain install source loads status only.\n- scripts/install.mjs PI_PACKAGE_MANIFEST matches, keeping the installer's ownership snapshot consistent with what it writes.\n- docs/INSTALL.md (Pi package grouping) and docs/agent-state-hooks.md describe one entrypoint and state that inbox/monitor integration is deprecated and unloaded by default.\n- Tests that assert the pair are updated or retired, and the suite passes with no new failures beyond the 2 pre-existing installer failures.\n- Beads memory xtmux-pi-package-entrypoints is rewritten to the new truth.\n\nSCOPE\n- package.json, scripts/install.mjs (PI_PACKAGE_MANIFEST), docs/INSTALL.md, docs/agent-state-hooks.md.\n- tests/installer/install.test.mjs:90 (asserts the manifest pair), tests/contracts/pi-extension-load.test.ts (asserts both entrypoints load and that pi-auto-monitor initializes inbox exactly once).\n- Beads memory xtmux-pi-package-entrypoints.\n\nNON_GOALS\n- Deleting extensions/pi-auto-monitor.ts, extensions/pi-inbox-reply.ts, or extensions/coordination-json.ts.\n- Retiring tests/contracts/pi-auto-monitor.test.ts or tests/contracts/eval-01-matrix.test.ts, which test the module itself and stay valid while the file exists.\n- Re-running the installer on the operator machine.\n\nCONSTRAINTS\n- The installer guards ownership by hashing PI_PACKAGE_MANIFEST, so manifest and installer must change together.\n- Existing installs whose recorded snapshot predates the change must not be silently overwritten; the assert path must keep refusing drifted directories.\n- Changing the shipped manifest changes behaviour for consumers: it must be documented, not silent.\n\nVALIDATION\n- node --test tests/installer/*.test.mjs and bun test tests/ test/ with no new failures.\n- A dry run of the installer path against a temporary HOME (the installer tests already do this) showing a single entrypoint written.\n- grep of package.json and docs for the removed second entrypoint returning only historical mentions.\n\nOUTPUT\nThe narrowed manifest, updated installer constant, updated docs, updated tests, rewritten memory, and a bead note naming the consumer-visible behaviour change.\n",
+        "id": "xtmux-cq2.3",
+        "issue_type": "task",
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 2,
+        "status": "open",
+        "title": "manifest: status-only pi entrypoint by default for every consumer",
+        "updated_at": "2026-09-12T07:08:50Z"
+      }
+    }
+  },
+  "new_comments": {},
+  "relations": [
+    {
+      "raw": {
+        "created_at": "2026-09-12T07:08:50Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "xtmux-cq2",
+        "issue_id": "xtmux-cq2.3",
+        "metadata": "{}",
+        "type": "parent-child"
+      },
+      "source": "xtmux-cq2.3",
+      "source_field": "dependencies",
+      "target": "xtmux-cq2",
+      "type": "parent-child"
+    }
+  ],
+  "repository": "Jaggerxtrm/xtmux",
+  "root_id": "xtmux-cq2",
+  "root_title": "epic: pi agent status — settled-based, status-only integration",
+  "roundtrip": {
+    "base_package_sha256": "80501a785e215b340cb378bcc737594a2033e134e38e80d3662da3c7f069cf63",
+    "base_record_sha256": {
+      "xtmux-cq2": "f4eae3360655de87e7988567369b2fd636e519ef7cd408ad983fbd3e583e0abf",
+      "xtmux-cq2.3": "a92adb0a6c1a053f285c2ecef6649c44bff55a177c39d8bc59038dfba0634306"
+    },
+    "edit_contract": "modify desired_issues and new_comments only; issues.*.source is immutable base state",
+    "prepared_at": "2026-10-05T17:35:19Z",
+    "schema_version": "xtrm.board-audit.roundtrip.v1"
+  },
+  "schema_version": "xtrm.board-audit.work-package.v1",
+  "scope": "open"
+}

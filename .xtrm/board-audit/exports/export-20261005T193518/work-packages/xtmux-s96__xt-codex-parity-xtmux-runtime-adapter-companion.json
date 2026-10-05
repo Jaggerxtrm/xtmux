@@ -1,0 +1,286 @@
+{
+  "content_sha256": "6f08658b031369599426f3120d5b6844a373c3073a1cd7d500b19cc284e0f7e3",
+  "diagnostics": {
+    "dangling_relations": [
+      {
+        "source": "xtmux-s96",
+        "target": "external:core:xtrm-ozknq",
+        "type": "related"
+      },
+      {
+        "source": "xtmux-s96.5",
+        "target": "external:core:xtrm-ozknq.11",
+        "type": "blocks"
+      }
+    ],
+    "derived_dotted_parent_links": [],
+    "multiple_parent_nodes": []
+  },
+  "external_relations": [
+    {
+      "raw": {
+        "created_at": "2026-08-02T18:51:51Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "external:core:xtrm-ozknq",
+        "issue_id": "xtmux-s96",
+        "metadata": "{}",
+        "type": "related"
+      },
+      "source": "xtmux-s96",
+      "source_field": "dependencies",
+      "target": "external:core:xtrm-ozknq",
+      "target_present_in_snapshot": false,
+      "type": "related"
+    },
+    {
+      "raw": {
+        "created_at": "2026-08-02T18:51:56Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "external:core:xtrm-ozknq.11",
+        "issue_id": "xtmux-s96.5",
+        "metadata": "{}",
+        "type": "blocks"
+      },
+      "source": "xtmux-s96.5",
+      "source_field": "dependencies",
+      "target": "external:core:xtrm-ozknq.11",
+      "target_present_in_snapshot": false,
+      "type": "blocks"
+    },
+    {
+      "raw": {
+        "created_at": "2026-08-02T18:51:55Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "xtmux-s96.4",
+        "issue_id": "xtmux-s96.5",
+        "metadata": "{}",
+        "type": "blocks"
+      },
+      "source": "xtmux-s96.5",
+      "source_field": "dependencies",
+      "target": "xtmux-s96.4",
+      "target_present_in_snapshot": true,
+      "target_title": "K4-xtmux — Complete Codex lifecycle, recovery, and managed distribution",
+      "type": "blocks"
+    },
+    {
+      "raw": {
+        "created_at": "2026-08-02T19:00:12Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "xtmux-s96.4",
+        "issue_id": "xtmux-s96.7",
+        "metadata": "{}",
+        "type": "blocks"
+      },
+      "source": "xtmux-s96.7",
+      "source_field": "dependencies",
+      "target": "xtmux-s96.4",
+      "target_present_in_snapshot": true,
+      "target_title": "K4-xtmux — Complete Codex lifecycle, recovery, and managed distribution",
+      "type": "blocks"
+    }
+  ],
+  "hierarchy": {
+    "children": [
+      {
+        "children": [],
+        "id": "xtmux-s96.5"
+      },
+      {
+        "children": [],
+        "id": "xtmux-s96.7"
+      }
+    ],
+    "id": "xtmux-s96"
+  },
+  "issues": {
+    "xtmux-s96": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "comment_count": 0,
+        "created_at": "2026-08-02T16:47:59Z",
+        "created_by": "jaggerxtrm",
+        "dependencies": [
+          {
+            "created_at": "2026-08-02T18:51:51Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "external:core:xtrm-ozknq",
+            "issue_id": "xtmux-s96",
+            "metadata": "{}",
+            "type": "related"
+          }
+        ],
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "description": "## PROBLEM\nXT Codex parity needs xtmux-specific adapter work, but xtmux already owns messages, obligations, monitors, wakes, identity, lifecycle state, and recovery authorities.\n\n## SUCCESS\nAdd a Codex runtime adapter, exact installed-version payload fixtures, stable turn capture, and recovery integration over existing xtmux domains. Produce a backward-compatible compatibility release before Core publishes the production launcher.\n\n## SCOPE\nThis root owns only xtmux repository changes for K1 characterization, K3-xtmux, K4 lifecycle/distribution completion, test coverage, and the K6 sibling compatibility release.\n\n## NON_GOALS\nDo not create a Codex-specific message store, obligation store, monitor/wake registry, session identity, lifecycle authority, scheduler, launcher, worktree owner, or Specialist job system. Do not make optional MCP/plugin work or broad Serena history cleanup a prerequisite.\n\n## CONSTRAINTS\nConsume deterministic Core outcomes and exact argv next actions. Preserve current Pi/Claude behavior and public contracts. Use repository-local children only. Represent Core, Specialists, Jira, and programme gates as external references or companion relations.\n\n## VALIDATION\nUse real Codex payload fixtures, EVAL-01 Codex cases, restart/replay/idempotence tests, installer ownership tests, and an installed-package compatibility smoke. Prove existing state stores remain authoritative.\n\n## OUTPUT\nA repository-owned companion graph related to Core xtrm-ozknq and Jira KAN-127. Canonical sequencing note: https://github.com/xtrm-dev/xtrm/blob/ed06ba222307030c7153c43cd2370262706b78a4/docs/shared/xtrm-codex-kan-127-execution-note.md",
+        "external_ref": "jira-KAN-127",
+        "id": "xtmux-s96",
+        "issue_type": "epic",
+        "labels": [
+          "codex",
+          "cross-repo",
+          "parity"
+        ],
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 1,
+        "status": "open",
+        "title": "XT Codex parity — xtmux runtime adapter companion",
+        "updated_at": "2026-08-02T16:47:59Z"
+      }
+    },
+    "xtmux-s96.5": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "comment_count": 0,
+        "created_at": "2026-08-02T16:51:55Z",
+        "created_by": "jaggerxtrm",
+        "dependencies": [
+          {
+            "created_at": "2026-08-02T18:51:56Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "external:core:xtrm-ozknq.11",
+            "issue_id": "xtmux-s96.5",
+            "metadata": "{}",
+            "type": "blocks"
+          },
+          {
+            "created_at": "2026-08-02T18:51:55Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "xtmux-s96",
+            "issue_id": "xtmux-s96.5",
+            "metadata": "{}",
+            "type": "parent-child"
+          },
+          {
+            "created_at": "2026-08-02T18:51:55Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "xtmux-s96.4",
+            "issue_id": "xtmux-s96.5",
+            "metadata": "{}",
+            "type": "blocks"
+          },
+          {
+            "created_at": "2026-08-02T19:00:13Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "xtmux-s96.7",
+            "issue_id": "xtmux-s96.5",
+            "metadata": "{}",
+            "type": "blocks"
+          }
+        ],
+        "dependency_count": 3,
+        "dependent_count": 0,
+        "description": "## PROBLEM\nCore must not publish a production launcher against xtmux behavior that exists only on a branch.\n\n## SUCCESS\nPublish a backward-compatible xtmux compatibility release containing the accepted K3/K4 adapter and lifecycle work, before the Core launcher release.\n\n## SCOPE\nVersioning, changelog, package publication, compatibility metadata, and post-publish install verification for xtmux.\n\n## NON_GOALS\nDo not publish Core or Specialists, change release order, or introduce new optional capabilities.\n\n## CONSTRAINTS\nThis issue executes only after K5 promotion authorization. The release must remain compatible with the current Core line and expose no dependency on unpublished Core behavior beyond an already published contract package if required.\n\n## VALIDATION\nVerify package contents, registry version, clean install/update, EVAL-01 fixtures, backward compatibility, and the exact version handed to the Core release bead.\n\n## OUTPUT\nA published xtmux version and immutable release evidence consumed by Core K6.",
+        "id": "xtmux-s96.5",
+        "issue_type": "task",
+        "labels": [
+          "codex",
+          "cross-repo",
+          "k-phase",
+          "parity"
+        ],
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 1,
+        "spec_id": "https://github.com/xtrm-dev/xtrm/blob/ed06ba222307030c7153c43cd2370262706b78a4/docs/shared/xtrm-codex-kan-127-execution-note.md",
+        "status": "open",
+        "title": "K6-xtmux — Publish the backward-compatible Codex compatibility release",
+        "updated_at": "2026-08-02T16:51:55Z"
+      }
+    },
+    "xtmux-s96.7": {
+      "selection_state": "selected",
+      "source": {
+        "_type": "issue",
+        "comment_count": 0,
+        "created_at": "2026-08-02T17:00:12Z",
+        "created_by": "jaggerxtrm",
+        "dependencies": [
+          {
+            "created_at": "2026-08-02T19:00:12Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "xtmux-s96",
+            "issue_id": "xtmux-s96.7",
+            "metadata": "{}",
+            "type": "parent-child"
+          },
+          {
+            "created_at": "2026-08-02T19:00:12Z",
+            "created_by": "jaggerxtrm",
+            "depends_on_id": "xtmux-s96.4",
+            "issue_id": "xtmux-s96.7",
+            "metadata": "{}",
+            "type": "blocks"
+          }
+        ],
+        "dependency_count": 1,
+        "dependent_count": 1,
+        "description": "## PROBLEM\nThe external Core K5 edge is persisted but not enforced by the local ready view without federation.\n\n## SUCCESS\nClose only after Core xtrm-ozknq.11 records an approved production promotion.\n\n## SCOPE\nRead-only Core promotion evidence check after xtmux K4.\n\n## NON_GOALS\nDo not decide parity from xtmux or publish before authorization.\n\n## CONSTRAINTS\nRecord the Core gate decision, GATE-IFACE evidence reference, parity matrix reference, and compatible versions.\n\n## VALIDATION\nVerify Core K5 is closed as promoted, not rejected or waived.\n\n## OUTPUT\nA local synchronization gate that blocks the xtmux compatibility release.",
+        "id": "xtmux-s96.7",
+        "issue_type": "task",
+        "labels": [
+          "codex",
+          "cross-repo",
+          "external-gate",
+          "parity"
+        ],
+        "owner": "jagger.xtrm@gmail.com",
+        "priority": 1,
+        "spec_id": "https://github.com/xtrm-dev/xtrm/blob/ed06ba222307030c7153c43cd2370262706b78a4/docs/shared/xtrm-codex-kan-127-execution-note.md",
+        "status": "open",
+        "title": "Gate: observe Core K5 production promotion authorization",
+        "updated_at": "2026-08-02T17:00:12Z"
+      }
+    }
+  },
+  "relations": [
+    {
+      "raw": {
+        "created_at": "2026-08-02T19:00:13Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "xtmux-s96.7",
+        "issue_id": "xtmux-s96.5",
+        "metadata": "{}",
+        "type": "blocks"
+      },
+      "source": "xtmux-s96.5",
+      "source_field": "dependencies",
+      "target": "xtmux-s96.7",
+      "type": "blocks"
+    },
+    {
+      "raw": {
+        "created_at": "2026-08-02T18:51:55Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "xtmux-s96",
+        "issue_id": "xtmux-s96.5",
+        "metadata": "{}",
+        "type": "parent-child"
+      },
+      "source": "xtmux-s96.5",
+      "source_field": "dependencies",
+      "target": "xtmux-s96",
+      "type": "parent-child"
+    },
+    {
+      "raw": {
+        "created_at": "2026-08-02T19:00:12Z",
+        "created_by": "jaggerxtrm",
+        "depends_on_id": "xtmux-s96",
+        "issue_id": "xtmux-s96.7",
+        "metadata": "{}",
+        "type": "parent-child"
+      },
+      "source": "xtmux-s96.7",
+      "source_field": "dependencies",
+      "target": "xtmux-s96",
+      "type": "parent-child"
+    }
+  ],
+  "repository": "Jaggerxtrm/xtmux",
+  "root_id": "xtmux-s96",
+  "root_title": "XT Codex parity — xtmux runtime adapter companion",
+  "schema_version": "xtrm.board-audit.work-package.v1",
+  "scope": "open"
+}

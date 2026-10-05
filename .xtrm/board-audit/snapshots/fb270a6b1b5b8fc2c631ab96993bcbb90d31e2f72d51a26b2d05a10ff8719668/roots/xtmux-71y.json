@@ -1,0 +1,1 @@
+{"issue_ids":["xtmux-71y"],"open_issue_count":1,"root_id":"xtmux-71y","schema_version":"xtrm.board-audit.pr-root.v1","source_sha256":"01aa352ed9808c8cf5e418926069889dce4b9c207239fbdd9c8b296c86d66b64","title":"topology --json agent object omits role/worktree/branch/parent_pane published by Core PR #465"}
