@@ -2220,13 +2220,11 @@ Durable task content belongs in beads (`bd`), not here.
                    expectsReply, createdAtMs
     message-ack    messageKey, acked, ackedAtMs, ackedBy, status
     message-reply  messageKey, messageId, duplicate, replyToMessageKey,
-                   fulfilledMessageKey, fulfilled, senderId, senderPaneId,
-                   recipientId, targetPaneId, createdAtMs
+                   fulfilledMessageKey, fulfilled, senderId, senderPaneId, recipientId, targetPaneId, createdAtMs
     message-cancel messageKey, cancelled, cancelledAtMs
     message-list   correlated opt-in adds replyStatus, fulfilledAtMs,
                    fulfilledByMessageKey, correlatedReply
-    message-status --json adds replyStatus, fulfilledAtMs,
-                   fulfilledByMessageKey, correlatedReply
+    message-status --json adds replyStatus, fulfilledAtMs, fulfilledByMessageKey, correlatedReply
     unread-count   recipientId, unreadCount, oldestUnackedAtMs
     obligations    messageKey, messageId, senderId, senderPaneId, recipientId,
                    targetPaneId, summary, createdAtMs, acked, ackedAtMs, replyStatus
@@ -2300,6 +2298,10 @@ SESSIONS & DASHBOARD — inventory for orchestrators. — inventory for orchestr
   list [all|waiting|running|repo:<x>|branch:<x>|cmd:<x>|grep:<x>]
   list-active                                 list under the active filter
 
+  The inventory above is tmux-resident and dies with the server (XTMUX-491):
+  Recovery needs a durable copy — schedule `xtmux-obs snapshot-sessions` via
+  Cron; after a crash, `xtmux-obs sessions --json` renders per-pane cwd/repo/branch/agent state with `xt attach` hints, tmux not needed.
+
 NAVIGATION — operator traversal over sessions and attention targets.
   nav [next|prev|attention-next|attention-prev|back|help]
                    `nav` opens the navigator; next/prev follow tmux session order,
@@ -2308,8 +2310,7 @@ NAVIGATION — operator traversal over sessions and attention targets.
   json output:
     dashboard      mode, sessions, panes
                    sessions/panes rows: sessionId, sessionName, paneId, state,
-                   beadId, task, repo, branch, dirtyCount, sharedWorktree,
-                   idleMs, path
+                   beadId, task, repo, branch, dirtyCount, sharedWorktree, idleMs, path
     topology       schema_version, generated_at_ms, host, sessions
                    host: host_id
                    session: session_id, name, created_at_ms, activity_at_ms,
@@ -2341,12 +2342,11 @@ REMOTE — read-only observation of another host, over your own ssh.
     methods:       bridge.hello, bridge.cancel, topology.snapshot, journal.query,
                    journal.follow, pane.capture, health.get
     read-only:     anything that would MUTATE is refused (XTMUX_BRIDGE_READ_ONLY),
-                   and anything not on that list is refused too. Frames are
-                   size-capped; malformed input is answered and the stream keeps serving.
+                   and anything not on that list is refused too. Frames are size-capped;
+                   malformed input is answered and the stream keeps serving.
 
 OBSERVABILITY — the local event log and command telemetry (see also the standalone `xtmux-events` live tail).
-  log emit  <type> [key=value ...]
-  log tail  [n]
+  log emit <type> [key=value ...] · log tail [n]
   log query [--type <t>] [--session <s>] [--pane <%id>] [--bead <id>]
             [--since <dur>] [--limit <n>] [--after-id <n>] [json]
   log follow --after-id <n> [--interval <ms>] [--once] [json]
