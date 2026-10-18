@@ -7,6 +7,7 @@ import {
   collectPanes,
   formatSnapshotRows,
   gitProbeFor,
+  sessionsList,
   writeSnapshot,
   type SessionSnapshot,
 } from "../../src/commands/snapshot.ts";
@@ -115,5 +116,185 @@ describe("writeSnapshot + roundtrip", () => {
     const lines = formatSnapshotRows(snap);
     expect(lines.length).toBe(2);
     expect(lines[1]).toContain("panes=0");
+  });
+});
+
+describe("server identity", () => {
+  test("buildSnapshot records serverPid + serverStartTime, null when server down", () => {
+    const alive = buildSnapshot(fakeTmux([], {}, true), fakeGit, 1_700_000_000_000);
+    expect(alive.serverAlive).toBe(true);
+    expect(alive.serverPid).toBe(999);
+    expect(alive.serverStartTime).toBe(999);
+    const dead = buildSnapshot(fakeTmux([], {}, false), fakeGit, 1_700_000_000_000);
+    expect(dead.serverAlive).toBe(false);
+    expect(dead.serverPid).toBeNull();
+    expect(dead.serverStartTime).toBeNull();
+  });
+});
+
+describe("pre-loss pinning", () => {
+  const T0 = 1_700_000_000_000;
+  const stamp = (ts: number) =>
+    `pre-loss-${new Date(ts).toISOString().replace(/[:.]/g, "-")}.json`;
+  const snapAt = (ts: number, over: Partial<SessionSnapshot> = {}): SessionSnapshot => ({
+    schema: "xtmux.session-snapshot.v1",
+    capturedAtMs: ts,
+    serverAlive: true,
+    serverPid: 100,
+    serverStartTime: 500,
+    panes: [{ session: "s", windowIndex: 0, windowName: "w", paneId: "%1", currentCommand: "pi", cwd: "/x", repo: null, branch: null, attachSlug: null, agentStateRaw: null } as unknown as SessionSnapshot["panes"][number]],
+    ...over,
+  });
+  const pinnedNames = (dir: string): string[] => {
+    try {
+      return readdirSync(join(dir, "pinned")).filter((f) => f.endsWith(".json")).sort();
+    } catch {
+      return [];
+    }
+  };
+
+  test("identity change pins the previous snapshot", () => {
+    const dir = mkdtempSync(join(tmpdir(), "xtmux-pin-"));
+    try {
+      writeSnapshot(snapAt(T0), dir, T0);
+      writeSnapshot(snapAt(T0 + 60_000, { serverPid: 200, serverStartTime: 600 }), dir, T0);
+      const names = pinnedNames(dir);
+      expect(names).toEqual([stamp(T0)]);
+      const pinned = JSON.parse(readFileSync(join(dir, "pinned", names[0]!), "utf8"));
+      expect(pinned.serverPid).toBe(100);
+      expect(pinned.capturedAtMs).toBe(T0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("live -> dead -> restarted keeps the live inventory as the newest pin", () => {
+    const dir = mkdtempSync(join(tmpdir(), "xtmux-pin-"));
+    try {
+      const dead = { serverAlive: false, serverPid: null, serverStartTime: null };
+      writeSnapshot(snapAt(T0), dir, T0);
+      writeSnapshot(snapAt(T0 + 60_000, dead), dir, T0);
+      writeSnapshot(snapAt(T0 + 120_000, dead), dir, T0);
+      writeSnapshot(snapAt(T0 + 180_000, { serverPid: 200, serverStartTime: 900 }), dir, T0);
+      expect(pinnedNames(dir)).toEqual([stamp(T0)]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a live snapshot with no panes is never pinned", () => {
+    const dir = mkdtempSync(join(tmpdir(), "xtmux-pin-"));
+    try {
+      writeSnapshot(snapAt(T0, { panes: [] }), dir, T0);
+      writeSnapshot(snapAt(T0 + 60_000, { serverPid: 200 }), dir, T0);
+      expect(pinnedNames(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("serverAlive true->false pins even when the recorded pid is unchanged", () => {
+    const dir = mkdtempSync(join(tmpdir(), "xtmux-pin-"));
+    try {
+      writeSnapshot(snapAt(T0), dir, T0);
+      writeSnapshot(snapAt(T0 + 60_000, { serverAlive: false }), dir, T0);
+      expect(pinnedNames(dir)).toEqual([stamp(T0)]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("pre-boot snapshot pins even with identical identity", () => {
+    const dir = mkdtempSync(join(tmpdir(), "xtmux-pin-"));
+    try {
+      writeSnapshot(snapAt(T0), dir, null);
+      writeSnapshot(snapAt(T0 + 60_000), dir, T0 + 30_000);
+      expect(pinnedNames(dir)).toEqual([stamp(T0)]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("same identity does not pin", () => {
+    const dir = mkdtempSync(join(tmpdir(), "xtmux-pin-"));
+    try {
+      writeSnapshot(snapAt(T0), dir, T0);
+      writeSnapshot(snapAt(T0 + 60_000), dir, T0);
+      expect(pinnedNames(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("pinned files cap at the newest 5", () => {
+    const dir = mkdtempSync(join(tmpdir(), "xtmux-pin-"));
+    try {
+      for (let i = 0; i < 7; i++) {
+        writeSnapshot(snapAt(T0 + i * 60_000, { serverPid: 100 + i, serverStartTime: 500 + i }), dir, null);
+      }
+      // every write after the first pins its predecessor: snaps 0..5 pinned, oldest evicted
+      const names = pinnedNames(dir);
+      expect(names.length).toBe(5);
+      expect(names).toEqual([1, 2, 3, 4, 5].map((i) => stamp(T0 + i * 60_000)));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("sessions --pre-loss", () => {
+  const T0 = 1_700_000_000_000;
+  async function captureStdout(fn: () => Promise<number>): Promise<{ code: number; out: string }> {
+    const orig = process.stdout.write.bind(process.stdout);
+    let buf = "";
+    // deno-lint-ignore no-explicit-any
+    (process.stdout as any).write = (chunk: any) => {
+      buf += String(chunk);
+      return true;
+    };
+    try {
+      const code = await fn();
+      return { code, out: buf };
+    } finally {
+      (process.stdout as any).write = orig;
+    }
+  }
+
+  test("no pinned file: one line, exit 0", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "xtmux-preloss-"));
+    try {
+      const { code, out } = await captureStdout(() => sessionsList(["--pre-loss"], dir));
+      expect(code).toBe(0);
+      expect(out.trim().split("\n").length).toBe(1);
+      expect(out).toContain("no pinned pre-loss snapshot");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("renders the newest pinned snapshot, row format and --json", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "xtmux-preloss-"));
+    try {
+      const tmux = fakeTmux([["s", "1", "win", "%1", "claude", "/home/me/repo"]], {}, true);
+      const oldSnap = buildSnapshot(tmux, fakeGit, T0);
+      writeSnapshot(oldSnap, dir, T0);
+      const newSnap = buildSnapshot(tmux, fakeGit, T0 + 60_000);
+      (newSnap as SessionSnapshot).serverPid = 4242;
+      writeSnapshot(newSnap, dir, T0);
+
+      const text = await captureStdout(() => sessionsList(["--pre-loss"], dir));
+      expect(text.code).toBe(0);
+      expect(text.out).toContain("xt attach repo");
+      expect(text.out).toContain("tmux attach -t s:1");
+
+      const json = await captureStdout(() => sessionsList(["--pre-loss", "--json"], dir));
+      expect(json.code).toBe(0);
+      const parsed = JSON.parse(json.out);
+      expect(parsed.schema).toBe("xtmux.session-snapshot.v1");
+      expect(parsed.capturedAtMs).toBe(T0);
+      expect(parsed.panes.length).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

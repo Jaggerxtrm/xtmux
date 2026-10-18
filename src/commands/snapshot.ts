@@ -24,7 +24,8 @@ type GitRunner = (args: string[]) => { ok: boolean; out: string };
 
 export const realTmux: TmuxRunner = (args) => {
   const r = spawnSync("tmux", args, { encoding: "utf8" });
-  return { ok: (r.status ?? 0) === 0, out: (r.stdout ?? "").trim() };
+  // A missing or signal-killed tmux is not a live server (status null).
+  return { ok: !r.error && r.status === 0, out: (r.stdout ?? "").trim() };
 };
 
 export const realGit: GitRunner = (args) => {
@@ -54,6 +55,10 @@ export interface SessionSnapshot {
   schema: "xtmux.session-snapshot.v1";
   capturedAtMs: number;
   serverAlive: boolean;
+  /** tmux server pid (#{pid}); null when no server runs */
+  serverPid?: number | null;
+  /** tmux server start time (#{start_time}, epoch seconds); null when no server runs */
+  serverStartTime?: number | null;
   panes: SessionPane[];
 }
 
@@ -144,26 +149,127 @@ export function collectPanes(tmux: TmuxRunner, git: GitRunner): SessionPane[] {
   return panes;
 }
 
+function numOrNull(r: { ok: boolean; out: string }): number | null {
+  if (!r.ok || !r.out) return null;
+  const n = Number(r.out.split("\n")[0]);
+  return Number.isFinite(n) ? n : null;
+}
+
 export function buildSnapshot(tmux: TmuxRunner, git: GitRunner, nowMs: number): SessionSnapshot {
   const panes = collectPanes(tmux, git);
+  const pid = tmux(["display-message", "-p", "#{pid}"]);
+  const started = tmux(["display-message", "-p", "#{start_time}"]);
   return {
     schema: "xtmux.session-snapshot.v1",
     capturedAtMs: nowMs,
-    serverAlive: tmux(["display-message", "-p", "#{pid}"]).ok,
+    serverAlive: pid.ok,
+    serverPid: numOrNull(pid),
+    serverStartTime: numOrNull(started),
     panes,
   };
 }
 
-export function writeSnapshot(snap: SessionSnapshot, dir: string = snapshotDir()): string[] {
+/** This machine's boot time in ms. /proc/stat btime first, `uptime -s` fallback. */
+export function getBootTimeMs(): number | null {
+  try {
+    const m = readFileSync("/proc/stat", "utf8").match(/^btime\s+(\d+)/m);
+    if (m) return Number(m[1]) * 1000;
+  } catch {
+    // non-Linux or unreadable — try uptime below
+  }
+  try {
+    const r = spawnSync("uptime", ["-s"], { encoding: "utf8" });
+    const out = (r.stdout ?? "").trim();
+    if ((r.status ?? 1) === 0 && out) {
+      const t = Date.parse(out.replace(" ", "T"));
+      if (Number.isFinite(t)) return t;
+    }
+  } catch {
+    // no uptime either — caller treats null as "unknown, skip the boot check"
+  }
+  return null;
+}
+
+export const PINNED_KEEP = 5;
+
+export function pinnedDir(dir: string = snapshotDir()): string {
+  return join(dir, "pinned");
+}
+
+function fileStamp(tsMs: number): string {
+  return new Date(tsMs).toISOString().replace(/[:.]/g, "-");
+}
+
+/** True when the previous latest snapshot predates a server loss: identity
+ * changed, liveness flipped true->false, or it was captured before boot. */
+export function shouldPinPrev(prev: SessionSnapshot, next: SessionSnapshot, bootTimeMs: number | null): boolean {
+  // Only a live inventory is worth pinning: a dead-server snapshot has no
+  // panes, and pinning it on restart would bury the real pre-loss one.
+  if (!prev.serverAlive || prev.panes.length === 0) return false;
+  if (prev.serverAlive === true && next.serverAlive === false) return true;
+  if ((prev.serverPid ?? null) !== (next.serverPid ?? null)) return true;
+  if ((prev.serverStartTime ?? null) !== (next.serverStartTime ?? null)) return true;
+  if (bootTimeMs !== null && prev.capturedAtMs < bootTimeMs) return true;
+  return false;
+}
+
+/** Newest pinned pre-loss snapshot path, or null when nothing is pinned. */
+export function newestPinnedPath(dir: string = snapshotDir()): string | null {
+  let files: string[];
+  try {
+    files = readdirSync(pinnedDir(dir))
+      .filter((f) => f.startsWith("pre-loss-") && f.endsWith(".json"))
+      .sort();
+  } catch {
+    return null;
+  }
+  if (files.length === 0) return null;
+  return join(pinnedDir(dir), files[files.length - 1]!);
+}
+
+export function writeSnapshot(
+  snap: SessionSnapshot,
+  dir: string = snapshotDir(),
+  bootTimeMs: number | null = getBootTimeMs(),
+): string[] {
   mkdirSync(dir, { recursive: true });
   const latest = join(dir, "snapshot.json");
+  // Read the previous latest BEFORE overwriting: when it predates a server
+  // loss it is the exact inventory recovery needs, and cron would otherwise
+  // rotate it out of history/ within 20 minutes.
+  let prevRaw: string | null = null;
+  let prev: SessionSnapshot | null = null;
+  try {
+    prevRaw = readFileSync(latest, "utf8");
+    prev = JSON.parse(prevRaw) as SessionSnapshot;
+  } catch {
+    prevRaw = null;
+    prev = null;
+  }
+  // Pin before overwriting: a run killed mid-write must not lose the inventory.
+  if (prev && prevRaw && shouldPinPrev(prev, snap, bootTimeMs)) {
+    const pinDir = pinnedDir(dir);
+    mkdirSync(pinDir, { recursive: true });
+    writeFileSync(join(pinDir, `pre-loss-${fileStamp(prev.capturedAtMs)}.json`), prevRaw);
+    const pins = readdirSync(pinDir)
+      .filter((f) => f.startsWith("pre-loss-") && f.endsWith(".json"))
+      .sort();
+    for (const old of pins.slice(0, Math.max(0, pins.length - PINNED_KEEP))) {
+      try {
+        unlinkSync(join(pinDir, old));
+      } catch {
+        // concurrent cron may have removed it first — nothing to recover
+      }
+    }
+  }
+
   const tmp = join(dir, ".snapshot.json.tmp");
   writeFileSync(tmp, JSON.stringify(snap, null, 1) + "\n");
   renameSync(tmp, latest);
 
   const historyDir = join(dir, "history");
   mkdirSync(historyDir, { recursive: true });
-  const name = `snapshot-${new Date(snap.capturedAtMs).toISOString().replace(/[:.]/g, "-")}.json`;
+  const name = `snapshot-${fileStamp(snap.capturedAtMs)}.json`;
   writeFileSync(join(historyDir, name), JSON.stringify(snap) + "\n");
   const kept = readdirSync(historyDir).filter((f) => f.endsWith(".json")).sort();
   for (const old of kept.slice(0, Math.max(0, kept.length - HISTORY_KEEP))) {
@@ -214,11 +320,18 @@ export async function snapshotSessions(argv: string[]): Promise<number> {
   return 0;
 }
 
-export async function sessionsList(argv: string[]): Promise<number> {
+export async function sessionsList(argv: string[], dir: string = snapshotDir()): Promise<number> {
   const a = parseArgs(argv);
   let snap: SessionSnapshot;
-  if (a["snapshot"] !== undefined && a["snapshot"] !== false) {
-    const path = typeof a["snapshot"] === "string" ? a["snapshot"] : snapshotPath();
+  if (a["pre-loss"]) {
+    const pinned = newestPinnedPath(dir);
+    if (!pinned) {
+      process.stdout.write("no pinned pre-loss snapshot\n");
+      return 0;
+    }
+    snap = JSON.parse(readFileSync(pinned, "utf8")) as SessionSnapshot;
+  } else if (a["snapshot"] !== undefined && a["snapshot"] !== false) {
+    const path = typeof a["snapshot"] === "string" ? a["snapshot"] : join(dir, "snapshot.json");
     if (!existsSync(path)) {
       process.stderr.write(`no snapshot at ${path} — run 'xtmux-obs snapshot-sessions' while tmux is alive\n`);
       return 2;
