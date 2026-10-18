@@ -24,7 +24,8 @@ type GitRunner = (args: string[]) => { ok: boolean; out: string };
 
 export const realTmux: TmuxRunner = (args) => {
   const r = spawnSync("tmux", args, { encoding: "utf8" });
-  return { ok: (r.status ?? 0) === 0, out: (r.stdout ?? "").trim() };
+  // A missing or signal-killed tmux is not a live server (status null).
+  return { ok: !r.error && r.status === 0, out: (r.stdout ?? "").trim() };
 };
 
 export const realGit: GitRunner = (args) => {
@@ -204,7 +205,7 @@ function fileStamp(tsMs: number): string {
 export function shouldPinPrev(prev: SessionSnapshot, next: SessionSnapshot, bootTimeMs: number | null): boolean {
   // Only a live inventory is worth pinning: a dead-server snapshot has no
   // panes, and pinning it on restart would bury the real pre-loss one.
-  if (!prev.serverAlive) return false;
+  if (!prev.serverAlive || prev.panes.length === 0) return false;
   if (prev.serverAlive === true && next.serverAlive === false) return true;
   if ((prev.serverPid ?? null) !== (next.serverPid ?? null)) return true;
   if ((prev.serverStartTime ?? null) !== (next.serverStartTime ?? null)) return true;
@@ -245,10 +246,7 @@ export function writeSnapshot(
     prevRaw = null;
     prev = null;
   }
-  const tmp = join(dir, ".snapshot.json.tmp");
-  writeFileSync(tmp, JSON.stringify(snap, null, 1) + "\n");
-  renameSync(tmp, latest);
-
+  // Pin before overwriting: a run killed mid-write must not lose the inventory.
   if (prev && prevRaw && shouldPinPrev(prev, snap, bootTimeMs)) {
     const pinDir = pinnedDir(dir);
     mkdirSync(pinDir, { recursive: true });
@@ -264,6 +262,10 @@ export function writeSnapshot(
       }
     }
   }
+
+  const tmp = join(dir, ".snapshot.json.tmp");
+  writeFileSync(tmp, JSON.stringify(snap, null, 1) + "\n");
+  renameSync(tmp, latest);
 
   const historyDir = join(dir, "history");
   mkdirSync(historyDir, { recursive: true });

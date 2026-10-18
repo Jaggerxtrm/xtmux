@@ -142,7 +142,7 @@ describe("pre-loss pinning", () => {
     serverAlive: true,
     serverPid: 100,
     serverStartTime: 500,
-    panes: [],
+    panes: [{ session: "s", windowIndex: 0, windowName: "w", paneId: "%1", currentCommand: "pi", cwd: "/x", repo: null, branch: null, attachSlug: null, agentStateRaw: null } as unknown as SessionSnapshot["panes"][number]],
     ...over,
   });
   const pinnedNames = (dir: string): string[] => {
@@ -177,6 +177,17 @@ describe("pre-loss pinning", () => {
       writeSnapshot(snapAt(T0 + 120_000, dead), dir, T0);
       writeSnapshot(snapAt(T0 + 180_000, { serverPid: 200, serverStartTime: 900 }), dir, T0);
       expect(pinnedNames(dir)).toEqual([stamp(T0)]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a live snapshot with no panes is never pinned", () => {
+    const dir = mkdtempSync(join(tmpdir(), "xtmux-pin-"));
+    try {
+      writeSnapshot(snapAt(T0, { panes: [] }), dir, T0);
+      writeSnapshot(snapAt(T0 + 60_000, { serverPid: 200 }), dir, T0);
+      expect(pinnedNames(dir)).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
