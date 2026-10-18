@@ -79,7 +79,7 @@ commands:
                                tmux gone = empty pane list + serverAlive=false, still exit 0.
                                Schedule it (cron, systemd timer) so state never outlives
                                your memory of it: * * * * * xtmux-obs snapshot-sessions --json
-  sessions [--snapshot <path>|<flag>] [--json]
+  sessions [--snapshot <path>|<flag>] [--pre-loss] [--json]
                                ordered per-pane inventory + recovery hints — ends with
                                one row per pane carrying BOTH attach paths:
                                  xt attach <slug>       worktree + agent resume
@@ -87,6 +87,9 @@ commands:
                                Source: live tmux when a server answers, else the last
                                durable snapshot (that fallback IS the post-crash path);
                                --snapshot <path> forces a file (latest by default);
+                               --pre-loss renders the newest pinned/pre-loss-*.json
+                               snapshot (last inventory before a server loss);
+                               no pin yet = one line + exit 0.
                                --json prints the full xtmux.session-snapshot.v1 object.
   retention                                apply per-domain retention; prints RetentionReport
   shadow-summary                          shadow-mode divergence rollup
