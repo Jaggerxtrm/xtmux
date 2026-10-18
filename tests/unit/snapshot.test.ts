@@ -168,6 +168,20 @@ describe("pre-loss pinning", () => {
     }
   });
 
+  test("live -> dead -> restarted keeps the live inventory as the newest pin", () => {
+    const dir = mkdtempSync(join(tmpdir(), "xtmux-pin-"));
+    try {
+      const dead = { serverAlive: false, serverPid: null, serverStartTime: null };
+      writeSnapshot(snapAt(T0), dir, T0);
+      writeSnapshot(snapAt(T0 + 60_000, dead), dir, T0);
+      writeSnapshot(snapAt(T0 + 120_000, dead), dir, T0);
+      writeSnapshot(snapAt(T0 + 180_000, { serverPid: 200, serverStartTime: 900 }), dir, T0);
+      expect(pinnedNames(dir)).toEqual([stamp(T0)]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("serverAlive true->false pins even when the recorded pid is unchanged", () => {
     const dir = mkdtempSync(join(tmpdir(), "xtmux-pin-"));
     try {

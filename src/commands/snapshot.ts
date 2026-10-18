@@ -202,6 +202,9 @@ function fileStamp(tsMs: number): string {
 /** True when the previous latest snapshot predates a server loss: identity
  * changed, liveness flipped true->false, or it was captured before boot. */
 export function shouldPinPrev(prev: SessionSnapshot, next: SessionSnapshot, bootTimeMs: number | null): boolean {
+  // Only a live inventory is worth pinning: a dead-server snapshot has no
+  // panes, and pinning it on restart would bury the real pre-loss one.
+  if (!prev.serverAlive) return false;
   if (prev.serverAlive === true && next.serverAlive === false) return true;
   if ((prev.serverPid ?? null) !== (next.serverPid ?? null)) return true;
   if ((prev.serverStartTime ?? null) !== (next.serverStartTime ?? null)) return true;
