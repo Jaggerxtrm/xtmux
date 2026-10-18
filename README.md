@@ -145,6 +145,26 @@ SQLite is the source of truth at
 `XTMUX_OBS_V2=0` only for temporary legacy rollback or `XTMUX_OBS_V2=shadow` for
 comparison; neither mode makes runtime marker files authoritative.
 
+## Session snapshot (post-OOM recovery, XTMUX-491)
+
+tmux itself keeps no on-disk inventory: when the tmux server is lost (OOM,
+reboot), the map of "which agent was open in which worktree" goes with it.
+`xtmux-obs snapshot-sessions` captures every pane — session, window, pane id,
+live command, cwd, repo, branch, raw `@agent_state` — into
+`${XDG_STATE_HOME}/xtmux/sessions/snapshot.json` (atomic write) plus a capped
+`history/` trail, and `xtmux-obs sessions` renders that ordered inventory with
+`xt attach <slug>` and `tmux attach -t <session>:<window>` hints even when tmux
+is already gone (`--snapshot <path>` forces a snapshot; `--json` is
+machine-readable).
+
+Schedule the writer so the snapshot is always fresh:
+
+```cron
+* * * * * /path/to/xtmux-obs snapshot-sessions --json >/dev/null 2>&1
+```
+
+All its state lives on disk; killing and restarting it is harmless.
+
 ## Files
 
 | path | role |
