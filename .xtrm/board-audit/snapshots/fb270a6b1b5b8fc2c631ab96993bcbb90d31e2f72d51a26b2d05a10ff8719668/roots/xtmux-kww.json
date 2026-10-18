@@ -1,0 +1,1 @@
+{"issue_ids":["xtmux-kww"],"open_issue_count":1,"root_id":"xtmux-kww","schema_version":"xtrm.board-audit.pr-root.v1","source_sha256":"0e69c0656d11d28e000624c64e715ea5cae1d0d0ed4fd69ba96e5458db8e92bf","title":"Direct npm install of packed xtmux 0.2.5 fails before bundled Bun postinstall"}

@@ -1,0 +1,1 @@
+{"issue_ids":["xtmux-cku"],"open_issue_count":1,"root_id":"xtmux-cku","schema_version":"xtrm.board-audit.pr-root.v1","source_sha256":"353c544b10b54a235dfd5219835b71a7272c6e574283c87cfe4cb01cf98ccf36","title":"Stacked PRs are auto-closed unrecoverably when their base branch is squash-merged"}

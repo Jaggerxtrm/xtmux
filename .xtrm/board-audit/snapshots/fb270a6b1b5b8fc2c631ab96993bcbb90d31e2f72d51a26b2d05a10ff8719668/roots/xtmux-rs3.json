@@ -1,0 +1,1 @@
+{"issue_ids":["xtmux-rs3"],"open_issue_count":1,"root_id":"xtmux-rs3","schema_version":"xtrm.board-audit.pr-root.v1","source_sha256":"8ca1d99ecf38b5869aadbe5b9aaad871b37a2a0696baa9cdf2a6532a4d84f275","title":"sp run --background from a fresh core worktree cwd silently fails (no job registered, no error)"}

@@ -1,0 +1,1 @@
+{"issue_ids":["xtmux-1fa"],"open_issue_count":1,"root_id":"xtmux-1fa","schema_version":"xtrm.board-audit.pr-root.v1","source_sha256":"1570b525179c2d9e4295cc07367286328ee30d6c33f28aa696582317a009a1a0","title":"Installer tests must never mutate real ~/.xtrm global state"}
