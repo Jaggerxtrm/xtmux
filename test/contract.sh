@@ -27,7 +27,10 @@ AGENT_STATE="$ROOT/scripts/agent-state.sh"
 # picker, agent-state.sh and xtmux-monitor.sh spawn themselves — then reaches
 # the private server, and `tmux_private` names that server explicitly.
 . "$HERE/lib/tmux-isolation.sh"
-tmux_isolation_begin xtmux-contract
+tmux_isolation_begin xtmux-contract || {
+  printf '\033[31mFAIL\033[0m cannot create a private tmux directory; refusing to run against an inherited tmux server\n'
+  exit 1
+}
 snapshot() { cp "$2" "$GOLDEN/$1.golden"; printf '  \033[36msnap\033[0m %s\n' "$1"; }
 
 REGEN=0

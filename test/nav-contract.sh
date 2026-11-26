@@ -21,7 +21,10 @@ PICKER="$ROOT/bin/tmux-session-picker"
 # tmux() override and a fake tmux shim for subprocesses, and the preamble below
 # keeps any straggler client off an inherited live server.
 . "$HERE/lib/tmux-isolation.sh"
-tmux_isolation_begin xtmux-nav-contract
+tmux_isolation_begin xtmux-nav-contract || {
+  printf '\033[31mFAIL\033[0m cannot create a private tmux directory; refusing to run against an inherited tmux server\n'
+  exit 1
+}
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/xtmux-nav-contract.XXXXXX")"
 trap 'tmux_isolation_end; rm -rf "$WORK"' EXIT
