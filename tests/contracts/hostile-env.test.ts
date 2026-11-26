@@ -58,7 +58,7 @@ function rowCount(dbPath: string, table: string): number {
 }
 
 describe("hostile invocation environments", () => {
-  test("a valid pane without @agent_bead keeps the bead NULL", () => {
+  test("a valid pane without @agent_issue keeps the bead NULL", () => {
     const ctx = setup();
     try {
       const result = run(PICKER, ["telemetry", "git", "--", "rev-parse", "--show-toplevel"], {

@@ -105,7 +105,7 @@ describe("telemetry tmux identity boundary", () => {
       expect(started.exitCode).toBe(0);
       const option = run(
         "tmux",
-        ["-S", socket, "set-option", "-p", "-t", "%0", "@agent_bead", "contract-bead"],
+        ["-S", socket, "set-option", "-p", "-t", "%0", "@agent_issue", "contract-bead"],
         tmuxOverrides,
       );
       expect(option.exitCode).toBe(0);

@@ -38,7 +38,7 @@ case "\${!#}" in
   *session_id*window_id*pane_id*) printf '$42\\t@7\\t%%9\\t\\tbead-1\\t\\t123\\n' ;;
   '#{session_id}') printf '$42\\n' ;;
   '#S') printf 'contract\\n' ;;
-  '@agent_bead') printf 'bead-1\\n' ;;
+  '@agent_issue') printf 'bead-1\\n' ;;
   '@agent_episode_pending') grep -Fqx '@agent_episode_pending=1' "$state" && printf '1\\n' ;;
   '@agent_episode_cursor') v="$(grep -F '@agent_episode_cursor=' "$state" | tail -1)"; printf '%s\\n' "\${v#*=}" ;;
   '@agent_last_candidate') v="$(grep -F '@agent_last_candidate=' "$state" | tail -1)"; printf '%s\\n' "\${v#*=}" ;;

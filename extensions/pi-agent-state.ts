@@ -136,14 +136,15 @@ export default function xtmuxAgentState(pi: ExtensionAPI) {
     const info = await tmuxValue([
       "display-message",
       "-p",
-      "#{pane_id}\t#{session_id}\t#S\t#{@agent_bead}\t#{@agent_parent_session}",
+      "#{pane_id}\t#{session_id}\t#S\t#{@agent_issue}\t#{@agent_bead}\t#{@agent_parent_session}",
     ]);
     if (!info) return;
     // Defaults are load-bearing: tmuxValue trims, and trailing tabs ARE trailing
-    // whitespace, so an unset @agent_bead/@agent_parent_session drops those fields
+    // whitespace, so an unset @agent_issue/@agent_parent_session drops those fields
     // entirely and the destructured tail is undefined — which stringifies into
     // "bead=undefined" in the emitted row. Absent tail fields mean empty values.
-    const [pane, sessionId, sessionName, bead = "", parent = ""] = info.split("\t");
+    const [pane, sessionId, sessionName, issue = "", legacyBead = "", parent = ""] = info.split("\t");
+    const bead = issue || legacyBead;
     if (!pane) return;
     // xtmux-avz: spill the UNCOMPACTED message to a temp file so the picker can
     // store the full text. A single argv field is capped at ~128KB by the kernel

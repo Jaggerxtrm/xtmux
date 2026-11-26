@@ -132,7 +132,7 @@ test("one settled turn costs three subprocess calls, independent of tool count",
       if (command === "tmux") {
         // Include a configured parent: the deprecated pi->parent message-send must
         // stay gone even when a distinct orchestrator parent is present.
-        return { stdout: ["%me", "$me", "root", "xtmux-cq2", "$parent"].join("\t") };
+        return { stdout: ["%me", "$me", "root", "xtmux-cq2", "", "$parent"].join("\t") };
       }
       return { stdout: "" };
     },

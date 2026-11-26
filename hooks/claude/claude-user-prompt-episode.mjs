@@ -63,7 +63,8 @@ function main() {
 
   const sessionId = tmuxValue(["display-message", "-p", "#{session_id}"], pane);
   const sessionName = tmuxValue(["display-message", "-p", "#S"], pane);
-  const bead = tmuxValue(["show-options", "-p", "-qv", "@agent_bead"], pane);
+  // @agent_bead is the read-only legacy fallback for a pane launched before the rename.
+  const bead = tmuxValue(["show-options", "-p", "-qv", "@agent_issue"], pane) || tmuxValue(["show-options", "-p", "-qv", "@agent_bead"], pane);
   const parent = tmuxValue(["show-options", "-p", "-qv", "@agent_parent_session"], pane);
 
   // Arm the Stop hook first: even if the emit below fails, the next stop

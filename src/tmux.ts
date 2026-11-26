@@ -139,6 +139,21 @@ export function applyStaleness(state: string, lastTransition: string | undefined
   return nowMs - atMs > AGENT_STALE_AFTER_MS ? "stale" : state;
 }
 
+const LOGIN_SHELLS = new Set(["zsh", "bash", "sh", "fish", "dash"]);
+const LIVE_STATES = new Set(["idle", "running", "needs-input", "stale"]);
+
+/**
+ * A pane whose agent process exited keeps its last @agent_state, because no hook
+ * runs after the process ends. A live state on a pane that runs a login shell is
+ * therefore `exited`. The option itself is not rewritten (CORE-2801).
+ *
+ * Pure, so the rule is testable without tmux.
+ */
+export function applyExited(state: string, paneCommand: string | undefined): string {
+  if (!LIVE_STATES.has(state)) return state;
+  return LOGIN_SHELLS.has((paneCommand ?? "").trim()) ? "exited" : state;
+}
+
 /**
  * The pane's observed state, normalized. `unknown` when the pane advertises no
  * @agent_state at all — V1's answer when its opt-in pane-content inference
@@ -150,7 +165,9 @@ export function observe(paneId: string): string {
   const raw = r.ok ? r.out : "";
   if (raw === "") return "unknown";
   const state = normalizeAgentState(raw);
-  if (state !== "running") return state;
+  const cmd = tmux(["display-message", "-p", "-t", paneId, "#{pane_current_command}"]);
+  const exited = applyExited(state, cmd.ok ? cmd.out : undefined);
+  if (exited === "exited" || state !== "running") return exited;
   const t = tmux(["show-options", "-p", "-t", paneId, "-qv", "@agent_last_transition"]);
   return applyStaleness(state, t.ok ? t.out : undefined, Date.now());
 }

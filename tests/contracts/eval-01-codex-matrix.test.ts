@@ -116,7 +116,7 @@ case "\${args[0]}" in
         .split("#{window_id}").join("@1")
         .split("#{pane_id}").join(pane)
         .split("#{@agent_instance_id}").join(opt("@agent_instance_id"))
-        .split("#{@agent_bead}").join(opt("@agent_bead"))
+        .split("#{@agent_issue}").join(opt("@agent_issue"))
         .split("#{@agent_parent_session}").join(opt("@agent_parent_session"))
         .split("#{pid}").join(String(process.ppid));
       process.stdout.write(fmt + "\\n");
@@ -177,7 +177,7 @@ exec bun "$cli" "$@"
     XTMUX_OBS_DB_PATH: join(home, "state", "xtmux", "observability.db"),
     XTMUX_OBS_V2: "1",
     XTMUX_PICKER: join(home, "bin", "picker"),
-    XTMUX_AGENT_BEAD: BEAD,
+    XTMUX_AGENT_ISSUE: BEAD,
     XTMUX_AGENT_PARENT_SESSION: PARENT,
   };
   delete env.CLAUDE_HOOK_EVENT;
@@ -694,7 +694,7 @@ describe("EVAL-01 Codex column", () => {
 
     // tmux server restart: session ids rotate, pane options and states vanish.
     world.restartTmux();
-    expect(world.getOption(CODEX_PANE, "@agent_bead")).toBe("");
+    expect(world.getOption(CODEX_PANE, "@agent_issue")).toBe("");
 
     // Durable rows are reconstructable: explicit legacy addressing still lists
     // the pre-restart inbound duty, and the journal carries the full history.
@@ -714,7 +714,7 @@ describe("EVAL-01 Codex column", () => {
     // Resume mints a fresh occupation over the same pane; history stays intact.
     fireEvent(world, hooks, "SessionStart", fixturePayload("session-start.json", { source: "resume" }));
     expect(world.getState(CODEX_PANE)).toBe("idle");
-    expect(world.getOption(CODEX_PANE, "@agent_bead")).toBe(BEAD);
+    expect(world.getOption(CODEX_PANE, "@agent_issue")).toBe(BEAD);
     const instances = dbRows(world, "SELECT instance_id, ended_at_ms, end_reason FROM agent_instances ORDER BY started_at_ms");
     expect(instances).toHaveLength(2);
     expect(instances[1].instance_id).not.toBe(instances[0].instance_id);
@@ -824,18 +824,18 @@ describe("EVAL-01 Codex column", () => {
     fireEvent(world, hooks, "SessionEnd", fixturePayload("session-end.json"));
 
     // `off` cleared the lineage; the instance id deliberately survived.
-    expect(world.getOption(CODEX_PANE, "@agent_bead")).toBe("");
+    expect(world.getOption(CODEX_PANE, "@agent_issue")).toBe("");
     expect(world.getOption(CODEX_PANE, "@agent_parent_session")).toBe("");
     const survivingInstanceId = world.getOption(CODEX_PANE, "@agent_instance_id");
     expect(survivingInstanceId).not.toBe("");
 
     // The operator reruns `codex` by hand: no XTMUX_AGENT_* in the environment.
     const bare = { ...world.env };
-    delete bare.XTMUX_AGENT_BEAD;
+    delete bare.XTMUX_AGENT_ISSUE;
     delete bare.XTMUX_AGENT_PARENT_SESSION;
     fireEvent(world, hooks, "SessionStart", fixturePayload("session-start.json", { source: "resume" }), { env: bare });
 
-    expect(world.getOption(CODEX_PANE, "@agent_bead")).toBe(BEAD);
+    expect(world.getOption(CODEX_PANE, "@agent_issue")).toBe(BEAD);
     expect(world.getOption(CODEX_PANE, "@agent_parent_session")).toBe(PARENT);
     // The rehydrated binding reaches the DURABLE row too, not just the pane:
     // openInstance is idempotent, so a row opened without a bead is unrepairable.
@@ -859,11 +859,11 @@ describe("EVAL-01 Codex column", () => {
     expect(world.getOption(CODEX_PANE, "@agent_instance_id")).toBe("");
 
     const bare = { ...world.env };
-    delete bare.XTMUX_AGENT_BEAD;
+    delete bare.XTMUX_AGENT_ISSUE;
     delete bare.XTMUX_AGENT_PARENT_SESSION;
     fireEvent(world, hooks, "SessionStart", fixturePayload("session-start.json", { source: "startup" }), { env: bare });
 
-    expect(world.getOption(CODEX_PANE, "@agent_bead")).toBe("");
+    expect(world.getOption(CODEX_PANE, "@agent_issue")).toBe("");
     expect(world.getOption(CODEX_PANE, "@agent_parent_session")).toBe("");
     const instances = dbRows(world, "SELECT bead_id, parent_session_id FROM agent_instances ORDER BY started_at_ms");
     const latest = instances[instances.length - 1];
@@ -981,7 +981,7 @@ describe("EVAL-01 Codex column", () => {
     // Pane state ends `off`; task lineage is cleared so a reused pane never
     // projects the previous agent's binding. Instance id survives for postmortem.
     expect(world.getState(CODEX_PANE)).toBe("off");
-    expect(world.getOption(CODEX_PANE, "@agent_bead")).toBe("");
+    expect(world.getOption(CODEX_PANE, "@agent_issue")).toBe("");
     expect(world.getOption(CODEX_PANE, "@agent_parent_session")).toBe("");
     expect(world.getOption(CODEX_PANE, "@agent_instance_id")).not.toBe("");
 
