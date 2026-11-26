@@ -17,9 +17,17 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 PICKER="$ROOT/bin/tmux-session-picker"
 . "$HERE/lib/harness.sh"
+# Hermetic tmux (XTMUX-492): this suite drives picker functions under its own
+# tmux() override and a fake tmux shim for subprocesses, and the preamble below
+# keeps any straggler client off an inherited live server.
+. "$HERE/lib/tmux-isolation.sh"
+tmux_isolation_begin xtmux-nav-contract || {
+  printf '\033[31mFAIL\033[0m cannot create a private tmux directory; refusing to run against an inherited tmux server\n'
+  exit 1
+}
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/xtmux-nav-contract.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+trap 'tmux_isolation_end; rm -rf "$WORK"' EXIT
 harness_init "$WORK/results.tsv"
 
 # Same extraction as test/contract.sh: source everything before the top-level

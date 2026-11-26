@@ -657,19 +657,63 @@ also adds unacked messages for the current session.
 
 ## Testing
 
+Every test script runs against a **private tmux server** and never touches the tmux
+server of the session you start it from. `test/lib/tmux-isolation.sh` gives the suite a
+fresh `TMUX_TMPDIR` and removes an inherited `TMUX`/`TMUX_PANE`. Both halves matter:
+
+- direct calls name the private server explicitly, through `tmux_private` (or
+  `command tmux -L <socket>` where a suite wants its own socket);
+- the child processes the suite spawns - the session picker, `scripts/agent-state.sh`,
+  `scripts/xtmux-monitor.sh` - call `tmux` bare, and are safe only because `TMUX` is
+  gone and `TMUX_TMPDIR` points at the private directory.
+
+This matters because an inherited `TMUX` wins over `TMUX_TMPDIR`, an inherited
+`TMUX_TMPDIR` decides where a bare client's default socket lives, and an empty `-t`
+target makes tmux act on the current pane; any one of those reaches the live server. A
+suite that cannot create its private directory now fails loudly instead of continuing on
+the inherited server.
+
+The same preamble is sourced by `test/nav-contract.sh`, `test/harness-selftest.sh`,
+`scripts/smoke-json-api.sh` and `scripts/verify-json-api.sh`.
+
 ```sh
 make test
 # regenerate status-line goldens after intentional output-contract changes:
 make test-regen
+# prove the isolation itself (also part of make test and verify-json-api.sh):
+bash test/tmux-isolation-selftest.sh
 ```
 
-Current validation at the time of this README update:
+`test/tmux-isolation-selftest.sh` runs the whole of `test/contract.sh` twice, once per
+way a live server could leak in, so it takes about two to three minutes:
 
-```text
-bash test/contract.sh       290 pass, 0 fail
-bash test/nav-contract.sh   124 pass, 0 fail
-bun test                    409 pass, 0 fail
-```
+1. a decoy server on a private socket, with `TMUX` and `TMUX_PANE` aimed at it;
+2. a decoy server that *is* the default socket of a `TMUX_TMPDIR` the suite inherits.
+
+In both modes it asserts that the decoy's session list, pane list and pane contents are
+unchanged and that the decoy survived. A negative control in each mode first proves the
+comparison detects a client that honours the inherited value, so neither assertion can
+pass by accident. Drop the `unset TMUX` line and mode 1 goes red; drop the `TMUX_TMPDIR`
+export and mode 2 goes red.
+
+The suite needs `bin/xtmux-obs`; run `bun run build` (or `make build`) first. Run any
+suite directly as well - `bash test/contract.sh`, `bash test/nav-contract.sh` - without
+extra environment setup.
+
+Known failures: `test/contract.sh` has assertions that fail on `main` as well, so the
+invariant to check is that the failure **names** match `main` on the same host. Counts
+vary with the host - whether `bd`, `jq` and a built `bin/xtmux-obs` are present - so
+this file does not pin a total. These names fail on `main` and here, in a minimal
+environment:
+
+- `bead preview: valid bead summary`
+- `bead derive: from session name`
+- `bead derive: from path convention`
+- `handoff: dry-run writes prompt file and prints safe command`
+
+On a host with `bd` and `jq` present, two assertions added by #130 fail on both heads as
+well: `agent-state: legacy XTMUX_AGENT_BEAD seeds @agent_issue and never @agent_bead`
+and `context: carries agent_instance_id, bead_id and the persisted host_id`.
 
 `test/contract.sh` covers:
 
@@ -683,7 +727,7 @@ bun test                    409 pass, 0 fail
 - rename/kill/bulk-kill/act helper contracts
 - live picker TSV shape and preview smoke
 - specialist grouping/preview/waiting filter
-- richer filter integration against live tmux sessions
+- richer filter integration against private tmux sessions
 
 Some legacy rename checks can print intermediate `FAIL rename: ...` lines inside
 an isolated subshell in certain tmux environments, but the final suite summary is

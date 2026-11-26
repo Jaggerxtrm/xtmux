@@ -1,11 +1,14 @@
 .PHONY: test test-regen changelog release
 
 # harness-selftest first: a green contract run proves nothing unless the harness
-# under it can actually go red (xtmux-d0a.19).
+# under it can actually go red (xtmux-d0a.19). tmux-isolation-selftest last: it
+# runs contract.sh twice, once per way a live tmux server could leak in, and
+# proves neither run touched a server the suite did not create (XTMUX-492).
 test:
 	./test/harness-selftest.sh
 	./test/nav-contract.sh
 	./test/contract.sh
+	./test/tmux-isolation-selftest.sh
 
 test-regen:
 	./test/contract.sh --regen
