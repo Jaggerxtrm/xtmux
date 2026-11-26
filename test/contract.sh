@@ -2099,17 +2099,21 @@ if ! command -v tmux >/dev/null 2>&1; then
 else
   cd_sock="xtmux-contract-claude-$$"
   cd_bin="$WORK/claude-detect-bin"; mkdir -p "$cd_bin"
-  # `ps -o comm=` reports the executable's basename, so a COPY of sleep named
+  # `ps -o comm=` reports the executable's basename, so a COPY of sh named
   # `claude` is a process the detector sees exactly as it sees the real one — and a
   # copy of sh named `node` reproduces the `xt claude` wrapper. Real process table,
-  # no mocking of the thing under test.
-  cp "$(command -v sleep)" "$cd_bin/claude" 2>/dev/null || true
-  cp "$(command -v sh)"    "$cd_bin/node"   2>/dev/null || true
+  # no mocking of the thing under test. Both copies are sh: sh is a stand-alone
+  # binary on every runner, while `sleep` is a link to one multicall binary on
+  # Ubuntu 26.04 (uutils coreutils), and a copy of that named `claude` exits as an
+  # unknown applet before the detector runs. `; true` stops sh from exec-ing its
+  # last command, which would rename the process to `sleep`.
+  cp "$(command -v sh)" "$cd_bin/claude" 2>/dev/null || true
+  cp "$(command -v sh)" "$cd_bin/node"   2>/dev/null || true
   if [ -x "$cd_bin/claude" ] && [ -x "$cd_bin/node" ] && \
-     command tmux -L "$cd_sock" -f /dev/null new-session -d -s cdetect -n wrapped "$cd_bin/node -c '$cd_bin/claude 100; true'" 2>/dev/null; then
+     command tmux -L "$cd_sock" -f /dev/null new-session -d -s cdetect -n wrapped "$cd_bin/node -c '$cd_bin/claude -c \"sleep 100; true\"; true'" 2>/dev/null; then
     (
       tmux() { command tmux -L "$cd_sock" "$@"; }
-      tmux new-window -d -n direct "$cd_bin/claude 100"
+      tmux new-window -d -n direct "$cd_bin/claude -c \"sleep 100; true\""
       tmux new-window -d -n plain  "sleep 100"
       sleep 1
       cd_pane() { tmux list-panes -a -F '#{window_name} #{pane_id}' 2>/dev/null | awk -v w="$1" '$1==w{print $2; exit}'; }
