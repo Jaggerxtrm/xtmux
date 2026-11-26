@@ -117,6 +117,7 @@ case "\${args[0]}" in
         .split("#{pane_id}").join(pane)
         .split("#{@agent_instance_id}").join(opt("@agent_instance_id"))
         .split("#{@agent_issue}").join(opt("@agent_issue"))
+        .split("#{@agent_bead}").join(opt("@agent_bead"))
         .split("#{@agent_parent_session}").join(opt("@agent_parent_session"))
         .split("#{pid}").join(String(process.ppid));
       process.stdout.write(fmt + "\\n");

@@ -650,7 +650,7 @@ else
       XTMUX_AGENT_TASK='standardize metadata' \
       XTMUX_AGENT_ROLE='chain-coordinator' \
       XTMUX_AGENT_PARENT_SESSION=orch \
-      "$AGENT_STATE" running >/dev/null 2>&1
+      "$AGENT_STATE" running --new-instance >/dev/null 2>&1
     got_meta="$(tmux display-message -p -t "$target" $'#{@agent_state}\t#{@agent_issue}\t#{@agent_task}\t#{@agent_role}\t#{@agent_parent_session}\t#{@agent_last_transition}' 2>/dev/null || true)"
     IFS=$'\t' read -r got_state got_bead got_task got_role got_parent got_last <<< "$got_meta"
     [ "$got_state" = running ] && [ "$got_bead" = xtmux-mux.1 ] && [ "$got_task" = 'standardize metadata' ] && [ "$got_role" = 'chain-coordinator' ] && [ "$got_parent" = orch ] && [ -n "$got_last" ] && ok "agent-state: writes orchestration metadata (incl @agent_role)" || nok "agent-state: writes orchestration metadata (incl @agent_role)"
@@ -680,10 +680,15 @@ else
     tmux set-option -p -t "$target" @agent_issue OWNER-1 2>/dev/null || true
     TMUX_PANE="$target" XTMUX_AGENT_ISSUE=FROZEN-9 XTMUX_AGENT_ROLE=seeded "$AGENT_STATE" running >/dev/null 2>&1
     [ "$(own_opt @agent_issue)" = OWNER-1 ] && ok "agent-state: a non-empty @agent_issue is never overwritten from the launch env" || nok "agent-state: a non-empty @agent_issue is never overwritten from the launch env (got '$(own_opt @agent_issue)')"
+    # After `sb` unsets @agent_issue, a later transition never re-seeds it from the frozen env.
+    tmux set-option -p -t "$target" -u @agent_issue 2>/dev/null || true
+    TMUX_PANE="$target" XTMUX_AGENT_ISSUE=FROZEN-9 "$AGENT_STATE" idle >/dev/null 2>&1
+    TMUX_PANE="$target" XTMUX_AGENT_ISSUE=FROZEN-9 "$AGENT_STATE" running >/dev/null 2>&1
+    [ -z "$(own_opt @agent_issue)" ] && ok "agent-state: a transition never re-seeds @agent_issue after sb unset it" || nok "agent-state: a transition never re-seeds @agent_issue after sb unset it (got '$(own_opt @agent_issue)')"
     [ "$(own_opt @agent_role)" = seeded ] && ok "agent-state: the launch env seeds an empty option" || nok "agent-state: the launch env seeds an empty option"
     TMUX_PANE="$target" "$AGENT_STATE" off >/dev/null 2>&1 || true
     tmux set-option -p -t "$target" @agent_bead "" 2>/dev/null || true
-    TMUX_PANE="$target" XTMUX_AGENT_BEAD=LEGACY-3 "$AGENT_STATE" running >/dev/null 2>&1
+    TMUX_PANE="$target" XTMUX_AGENT_BEAD=LEGACY-3 "$AGENT_STATE" running --new-instance >/dev/null 2>&1
     [ "$(own_opt @agent_issue)" = LEGACY-3 ] && [ -z "$(own_opt @agent_bead)" ] && ok "agent-state: legacy XTMUX_AGENT_BEAD seeds @agent_issue and never @agent_bead" || nok "agent-state: legacy XTMUX_AGENT_BEAD seeds @agent_issue and never @agent_bead"
   else
     printf '  \033[33mskip\033[0m agent-state pane write (no panes)\n'
@@ -703,6 +708,11 @@ if command tmux -L "$own_sock" -f /dev/null new-session -d -s own -c "$own_repo"
   TMUX="$own_env" TMUX_PANE="$own_pane" "$AGENT_STATE" running >/dev/null 2>&1
   got_branch="$(command tmux -L "$own_sock" display-message -p -t "$own_pane" '#{@agent_branch}|#{@agent_worktree}')"
   [ "$got_branch" = "second-branch|$(cd "$own_repo" && pwd -P)" ] && ok "agent-state: @agent_branch/@agent_worktree refresh on a state transition" || nok "agent-state: @agent_branch/@agent_worktree refresh on a state transition (got '$got_branch')"
+  # A detached HEAD names no branch, and a cwd outside git declares no worktree.
+  git -C "$own_repo" checkout -q --detach 2>/dev/null
+  TMUX="$own_env" TMUX_PANE="$own_pane" "$AGENT_STATE" idle >/dev/null 2>&1
+  got_detached="$(command tmux -L "$own_sock" display-message -p -t "$own_pane" '#{?@agent_branch,SET,-}|#{?@agent_worktree,SET,-}')"
+  [ "$got_detached" = '-|SET' ] && ok "agent-state: a detached HEAD unsets @agent_branch" || nok "agent-state: a detached HEAD unsets @agent_branch (got '$got_detached')"
   command tmux -L "$own_sock" kill-server 2>/dev/null || true
 else
   printf '  \033[33mskip\033[0m identity ownership (cannot start a private tmux server)\n'

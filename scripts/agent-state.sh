@@ -134,7 +134,9 @@ seed_pane_option() {
 
 set_meta_from_env() {
   # XTMUX_AGENT_BEAD is the read-only legacy spelling of XTMUX_AGENT_ISSUE.
-  seed_pane_option @agent_issue "${XTMUX_AGENT_ISSUE:-${XTMUX_AGENT_BEAD:-}}"
+  # @agent_issue is seeded at launch only (--new-instance). After that `sb issue claim|release|close`
+  # owns it: a later transition must never put the frozen launch value back after `sb` unset it.
+  [ "$new_instance" = 1 ] && seed_pane_option @agent_issue "${XTMUX_AGENT_ISSUE:-${XTMUX_AGENT_BEAD:-}}"
   seed_pane_option @agent_task "${XTMUX_AGENT_TASK:-}"
   seed_pane_option @agent_role "${XTMUX_AGENT_ROLE:-}"
   seed_pane_option @agent_holder "${XTMUX_AGENT_HOLDER:-}"
@@ -153,10 +155,18 @@ refresh_git_meta() {
   cwd="$(tmux display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)"
   [ -n "$cwd" ] && [ -d "$cwd" ] || return 0
   top="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)"
-  [ -n "$top" ] || return 0
+  if [ -z "$top" ]; then
+    # Not a git work tree: the old worktree and branch are no longer true, so they are unset.
+    tmux set-option -p -u -t "$target" -q @agent_worktree 2>/dev/null || true
+    tmux set-option -p -u -t "$target" -q @agent_branch 2>/dev/null || true
+    return 0
+  fi
   branch="$(git -C "$top" symbolic-ref --short -q HEAD 2>/dev/null || true)"
   [ "$(tmux show-options -p -t "$target" -qv @agent_worktree 2>/dev/null || true)" = "$top" ] || set_pane_option @agent_worktree "$top"
-  if [ -n "$branch" ] && [ "$(tmux show-options -p -t "$target" -qv @agent_branch 2>/dev/null || true)" != "$branch" ]; then
+  if [ -z "$branch" ]; then
+    # Detached HEAD names no branch.
+    tmux set-option -p -u -t "$target" -q @agent_branch 2>/dev/null || true
+  elif [ "$(tmux show-options -p -t "$target" -qv @agent_branch 2>/dev/null || true)" != "$branch" ]; then
     set_pane_option @agent_branch "$branch"
   fi
   return 0
@@ -169,8 +179,9 @@ clear_optional_meta() {
   set_pane_option @agent_task ""
   set_pane_option @agent_role ""
   set_pane_option @agent_parent_session ""
-  # Legacy options of a pane launched before the rename: cleared, never written.
-  set_pane_option @agent_bead ""
+  # Legacy option of a pane launched before the rename: unset, never written.
+  tmux set-option -p -u -t "$target" -q @agent_bead 2>/dev/null || true
+  # Written by the picker handoff only (see docs/agent-identity.md); cleared with the rest.
   set_pane_option @agent_prompt_file ""
   # Written by the xt launcher rather than by this script, but cleared here for
   # the same reason @agent_parent_session is: `off` ends the agent's occupation,

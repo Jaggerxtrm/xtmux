@@ -4684,7 +4684,7 @@ handoff_v2() {
       return "$ready_rc"
     }
   fi
-  tmux set-option -p -t "$pane" -q @agent_issue "$bead" 2>/dev/null || true
+  # @agent_issue is owned by the pane's agent (sb claim sync); a handoff does not write it.
   tmux set-option -p -t "$pane" -q @agent_prompt_file "$prompt_file" 2>/dev/null || true
   [ -n "$parent" ] && tmux set-option -p -t "$pane" -q @agent_parent_session "$parent" 2>/dev/null || true
   local delivery_rc=0
@@ -4785,7 +4785,6 @@ handoff() {
     printf 'command\t%s safe-send-pointer --yes %s %s\n' "$self" "$qtarget" "$qpointer"
   fi
   if [ "$execute" = 1 ]; then
-    tmux set-option -p -t "$pane" -q @agent_issue "$bead" 2>/dev/null || true
     tmux set-option -p -t "$pane" -q @agent_prompt_file "$file" 2>/dev/null || true
     [ -n "$parent" ] && tmux set-option -p -t "$pane" -q @agent_parent_session "$parent" 2>/dev/null || true
     [ -n "$bead_line" ] && tmux set-option -p -t "$pane" -q @agent_task "$(tsv_clean "$bead_line")" 2>/dev/null || true
