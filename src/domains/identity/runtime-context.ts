@@ -41,6 +41,8 @@ const FORMAT = [
   "#{window_id}",
   "#{pane_id}",
   "#{@agent_instance_id}",
+  "#{@agent_issue}",
+  // Read-only fallback for a pane launched before the rename; nothing writes it.
   "#{@agent_bead}",
   "#{@agent_parent_session}",
   "#{pid}",
@@ -85,7 +87,8 @@ export function captureRuntimeContext(
     };
   }
 
-  const [sessionId, windowId, paneId, instanceId, bead, parentSession] = raw.split("\t");
+  const [sessionId, windowId, paneId, instanceId, issueOption, legacyBead, parentSession] = raw.split("\t");
+  const bead = issueOption || legacyBead;
   // A resolved pane must yield tmux's own stable ids. Anything else means we are
   // reading a format tmux did not fill — never guess an id from a name or index.
   if (!sessionId?.startsWith("$") || !windowId?.startsWith("@") || !paneId?.startsWith("%")) {

@@ -20,11 +20,15 @@ usage() {
   printf '                  SessionStart, Codex SessionStart), never on ordinary\n' >&2
   printf '                  transitions.\n' >&2
   printf '\noptional metadata env (pane-scoped):\n' >&2
-  printf '  XTMUX_AGENT_BEAD           -> @agent_bead\n' >&2
+  printf '  XTMUX_AGENT_ISSUE          -> @agent_issue   (XTMUX_AGENT_BEAD: legacy, read-only)\n' >&2
   printf '  XTMUX_AGENT_TASK           -> @agent_task\n' >&2
   printf '  XTMUX_AGENT_ROLE           -> @agent_role\n' >&2
-  printf '  XTMUX_AGENT_PROMPT_FILE    -> @agent_prompt_file\n' >&2
+  printf '  XTMUX_AGENT_HOLDER         -> @agent_holder\n' >&2
+  printf '  XTMUX_AGENT_DISPATCHER     -> @agent_dispatcher\n' >&2
   printf '  XTMUX_AGENT_PARENT_SESSION -> @agent_parent_session\n' >&2
+  printf '  XTMUX_AGENT_PARENT_PANE    -> @agent_parent_pane\n' >&2
+  printf '\nThe environment only SEEDS an empty option. A non-empty option is never overwritten:\n' >&2
+  printf 'its owner writes it (launcher, or sb issue claim|release|close for @agent_issue).\n' >&2
   printf '\n@agent_last_transition is written on every state transition.\n' >&2
 }
 
@@ -63,6 +67,13 @@ json_escape() {
   printf '%s' "$s"
 }
 
+# The issue the pane holds: @agent_issue, else the legacy @agent_bead of a pane
+# launched before the rename (read-only fallback). Result in REPLY.
+pane_issue() {
+  REPLY="$(tmux show-options -p -t "$target" -qv @agent_issue 2>/dev/null || true)"
+  [ -n "$REPLY" ] || REPLY="$(tmux show-options -p -t "$target" -qv @agent_bead 2>/dev/null || true)"
+}
+
 event_log_file() {
   if [ -n "${XTMUX_EVENT_LOG_FILE:-}" ]; then
     REPLY="$XTMUX_EVENT_LOG_FILE"
@@ -72,24 +83,23 @@ event_log_file() {
 }
 
 log_agent_state_event() {
-  local file dir ts epoch session bead task role prompt parent event host instance
+  local file dir ts epoch session bead task role parent event host instance
   event_log_file; file="$REPLY"; dir="${file%/*}"
   mkdir -p "$dir" 2>/dev/null || true
   ts="$(date -Is 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z')"
   epoch="$(date +%s 2>/dev/null || printf '0')"
   session="$(tmux display-message -p -t "$target" '#S' 2>/dev/null || true)"
-  bead="$(tmux show-options -p -t "$target" -qv @agent_bead 2>/dev/null || true)"
+  pane_issue; bead="$REPLY"
   task="$(tmux show-options -p -t "$target" -qv @agent_task 2>/dev/null || true)"
   role="$(tmux show-options -p -t "$target" -qv @agent_role 2>/dev/null || true)"
-  prompt="$(tmux show-options -p -t "$target" -qv @agent_prompt_file 2>/dev/null || true)"
   parent="$(tmux show-options -p -t "$target" -qv @agent_parent_session 2>/dev/null || true)"
   instance="$(tmux show-options -p -t "$target" -qv @agent_instance_id 2>/dev/null || true)"
   host_id; host="$REPLY"
   # CLAUDE_HOOK_EVENT / PI_HOOK_EVENT / CODEX_HOOK_EVENT may be exported by the
   # calling hook config.
   event="${CLAUDE_HOOK_EVENT:-${PI_HOOK_EVENT:-${CODEX_HOOK_EVENT:-}}}"
-  printf '{"ts":"%s","ts_epoch":%s,"type":"agent.state","pane":"%s","session":"%s","state":"%s","event":"%s","bead":"%s","task":"%s","role":"%s","prompt_file":"%s","parent":"%s","host_id":"%s","agent_instance_id":"%s"}\n' \
-    "$(json_escape "$ts")" "$epoch" "$(json_escape "$target")" "$(json_escape "$session")" "$(json_escape "$state")" "$(json_escape "$event")" "$(json_escape "$bead")" "$(json_escape "$task")" "$(json_escape "$role")" "$(json_escape "$prompt")" "$(json_escape "$parent")" "$(json_escape "$host")" "$(json_escape "$instance")" >> "$file" 2>/dev/null || true
+  printf '{"ts":"%s","ts_epoch":%s,"type":"agent.state","pane":"%s","session":"%s","state":"%s","event":"%s","bead":"%s","task":"%s","role":"%s","parent":"%s","host_id":"%s","agent_instance_id":"%s"}\n' \
+    "$(json_escape "$ts")" "$epoch" "$(json_escape "$target")" "$(json_escape "$session")" "$(json_escape "$state")" "$(json_escape "$event")" "$(json_escape "$bead")" "$(json_escape "$task")" "$(json_escape "$role")" "$(json_escape "$parent")" "$(json_escape "$host")" "$(json_escape "$instance")" >> "$file" 2>/dev/null || true
 }
 
 sanitize_meta_value() {
@@ -111,24 +121,68 @@ set_pane_option() {
   fi
 }
 
+# Seed one pane option from its launch environment variable, only when the option
+# is empty. The environment is frozen at launch; the owner of the option (the
+# launcher, or `sb issue claim|release|close` for @agent_issue) writes it after
+# that, so a state transition must never put the frozen value back.
+seed_pane_option() {
+  local opt="$1" value="$2"
+  [ -n "$value" ] || return 0
+  [ -z "$(tmux show-options -p -t "$target" -qv "$opt" 2>/dev/null || true)" ] || return 0
+  set_pane_option "$opt" "$(sanitize_meta_value "$value")"
+}
+
 set_meta_from_env() {
-  # Only variables that are present in the environment are applied. This keeps
-  # existing hooks backward compatible: callers that only pass a state do not
-  # accidentally wipe metadata during normal running/done transitions.
-  [ "${XTMUX_AGENT_BEAD+x}" = x ] && set_pane_option @agent_bead "$(sanitize_meta_value "$XTMUX_AGENT_BEAD")"
-  [ "${XTMUX_AGENT_TASK+x}" = x ] && set_pane_option @agent_task "$(sanitize_meta_value "$XTMUX_AGENT_TASK")"
-  [ "${XTMUX_AGENT_ROLE+x}" = x ] && set_pane_option @agent_role "$(sanitize_meta_value "$XTMUX_AGENT_ROLE")"
-  [ "${XTMUX_AGENT_PROMPT_FILE+x}" = x ] && set_pane_option @agent_prompt_file "$(sanitize_meta_value "$XTMUX_AGENT_PROMPT_FILE")"
-  [ "${XTMUX_AGENT_PARENT_SESSION+x}" = x ] && set_pane_option @agent_parent_session "$(sanitize_meta_value "$XTMUX_AGENT_PARENT_SESSION")"
+  # XTMUX_AGENT_BEAD is the read-only legacy spelling of XTMUX_AGENT_ISSUE.
+  # @agent_issue is seeded at launch only (--new-instance). After that `sb issue claim|release|close`
+  # owns it: a later transition must never put the frozen launch value back after `sb` unset it.
+  [ "$new_instance" = 1 ] && seed_pane_option @agent_issue "${XTMUX_AGENT_ISSUE:-${XTMUX_AGENT_BEAD:-}}"
+  seed_pane_option @agent_task "${XTMUX_AGENT_TASK:-}"
+  seed_pane_option @agent_role "${XTMUX_AGENT_ROLE:-}"
+  seed_pane_option @agent_holder "${XTMUX_AGENT_HOLDER:-}"
+  seed_pane_option @agent_dispatcher "${XTMUX_AGENT_DISPATCHER:-}"
+  seed_pane_option @agent_parent_session "${XTMUX_AGENT_PARENT_SESSION:-}"
+  seed_pane_option @agent_parent_pane "${XTMUX_AGENT_PARENT_PANE:-}"
+  return 0
+}
+
+# @agent_worktree and @agent_branch describe where the agent works NOW, so a
+# state transition refreshes them from the pane's working directory (a branch
+# switch otherwise leaves them stale). Only a git work tree answers; anything
+# else leaves the options as they are.
+refresh_git_meta() {
+  local cwd top branch
+  cwd="$(tmux display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)"
+  [ -n "$cwd" ] && [ -d "$cwd" ] || return 0
+  top="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -z "$top" ]; then
+    # Not a git work tree: the old worktree and branch are no longer true, so they are unset.
+    tmux set-option -p -u -t "$target" -q @agent_worktree 2>/dev/null || true
+    tmux set-option -p -u -t "$target" -q @agent_branch 2>/dev/null || true
+    return 0
+  fi
+  branch="$(git -C "$top" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+  [ "$(tmux show-options -p -t "$target" -qv @agent_worktree 2>/dev/null || true)" = "$top" ] || set_pane_option @agent_worktree "$top"
+  if [ -z "$branch" ]; then
+    # Detached HEAD names no branch.
+    tmux set-option -p -u -t "$target" -q @agent_branch 2>/dev/null || true
+  elif [ "$(tmux show-options -p -t "$target" -qv @agent_branch 2>/dev/null || true)" != "$branch" ]; then
+    set_pane_option @agent_branch "$branch"
+  fi
   return 0
 }
 
 clear_optional_meta() {
-  set_pane_option @agent_bead ""
+  set_pane_option @agent_issue ""
+  set_pane_option @agent_holder ""
+  set_pane_option @agent_dispatcher ""
   set_pane_option @agent_task ""
   set_pane_option @agent_role ""
-  set_pane_option @agent_prompt_file ""
   set_pane_option @agent_parent_session ""
+  # Legacy option of a pane launched before the rename: unset, never written.
+  tmux set-option -p -u -t "$target" -q @agent_bead 2>/dev/null || true
+  # Written by the picker handoff only (see docs/agent-identity.md); cleared with the rest.
+  set_pane_option @agent_prompt_file ""
   # Written by the xt launcher rather than by this script, but cleared here for
   # the same reason @agent_parent_session is: `off` ends the agent's occupation,
   # and topology --json now publishes these as agent.worktree/branch/parent_pane_id.
@@ -140,8 +194,8 @@ clear_optional_meta() {
   set_pane_option @agent_parent_pane ""
 }
 
-# K4 restart recovery (xtmux-s96.4). `off` clears @agent_bead, @agent_task,
-# @agent_role, @agent_prompt_file and @agent_parent_session, so an agent
+# K4 restart recovery (xtmux-s96.4). `off` clears @agent_issue, @agent_task,
+# @agent_role and @agent_parent_session, so an agent
 # restarted in the SAME pane without its launcher environment — `codex resume`,
 # a crashed harness relaunched by hand, a reattached terminal — used to come
 # back with no task binding and no way to recover one.
@@ -171,14 +225,15 @@ restore_pane_meta() {
 
   local wanted=()
   for pair in \
-    "XTMUX_AGENT_BEAD:@agent_bead:beadId" \
+    "XTMUX_AGENT_ISSUE:@agent_issue:beadId" \
     "XTMUX_AGENT_TASK:@agent_task:task" \
     "XTMUX_AGENT_ROLE:@agent_role:role" \
-    "XTMUX_AGENT_PROMPT_FILE:@agent_prompt_file:promptFile" \
     "XTMUX_AGENT_PARENT_SESSION:@agent_parent_session:parentSessionId"
   do
     env="${pair%%:*}"; rest="${pair#*:}"; opt="${rest%%:*}"; field="${rest##*:}"
     if [ "${!env+x}" = x ]; then continue; fi
+    # the legacy spelling of the issue variable also counts as caller-supplied
+    if [ "$env" = XTMUX_AGENT_ISSUE ] && [ "${XTMUX_AGENT_BEAD+x}" = x ]; then continue; fi
     if [ -n "$(tmux show-options -p -t "$target" -qv "$opt" 2>/dev/null || true)" ]; then continue; fi
     wanted+=("$opt:$field")
   done
@@ -211,9 +266,9 @@ if [ "$new_instance" = 1 ]; then
 fi
 
 # BEFORE any emit, because emit_v2 reads these from the pane options. A delegated
-# agent is launched as `XTMUX_AGENT_BEAD=... agent-state.sh idle --new-instance`,
+# agent is launched as `XTMUX_AGENT_ISSUE=... agent-state.sh idle --new-instance`,
 # so with this call left until after the lifecycle emits — where it used to be —
-# the one launch that most needs a bead binding is exactly the one that opens its
+# the one launch that most needs an issue binding is exactly the one that opens its
 # durable instance without one. openInstance is idempotent, so no later
 # transition can repair that row.
 set_meta_from_env
@@ -249,10 +304,9 @@ emit_v2() {
     session_name="$(tmux display-message -p -t "$target" '#S' 2>/dev/null || true)" \
     instance_id="$instance" \
     host_id="$host" \
-    bead="$(tmux show-options -p -t "$target" -qv @agent_bead 2>/dev/null || true)" \
+    bead="$(pane_issue; printf '%s' "$REPLY")" \
     task="$(tmux show-options -p -t "$target" -qv @agent_task 2>/dev/null || true)" \
     role="$(tmux show-options -p -t "$target" -qv @agent_role 2>/dev/null || true)" \
-    prompt_file="$(tmux show-options -p -t "$target" -qv @agent_prompt_file 2>/dev/null || true)" \
     parent="$(tmux show-options -p -t "$target" -qv @agent_parent_session 2>/dev/null || true)" \
     >/dev/null 2>&1 || true
 }
@@ -284,6 +338,7 @@ tmux set-option -p -t "$target" -q @agent_last_transition "$(date -Is)" 2>/dev/n
 # Emitted BEFORE clear_optional_meta: `off` wipes @agent_bead, and the closing
 # event is precisely the one that most needs to say which bead the agent died on.
 if [ "$new_instance" = 1 ] || [ "$prev_state" != "$state" ]; then
+  [ "$state" = off ] || refresh_git_meta
   emit_v2 agent.state state="$state" hook_event="${CLAUDE_HOOK_EVENT:-${PI_HOOK_EVENT:-${CODEX_HOOK_EVENT:-}}}"
   # `|| true`: this is the if-body's last command, and a false test under set -e
   # would take the whole hook down with it.

@@ -105,9 +105,9 @@ and clean up tmux-based agent work.
 
 - standardized `@agent_*` metadata:
   - `@agent_state`
-  - `@agent_bead`
+  - `@agent_issue`
   - `@agent_task`
-  - `@agent_prompt_file`
+  - `@agent_holder`, `@agent_dispatcher`, `@agent_parent_pane`
   - `@agent_parent_session`
   - `@agent_last_transition`
 - `wait-agent`: requester-owned SQLite wait that blocks until an agent pane leaves working/running state; `--consume` claims a terminal wake once. A completed wake is replayed only while the target is idle — re-arming against a target that is working again always opens a fresh wait
@@ -482,11 +482,15 @@ calling only the state argument:
 
 Optional metadata env vars:
 
+The environment only seeds an empty option. A non-empty option is never overwritten by `agent-state.sh`; its owner writes it (see core `docs/agent-identity.md`). `agent-state.sh` refreshes `@agent_worktree` and `@agent_branch` from the pane's working directory on every state transition.
+
 | env | tmux option | meaning |
 |---|---|---|
-| `XTMUX_AGENT_BEAD` | `@agent_bead` | current durable Beads task contract |
+| `XTMUX_AGENT_ISSUE` | `@agent_issue` | Substrate Issue the pane's agent holds (`XTMUX_AGENT_BEAD` / `@agent_bead` are read-only legacy fallbacks) |
 | `XTMUX_AGENT_TASK` | `@agent_task` | short human-readable task summary |
-| `XTMUX_AGENT_PROMPT_FILE` | `@agent_prompt_file` | `/tmp/...` prompt file used for handoff |
+| `XTMUX_AGENT_HOLDER` | `@agent_holder` | Substrate holder that owns the pane (claim sync compares against it) |
+| `XTMUX_AGENT_DISPATCHER` | `@agent_dispatcher` | Substrate participant that dispatched the agent |
+| `XTMUX_AGENT_PARENT_PANE` | `@agent_parent_pane` | dispatcher's tmux `#{pane_id}` |
 | `XTMUX_AGENT_PARENT_SESSION` | `@agent_parent_session` | orchestrator tmux `#{session_id}` (e.g. `$3`) — stable, per-instance, never recycled; do not use `#S` (session name) |
 | automatic | `@agent_last_transition` | ISO timestamp for last state transition |
 

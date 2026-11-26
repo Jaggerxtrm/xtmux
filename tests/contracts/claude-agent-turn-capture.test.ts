@@ -18,7 +18,7 @@ case "\${!#}" in
   '#{pane_id}') printf '%%child\\n' ;;
   '#{session_id}') printf '$child\\n' ;;
   '#S') printf 'child\\n' ;;
-  '@agent_bead') printf 'xtmux-msg\\n' ;;
+  '@agent_issue') printf 'xtmux-msg\\n' ;;
   '@agent_parent_session') printf '%s\\n' "\${MOCK_PARENT:-}" ;;
 esac
 `);
@@ -74,7 +74,7 @@ case "\${!#}" in
   '#{pane_id}') printf '%%child\\n' ;;
   '#{session_id}') printf '$child\\n' ;;
   '#S') printf 'child\\n' ;;
-  '@agent_bead') printf '\\n' ;;
+  '@agent_issue') printf '\\n' ;;
   '@agent_parent_session') printf '\\n' ;;
 esac
 `);
@@ -149,7 +149,7 @@ case "\${!#}" in
   '#{pane_id}') printf '%%child\\n' ;;
   '#{session_id}') printf '$child\\n' ;;
   '#S') printf 'child\\n' ;;
-  '@agent_bead') printf 'xtmux-msg\\n' ;;
+  '@agent_issue') printf 'xtmux-msg\\n' ;;
   '@agent_parent_session') printf '%s\\n' "\${MOCK_PARENT:-}" ;;
   '@agent_episode_pending') grep -Fqx '@agent_episode_pending=1' "$state" && printf '1\\n' ;;
   '@agent_episode_cursor') v="$(grep -F '@agent_episode_cursor=' "$state" | tail -1)"; printf '%s\\n' "\${v#*=}" ;;

@@ -643,16 +643,17 @@ else
     TMUX_PANE="$target" "$AGENT_STATE" needs-input >/dev/null 2>&1
     got="$(tmux display-message -p -t "$target" '#{@agent_state}' 2>/dev/null || true)"
     if [ "$got" = "needs-input" ]; then ok "agent-state: writes pane option"; else nok "agent-state: writes pane option (got '$got')"; fi
+    # The launch env only seeds EMPTY options (CORE-2801): start from a clean pane.
+    for opt in @agent_issue @agent_bead @agent_task @agent_role @agent_parent_session; do tmux set-option -p -t "$target" -u "$opt" 2>/dev/null || true; done
     TMUX_PANE="$target" \
-      XTMUX_AGENT_BEAD=xtmux-mux.1 \
+      XTMUX_AGENT_ISSUE=xtmux-mux.1 \
       XTMUX_AGENT_TASK='standardize metadata' \
       XTMUX_AGENT_ROLE='chain-coordinator' \
-      XTMUX_AGENT_PROMPT_FILE=/tmp/xtmux-mux.1.txt \
       XTMUX_AGENT_PARENT_SESSION=orch \
-      "$AGENT_STATE" running >/dev/null 2>&1
-    got_meta="$(tmux display-message -p -t "$target" $'#{@agent_state}\t#{@agent_bead}\t#{@agent_task}\t#{@agent_role}\t#{@agent_prompt_file}\t#{@agent_parent_session}\t#{@agent_last_transition}' 2>/dev/null || true)"
-    IFS=$'\t' read -r got_state got_bead got_task got_role got_prompt got_parent got_last <<< "$got_meta"
-    [ "$got_state" = running ] && [ "$got_bead" = xtmux-mux.1 ] && [ "$got_task" = 'standardize metadata' ] && [ "$got_role" = 'chain-coordinator' ] && [ "$got_prompt" = /tmp/xtmux-mux.1.txt ] && [ "$got_parent" = orch ] && [ -n "$got_last" ] && ok "agent-state: writes orchestration metadata (incl @agent_role)" || nok "agent-state: writes orchestration metadata (incl @agent_role)"
+      "$AGENT_STATE" running --new-instance >/dev/null 2>&1
+    got_meta="$(tmux display-message -p -t "$target" $'#{@agent_state}\t#{@agent_issue}\t#{@agent_task}\t#{@agent_role}\t#{@agent_parent_session}\t#{@agent_last_transition}' 2>/dev/null || true)"
+    IFS=$'\t' read -r got_state got_bead got_task got_role got_parent got_last <<< "$got_meta"
+    [ "$got_state" = running ] && [ "$got_bead" = xtmux-mux.1 ] && [ "$got_task" = 'standardize metadata' ] && [ "$got_role" = 'chain-coordinator' ] && [ "$got_parent" = orch ] && [ -n "$got_last" ] && ok "agent-state: writes orchestration metadata (incl @agent_role)" || nok "agent-state: writes orchestration metadata (incl @agent_role)"
     meta_row="$($PICKER list all expanded 2>/dev/null | awk -F'\t' -v p="$target" '$1=="pane"&&$4==p{print $5; exit}')"
     meta_row_plain="$(idle_plain "$meta_row")"
     case "$meta_row_plain" in *"bead:xtmux-mux.1"*"task:standardize metadata"*"from:orch"*) ok "picker: pane row consumes optional agent metadata" ;; *) nok "picker: pane row consumes optional agent metadata" ;; esac
@@ -666,18 +667,57 @@ else
     tmux set-option -p -t "$target" @agent_branch xt/gone 2>/dev/null || true
     tmux set-option -p -t "$target" @agent_parent_pane %999 2>/dev/null || true
     TMUX_PANE="$target" "$AGENT_STATE" off >/dev/null 2>&1 || true
-    got_clear="$(tmux display-message -p -t "$target" $'#{@agent_state}\t#{@agent_bead}\t#{@agent_task}\t#{@agent_role}\t#{@agent_prompt_file}\t#{@agent_parent_session}' 2>/dev/null || true)"
-    IFS=$'\t' read -r got_state got_bead got_task got_role got_prompt got_parent <<< "$got_clear"
-    [ "$got_state" = off ] && [ -z "$got_bead$got_task$got_role$got_prompt$got_parent" ] && ok "agent-state: off clears optional metadata" || nok "agent-state: off clears optional metadata"
+    got_clear="$(tmux display-message -p -t "$target" $'#{@agent_state}\t#{@agent_issue}\t#{@agent_task}\t#{@agent_role}\t#{@agent_parent_session}' 2>/dev/null || true)"
+    IFS=$'\t' read -r got_state got_bead got_task got_role got_parent <<< "$got_clear"
+    [ "$got_state" = off ] && [ -z "$got_bead$got_task$got_role$got_parent" ] && ok "agent-state: off clears optional metadata" || nok "agent-state: off clears optional metadata"
     # Set/unset, not the value: a TSV of empty fields is unreadable here because
     # bash collapses runs of tab (an IFS whitespace char), so trailing cleared
     # fields would vanish and the assertion would pass against anything.
     got_lineage="$(tmux display-message -p -t "$target" '#{?@agent_worktree,SET,-}|#{?@agent_branch,SET,-}|#{?@agent_parent_pane,SET,-}' 2>/dev/null || true)"
     [ "$got_lineage" = '-|-|-' ] && ok "agent-state: off clears published lineage (worktree/branch/parent_pane)" || nok "agent-state: off clears published lineage (worktree/branch/parent_pane) (got '$got_lineage')"
+    # CORE-2801: one owner per field. The launch environment only SEEDS an empty option.
+    own_opt() { tmux display-message -p -t "$target" "#{$1}" 2>/dev/null || true; }
+    tmux set-option -p -t "$target" @agent_issue OWNER-1 2>/dev/null || true
+    TMUX_PANE="$target" XTMUX_AGENT_ISSUE=FROZEN-9 XTMUX_AGENT_ROLE=seeded "$AGENT_STATE" running >/dev/null 2>&1
+    [ "$(own_opt @agent_issue)" = OWNER-1 ] && ok "agent-state: a non-empty @agent_issue is never overwritten from the launch env" || nok "agent-state: a non-empty @agent_issue is never overwritten from the launch env (got '$(own_opt @agent_issue)')"
+    # After `sb` unsets @agent_issue, a later transition never re-seeds it from the frozen env.
+    tmux set-option -p -t "$target" -u @agent_issue 2>/dev/null || true
+    TMUX_PANE="$target" XTMUX_AGENT_ISSUE=FROZEN-9 "$AGENT_STATE" idle >/dev/null 2>&1
+    TMUX_PANE="$target" XTMUX_AGENT_ISSUE=FROZEN-9 "$AGENT_STATE" running >/dev/null 2>&1
+    [ -z "$(own_opt @agent_issue)" ] && ok "agent-state: a transition never re-seeds @agent_issue after sb unset it" || nok "agent-state: a transition never re-seeds @agent_issue after sb unset it (got '$(own_opt @agent_issue)')"
+    [ "$(own_opt @agent_role)" = seeded ] && ok "agent-state: the launch env seeds an empty option" || nok "agent-state: the launch env seeds an empty option"
+    TMUX_PANE="$target" "$AGENT_STATE" off >/dev/null 2>&1 || true
+    tmux set-option -p -t "$target" @agent_bead "" 2>/dev/null || true
+    TMUX_PANE="$target" XTMUX_AGENT_BEAD=LEGACY-3 "$AGENT_STATE" running --new-instance >/dev/null 2>&1
+    [ "$(own_opt @agent_issue)" = LEGACY-3 ] && [ -z "$(own_opt @agent_bead)" ] && ok "agent-state: legacy XTMUX_AGENT_BEAD seeds @agent_issue and never @agent_bead" || nok "agent-state: legacy XTMUX_AGENT_BEAD seeds @agent_issue and never @agent_bead"
   else
     printf '  \033[33mskip\033[0m agent-state pane write (no panes)\n'
   fi
 fi
+
+echo
+echo "== identity ownership: git refresh (CORE-2801, private socket) =="
+own_sock="xtmux-own-$$"
+own_repo="$(mktemp -d)"
+git -C "$own_repo" init -q -b first-branch 2>/dev/null && git -C "$own_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init 2>/dev/null
+if command tmux -L "$own_sock" -f /dev/null new-session -d -s own -c "$own_repo" 'sleep 300' 2>/dev/null; then
+  own_pane="$(command tmux -L "$own_sock" list-panes -a -F '#{pane_id}' | head -1)"
+  own_env="$(command tmux -L "$own_sock" display-message -p -t "$own_pane" '#{socket_path},0,0')"
+  TMUX="$own_env" TMUX_PANE="$own_pane" "$AGENT_STATE" idle >/dev/null 2>&1
+  git -C "$own_repo" checkout -q -b second-branch 2>/dev/null
+  TMUX="$own_env" TMUX_PANE="$own_pane" "$AGENT_STATE" running >/dev/null 2>&1
+  got_branch="$(command tmux -L "$own_sock" display-message -p -t "$own_pane" '#{@agent_branch}|#{@agent_worktree}')"
+  [ "$got_branch" = "second-branch|$(cd "$own_repo" && pwd -P)" ] && ok "agent-state: @agent_branch/@agent_worktree refresh on a state transition" || nok "agent-state: @agent_branch/@agent_worktree refresh on a state transition (got '$got_branch')"
+  # A detached HEAD names no branch, and a cwd outside git declares no worktree.
+  git -C "$own_repo" checkout -q --detach 2>/dev/null
+  TMUX="$own_env" TMUX_PANE="$own_pane" "$AGENT_STATE" idle >/dev/null 2>&1
+  got_detached="$(command tmux -L "$own_sock" display-message -p -t "$own_pane" '#{?@agent_branch,SET,-}|#{?@agent_worktree,SET,-}')"
+  [ "$got_detached" = '-|SET' ] && ok "agent-state: a detached HEAD unsets @agent_branch" || nok "agent-state: a detached HEAD unsets @agent_branch (got '$got_detached')"
+  command tmux -L "$own_sock" kill-server 2>/dev/null || true
+else
+  printf '  \033[33mskip\033[0m identity ownership (cannot start a private tmux server)\n'
+fi
+rm -rf "$own_repo"
 
 echo
 echo "== identity contract: host_id + @agent_instance_id (xtmux-j46.1) =="
@@ -854,7 +894,7 @@ c=sqlite3.connect(sys.argv[1]); print(c.execute(\"SELECT instance_id FROM event_
   # silently breaks the one binding Specialists needs: job -> pane -> bead.
   env TMUX="$rl_tmuxenv" TMUX_PANE="$bare" XDG_STATE_HOME="$rl_state" \
     XTMUX_OBS_V2=1 PATH="$rl_bin:$PATH" \
-    XTMUX_AGENT_BEAD=xtmux-j46.7 XTMUX_AGENT_TASK='delegated task' \
+    XTMUX_AGENT_ISSUE=xtmux-j46.7 XTMUX_AGENT_TASK='delegated task' \
     "$AGENT_STATE" idle --new-instance >/dev/null 2>&1
   d_bead="$(rl_q "SELECT bead_id FROM agent_instances WHERE pane_id='$bare'")"
   d_task="$(rl_q "SELECT task FROM agent_instances WHERE pane_id='$bare'")"
@@ -933,7 +973,7 @@ else
 
   # Give the pane a full agent identity, the way a live agent session would.
   env TMUX="$ctx_tmuxenv" TMUX_PANE="$ctx_pane" XDG_STATE_HOME="$ctx_state" \
-    XTMUX_HOST_ID_FILE="$ctx_hostfile" XTMUX_AGENT_BEAD=xtmux-j46.2 \
+    XTMUX_HOST_ID_FILE="$ctx_hostfile" XTMUX_AGENT_ISSUE=xtmux-j46.2 \
     "$AGENT_STATE" idle --new-instance >/dev/null 2>&1
   ctx_json="$(ctx_run)"
 
@@ -2059,17 +2099,21 @@ if ! command -v tmux >/dev/null 2>&1; then
 else
   cd_sock="xtmux-contract-claude-$$"
   cd_bin="$WORK/claude-detect-bin"; mkdir -p "$cd_bin"
-  # `ps -o comm=` reports the executable's basename, so a COPY of sleep named
+  # `ps -o comm=` reports the executable's basename, so a COPY of sh named
   # `claude` is a process the detector sees exactly as it sees the real one — and a
   # copy of sh named `node` reproduces the `xt claude` wrapper. Real process table,
-  # no mocking of the thing under test.
-  cp "$(command -v sleep)" "$cd_bin/claude" 2>/dev/null || true
-  cp "$(command -v sh)"    "$cd_bin/node"   2>/dev/null || true
+  # no mocking of the thing under test. Both copies are sh: sh is a stand-alone
+  # binary on every runner, while `sleep` is a link to one multicall binary on
+  # Ubuntu 26.04 (uutils coreutils), and a copy of that named `claude` exits as an
+  # unknown applet before the detector runs. `; true` stops sh from exec-ing its
+  # last command, which would rename the process to `sleep`.
+  cp "$(command -v sh)" "$cd_bin/claude" 2>/dev/null || true
+  cp "$(command -v sh)" "$cd_bin/node"   2>/dev/null || true
   if [ -x "$cd_bin/claude" ] && [ -x "$cd_bin/node" ] && \
-     command tmux -L "$cd_sock" -f /dev/null new-session -d -s cdetect -n wrapped "$cd_bin/node -c '$cd_bin/claude 100; true'" 2>/dev/null; then
+     command tmux -L "$cd_sock" -f /dev/null new-session -d -s cdetect -n wrapped "$cd_bin/node -c '$cd_bin/claude -c \"sleep 100; true\"; true'" 2>/dev/null; then
     (
       tmux() { command tmux -L "$cd_sock" "$@"; }
-      tmux new-window -d -n direct "$cd_bin/claude 100"
+      tmux new-window -d -n direct "$cd_bin/claude -c \"sleep 100; true\""
       tmux new-window -d -n plain  "sleep 100"
       sleep 1
       cd_pane() { tmux list-panes -a -F '#{window_name} #{pane_id}' 2>/dev/null | awk -v w="$1" '$1==w{print $2; exit}'; }
@@ -2293,7 +2337,7 @@ else
   tmux new-session -d -s "$dash_b" -c "$dash_repo" 'sleep 100' 2>/dev/null
   dash_pane_a="$(tmux list-panes -t "$dash_a" -F '#{pane_id}' 2>/dev/null | head -1)"
   if [ -n "$dash_pane_a" ]; then
-    TMUX_PANE="$dash_pane_a" XTMUX_AGENT_BEAD=xtmux-mux.6 XTMUX_AGENT_TASK='dash task' XTMUX_AGENT_PARENT_SESSION=orch "$AGENT_STATE" needs-input >/dev/null 2>&1
+    TMUX_PANE="$dash_pane_a" XTMUX_AGENT_ISSUE=xtmux-mux.6 XTMUX_AGENT_TASK='dash task' XTMUX_AGENT_PARENT_SESSION=orch "$AGENT_STATE" needs-input --new-instance >/dev/null 2>&1
   fi
   dash_rows="$($PICKER dashboard sessions-only 2>/dev/null)"
   dash_a_row="$(printf '%s\n' "$dash_rows" | awk -F'\t' -v n="$dash_a" '$1=="session" && $3==n {print; exit}')"

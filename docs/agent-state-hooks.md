@@ -26,16 +26,21 @@ pane-scoped tmux user options:
 | option | source env | meaning |
 |---|---|---|
 | `@agent_state` | first CLI arg | structured lifecycle state: `running`, `needs-input`, `done`, `idle`, `off` |
-| `@agent_bead` | `XTMUX_AGENT_BEAD` | current durable task contract, if any |
+| `@agent_issue` | `XTMUX_AGENT_ISSUE` | Substrate Issue the agent holds, if any. Seeded only at launch (`--new-instance`); afterwards `sb issue claim\|release\|close` owns it. `@agent_bead` / `XTMUX_AGENT_BEAD` are read-only legacy fallbacks. |
+| `@agent_holder` | `XTMUX_AGENT_HOLDER` | Substrate holder that owns the pane |
+| `@agent_dispatcher` | `XTMUX_AGENT_DISPATCHER` | Substrate participant that dispatched the agent |
 | `@agent_task` | `XTMUX_AGENT_TASK` | short human-readable task summary |
-| `@agent_prompt_file` | `XTMUX_AGENT_PROMPT_FILE` | `/tmp/...` prompt-file pointer used for safe handoff |
+| `@agent_prompt_file` | none | `/tmp/...` prompt-file pointer written by the picker handoff only; `agent-state.sh` never writes it and clears it on `off` |
 | `@agent_parent_session` | `XTMUX_AGENT_PARENT_SESSION` | orchestrator tmux `#{session_id}` that delegated the work (stable per-instance id, e.g. `$3`; never `#S` session-name which is mutable and recycled) |
 | `@agent_last_transition` | automatic | ISO timestamp for the latest state transition |
 
-metadata env vars are optional and backward-compatible: if a hook only calls
-`agent-state.sh running`, existing metadata is left alone. `agent-state.sh off`
+metadata env vars are optional and only seed an EMPTY option: a non-empty option is
+never overwritten from the environment, and `@agent_issue` is seeded only at launch.
+If a hook only calls `agent-state.sh running`, existing metadata is left alone.
+Every real transition also refreshes `@agent_worktree` and `@agent_branch` from the
+pane's working directory (unset outside a git work tree, branch unset on a detached HEAD). `agent-state.sh off`
 keeps `@agent_state=off` for compatibility and clears optional task metadata so
-reused panes do not show stale bead/task pointers.
+reused panes do not show stale issue/task pointers.
 
 example:
 

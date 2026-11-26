@@ -514,7 +514,7 @@ session_meta() {
 }
 
 pane_meta() {
-  tmux list-panes -a -F $'#{session_id}\t#{window_index}\t#{s/\n/ /:#{s/\t/ /:window_name}}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{s/\n/ /:#{s/\t/ /:pane_current_command}}\t#{s/\n/ /:#{s/\t/ /:pane_current_path}}\t#{?@agent_state,#{s/\n/ /:#{s/\t/ /:@agent_state}},-}\t#{pane_pid}\t#{?@agent_bead,#{s/\n/ /:#{s/\t/ /:@agent_bead}},-}\t#{?@agent_task,#{s/\n/ /:#{s/\t/ /:@agent_task}},-}\t#{?@agent_parent_session,#{s/\n/ /:#{s/\t/ /:@agent_parent_session}},-}\t#{?@agent_last_transition,#{s/\n/ /:#{s/\t/ /:@agent_last_transition}},-}\t#{?@agent_worktree,#{s/\n/ /:#{s/\t/ /:@agent_worktree}},-}'
+  tmux list-panes -a -F $'#{session_id}\t#{window_index}\t#{s/\n/ /:#{s/\t/ /:window_name}}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{s/\n/ /:#{s/\t/ /:pane_current_command}}\t#{s/\n/ /:#{s/\t/ /:pane_current_path}}\t#{?@agent_state,#{s/\n/ /:#{s/\t/ /:@agent_state}},-}\t#{pane_pid}\t#{?@agent_issue,#{s/\n/ /:#{s/\t/ /:@agent_issue}},#{?@agent_bead,#{s/\n/ /:#{s/\t/ /:@agent_bead}},-}}\t#{?@agent_task,#{s/\n/ /:#{s/\t/ /:@agent_task}},-}\t#{?@agent_parent_session,#{s/\n/ /:#{s/\t/ /:@agent_parent_session}},-}\t#{?@agent_last_transition,#{s/\n/ /:#{s/\t/ /:@agent_last_transition}},-}\t#{?@agent_worktree,#{s/\n/ /:#{s/\t/ /:@agent_worktree}},-}'
 }
 
 agent_meta_value() {
@@ -1799,7 +1799,7 @@ telemetry_run() {
     current_tmux_pane; pane="$REPLY"
     current_tmux_session; session="$REPLY"
     current_tmux_session_id; session_id="$REPLY"
-    [ -n "$pane" ] && bead="$(tmux show-options -p -t "$pane" -qv @agent_bead 2>/dev/null || true)"
+    [ -n "$pane" ] && bead="$(tmux show-options -p -t "$pane" -qv @agent_issue 2>/dev/null || true)"; [ -n "$bead" ] || bead="$(tmux show-options -p -t "$pane" -qv @agent_bead 2>/dev/null || true)"
   fi
   cwd="$(pwd -P 2>/dev/null || pwd)"
   run_id=''
@@ -1964,7 +1964,7 @@ _dashboard_tsv() {
       printf 'pane\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$pane_sid" "$(tsv_clean "$pane_sname")" "$pane_id" "${pane_state_norm:-}" "$(tsv_clean "$pane_bead")" "$(tsv_clean "$pane_task")" "$(tsv_clean "$pane_cmd")" "$(tsv_clean "$pane_path")" >> "$tmp_panes"
     fi
-  done < <(tmux list-panes -a -F $'#{session_id}\t#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}' 2>/dev/null || true)
+  done < <(tmux list-panes -a -F $'#{session_id}\t#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_issue,#{@agent_issue},#{?@agent_bead,#{@agent_bead},-}}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}' 2>/dev/null || true)
 
   for root in "${!root_sids[@]}"; do
     _sid_list="${root_sids[$root]}"; set -- $_sid_list
@@ -2056,7 +2056,7 @@ topology_json() {
   # One list-panes pass supplies every session, window and pane field. Do not
   # add display-message/show-options calls here: Console needs one coherent
   # snapshot, not independently sampled hierarchy levels.
-  rows="$(tmux list-panes -a -F $'#{session_id}\t#{session_name}\t#{session_created}\t#{session_activity}\t#{session_attached}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{?@agent_instance_id,#{@agent_instance_id},-}\t#{?@agent_state,#{@agent_state},-}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_prompt_file,#{@agent_prompt_file},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}\t#{?@agent_role,#{@agent_role},-}\t#{?@agent_worktree,#{@agent_worktree},-}\t#{?@agent_branch,#{@agent_branch},-}\t#{?@agent_parent_pane,#{@agent_parent_pane},-}' 2>/dev/null || true)"
+  rows="$(tmux list-panes -a -F $'#{session_id}\t#{session_name}\t#{session_created}\t#{session_activity}\t#{session_attached}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{?@agent_instance_id,#{@agent_instance_id},-}\t#{?@agent_state,#{@agent_state},-}\t#{?@agent_issue,#{@agent_issue},#{?@agent_bead,#{@agent_bead},-}}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_prompt_file,#{@agent_prompt_file},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}\t#{?@agent_role,#{@agent_role},-}\t#{?@agent_worktree,#{@agent_worktree},-}\t#{?@agent_branch,#{@agent_branch},-}\t#{?@agent_parent_pane,#{@agent_parent_pane},-}' 2>/dev/null || true)"
 
   local -a sessions=() pane_rows=()
   declare -A session_seen=() session_name=() session_created=() session_activity=() session_attached=()
@@ -4684,7 +4684,7 @@ handoff_v2() {
       return "$ready_rc"
     }
   fi
-  tmux set-option -p -t "$pane" -q @agent_bead "$bead" 2>/dev/null || true
+  # @agent_issue is owned by the pane's agent (sb claim sync); a handoff does not write it.
   tmux set-option -p -t "$pane" -q @agent_prompt_file "$prompt_file" 2>/dev/null || true
   [ -n "$parent" ] && tmux set-option -p -t "$pane" -q @agent_parent_session "$parent" 2>/dev/null || true
   local delivery_rc=0
@@ -4785,7 +4785,6 @@ handoff() {
     printf 'command\t%s safe-send-pointer --yes %s %s\n' "$self" "$qtarget" "$qpointer"
   fi
   if [ "$execute" = 1 ]; then
-    tmux set-option -p -t "$pane" -q @agent_bead "$bead" 2>/dev/null || true
     tmux set-option -p -t "$pane" -q @agent_prompt_file "$file" 2>/dev/null || true
     [ -n "$parent" ] && tmux set-option -p -t "$pane" -q @agent_parent_session "$parent" 2>/dev/null || true
     [ -n "$bead_line" ] && tmux set-option -p -t "$pane" -q @agent_task "$(tsv_clean "$bead_line")" 2>/dev/null || true
@@ -4996,7 +4995,7 @@ preview_session_row() {
   pane_path="${pane_path:-$HOME}"
   hdr="$(tmux display-message -p -t "$sid" $'#{session_attached}\t#{session_windows}' 2>/dev/null || true)"
   IFS=$'\t' read -r attached window_count <<< "$hdr"
-  panes_raw="$(tmux list-panes -s -t "$sid" -F $'#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_prompt_file,#{@agent_prompt_file},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}' 2>/dev/null || true)"
+  panes_raw="$(tmux list-panes -s -t "$sid" -F $'#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_issue,#{@agent_issue},#{?@agent_bead,#{@agent_bead},-}}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_prompt_file,#{@agent_prompt_file},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}' 2>/dev/null || true)"
   pane_count=0
   while IFS= read -r line; do
     IFS=$'\t' read -r window_index window_name pane_id pane_index pane_active pane_cmd pane_row_path pane_width pane_height pane_left pane_top pane_state pane_pid meta_bead meta_task meta_prompt meta_parent meta_last <<< "$line"
@@ -5066,7 +5065,7 @@ preview_session_row() {
 preview_pane_row() {
   local sid="$1" name="$2" target_pane="$3" pinfo pane_path pane_cmd window_line pane_state pane_pid pane_width pane_height pane_left pane_top
   local meta_bead meta_task meta_prompt meta_parent meta_last root root_name attached bead sp_view_state
-  pinfo="$(tmux display-message -p -t "$target_pane" $'#{pane_current_path}\t#{pane_current_command}\t#I:#W\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_bead,#{@agent_bead},-}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_prompt_file,#{@agent_prompt_file},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}' 2>/dev/null || true)"
+  pinfo="$(tmux display-message -p -t "$target_pane" $'#{pane_current_path}\t#{pane_current_command}\t#I:#W\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{?@agent_state,#{@agent_state},-}\t#{pane_pid}\t#{?@agent_issue,#{@agent_issue},#{?@agent_bead,#{@agent_bead},-}}\t#{?@agent_task,#{@agent_task},-}\t#{?@agent_prompt_file,#{@agent_prompt_file},-}\t#{?@agent_parent_session,#{@agent_parent_session},-}\t#{?@agent_last_transition,#{@agent_last_transition},-}' 2>/dev/null || true)"
   IFS=$'\t' read -r pane_path pane_cmd window_line pane_width pane_height pane_left pane_top pane_state pane_pid meta_bead meta_task meta_prompt meta_parent meta_last <<< "$pinfo"
   pane_path="${pane_path:-$HOME}"
   normalize_agent_state "$target_pane" "$pane_state" "$pane_cmd" "$meta_last"; pane_state="$REPLY"

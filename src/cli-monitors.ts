@@ -223,6 +223,12 @@ function pollMonitor(db: Db, p: PollParams): void {
       deliverTerminal(db, p.monitorId, "error", Date.now(), "agent state stale: no @agent_last_transition inside the liveness window");
       break;
     }
+    // `exited`: the pane still reports a live state but runs a login shell, so the agent
+    // process is gone. That is not a finished turn and must not be delivered as `done`.
+    if (state === "exited") {
+      deliverTerminal(db, p.monitorId, "target_gone", Date.now());
+      break;
+    }
     // `unknown` means the pane advertises no @agent_state, which is true both of
     // a live pane with no agent hooks and of a pane that no longer exists. Only
     // the second is `target_gone`, and calling it `done` would report a turn that
