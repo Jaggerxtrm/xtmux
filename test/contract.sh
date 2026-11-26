@@ -2333,7 +2333,7 @@ else
   tmux new-session -d -s "$dash_b" -c "$dash_repo" 'sleep 100' 2>/dev/null
   dash_pane_a="$(tmux list-panes -t "$dash_a" -F '#{pane_id}' 2>/dev/null | head -1)"
   if [ -n "$dash_pane_a" ]; then
-    TMUX_PANE="$dash_pane_a" XTMUX_AGENT_ISSUE=xtmux-mux.6 XTMUX_AGENT_TASK='dash task' XTMUX_AGENT_PARENT_SESSION=orch "$AGENT_STATE" needs-input >/dev/null 2>&1
+    TMUX_PANE="$dash_pane_a" XTMUX_AGENT_ISSUE=xtmux-mux.6 XTMUX_AGENT_TASK='dash task' XTMUX_AGENT_PARENT_SESSION=orch "$AGENT_STATE" needs-input --new-instance >/dev/null 2>&1
   fi
   dash_rows="$($PICKER dashboard sessions-only 2>/dev/null)"
   dash_a_row="$(printf '%s\n' "$dash_rows" | awk -F'\t' -v n="$dash_a" '$1=="session" && $3==n {print; exit}')"
