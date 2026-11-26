@@ -3,12 +3,18 @@ set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 picker="$root/bin/tmux-session-picker"
+# Hermetic tmux (XTMUX-492): drop an inherited TMUX/TMUX_PANE and move the socket
+# directory private, so every client below (all of which also name their own -L
+# server) is confined to this run.
+. "$root/test/lib/tmux-isolation.sh"
+tmux_isolation_begin xtmux-json-smoke
 label="xtmux-json-smoke-$$"
 tmp="$(mktemp -d)"
 monitor_id=''
 cleanup() {
   [ -z "$monitor_id" ] || "$picker" monitor-kill "$monitor_id" --json >/dev/null 2>&1 || true
   tmux -L "$label" kill-server >/dev/null 2>&1 || true
+  tmux_isolation_end
   rm -rf "$tmp"
 }
 trap cleanup EXIT INT TERM

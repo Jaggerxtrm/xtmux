@@ -14,8 +14,12 @@
 set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Hermetic tmux (XTMUX-492): the suites this script generates inherit this
+# shell's environment, so an inherited TMUX/TMUX_PANE must not survive here.
+. "$HERE/lib/tmux-isolation.sh"
+tmux_isolation_begin xtmux-harness-selftest
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'tmux_isolation_end; rm -rf "$WORK"' EXIT
 
 selftest_pass=0
 selftest_fail=0
