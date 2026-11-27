@@ -35,15 +35,32 @@ set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if ! command -v tmux >/dev/null 2>&1; then
-  printf 'SKIP tmux-isolation: tmux not installed\n'
-  exit 0
-fi
-
 pass=0
 fail=0
 ok()  { printf '  \033[32mok\033[0m   %s\n' "$1"; pass=$((pass + 1)); }
 nok() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
+
+# A SKIP is neither a pass nor a silent no-op. CI reads a green job as "the claim
+# held", and its log is uploaded only on failure, so a skip that exits 0 would
+# vanish. Every skip therefore prints a line the gate can grep, lands in the job
+# summary when GitHub provides one, and becomes a FAILURE under
+# XTMUX_SELFTEST_REQUIRE_TMUX=1 — the CI gate sets that, because on a hosted
+# runner tmux is installed and a skip can only mean the decoy was not proven.
+skip() {
+  printf 'SKIP tmux-isolation: %s\n' "$1"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    printf 'xtmux-isolation-selftest: SKIP - %s\n' "$1" >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+  fi
+  if [ "${XTMUX_SELFTEST_REQUIRE_TMUX:-0}" = 1 ]; then
+    printf '\033[31mFAIL\033[0m tmux-isolation: skipping is not allowed here (%s)\n' "$1" >&2
+    exit 1
+  fi
+  exit 0
+}
+
+# Defined after skip(): a missing tmux is a skip, and it must be reported the
+# same way as every other skip in this script.
+command -v tmux >/dev/null 2>&1 || skip 'tmux not installed'
 
 decoy_dir="$(mktemp -d "${TMPDIR:-/tmp}/xtmux-isolation-decoy.XXXXXX")"
 decoy_sock="$decoy_dir/decoy"
@@ -61,8 +78,7 @@ echo "== tmux isolation self-test (XTMUX-492) =="
 
 # --- mode 1: a decoy reached through an inherited TMUX ------------------------
 if ! tmux -S "$decoy_sock" -f /dev/null new-session -d -s decoy-keep 'sleep 3600' 2>/dev/null; then
-  printf 'SKIP tmux-isolation: cannot start the decoy server\n'
-  exit 0
+  skip 'cannot start the decoy server'
 fi
 tmux -S "$decoy_sock" new-session -d -s decoy-cat -x 100 -y 20 'cat'
 
@@ -83,14 +99,12 @@ decoy_snapshot() {
 }
 
 if [ -z "$decoy_pane" ] || [ -z "$decoy_server_pid" ]; then
-  printf 'SKIP tmux-isolation: the decoy server has no pane or pid\n'
-  exit 0
+  skip 'the decoy server has no pane or pid'
 fi
 
 before="$(decoy_snapshot)"
 if [ -z "$before" ]; then
-  printf 'SKIP tmux-isolation: the decoy snapshot is empty\n'
-  exit 0
+  skip 'the decoy snapshot is empty'
 fi
 
 # --- mode 1 control: an inherited TMUX must be visible to this comparison -----
@@ -140,8 +154,7 @@ fi
 dtmux() { env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$default_dir" tmux -L default "$@"; }
 
 if ! dtmux -f /dev/null new-session -d -s ddecoy-keep 'sleep 3600' 2>/dev/null; then
-  printf 'SKIP tmux-isolation: cannot start the default-socket decoy server\n'
-  exit 0
+  skip 'cannot start the default-socket decoy server'
 fi
 dtmux new-session -d -s ddecoy-cat -x 100 -y 20 'cat'
 
@@ -158,8 +171,7 @@ ddecoy_snapshot() {
 
 dbefore="$(ddecoy_snapshot)"
 if [ -z "$ddecoy_sock" ] || [ -z "$dbefore" ]; then
-  printf 'SKIP tmux-isolation: the default-socket decoy is not usable\n'
-  exit 0
+  skip 'the default-socket decoy is not usable'
 fi
 
 # --- mode 2 control: an inherited TMUX_TMPDIR must be visible too -------------
@@ -203,5 +215,7 @@ else
   tail -20 "$suite2_log" >&2
 fi
 
+# Zero assertions is a skip, not a green run.
+[ "$pass" -gt 0 ] || skip 'no assertion ran'
 printf '== %s pass, %s fail ==\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

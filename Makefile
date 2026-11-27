@@ -1,14 +1,20 @@
 .PHONY: test test-regen changelog release
 
+# Order matters. A suite that stops the chain must be last, or everything after
+# it never runs.
+#
 # harness-selftest first: a green contract run proves nothing unless the harness
-# under it can actually go red (xtmux-d0a.19). tmux-isolation-selftest last: it
+# under it can actually go red (xtmux-d0a.19). tmux-isolation-selftest second: it
 # runs contract.sh twice, once per way a live tmux server could leak in, and
-# proves neither run touched a server the suite did not create (XTMUX-492).
+# proves neither run touched a server the suite did not create (XTMUX-492); it used
+# to run last, so contract.sh's documented known failures ended the chain before
+# the isolation claim was ever tested. nav-contract and contract keep their order
+# and stay last for the same reason (XTMUX-494).
 test:
 	./test/harness-selftest.sh
+	./test/tmux-isolation-selftest.sh
 	./test/nav-contract.sh
 	./test/contract.sh
-	./test/tmux-isolation-selftest.sh
 
 test-regen:
 	./test/contract.sh --regen

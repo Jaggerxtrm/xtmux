@@ -27,10 +27,19 @@ AGENT_STATE="$ROOT/scripts/agent-state.sh"
 # picker, agent-state.sh and xtmux-monitor.sh spawn themselves — then reaches
 # the private server, and `tmux_private` names that server explicitly.
 . "$HERE/lib/tmux-isolation.sh"
-tmux_isolation_begin xtmux-contract || {
-  printf '\033[31mFAIL\033[0m cannot create a private tmux directory; refusing to run against an inherited tmux server\n'
-  exit 1
-}
+tmux_isolation_begin xtmux-contract
+
+# The launch-only agent environment (XTMUX_AGENT_*) and the host-id override
+# belong to the CALLER's agent session, not to this suite. A worker running the
+# suite inherits them from `xt`, and then an assertion that seeds a pane from
+# XTMUX_AGENT_BEAD sees the caller's issue instead of the one it asked for: that
+# is what made "agent-state: legacy XTMUX_AGENT_BEAD seeds @agent_issue" fail on
+# a host with bd and jq (XTMUX-494). Every assertion below that exercises these
+# variables sets its own values, so clear the inherited ones once, the same way
+# tmux_isolation_begin clears TMUX.
+unset XTMUX_AGENT_ISSUE XTMUX_AGENT_BEAD XTMUX_AGENT_TASK XTMUX_AGENT_ROLE \
+  XTMUX_AGENT_HOLDER XTMUX_AGENT_DISPATCHER XTMUX_AGENT_PARENT_SESSION \
+  XTMUX_AGENT_PARENT_PANE XTMUX_AGENT_RUNTIME XTMUX_HOST_ID_FILE
 snapshot() { cp "$2" "$GOLDEN/$1.golden"; printf '  \033[36msnap\033[0m %s\n' "$1"; }
 
 REGEN=0
@@ -709,8 +718,19 @@ else
     [ "$(own_opt @agent_role)" = seeded ] && ok "agent-state: the launch env seeds an empty option" || nok "agent-state: the launch env seeds an empty option"
     TMUX="$as_tmuxenv" TMUX_PANE="$target" "$AGENT_STATE" off >/dev/null 2>&1 || true
     tmux_private set-option -p -t "$target" @agent_bead "" 2>/dev/null || true
-    TMUX="$as_tmuxenv" TMUX_PANE="$target" XTMUX_AGENT_BEAD=LEGACY-3 "$AGENT_STATE" running --new-instance >/dev/null 2>&1
+    # The legacy spelling is read-only and applies only when the CURRENT spelling
+    # is absent. Express that precondition at the call (`env -u`) instead of
+    # trusting the caller's environment: a worker's own XTMUX_AGENT_ISSUE used to
+    # win here, which is why this assertion failed on a host with bd and jq
+    # (XTMUX-494). The suite also clears the inherited variables at startup; this
+    # keeps the assertion true when someone runs one section by hand.
+    env -u XTMUX_AGENT_ISSUE TMUX="$as_tmuxenv" TMUX_PANE="$target" XTMUX_AGENT_BEAD=LEGACY-3 "$AGENT_STATE" running --new-instance >/dev/null 2>&1
     [ "$(own_opt @agent_issue)" = LEGACY-3 ] && [ -z "$(own_opt @agent_bead)" ] && ok "agent-state: legacy XTMUX_AGENT_BEAD seeds @agent_issue and never @agent_bead" || nok "agent-state: legacy XTMUX_AGENT_BEAD seeds @agent_issue and never @agent_bead"
+    # The current spelling wins when both are supplied: the legacy variable is a
+    # fallback, never an override.
+    tmux_private set-option -p -t "$target" -u @agent_issue 2>/dev/null || true
+    TMUX="$as_tmuxenv" TMUX_PANE="$target" XTMUX_AGENT_ISSUE=NEW-1 XTMUX_AGENT_BEAD=LEGACY-3 "$AGENT_STATE" running --new-instance >/dev/null 2>&1
+    [ "$(own_opt @agent_issue)" = NEW-1 ] && [ -z "$(own_opt @agent_bead)" ] && ok "agent-state: XTMUX_AGENT_ISSUE wins over the legacy XTMUX_AGENT_BEAD" || nok "agent-state: XTMUX_AGENT_ISSUE wins over the legacy XTMUX_AGENT_BEAD (got '$(own_opt @agent_issue)')"
   fi
   tmux_private kill-session -t "$as_sess" 2>/dev/null || true
 fi
@@ -992,7 +1012,15 @@ else
   jget() { printf '%s' "$1" | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p"; }
 
   # Give the pane a full agent identity, the way a live agent session would.
-  env TMUX="$ctx_tmuxenv" TMUX_PANE="$ctx_pane" XDG_STATE_HOME="$ctx_state" \
+  # Start from a pane with NO identity: the launch environment seeds only an
+  # empty option (CORE-2801), so a value left by the caller's environment or by an
+  # earlier section would mask the seeding and fail the bead_id assertion
+  # (XTMUX-494). `env -u XTMUX_AGENT_BEAD` keeps the legacy spelling out of it,
+  # because the current spelling is the one under test here.
+  for opt in @agent_issue @agent_bead @agent_instance_id; do
+    command tmux -L "$ctx_sock" set-option -p -t "$ctx_pane" -qu "$opt" 2>/dev/null || true
+  done
+  env -u XTMUX_AGENT_BEAD TMUX="$ctx_tmuxenv" TMUX_PANE="$ctx_pane" XDG_STATE_HOME="$ctx_state" \
     XTMUX_HOST_ID_FILE="$ctx_hostfile" XTMUX_AGENT_ISSUE=xtmux-j46.2 \
     "$AGENT_STATE" idle --new-instance >/dev/null 2>&1
   ctx_json="$(ctx_run)"
