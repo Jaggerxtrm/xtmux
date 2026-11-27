@@ -208,9 +208,10 @@ A checkout can use the same installer directly:
 The installer places a guard at `~/.local/bin/tmux`, ahead of the real binary on
 `PATH`. The guard refuses one command, `kill-server` and its abbreviations
 (`kill-ser` through `kill-server`), when it targets the per-user default socket,
-`${TMUX_TMPDIR:-/tmp}/tmux-<uid>/default`: tmux resolves its socket from an
-inherited `TMUX` variable first, so an agent pane's `tmux kill-server` kills every
-session on the machine. Every other command, every argument and the exit status
+`/tmp/tmux-<uid>/default`: tmux resolves its socket from an inherited `TMUX`
+variable first, so an agent pane's `tmux kill-server` kills every session on the
+machine. A private `TMUX_TMPDIR` is not protected, so the usual safe recipe
+(`unset TMUX TMUX_PANE; TMUX_TMPDIR=$(mktemp -d)`) keeps working. Every other command, every argument and the exit status
 pass through unchanged, and the guard resolves the real tmux from `PATH` (the
 first `tmux` that is not the guard) instead of hard-coding a location.
 

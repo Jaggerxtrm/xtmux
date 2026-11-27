@@ -161,6 +161,16 @@ guard_run - - kill-s
 assert_passed "kill-s is outside the operator rule set, so it is not guarded" "kill-s"
 
 echo "== configured protected socket =="
+# The recipe every contract prescribes: TMUX unset, TMUX_TMPDIR a private
+# directory. That server is not the protected one, so kill-server passes.
+: >"$RECORD"
+CASE_RC=$(
+  env -u TMUX -u TMUX_PANE -u TMUX_ALLOW_KILL_SERVER -u XTMUX_GUARD_SOCKET FAKE_TMUX_RECORD="$RECORD" \
+    TMUX_TMPDIR="$WORK/private-default" PATH="$GUARD_BIN:$REAL_BIN:/usr/bin:/bin" "$GUARD_BIN/tmux" kill-server >/dev/null 2>&1
+  echo $?
+)
+assert_eq "a private TMUX_TMPDIR is not the protected socket" 0 "$CASE_RC"
+assert_eq "a private TMUX_TMPDIR: kill-server passes to the real tmux" "kill-server" "$(cat "$RECORD")"
 : >"$RECORD"
 CASE_RC=$(
   env -u TMUX -u TMUX_PANE -u TMUX_ALLOW_KILL_SERVER FAKE_TMUX_RECORD="$RECORD" \
@@ -212,8 +222,17 @@ if [ -x /usr/bin/tmux ]; then
   ) >"$WORK/out" 2>"$WORK/err"
   assert_eq "bare kill-server against the private default socket" 1 "$?"
   if tmux_private_running; then ok "refused kill-server leaves the server alive"; else nok "refused kill-server leaves the server alive"; fi
+  # The prescribed recipe against a real private server: TMUX unset, TMUX_TMPDIR
+  # private, no protected-socket override. The guard must let this through.
   (
-    unset TMUX TMUX_PANE TMUX_ALLOW_KILL_SERVER
+    unset TMUX TMUX_PANE TMUX_ALLOW_KILL_SERVER XTMUX_GUARD_SOCKET
+    TMUX_TMPDIR="$TMUX_ISO_DIR" PATH="$GUARD_BIN:/usr/bin:/bin" "$GUARD_BIN/tmux" kill-server
+  ) >"$WORK/out" 2>"$WORK/err"
+  assert_eq "bare kill-server on a private TMUX_TMPDIR exits 0" 0 "$?"
+  if tmux_private_running; then nok "the private server is gone after the allowed kill"; else ok "the private server is gone after the allowed kill"; fi
+  if tmux_private new-session -d -s guard-probe; then ok "private server restarted with -L"; else nok "private server restarted with -L"; fi
+  (
+    unset TMUX TMUX_PANE TMUX_ALLOW_KILL_SERVER XTMUX_GUARD_SOCKET
     TMUX_TMPDIR="$TMUX_ISO_DIR" PATH="$GUARD_BIN:/usr/bin:/bin" "$GUARD_BIN/tmux" -L default kill-server
   ) >"$WORK/out" 2>"$WORK/err"
   assert_eq "explicit -L kill-server exits 0" 0 "$?"

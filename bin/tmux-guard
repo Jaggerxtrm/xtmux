@@ -20,9 +20,12 @@
 #   tmux -S <path> kill-server              explicit socket path
 #   TMUX_ALLOW_KILL_SERVER=1 tmux kill-server
 #
-# The protected socket is the per-user default one that tmux itself would use:
-# ${TMUX_TMPDIR:-/tmp}/tmux-<uid>/default. XTMUX_GUARD_SOCKET overrides it, so a
-# test can protect a private socket and never name the live one.
+# The protected socket is the per-user default one, /tmp/tmux-<uid>/default.
+# TMUX_TMPDIR is deliberately NOT part of it: a private TMUX_TMPDIR is how every
+# suite and every careful shell keeps tmux away from the real server, and refusing
+# kill-server there would break that recipe and push people to the override.
+# XTMUX_GUARD_SOCKET replaces the protected path (tests use it so no case names
+# the live socket).
 #
 # The real tmux is resolved from PATH: the first executable `tmux` whose
 # canonical path is not this script, so the guard's own directory cannot resolve
@@ -31,10 +34,12 @@
 set -u
 
 prog=tmux-guard
-# What tmux resolves for itself when neither -L nor -S is given: TMUX_TMPDIR or
+# What the tmux client resolves when neither -L nor -S is given: TMUX_TMPDIR or
 # /tmp, then tmux-<uid>/default.
 default_socket="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/default"
-protected_socket="${XTMUX_GUARD_SOCKET:-$default_socket}"
+# What this guard protects: the per-user default server, which lives under /tmp
+# regardless of TMUX_TMPDIR, unless XTMUX_GUARD_SOCKET names another socket.
+protected_socket="${XTMUX_GUARD_SOCKET:-/tmp/tmux-$(id -u)/default}"
 
 guard_fail() {
   printf '%s: %s\n' "$prog" "$*" >&2
