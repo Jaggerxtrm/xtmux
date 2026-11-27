@@ -20,13 +20,21 @@
 #   tmux -S <path> kill-server              explicit socket path
 #   TMUX_ALLOW_KILL_SERVER=1 tmux kill-server
 #
+# The protected socket is the per-user default one that tmux itself would use:
+# ${TMUX_TMPDIR:-/tmp}/tmux-<uid>/default. XTMUX_GUARD_SOCKET overrides it, so a
+# test can protect a private socket and never name the live one.
+#
 # The real tmux is resolved from PATH: the first executable `tmux` whose
-# canonical path is not this script. No path is hard-coded. XTMUX_REAL_TMUX
+# canonical path is not this script, so the guard's own directory cannot resolve
+# to the guard. No path is hard-coded. XTMUX_GUARD_REAL (alias XTMUX_REAL_TMUX)
 # overrides the search for tests, debugging and unusual layouts.
 set -u
 
 prog=tmux-guard
+# What tmux resolves for itself when neither -L nor -S is given: TMUX_TMPDIR or
+# /tmp, then tmux-<uid>/default.
 default_socket="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/default"
+protected_socket="${XTMUX_GUARD_SOCKET:-$default_socket}"
 
 guard_fail() {
   printf '%s: %s\n' "$prog" "$*" >&2
@@ -74,7 +82,7 @@ canonical_socket() {
 # into one clear error (a PATH whose every `tmux` resolves to this script).
 depth=${XTMUX_TMUX_GUARD_DEPTH:-0}
 case $depth in ''|*[!0-9]*) depth=0 ;; esac
-[ "$depth" -lt 3 ] || guard_fail "refusing to recurse: no real tmux found on PATH (set XTMUX_REAL_TMUX)"
+[ "$depth" -lt 3 ] || guard_fail "refusing to recurse: no real tmux found on PATH (set XTMUX_GUARD_REAL)"
 
 self_path=$0
 case $self_path in
@@ -88,13 +96,14 @@ self_canonical=$(canonical_file "$self_path" 2>/dev/null || printf '%s\n' "$self
 
 find_real_tmux() {
   local dir candidate resolved
-  if [ -n "${XTMUX_REAL_TMUX:-}" ]; then
-    candidate=$XTMUX_REAL_TMUX
+  local override=${XTMUX_GUARD_REAL:-${XTMUX_REAL_TMUX:-}}
+  if [ -n "$override" ]; then
+    candidate=$override
     if [ -x "$candidate" ] && [ ! -d "$candidate" ]; then
       printf '%s\n' "$candidate"
       return 0
     fi
-    printf '%s: XTMUX_REAL_TMUX=%s is not an executable file\n' "$prog" "$candidate" >&2
+    printf '%s: XTMUX_GUARD_REAL=%s is not an executable file\n' "$prog" "$candidate" >&2
     return 1
   fi
   local old_ifs=$IFS
@@ -153,34 +162,30 @@ while [ "$index" -lt "$count" ]; do
   esac
 done
 
-# `kill-server` and every unique abbreviation of it (`kill-ser` is the shortest;
-# `kill-session` diverges before the final "r" and is not guarded).
+# The operator's rule set: `kill-server` and the abbreviations that stop a whole
+# server. `kill-session` and the other commands are not guarded (XTMUX-493 scope).
 guarded=0
 case $command_word in
-  kill-ser*) guarded=1 ;;
+  kill-ser|kill-serv|kill-serve|kill-server) guarded=1 ;;
 esac
 
 if [ "$guarded" = 1 ]; then
   if [ "$explicit_socket" = 1 ]; then
     guarded=0
   else
-    case ${TMUX_ALLOW_KILL_SERVER:-} in
-      ''|0) ;;
-      *) guarded=0 ;;
-    esac
+    # Only the literal 1 overrides; an empty or any other value does not.
+    [ "${TMUX_ALLOW_KILL_SERVER:-}" = 1 ] && guarded=0
   fi
 fi
 
 if [ "$guarded" = 1 ]; then
   if [ -n "${TMUX:-}" ]; then
-    # TMUX is "<socket-path>,<server-pid>,<session-index>"; the path itself may
-    # contain commas, so strip the two trailing fields.
-    target=${TMUX%,*}
-    target=${target%,*}
+    # TMUX is "<socket-path>,<server-pid>,<session-index>".
+    target=${TMUX%%,*}
   else
     target=$default_socket
   fi
-  if [ "$(canonical_socket "$target")" = "$(canonical_socket "$default_socket")" ]; then
+  if [ "$(canonical_socket "$target")" = "$(canonical_socket "$protected_socket")" ]; then
     cat >&2 <<EOF
 $prog: refusing \`tmux kill-server\` on the per-user default socket
   socket: $(canonical_socket "$target")
@@ -192,6 +197,6 @@ EOF
   fi
 fi
 
-real_tmux=$(find_real_tmux) || guard_fail "no real tmux on PATH (the guard must not shadow it); set XTMUX_REAL_TMUX=<path>"
+real_tmux=$(find_real_tmux) || guard_fail "no real tmux on PATH (the guard must not shadow it); set XTMUX_GUARD_REAL=<path>"
 export XTMUX_TMUX_GUARD_DEPTH=$((depth + 1))
 exec "$real_tmux" "${args[@]}"
