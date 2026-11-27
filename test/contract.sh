@@ -20,6 +20,17 @@ AGENT_STATE="$ROOT/scripts/agent-state.sh"
 # result a subshell produces. See lib/harness.sh, and test/harness-selftest.sh
 # which proves a subshell failure still fails the suite.
 . "$HERE/lib/harness.sh"
+# Hermetic tmux (XTMUX-492). This suite must never reach the operator's live
+# tmux server, even when it runs inside a live tmux session: TMUX wins over
+# TMUX_TMPDIR, so the inherited client variables are dropped and the socket
+# directory is private. Everything below — including the tmux clients the
+# picker, agent-state.sh and xtmux-monitor.sh spawn themselves — then reaches
+# the private server, and `tmux_private` names that server explicitly.
+. "$HERE/lib/tmux-isolation.sh"
+tmux_isolation_begin xtmux-contract || {
+  printf '\033[31mFAIL\033[0m cannot create a private tmux directory; refusing to run against an inherited tmux server\n'
+  exit 1
+}
 snapshot() { cp "$2" "$GOLDEN/$1.golden"; printf '  \033[36msnap\033[0m %s\n' "$1"; }
 
 REGEN=0
@@ -40,7 +51,7 @@ WORK_ROOT="${XTMUX_TEST_WORKSPACE_ROOT:-${TMPDIR:-/tmp}}"
 mkdir -p "$WORK_ROOT"
 WORK_ROOT="$(cd "$WORK_ROOT" && pwd)"
 WORK="$(mktemp -d "$WORK_ROOT/xtmux-contract.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+trap 'tmux_isolation_end; rm -rf "$WORK"' EXIT
 mkdir -p "$GOLDEN"
 harness_init "$WORK/results.tsv"
 
@@ -564,13 +575,17 @@ grep -F '"type":"git.command"' "$tele_log" >/dev/null && grep -F '"tool":"git"' 
 bash -n scripts/xtmux-monitor.sh && scripts/xtmux-monitor.sh --help | grep -F -- '--full' >/dev/null && ok "xtmux-monitor: help and syntax" || nok "xtmux-monitor: help and syntax"
 mon_s="xtmux-monitor-contract-$$"
 mon_log="$WORK/monitor-events.jsonl"
-scripts/xtmux-monitor.sh --session "$mon_s" --log "$mon_log" --no-attach --kill-existing >/dev/null
-if tmux has-session -t "$mon_s" 2>/dev/null && [ "$(tmux list-panes -t "$mon_s" 2>/dev/null | wc -l | tr -d ' ')" -ge 3 ] && [ -f "$mon_log" ]; then
-  ok "xtmux-monitor: creates monitoring layout"
+if ! command -v tmux >/dev/null 2>&1; then
+  printf '  \033[33mskip\033[0m xtmux-monitor layout (tmux missing)\n'
 else
-  nok "xtmux-monitor: creates monitoring layout"
+  scripts/xtmux-monitor.sh --session "$mon_s" --log "$mon_log" --no-attach --kill-existing >/dev/null
+  if tmux_guard_target "$mon_s" && tmux_private has-session -t "$mon_s" 2>/dev/null && [ "$(tmux_private list-panes -t "$mon_s" 2>/dev/null | wc -l | tr -d ' ')" -ge 3 ] && [ -f "$mon_log" ]; then
+    ok "xtmux-monitor: creates monitoring layout"
+  else
+    nok "xtmux-monitor: creates monitoring layout"
+  fi
+  tmux_private kill-session -t "$mon_s" 2>/dev/null || true
 fi
-tmux kill-session -t "$mon_s" 2>/dev/null || true
 
 echo
 echo "== git-pane-status.sh contract =="
@@ -631,53 +646,98 @@ else
   ok "agent-state: invalid state exits non-zero"
 fi
 
-if ! tmux info >/dev/null 2>&1; then
-  printf '  \033[33mskip\033[0m agent-state pane write (no live tmux server)\n'
+# Pane writes need a pane. Skipping when "no server is live" lost these assertions
+# on every isolated run, so this block starts the suite's private server and runs
+# on a pane of its own — never on a bystander pane of another server.
+as_sess="xtmux-contract-agent-state-$$"
+if ! command -v tmux >/dev/null 2>&1 || ! tmux_private new-session -d -s "$as_sess" -x 120 -y 30 'sleep 100' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m agent-state pane write (cannot start the private tmux server)\n'
 else
-  target="$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null | head -1)"
-  if [ -n "$target" ]; then
-    if [ -z "${TMUX:-}" ]; then
-      TMUX="$(tmux display-message -p -t "$target" '#{socket_path},0,0')"
-      export TMUX
-    fi
-    TMUX_PANE="$target" "$AGENT_STATE" needs-input >/dev/null 2>&1
-    got="$(tmux display-message -p -t "$target" '#{@agent_state}' 2>/dev/null || true)"
+  target="$(tmux_private list-panes -t "$as_sess" -F '#{pane_id}' 2>/dev/null | head -1)"
+  if ! tmux_guard_target "$target"; then
+    printf '  \033[33mskip\033[0m agent-state pane write (no panes)\n'
+  else
+    # agent-state.sh exits early unless TMUX names its server (without it, tmux
+    # could resolve the pane against a bystander). Hand it the private socket per
+    # command; TMUX stays unset for the rest of the suite.
+    as_tmuxenv="$(tmux_private display-message -p -t "$target" '#{socket_path},0,0')"
+    TMUX="$as_tmuxenv" TMUX_PANE="$target" "$AGENT_STATE" needs-input >/dev/null 2>&1
+    got="$(tmux_private display-message -p -t "$target" '#{@agent_state}' 2>/dev/null || true)"
     if [ "$got" = "needs-input" ]; then ok "agent-state: writes pane option"; else nok "agent-state: writes pane option (got '$got')"; fi
-    TMUX_PANE="$target" \
-      XTMUX_AGENT_BEAD=xtmux-mux.1 \
+    # The launch env only seeds EMPTY options (CORE-2801): start from a clean pane.
+    for opt in @agent_issue @agent_bead @agent_task @agent_role @agent_parent_session; do tmux_private set-option -p -t "$target" -u "$opt" 2>/dev/null || true; done
+    TMUX="$as_tmuxenv" TMUX_PANE="$target" \
+      XTMUX_AGENT_ISSUE=xtmux-mux.1 \
       XTMUX_AGENT_TASK='standardize metadata' \
       XTMUX_AGENT_ROLE='chain-coordinator' \
-      XTMUX_AGENT_PROMPT_FILE=/tmp/xtmux-mux.1.txt \
       XTMUX_AGENT_PARENT_SESSION=orch \
-      "$AGENT_STATE" running >/dev/null 2>&1
-    got_meta="$(tmux display-message -p -t "$target" $'#{@agent_state}\t#{@agent_bead}\t#{@agent_task}\t#{@agent_role}\t#{@agent_prompt_file}\t#{@agent_parent_session}\t#{@agent_last_transition}' 2>/dev/null || true)"
-    IFS=$'\t' read -r got_state got_bead got_task got_role got_prompt got_parent got_last <<< "$got_meta"
-    [ "$got_state" = running ] && [ "$got_bead" = xtmux-mux.1 ] && [ "$got_task" = 'standardize metadata' ] && [ "$got_role" = 'chain-coordinator' ] && [ "$got_prompt" = /tmp/xtmux-mux.1.txt ] && [ "$got_parent" = orch ] && [ -n "$got_last" ] && ok "agent-state: writes orchestration metadata (incl @agent_role)" || nok "agent-state: writes orchestration metadata (incl @agent_role)"
+      "$AGENT_STATE" running --new-instance >/dev/null 2>&1
+    got_meta="$(tmux_private display-message -p -t "$target" $'#{@agent_state}\t#{@agent_issue}\t#{@agent_task}\t#{@agent_role}\t#{@agent_parent_session}\t#{@agent_last_transition}' 2>/dev/null || true)"
+    IFS=$'\t' read -r got_state got_bead got_task got_role got_parent got_last <<< "$got_meta"
+    [ "$got_state" = running ] && [ "$got_bead" = xtmux-mux.1 ] && [ "$got_task" = 'standardize metadata' ] && [ "$got_role" = 'chain-coordinator' ] && [ "$got_parent" = orch ] && [ -n "$got_last" ] && ok "agent-state: writes orchestration metadata (incl @agent_role)" || nok "agent-state: writes orchestration metadata (incl @agent_role)"
     meta_row="$($PICKER list all expanded 2>/dev/null | awk -F'\t' -v p="$target" '$1=="pane"&&$4==p{print $5; exit}')"
     meta_row_plain="$(idle_plain "$meta_row")"
     case "$meta_row_plain" in *"bead:xtmux-mux.1"*"task:standardize metadata"*"from:orch"*) ok "picker: pane row consumes optional agent metadata" ;; *) nok "picker: pane row consumes optional agent metadata" ;; esac
-    target_sid="$(tmux display-message -p -t "$target" '#{session_id}' 2>/dev/null || true)"
-    target_name="$(tmux display-message -p -t "$target" '#S' 2>/dev/null || true)"
+    target_sid="$(tmux_private display-message -p -t "$target" '#{session_id}' 2>/dev/null || true)"
+    target_name="$(tmux_private display-message -p -t "$target" '#S' 2>/dev/null || true)"
     preview_meta="$($PICKER preview pane "$target_sid" "$target_name" "$target" 2>/dev/null)"
     case "$preview_meta" in *"AGENT"*"bead      xtmux-mux.1"*"bead-context xtmux-mux.1"*) ok "picker: pane preview shows bead context" ;; *) nok "picker: pane preview shows bead context" ;; esac
     # The launcher-written lineage options: topology --json publishes them, so a
     # reused pane must not keep projecting the dead agent's worktree/branch/parent.
-    tmux set-option -p -t "$target" @agent_worktree /srv/wt/gone 2>/dev/null || true
-    tmux set-option -p -t "$target" @agent_branch xt/gone 2>/dev/null || true
-    tmux set-option -p -t "$target" @agent_parent_pane %999 2>/dev/null || true
-    TMUX_PANE="$target" "$AGENT_STATE" off >/dev/null 2>&1 || true
-    got_clear="$(tmux display-message -p -t "$target" $'#{@agent_state}\t#{@agent_bead}\t#{@agent_task}\t#{@agent_role}\t#{@agent_prompt_file}\t#{@agent_parent_session}' 2>/dev/null || true)"
-    IFS=$'\t' read -r got_state got_bead got_task got_role got_prompt got_parent <<< "$got_clear"
-    [ "$got_state" = off ] && [ -z "$got_bead$got_task$got_role$got_prompt$got_parent" ] && ok "agent-state: off clears optional metadata" || nok "agent-state: off clears optional metadata"
+    tmux_private set-option -p -t "$target" @agent_worktree /srv/wt/gone 2>/dev/null || true
+    tmux_private set-option -p -t "$target" @agent_branch xt/gone 2>/dev/null || true
+    tmux_private set-option -p -t "$target" @agent_parent_pane %999 2>/dev/null || true
+    TMUX="$as_tmuxenv" TMUX_PANE="$target" "$AGENT_STATE" off >/dev/null 2>&1 || true
+    got_clear="$(tmux_private display-message -p -t "$target" $'#{@agent_state}\t#{@agent_issue}\t#{@agent_task}\t#{@agent_role}\t#{@agent_parent_session}' 2>/dev/null || true)"
+    IFS=$'\t' read -r got_state got_bead got_task got_role got_parent <<< "$got_clear"
+    [ "$got_state" = off ] && [ -z "$got_bead$got_task$got_role$got_parent" ] && ok "agent-state: off clears optional metadata" || nok "agent-state: off clears optional metadata"
     # Set/unset, not the value: a TSV of empty fields is unreadable here because
     # bash collapses runs of tab (an IFS whitespace char), so trailing cleared
     # fields would vanish and the assertion would pass against anything.
-    got_lineage="$(tmux display-message -p -t "$target" '#{?@agent_worktree,SET,-}|#{?@agent_branch,SET,-}|#{?@agent_parent_pane,SET,-}' 2>/dev/null || true)"
+    got_lineage="$(tmux_private display-message -p -t "$target" '#{?@agent_worktree,SET,-}|#{?@agent_branch,SET,-}|#{?@agent_parent_pane,SET,-}' 2>/dev/null || true)"
     [ "$got_lineage" = '-|-|-' ] && ok "agent-state: off clears published lineage (worktree/branch/parent_pane)" || nok "agent-state: off clears published lineage (worktree/branch/parent_pane) (got '$got_lineage')"
-  else
-    printf '  \033[33mskip\033[0m agent-state pane write (no panes)\n'
+    # CORE-2801: one owner per field. The launch environment only SEEDS an empty option.
+    own_opt() { tmux_private display-message -p -t "$target" "#{$1}" 2>/dev/null || true; }
+    tmux_private set-option -p -t "$target" @agent_issue OWNER-1 2>/dev/null || true
+    TMUX="$as_tmuxenv" TMUX_PANE="$target" XTMUX_AGENT_ISSUE=FROZEN-9 XTMUX_AGENT_ROLE=seeded "$AGENT_STATE" running >/dev/null 2>&1
+    [ "$(own_opt @agent_issue)" = OWNER-1 ] && ok "agent-state: a non-empty @agent_issue is never overwritten from the launch env" || nok "agent-state: a non-empty @agent_issue is never overwritten from the launch env (got '$(own_opt @agent_issue)')"
+    # After `sb` unsets @agent_issue, a later transition never re-seeds it from the frozen env.
+    tmux_private set-option -p -t "$target" -u @agent_issue 2>/dev/null || true
+    TMUX="$as_tmuxenv" TMUX_PANE="$target" XTMUX_AGENT_ISSUE=FROZEN-9 "$AGENT_STATE" idle >/dev/null 2>&1
+    TMUX="$as_tmuxenv" TMUX_PANE="$target" XTMUX_AGENT_ISSUE=FROZEN-9 "$AGENT_STATE" running >/dev/null 2>&1
+    [ -z "$(own_opt @agent_issue)" ] && ok "agent-state: a transition never re-seeds @agent_issue after sb unset it" || nok "agent-state: a transition never re-seeds @agent_issue after sb unset it (got '$(own_opt @agent_issue)')"
+    [ "$(own_opt @agent_role)" = seeded ] && ok "agent-state: the launch env seeds an empty option" || nok "agent-state: the launch env seeds an empty option"
+    TMUX="$as_tmuxenv" TMUX_PANE="$target" "$AGENT_STATE" off >/dev/null 2>&1 || true
+    tmux_private set-option -p -t "$target" @agent_bead "" 2>/dev/null || true
+    TMUX="$as_tmuxenv" TMUX_PANE="$target" XTMUX_AGENT_BEAD=LEGACY-3 "$AGENT_STATE" running --new-instance >/dev/null 2>&1
+    [ "$(own_opt @agent_issue)" = LEGACY-3 ] && [ -z "$(own_opt @agent_bead)" ] && ok "agent-state: legacy XTMUX_AGENT_BEAD seeds @agent_issue and never @agent_bead" || nok "agent-state: legacy XTMUX_AGENT_BEAD seeds @agent_issue and never @agent_bead"
   fi
+  tmux_private kill-session -t "$as_sess" 2>/dev/null || true
 fi
+
+echo
+echo "== identity ownership: git refresh (CORE-2801, private socket) =="
+own_sock="xtmux-own-$$"
+own_repo="$(mktemp -d)"
+git -C "$own_repo" init -q -b first-branch 2>/dev/null && git -C "$own_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init 2>/dev/null
+if command tmux -L "$own_sock" -f /dev/null new-session -d -s own -c "$own_repo" 'sleep 300' 2>/dev/null; then
+  own_pane="$(command tmux -L "$own_sock" list-panes -a -F '#{pane_id}' | head -1)"
+  own_env="$(command tmux -L "$own_sock" display-message -p -t "$own_pane" '#{socket_path},0,0')"
+  TMUX="$own_env" TMUX_PANE="$own_pane" "$AGENT_STATE" idle >/dev/null 2>&1
+  git -C "$own_repo" checkout -q -b second-branch 2>/dev/null
+  TMUX="$own_env" TMUX_PANE="$own_pane" "$AGENT_STATE" running >/dev/null 2>&1
+  got_branch="$(command tmux -L "$own_sock" display-message -p -t "$own_pane" '#{@agent_branch}|#{@agent_worktree}')"
+  [ "$got_branch" = "second-branch|$(cd "$own_repo" && pwd -P)" ] && ok "agent-state: @agent_branch/@agent_worktree refresh on a state transition" || nok "agent-state: @agent_branch/@agent_worktree refresh on a state transition (got '$got_branch')"
+  # A detached HEAD names no branch, and a cwd outside git declares no worktree.
+  git -C "$own_repo" checkout -q --detach 2>/dev/null
+  TMUX="$own_env" TMUX_PANE="$own_pane" "$AGENT_STATE" idle >/dev/null 2>&1
+  got_detached="$(command tmux -L "$own_sock" display-message -p -t "$own_pane" '#{?@agent_branch,SET,-}|#{?@agent_worktree,SET,-}')"
+  [ "$got_detached" = '-|SET' ] && ok "agent-state: a detached HEAD unsets @agent_branch" || nok "agent-state: a detached HEAD unsets @agent_branch (got '$got_detached')"
+  command tmux -L "$own_sock" kill-server 2>/dev/null || true
+else
+  printf '  \033[33mskip\033[0m identity ownership (cannot start a private tmux server)\n'
+fi
+rm -rf "$own_repo"
 
 echo
 echo "== identity contract: host_id + @agent_instance_id (xtmux-j46.1) =="
@@ -854,7 +914,7 @@ c=sqlite3.connect(sys.argv[1]); print(c.execute(\"SELECT instance_id FROM event_
   # silently breaks the one binding Specialists needs: job -> pane -> bead.
   env TMUX="$rl_tmuxenv" TMUX_PANE="$bare" XDG_STATE_HOME="$rl_state" \
     XTMUX_OBS_V2=1 PATH="$rl_bin:$PATH" \
-    XTMUX_AGENT_BEAD=xtmux-j46.7 XTMUX_AGENT_TASK='delegated task' \
+    XTMUX_AGENT_ISSUE=xtmux-j46.7 XTMUX_AGENT_TASK='delegated task' \
     "$AGENT_STATE" idle --new-instance >/dev/null 2>&1
   d_bead="$(rl_q "SELECT bead_id FROM agent_instances WHERE pane_id='$bare'")"
   d_task="$(rl_q "SELECT task FROM agent_instances WHERE pane_id='$bare'")"
@@ -933,7 +993,7 @@ else
 
   # Give the pane a full agent identity, the way a live agent session would.
   env TMUX="$ctx_tmuxenv" TMUX_PANE="$ctx_pane" XDG_STATE_HOME="$ctx_state" \
-    XTMUX_HOST_ID_FILE="$ctx_hostfile" XTMUX_AGENT_BEAD=xtmux-j46.2 \
+    XTMUX_HOST_ID_FILE="$ctx_hostfile" XTMUX_AGENT_ISSUE=xtmux-j46.2 \
     "$AGENT_STATE" idle --new-instance >/dev/null 2>&1
   ctx_json="$(ctx_run)"
 
@@ -2059,17 +2119,21 @@ if ! command -v tmux >/dev/null 2>&1; then
 else
   cd_sock="xtmux-contract-claude-$$"
   cd_bin="$WORK/claude-detect-bin"; mkdir -p "$cd_bin"
-  # `ps -o comm=` reports the executable's basename, so a COPY of sleep named
+  # `ps -o comm=` reports the executable's basename, so a COPY of sh named
   # `claude` is a process the detector sees exactly as it sees the real one — and a
   # copy of sh named `node` reproduces the `xt claude` wrapper. Real process table,
-  # no mocking of the thing under test.
-  cp "$(command -v sleep)" "$cd_bin/claude" 2>/dev/null || true
-  cp "$(command -v sh)"    "$cd_bin/node"   2>/dev/null || true
+  # no mocking of the thing under test. Both copies are sh: sh is a stand-alone
+  # binary on every runner, while `sleep` is a link to one multicall binary on
+  # Ubuntu 26.04 (uutils coreutils), and a copy of that named `claude` exits as an
+  # unknown applet before the detector runs. `; true` stops sh from exec-ing its
+  # last command, which would rename the process to `sleep`.
+  cp "$(command -v sh)" "$cd_bin/claude" 2>/dev/null || true
+  cp "$(command -v sh)" "$cd_bin/node"   2>/dev/null || true
   if [ -x "$cd_bin/claude" ] && [ -x "$cd_bin/node" ] && \
-     command tmux -L "$cd_sock" -f /dev/null new-session -d -s cdetect -n wrapped "$cd_bin/node -c '$cd_bin/claude 100; true'" 2>/dev/null; then
+     command tmux -L "$cd_sock" -f /dev/null new-session -d -s cdetect -n wrapped "$cd_bin/node -c '$cd_bin/claude -c \"sleep 100; true\"; true'" 2>/dev/null; then
     (
       tmux() { command tmux -L "$cd_sock" "$@"; }
-      tmux new-window -d -n direct "$cd_bin/claude 100"
+      tmux new-window -d -n direct "$cd_bin/claude -c \"sleep 100; true\""
       tmux new-window -d -n plain  "sleep 100"
       sleep 1
       cd_pane() { tmux list-panes -a -F '#{window_name} #{pane_id}' 2>/dev/null | awk -v w="$1" '$1==w{print $2; exit}'; }
@@ -2152,19 +2216,30 @@ fi
 echo
 echo "== act (act-on-preview) contract =="
 
-if "$PICKER" act session x "" approve >/dev/null 2>&1; then
-  ok "act: session-row guard is a safe no-op"
-else
-  ok "act: session-row guard is a safe no-op (exit ok)"
+# The session-row guard path resolves the current pane from TMUX when the
+# target is empty, exactly as it does when a person runs it inside a session.
+# Hand the picker the private server for these calls so the guard is exercised
+# with a resolvable pane; without TMUX it refuses and the assertion never ran.
+act_sess="xtmux-contract-act-guard-$$"
+act_env=""
+if command -v tmux >/dev/null 2>&1 && tmux_private new-session -d -s "$act_sess" -x 80 -y 24 'cat' 2>/dev/null; then
+  act_pane="$(tmux_private list-panes -t "$act_sess" -F '#{pane_id}' 2>/dev/null | head -1)"
+  tmux_guard_target "${act_pane:-}" && act_env="$(tmux_private display-message -p -t "$act_pane" '#{socket_path},0,0')"
 fi
-
-if "$PICKER" act session x "" approve >/dev/null 2>&1; then
-  :
+if [ -n "$act_env" ]; then
+  if TMUX="$act_env" TMUX_PANE="$act_pane" "$PICKER" act session x "" approve >/dev/null 2>&1; then
+    ok "act: session-row guard is a safe no-op"
+  else
+    ok "act: session-row guard is a safe no-op (exit ok)"
+  fi
+  # session-row act must not error on the guard path (exit 0 regardless)
+  TMUX="$act_env" TMUX_PANE="$act_pane" "$PICKER" act session "" "" approve >/dev/null 2>&1 \
+    && ok "act: session row returns 0" \
+    || nok "act: session row returns 0 (guard path exited non-zero)"
+  tmux_private kill-session -t "$act_sess" 2>/dev/null || true
 else
-  :
+  printf '  \033[33mskip\033[0m act session-row guard (cannot start the private tmux server)\n'
 fi
-# session-row act must not error on the guard path (exit 0 regardless)
-"$PICKER" act session "" "" approve >/dev/null 2>&1 && ok "act: session row returns 0"
 
 if "$PICKER" act pane x "%nopenope" frobnicate >/dev/null 2>&1; then
   nok "act: unknown action should fail"
@@ -2172,31 +2247,31 @@ else
   ok "act: unknown action exits non-zero"
 fi
 
-if ! tmux info >/dev/null 2>&1; then
-  printf '  \033[33mskip\033[0m act delivery (no live tmux server)\n'
+wsess="xtmux-contract-act-$$"
+if ! command -v tmux >/dev/null 2>&1 || ! tmux_private new-session -d -s "$wsess" -x 120 -y 30 'cat' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m act delivery (cannot start the private tmux server)\n'
 else
-  wsess="xtmux-contract-act-$$"
-  tmux new-session -d -s "$wsess" -x 120 -y 30 'cat' 2>/dev/null
-  wpane="$(tmux list-panes -t "$wsess" -F '#{pane_id}' 2>/dev/null | head -1)"
-  if [ -n "$wpane" ]; then
+  wpane="$(tmux_private list-panes -t "$wsess" -F '#{pane_id}' 2>/dev/null | head -1)"
+  if ! tmux_guard_target "$wpane"; then
+    printf '  \033[33mskip\033[0m act delivery (no pane)\n'
+  else
     "$PICKER" act pane "$wsess" "$wpane" approve >/dev/null 2>&1
     sleep 0.3
-    if tmux capture-pane -p -t "$wpane" 2>/dev/null | grep -q '^y$'; then
+    if tmux_private capture-pane -p -t "$wpane" 2>/dev/null | grep -q '^y$'; then
       ok "act: approve sends 'y' to the pane"
     else
       nok "act: approve delivery"
     fi
-  else
-    printf '  \033[33mskip\033[0m act delivery (no pane)\n'
   fi
-  tmux kill-session -t "$wsess" 2>/dev/null || true
+  tmux_private kill-session -t "$wsess" 2>/dev/null || true
 fi
 
 echo
 echo "== list/preview contract (live tmux) =="
 
-if ! tmux info >/dev/null 2>&1; then
-  printf '  \033[33mskip\033[0m no live tmux server\n'
+lp_sess="xtmux-contract-list-$$"
+if ! command -v tmux >/dev/null 2>&1 || ! tmux_private new-session -d -s "$lp_sess" -x 100 -y 30 'sleep 60' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m list/preview (cannot start the private tmux server)\n'
 else
   rows="$("$PICKER" list all 2>/dev/null)"
   shape_ok=1
@@ -2227,6 +2302,7 @@ else
 
   # bad arg exits non-zero
   if "$PICKER" __bad__ >/dev/null 2>&1; then nok "bad-arg exit code"; else ok "bad-arg exits non-zero"; fi
+  tmux_private kill-session -t "$lp_sess" 2>/dev/null || true
 fi
 
 
@@ -2234,16 +2310,16 @@ echo
 
 echo "== monitor registry contract (live tmux) =="
 
-if ! tmux info >/dev/null 2>&1; then
-  printf '  \033[33mskip\033[0m monitor registry tests (no live tmux server)\n'
+mon_tmp="$WORK/monitor-state"
+mon_sess="xtmux-monitor-$$"
+if ! command -v tmux >/dev/null 2>&1 || ! tmux_private new-session -d -s "$mon_sess" -c "$ROOT" 'sleep 100' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m monitor registry tests (cannot start the private tmux server)\n'
 else
-  mon_tmp="$WORK/monitor-state"
-  mon_sess="xtmux-monitor-$$"
-  tmux kill-session -t "$mon_sess" 2>/dev/null || true
-  tmux new-session -d -s "$mon_sess" -c "$ROOT" 'sleep 100' 2>/dev/null
-  mon_pane="$(tmux list-panes -t "$mon_sess" -F '#{pane_id}' 2>/dev/null | head -1)"
-  if [ -n "$mon_pane" ]; then
-    tmux set-option -p -t "$mon_pane" -q @agent_state running
+  mon_pane="$(tmux_private list-panes -t "$mon_sess" -F '#{pane_id}' 2>/dev/null | head -1)"
+  if ! tmux_guard_target "$mon_pane"; then
+    printf '  \033[33mskip\033[0m monitor registry tests (no pane)\n'
+  else
+    tmux_private set-option -p -t "$mon_pane" -q @agent_state running
     mon_start="$(TMPDIR="$mon_tmp" "$PICKER" monitor-agent "$mon_pane" --timeout 10s --interval 1s 2>/dev/null)"
     mon_id="$(printf '%s\n' "$mon_start" | awk -F'\t' '$1=="monitor"{print $2; exit}')"
     mon_list="$(TMPDIR="$mon_tmp" "$PICKER" monitor-list 2>/dev/null)"
@@ -2256,10 +2332,10 @@ else
     mon_list_after_kill="$(TMPDIR="$mon_tmp" "$PICKER" monitor-list 2>/dev/null)"
     if ! printf '%s\n' "$mon_list_after_kill" | grep -F "$mon_id" >/dev/null; then ok "monitor-registry: kill removes registry entry"; else nok "monitor-registry: kill removes registry entry"; fi
 
-    tmux set-option -p -t "$mon_pane" -q @agent_state running
+    tmux_private set-option -p -t "$mon_pane" -q @agent_state running
     mon_start2="$(TMPDIR="$mon_tmp" "$PICKER" monitor-agent "$mon_pane" --timeout 10s --interval 1s 2>/dev/null)"
     mon_id2="$(printf '%s\n' "$mon_start2" | awk -F'\t' '$1=="monitor"{print $2; exit}')"
-    ( sleep 1; tmux set-option -p -t "$mon_pane" -q @agent_state idle ) &
+    ( sleep 1; tmux_private set-option -p -t "$mon_pane" -q @agent_state idle ) &
     mon_cleaned=0
     for _ in 1 2 3 4 5; do
       sleep 1
@@ -2268,211 +2344,214 @@ else
     done
     [ "$mon_cleaned" = 1 ] && ok "monitor-registry: completed monitor cleans registry entry" || nok "monitor-registry: completed monitor cleans registry entry"
     TMPDIR="$mon_tmp" "$PICKER" monitor-kill "$mon_id2" >/dev/null 2>&1 || true
-  else
-    printf '  \033[33mskip\033[0m monitor registry tests (no pane)\n'
   fi
-  tmux kill-session -t "$mon_sess" 2>/dev/null || true
+  tmux_private kill-session -t "$mon_sess" 2>/dev/null || true
 fi
 
 echo
 
 echo "== delegation dashboard contract (live tmux) =="
 
-if ! tmux info >/dev/null 2>&1; then
-  printf '  \033[33mskip\033[0m dashboard tests (no live tmux server)\n'
+dash_repo="$WORK/dashboard-repo"
+mk_repo "$dash_repo"
+add_clean "$dash_repo" "dirty.txt" "base"
+add_modified "$dash_repo" "dirty.txt" "changed"
+dash_a="xtmux-dashboard-a-$$"
+dash_b="xtmux-dashboard-b-$$"
+if ! command -v tmux >/dev/null 2>&1 \
+  || ! tmux_private new-session -d -s "$dash_a" -c "$dash_repo" 'sleep 100' 2>/dev/null \
+  || ! tmux_private new-session -d -s "$dash_b" -c "$dash_repo" 'sleep 100' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m dashboard tests (cannot start the private tmux server)\n'
 else
-  dash_repo="$WORK/dashboard-repo"
-  mk_repo "$dash_repo"
-  add_clean "$dash_repo" "dirty.txt" "base"
-  add_modified "$dash_repo" "dirty.txt" "changed"
-  dash_a="xtmux-dashboard-a-$$"
-  dash_b="xtmux-dashboard-b-$$"
-  tmux kill-session -t "$dash_a" 2>/dev/null || true
-  tmux kill-session -t "$dash_b" 2>/dev/null || true
-  tmux new-session -d -s "$dash_a" -c "$dash_repo" 'sleep 100' 2>/dev/null
-  tmux new-session -d -s "$dash_b" -c "$dash_repo" 'sleep 100' 2>/dev/null
-  dash_pane_a="$(tmux list-panes -t "$dash_a" -F '#{pane_id}' 2>/dev/null | head -1)"
-  if [ -n "$dash_pane_a" ]; then
-    TMUX_PANE="$dash_pane_a" XTMUX_AGENT_BEAD=xtmux-mux.6 XTMUX_AGENT_TASK='dash task' XTMUX_AGENT_PARENT_SESSION=orch "$AGENT_STATE" needs-input >/dev/null 2>&1
+  dash_pane_a="$(tmux_private list-panes -t "$dash_a" -F '#{pane_id}' 2>/dev/null | head -1)"
+  if ! tmux_guard_target "$dash_pane_a"; then
+    printf '  \033[33mskip\033[0m dashboard tests (no pane)\n'
+  else
+    dash_tmuxenv="$(tmux_private display-message -p -t "$dash_pane_a" '#{socket_path},0,0')"
+    TMUX="$dash_tmuxenv" TMUX_PANE="$dash_pane_a" XTMUX_AGENT_ISSUE=xtmux-mux.6 XTMUX_AGENT_TASK='dash task' XTMUX_AGENT_PARENT_SESSION=orch "$AGENT_STATE" needs-input --new-instance >/dev/null 2>&1
+    dash_rows="$($PICKER dashboard sessions-only 2>/dev/null)"
+    dash_a_row="$(printf '%s\n' "$dash_rows" | awk -F'\t' -v n="$dash_a" '$1=="session" && $3==n {print; exit}')"
+    dash_b_row="$(printf '%s\n' "$dash_rows" | awk -F'\t' -v n="$dash_b" '$1=="session" && $3==n {print; exit}')"
+    IFS=$'\t' read -r _ _ _ dash_state dash_bead dash_task dash_repo_name dash_branch dash_dirty dash_shared _ <<< "$dash_a_row"
+    [ "$dash_state" = needs-input ] && [ "$dash_bead" = xtmux-mux.6 ] && [ "$dash_task" = 'dash task' ] && [ "$dash_dirty" -gt 0 ] && [ "$dash_shared" = 1 ] && ok "dashboard: session row has state bead task dirty shared" || nok "dashboard: session row has state bead task dirty shared"
+    dash_b_shared="$(printf '%s\n' "$dash_b_row" | awk -F'\t' '{print $10}')"
+    [ "$dash_b_shared" = 1 ] && ok "dashboard: missing metadata still reports shared worktree" || nok "dashboard: missing metadata still reports shared worktree"
+    dash_expanded="$($PICKER dashboard expanded 2>/dev/null)"
+    dash_pane_row="$(printf '%s\n' "$dash_expanded" | awk -F'\t' -v p="$dash_pane_a" '$1=="pane" && $4==p {print; exit}')"
+    IFS=$'\t' read -r _ _ _ _ pane_state pane_bead pane_task _ <<< "$dash_pane_row"
+    [ "$pane_state" = needs-input ] && [ "$pane_bead" = xtmux-mux.6 ] && [ "$pane_task" = 'dash task' ] && ok "dashboard: expanded mode exposes pane detail" || nok "dashboard: expanded mode exposes pane detail"
+    TMUX="$dash_tmuxenv" TMUX_PANE="$dash_pane_a" "$AGENT_STATE" off >/dev/null 2>&1 || true
   fi
-  dash_rows="$($PICKER dashboard sessions-only 2>/dev/null)"
-  dash_a_row="$(printf '%s\n' "$dash_rows" | awk -F'\t' -v n="$dash_a" '$1=="session" && $3==n {print; exit}')"
-  dash_b_row="$(printf '%s\n' "$dash_rows" | awk -F'\t' -v n="$dash_b" '$1=="session" && $3==n {print; exit}')"
-  IFS=$'\t' read -r _ _ _ dash_state dash_bead dash_task dash_repo_name dash_branch dash_dirty dash_shared _ <<< "$dash_a_row"
-  [ "$dash_state" = needs-input ] && [ "$dash_bead" = xtmux-mux.6 ] && [ "$dash_task" = 'dash task' ] && [ "$dash_dirty" -gt 0 ] && [ "$dash_shared" = 1 ] && ok "dashboard: session row has state bead task dirty shared" || nok "dashboard: session row has state bead task dirty shared"
-  dash_b_shared="$(printf '%s\n' "$dash_b_row" | awk -F'\t' '{print $10}')"
-  [ "$dash_b_shared" = 1 ] && ok "dashboard: missing metadata still reports shared worktree" || nok "dashboard: missing metadata still reports shared worktree"
-  dash_expanded="$($PICKER dashboard expanded 2>/dev/null)"
-  dash_pane_row="$(printf '%s\n' "$dash_expanded" | awk -F'\t' -v p="$dash_pane_a" '$1=="pane" && $4==p {print; exit}')"
-  IFS=$'\t' read -r _ _ _ _ pane_state pane_bead pane_task _ <<< "$dash_pane_row"
-  [ "$pane_state" = needs-input ] && [ "$pane_bead" = xtmux-mux.6 ] && [ "$pane_task" = 'dash task' ] && ok "dashboard: expanded mode exposes pane detail" || nok "dashboard: expanded mode exposes pane detail"
-  TMUX_PANE="$dash_pane_a" "$AGENT_STATE" off >/dev/null 2>&1 || true
-  tmux kill-session -t "$dash_a" 2>/dev/null || true
-  tmux kill-session -t "$dash_b" 2>/dev/null || true
+  tmux_private kill-session -t "$dash_a" 2>/dev/null || true
+  tmux_private kill-session -t "$dash_b" 2>/dev/null || true
 fi
 
 
 echo
 echo "== topology JSON contract (live tmux) =="
 
-if ! tmux info >/dev/null 2>&1; then
-  printf '  \033[33mskip\033[0m topology tests (no live tmux server)\n'
+topo_a="xtmux-topology-a-$$"
+topo_b="xtmux-topology-b-$$"
+if ! command -v tmux >/dev/null 2>&1; then
+  printf '  \033[33mskip\033[0m topology tests (tmux missing)\n'
 elif ! command -v jq >/dev/null 2>&1; then
   printf '  \033[33mskip\033[0m topology tests (jq missing)\n'
+elif ! tmux_private new-session -d -s "$topo_a" -x 100 -y 30 'sleep 100' 2>/dev/null \
+  || ! tmux_private new-session -d -s "$topo_b" -x 90 -y 25 'sleep 100' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m topology tests (cannot start the private tmux server)\n'
 else
-  topo_a="xtmux-topology-a-$$"
-  topo_b="xtmux-topology-b-$$"
-  tmux kill-session -t "$topo_a" 2>/dev/null || true
-  tmux kill-session -t "$topo_b" 2>/dev/null || true
-  tmux new-session -d -s "$topo_a" -x 100 -y 30 'sleep 100' 2>/dev/null
-  tmux new-session -d -s "$topo_b" -x 90 -y 25 'sleep 100' 2>/dev/null
-  tmux split-window -h -t "$topo_a" 'sleep 100' 2>/dev/null
+  tmux_private split-window -h -t "$topo_a" 'sleep 100' 2>/dev/null
   # A SECOND window in topo_a. With one window per session, a snapshot that
   # flattened every pane of a session into a single synthetic window would satisfy
   # every other assertion here — the window rung has to be forced to carry weight.
-  tmux new-window -d -t "$topo_a" 'sleep 100' 2>/dev/null
-  topo_sid="$(tmux display-message -p -t "$topo_a" '#{session_id}' 2>/dev/null)"
-  topo_parent_pane="$(tmux list-panes -t "$topo_a" -F '#{pane_id}' 2>/dev/null | tail -1)"
-  topo_b_pane="$(tmux list-panes -t "$topo_b" -F '#{pane_id}' 2>/dev/null | head -1)"
-  tmux set-option -p -t "$topo_parent_pane" @agent_parent_session "$topo_sid" 2>/dev/null || true
-  tmux set-option -p -t "$topo_parent_pane" @agent_instance_id topology-instance 2>/dev/null || true
-  tmux set-option -p -t "$topo_parent_pane" @agent_state running 2>/dev/null || true
-  # xtrm.topology.projection.v1 lineage. Set on the SAME pane as the older
-  # options so one assertion proves the new fields ride alongside them rather
-  # than replacing them, and left unset on topo_b so absence stays absence.
-  tmux set-option -p -t "$topo_parent_pane" @agent_role chain-coordinator 2>/dev/null || true
-  tmux set-option -p -t "$topo_parent_pane" @agent_worktree /srv/wt/topology 2>/dev/null || true
-  tmux set-option -p -t "$topo_parent_pane" @agent_branch xt/topology 2>/dev/null || true
-  tmux set-option -p -t "$topo_parent_pane" @agent_parent_pane "$topo_b_pane" 2>/dev/null || true
-  topo_json="$(XDG_STATE_HOME="$WORK/topology-state" XTMUX_OBS_V2=0 "$PICKER" topology --json 2>/dev/null)"
-  # topo_a is 2 windows holding 2 + 1 panes. The per-window pane COUNTS and the
-  # global uniqueness of every pane_id are what pin the shape: a graph that hung
-  # every pane under every window would still satisfy a "find pane P under window
-  # W" lookup for each pane, and only these two catch it.
-  printf '%s\n' "$topo_json" | jq -e --arg a "$topo_a" --arg b "$topo_b" \
-    '([.sessions[] | select(.name == $a or .name == $b)] | length == 2) and
-     ([.sessions[] | select(.name == $a) | .windows[] | .panes | length] | sort == [1, 2]) and
-     ([.sessions[] | select(.name == $b) | .windows] | flatten | length == 1) and
-     ([.sessions[].windows[].panes[].pane_id] | (length == (unique | length)))' >/dev/null \
-    && ok "topology: host -> sessions -> windows nesting" || nok "topology: host -> sessions -> windows nesting"
-  printf '%s\n' "$topo_json" | jq -e --arg a "$topo_a" --arg p "$topo_parent_pane" --arg sid "$topo_sid" \
-    '(.schema_version == "xtrm.xtmux.topology.v1") and (.host.host_id | length > 0) and
-     ([.sessions[] | select(.name == $a) | .windows[].panes[]] | length == 3) and
-     ([.sessions[] | select(.name == $a) | .windows[].panes[] | select(.pane_id == $p and .agent.parent_session_id == $sid)] | length == 1)' >/dev/null \
-    && ok "topology: stable IDs and parent session metadata" || nok "topology: stable IDs and parent session metadata"
-  printf '%s\n' "$topo_json" | jq -e --arg p "$topo_parent_pane" --arg b "$topo_b_pane" --arg sid "$topo_sid" \
-    '[.sessions[].windows[].panes[] | select(.pane_id == $p) | .agent
-      | select(.role == "chain-coordinator" and .worktree == "/srv/wt/topology" and .branch == "xt/topology"
-               and .parent_pane_id == $b and .parent_session_id == $sid and .state == "running")] | length == 1' >/dev/null \
-    && ok "topology: publishes role/worktree/branch/parent_pane_id (projection.v1)" || nok "topology: publishes role/worktree/branch/parent_pane_id (projection.v1)"
-  # ANSI-C quoting makes tabs real; tmux leaves \t literal inside single-quoted formats.
-  # -s widens list-panes from the session's CURRENT window to every pane it owns —
-  # without it the second window's pane is never compared against anything.
-  topo_expected="$(tmux list-panes -s -t "$topo_a" -F $'#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_pid}\t#{window_id}\t#{window_index}' 2>/dev/null)"
-  topo_geometry_ok=1
-  while IFS=$'\t' read -r ep ei ea ew eh el et epid ewid ewidx; do
-    [ -n "$ep" ] || continue
-    # The pane is looked up THROUGH its window: a graph that put the right pane
-    # under the wrong window would pass a flat `.. | .panes[]` scan.
-    if ! printf '%s\n' "$topo_json" | jq -e --arg p "$ep" --argjson i "${ei:-0}" --argjson a "${ea:-0}" --argjson w "${ew:-0}" --argjson h "${eh:-0}" --argjson l "${el:-0}" --argjson t "${et:-0}" --argjson pid "${epid:-0}" --arg wid "${ewid:-}" --argjson widx "${ewidx:-0}" \
-      '[.sessions[].windows[] | select(.window_id == $wid and .window_index == $widx) | .panes[]
-        | select(.pane_id == $p and .pane_index == $i and .active == ($a == 1) and .width == $w and .height == $h and .left == $l and .top == $t and .pid == $pid)] | length == 1' >/dev/null; then
-      topo_geometry_ok=0
-    fi
-  done <<< "$topo_expected"
-  [ "$topo_geometry_ok" = 1 ] && ok "topology: each pane sits under its own window, with tmux's geometry" || nok "topology: each pane sits under its own window, with tmux's geometry"
-  printf '%s\n' "$topo_json" | jq -e --arg b "$topo_b_pane" \
-    '[.sessions[].windows[].panes[] | select(.pane_id == $b and ((has("agent") | not) or .agent == null))] | length == 1 and ([.. | objects | keys[]] | any(. == "content" or . == "env" or . == "environment") | not)' >/dev/null \
-    && ok "topology: absent agent metadata and no pane content/env" || nok "topology: absent agent metadata and no pane content/env"
-  tmux kill-session -t "$topo_a" 2>/dev/null || true
-  tmux kill-session -t "$topo_b" 2>/dev/null || true
+  tmux_private new-window -d -t "$topo_a" 'sleep 100' 2>/dev/null
+  topo_sid="$(tmux_private display-message -p -t "$topo_a" '#{session_id}' 2>/dev/null)"
+  topo_parent_pane="$(tmux_private list-panes -t "$topo_a" -F '#{pane_id}' 2>/dev/null | tail -1)"
+  topo_b_pane="$(tmux_private list-panes -t "$topo_b" -F '#{pane_id}' 2>/dev/null | head -1)"
+  if ! tmux_guard_target "$topo_sid" || ! tmux_guard_target "$topo_parent_pane" || ! tmux_guard_target "$topo_b_pane"; then
+    printf '  \033[33mskip\033[0m topology tests (no panes)\n'
+  else
+    tmux_private set-option -p -t "$topo_parent_pane" @agent_parent_session "$topo_sid" 2>/dev/null || true
+    tmux_private set-option -p -t "$topo_parent_pane" @agent_instance_id topology-instance 2>/dev/null || true
+    tmux_private set-option -p -t "$topo_parent_pane" @agent_state running 2>/dev/null || true
+    # xtrm.topology.projection.v1 lineage. Set on the SAME pane as the older
+    # options so one assertion proves the new fields ride alongside them rather
+    # than replacing them, and left unset on topo_b so absence stays absence.
+    tmux_private set-option -p -t "$topo_parent_pane" @agent_role chain-coordinator 2>/dev/null || true
+    tmux_private set-option -p -t "$topo_parent_pane" @agent_worktree /srv/wt/topology 2>/dev/null || true
+    tmux_private set-option -p -t "$topo_parent_pane" @agent_branch xt/topology 2>/dev/null || true
+    tmux_private set-option -p -t "$topo_parent_pane" @agent_parent_pane "$topo_b_pane" 2>/dev/null || true
+    topo_json="$(XDG_STATE_HOME="$WORK/topology-state" XTMUX_OBS_V2=0 "$PICKER" topology --json 2>/dev/null)"
+    # topo_a is 2 windows holding 2 + 1 panes. The per-window pane COUNTS and the
+    # global uniqueness of every pane_id are what pin the shape: a graph that hung
+    # every pane under every window would still satisfy a "find pane P under window
+    # W" lookup for each pane, and only these two catch it.
+    printf '%s\n' "$topo_json" | jq -e --arg a "$topo_a" --arg b "$topo_b" \
+      '([.sessions[] | select(.name == $a or .name == $b)] | length == 2) and
+       ([.sessions[] | select(.name == $a) | .windows[] | .panes | length] | sort == [1, 2]) and
+       ([.sessions[] | select(.name == $b) | .windows] | flatten | length == 1) and
+       ([.sessions[].windows[].panes[].pane_id] | (length == (unique | length)))' >/dev/null \
+      && ok "topology: host -> sessions -> windows nesting" || nok "topology: host -> sessions -> windows nesting"
+    printf '%s\n' "$topo_json" | jq -e --arg a "$topo_a" --arg p "$topo_parent_pane" --arg sid "$topo_sid" \
+      '(.schema_version == "xtrm.xtmux.topology.v1") and (.host.host_id | length > 0) and
+       ([.sessions[] | select(.name == $a) | .windows[].panes[]] | length == 3) and
+       ([.sessions[] | select(.name == $a) | .windows[].panes[] | select(.pane_id == $p and .agent.parent_session_id == $sid)] | length == 1)' >/dev/null \
+      && ok "topology: stable IDs and parent session metadata" || nok "topology: stable IDs and parent session metadata"
+    printf '%s\n' "$topo_json" | jq -e --arg p "$topo_parent_pane" --arg b "$topo_b_pane" --arg sid "$topo_sid" \
+      '[.sessions[].windows[].panes[] | select(.pane_id == $p) | .agent
+        | select(.role == "chain-coordinator" and .worktree == "/srv/wt/topology" and .branch == "xt/topology"
+                 and .parent_pane_id == $b and .parent_session_id == $sid and .state == "running")] | length == 1' >/dev/null \
+      && ok "topology: publishes role/worktree/branch/parent_pane_id (projection.v1)" || nok "topology: publishes role/worktree/branch/parent_pane_id (projection.v1)"
+    # ANSI-C quoting makes tabs real; tmux leaves \t literal inside single-quoted formats.
+    # -s widens list-panes from the session's CURRENT window to every pane it owns —
+    # without it the second window's pane is never compared against anything.
+    topo_expected="$(tmux_private list-panes -s -t "$topo_a" -F $'#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_pid}\t#{window_id}\t#{window_index}' 2>/dev/null)"
+    topo_geometry_ok=1
+    while IFS=$'\t' read -r ep ei ea ew eh el et epid ewid ewidx; do
+      [ -n "$ep" ] || continue
+      # The pane is looked up THROUGH its window: a graph that put the right pane
+      # under the wrong window would pass a flat `.. | .panes[]` scan.
+      if ! printf '%s\n' "$topo_json" | jq -e --arg p "$ep" --argjson i "${ei:-0}" --argjson a "${ea:-0}" --argjson w "${ew:-0}" --argjson h "${eh:-0}" --argjson l "${el:-0}" --argjson t "${et:-0}" --argjson pid "${epid:-0}" --arg wid "${ewid:-}" --argjson widx "${ewidx:-0}" \
+        '[.sessions[].windows[] | select(.window_id == $wid and .window_index == $widx) | .panes[]
+          | select(.pane_id == $p and .pane_index == $i and .active == ($a == 1) and .width == $w and .height == $h and .left == $l and .top == $t and .pid == $pid)] | length == 1' >/dev/null; then
+        topo_geometry_ok=0
+      fi
+    done <<< "$topo_expected"
+    [ "$topo_geometry_ok" = 1 ] && ok "topology: each pane sits under its own window, with tmux's geometry" || nok "topology: each pane sits under its own window, with tmux's geometry"
+    printf '%s\n' "$topo_json" | jq -e --arg b "$topo_b_pane" \
+      '[.sessions[].windows[].panes[] | select(.pane_id == $b and ((has("agent") | not) or .agent == null))] | length == 1 and ([.. | objects | keys[]] | any(. == "content" or . == "env" or . == "environment") | not)' >/dev/null \
+      && ok "topology: absent agent metadata and no pane content/env" || nok "topology: absent agent metadata and no pane content/env"
+  fi
+  tmux_private kill-session -t "$topo_a" 2>/dev/null || true
+  tmux_private kill-session -t "$topo_b" 2>/dev/null || true
 fi
 
 
 echo "== specialist sp-* contract =="
 
-if ! tmux info >/dev/null 2>&1; then
-  printf '  \033[33mskip\033[0m specialist tests (no live tmux server)\n'
+# A unique name that still matches the specialist pattern sp-<role>-<hex-or-digits>.
+sp_sess="sp-executor-$$"
+if ! command -v tmux >/dev/null 2>&1 || ! tmux_private new-session -d -s "$sp_sess" -x 120 -y 30 'cat' 2>/dev/null; then
+  printf '  \033[33mskip\033[0m specialist tests (cannot start the private tmux server)\n'
 else
-  sp_sess="sp-executor-deadbe"
-  tmux kill-session -t "$sp_sess" 2>/dev/null || true
-  tmux new-session -d -s "$sp_sess" -x 120 -y 30 'cat' 2>/dev/null
-  sp_pane="$(tmux list-panes -t "$sp_sess" -F '#{pane_id}' 2>/dev/null | head -1)"
-  sp_sid="$(tmux display-message -p -t "$sp_sess" '#{session_id}' 2>/dev/null)"
-
-  all_sp_rows="$($PICKER list all 2>/dev/null)"
-  sp_rows="$(printf '%s
-' "$all_sp_rows" | grep "$sp_sess" || true)"
-  if printf '%s' "$sp_rows" | grep -q '\[sp\]' && printf '%s' "$sp_rows" | grep -q 'executor' && ! printf '%s' "$sp_rows" | grep -q '\[stale\]'; then
-    ok "specialist: sp-* pane gets [sp] role badge without false [stale]"
+  sp_pane="$(tmux_private list-panes -t "$sp_sess" -F '#{pane_id}' 2>/dev/null | head -1)"
+  sp_sid="$(tmux_private display-message -p -t "$sp_sess" '#{session_id}' 2>/dev/null)"
+  if ! tmux_guard_target "$sp_pane" || ! tmux_guard_target "$sp_sid"; then
+    printf '  \033[33mskip\033[0m specialist tests (no pane)\n'
   else
-    nok "specialist: sp-* list badge"
-    printf '      rows: %s
-' "$sp_rows"
+    all_sp_rows="$($PICKER list all 2>/dev/null)"
+    sp_rows="$(printf '%s\n' "$all_sp_rows" | grep "$sp_sess" || true)"
+    if printf '%s' "$sp_rows" | grep -q '\[sp\]' && printf '%s' "$sp_rows" | grep -q 'executor' && ! printf '%s' "$sp_rows" | grep -q '\[stale\]'; then
+      ok "specialist: sp-* pane gets [sp] role badge without false [stale]"
+    else
+      nok "specialist: sp-* list badge"
+      printf '      rows: %s\n' "$sp_rows"
+    fi
+
+    header_line="$(printf '%s\n' "$all_sp_rows" | awk -F'\t' '$1=="header" && $3=="specialists"{print NR; exit}')"
+    sp_line="$(printf '%s\n' "$all_sp_rows" | awk -F'\t' -v s="$sp_sess" '$1=="session" && $3==s{print NR; exit}')"
+    if [ -n "$header_line" ] && [ -n "$sp_line" ] && [ "$header_line" -lt "$sp_line" ]; then
+      ok "specialist: sp-* sessions grouped under bottom header"
+    else
+      nok "specialist: sp-* sessions grouped under bottom header"
+    fi
+
+    sp_prev="$("$PICKER" preview pane "$sp_sid" "$sp_sess" "$sp_pane" 2>/dev/null)"
+    if printf '%s' "$sp_prev" | grep -q 'specialist executor' && printf '%s' "$sp_prev" | grep -q 'sp-state  stale'; then
+      ok "specialist: pane preview fields"
+    else
+      nok "specialist: pane preview fields"
+      printf '      preview: %s\n' "$(printf '%s\n' "$sp_prev" | head -12)"
+    fi
+
+    sp_sess_prev="$("$PICKER" preview session "$sp_sid" "$sp_sess" 2>/dev/null)"
+    if printf '%s' "$sp_sess_prev" | grep -q 'specialist executor' && printf '%s' "$sp_sess_prev" | grep -q 'sp-state  stale'; then
+      ok "specialist: session preview fields"
+    else
+      nok "specialist: session preview fields"
+      printf '      preview: %s\n' "$(printf '%s\n' "$sp_sess_prev" | head -12)"
+    fi
+
+    sp_tmuxenv="$(tmux_private display-message -p -t "$sp_pane" '#{socket_path},0,0')"
+    TMUX="$sp_tmuxenv" TMUX_PANE="$sp_pane" "$AGENT_STATE" needs-input >/dev/null 2>&1
+    sp_wait_rows="$("$PICKER" list waiting 2>/dev/null | grep "$sp_sess" || true)"
+    if printf '%s' "$sp_wait_rows" | grep -q '\[sp\]' && printf '%s' "$sp_wait_rows" | grep -q '\[wait\]'; then
+      ok "specialist: explicit waiting state appears in waiting filter"
+    else
+      nok "specialist: waiting filter"
+      printf '      rows: %s\n' "$sp_wait_rows"
+    fi
+    TMUX="$sp_tmuxenv" TMUX_PANE="$sp_pane" "$AGENT_STATE" off >/dev/null 2>&1 || true
   fi
 
-  header_line="$(printf '%s
-' "$all_sp_rows" | awk -F'	' '$1=="header" && $3=="specialists"{print NR; exit}')"
-  sp_line="$(printf '%s
-' "$all_sp_rows" | awk -F'	' -v s="$sp_sess" '$1=="session" && $3==s{print NR; exit}')"
-  if [ -n "$header_line" ] && [ -n "$sp_line" ] && [ "$header_line" -lt "$sp_line" ]; then
-    ok "specialist: sp-* sessions grouped under bottom header"
-  else
-    nok "specialist: sp-* sessions grouped under bottom header"
-  fi
-
-  sp_prev="$("$PICKER" preview pane "$sp_sid" "$sp_sess" "$sp_pane" 2>/dev/null)"
-  if printf '%s' "$sp_prev" | grep -q 'specialist executor' && printf '%s' "$sp_prev" | grep -q 'sp-state  stale'; then
-    ok "specialist: pane preview fields"
-  else
-    nok "specialist: pane preview fields"
-    printf '      preview: %s\n' "$(printf '%s\n' "$sp_prev" | head -12)"
-  fi
-
-  sp_sess_prev="$("$PICKER" preview session "$sp_sid" "$sp_sess" 2>/dev/null)"
-  if printf '%s' "$sp_sess_prev" | grep -q 'specialist executor' && printf '%s' "$sp_sess_prev" | grep -q 'sp-state  stale'; then
-    ok "specialist: session preview fields"
-  else
-    nok "specialist: session preview fields"
-    printf '      preview: %s\n' "$(printf '%s\n' "$sp_sess_prev" | head -12)"
-  fi
-
-  TMUX_PANE="$sp_pane" "$AGENT_STATE" needs-input >/dev/null 2>&1
-  sp_wait_rows="$("$PICKER" list waiting 2>/dev/null | grep "$sp_sess" || true)"
-  if printf '%s' "$sp_wait_rows" | grep -q '\[sp\]' && printf '%s' "$sp_wait_rows" | grep -q '\[wait\]'; then
-    ok "specialist: explicit waiting state appears in waiting filter"
-  else
-    nok "specialist: waiting filter"
-    printf '      rows: %s
-' "$sp_wait_rows"
-  fi
-  TMUX_PANE="$sp_pane" "$AGENT_STATE" off >/dev/null 2>&1 || true
-
-  tmux kill-session -t "$sp_sess" 2>/dev/null || true
+  tmux_private kill-session -t "$sp_sess" 2>/dev/null || true
 fi
 
 echo
 echo "== filter contract (live tmux) =="
 
-if ! tmux info >/dev/null 2>&1; then
-  printf '  \033[33mskip\033[0m filter tests (no live tmux server)\n'
-else
+# Unique names: a fixed name collides with a real session on any shared server,
+# and tmux resolves -t by exact name, then prefix, then fnmatch.
+sa="xt-contract-filt-a-$$"; sb="xt-contract-filt-b-$$"
+filter_gate_ok=0
+if command -v tmux >/dev/null 2>&1; then
   fa="$WORK/filtA"; fb="$WORK/filtB"
   mk_repo "$fa"
   mk_repo "$fb"
   # repo B on a 'feat' branch (drop main) so branch: filters are deterministic
   git -C "$fb" checkout -q -b feat 2>/dev/null || git -C "$fb" checkout -q feat 2>/dev/null || true
   git -C "$fb" branch -q -D main 2>/dev/null || true
-
-  sa="xt-contract-filt-a"; sb="xt-contract-filt-b"
-  tmux kill-session -t "$sa" 2>/dev/null || true
-  tmux kill-session -t "$sb" 2>/dev/null || true
   # detached 'bash' -> pane_current_command=bash (classify: shell), stays alive
-  tmux new-session -d -s "$sa" -c "$fa" 'bash' 2>/dev/null
-  tmux new-session -d -s "$sb" -c "$fb" 'bash' 2>/dev/null
-  pa="$(tmux list-panes -t "$sa" -F '#{pane_id}' 2>/dev/null | head -1)"
-  pb="$(tmux list-panes -t "$sb" -F '#{pane_id}' 2>/dev/null | head -1)"
-
+  if tmux_private new-session -d -s "$sa" -c "$fa" 'bash' 2>/dev/null \
+    && tmux_private new-session -d -s "$sb" -c "$fb" 'bash' 2>/dev/null; then
+    pa="$(tmux_private list-panes -t "$sa" -F '#{pane_id}' 2>/dev/null | head -1)"
+    pb="$(tmux_private list-panes -t "$sb" -F '#{pane_id}' 2>/dev/null | head -1)"
+    if tmux_guard_target "$pa" && tmux_guard_target "$pb"; then filter_gate_ok=1; fi
+  fi
+fi
+if [ "$filter_gate_ok" != 1 ]; then
+  printf '  \033[33mskip\033[0m filter tests (cannot start the private tmux server)\n'
+else
   # Use the repository status fixture even when the caller supplies an
   # isolated HOME without an installed ~/.tmux/scripts/git-pane-status.sh.
   filter_home="$WORK/filter-home"
@@ -2483,7 +2562,10 @@ else
   list_has() { filter_picker list "$1" 2>/dev/null | awk -F'\t' -v s="$2" '$1=="session"&&$3==s{f=1} END{exit !f}'; }
   # unique grep token written into A's pane only
   grep_tok="XTMUXFILTTOKENzz9"
-  tmux send-keys -t "$pa" "printf '%s' '$grep_tok'" Enter 2>/dev/null
+  # A guarded -t: an EMPTY -t would type into whatever pane the client resolved.
+  if tmux_guard_target "$pa"; then
+    tmux_private send-keys -t "$pa" "printf '%s' '$grep_tok'" Enter 2>/dev/null
+  fi
   sleep 0.5
 
   # repo filter: A in repo filtA, B in filtB
@@ -2499,9 +2581,10 @@ else
   list_has "cmd:shell" "$sa" && ok "filter: cmd:shell matches bash pane"    || nok "filter: cmd:shell matches bash pane"
   list_has "cmd:agent" "$sa" && nok "filter: cmd:agent excludes plain shell"|| ok "filter: cmd:agent excludes plain shell"
   # promote A to an agent via truthful @agent_state -> cmd:agent now matches A
-  TMUX_PANE="$pa" "$AGENT_STATE" running >/dev/null 2>&1
+  filter_tmuxenv="$(tmux_private display-message -p -t "$pa" '#{socket_path},0,0')"
+  TMUX="$filter_tmuxenv" TMUX_PANE="$pa" "$AGENT_STATE" running >/dev/null 2>&1
   list_has "cmd:agent" "$sa" && ok "filter: cmd:agent matches @agent_state" || nok "filter: cmd:agent matches @agent_state"
-  TMUX_PANE="$pa" "$AGENT_STATE" off >/dev/null 2>&1 || true
+  TMUX="$filter_tmuxenv" TMUX_PANE="$pa" "$AGENT_STATE" off >/dev/null 2>&1 || true
 
   # free-text grep: the unique token lives only in A
   list_has "grep:$grep_tok" "$sa" && ok "filter: grep matches pane text"    || nok "filter: grep matches pane text"
@@ -2523,8 +2606,8 @@ else
   assert_eq "filter: prompt reflects spec" "repo:filtA> " "$(filter_picker prompt-label 2>/dev/null)"
   filter_picker filter-clear >/dev/null 2>&1
 
-  tmux kill-session -t "$sa" 2>/dev/null || true
-  tmux kill-session -t "$sb" 2>/dev/null || true
+  tmux_private kill-session -t "$sa" 2>/dev/null || true
+  tmux_private kill-session -t "$sb" 2>/dev/null || true
 fi
 echo
 echo "== xtmux alias =="
@@ -2718,58 +2801,62 @@ grep -q 'no `text` field and no `id` field' "$WORK/help.out" \
 
 # 4. THE DRIFT GUARD: documented json fields vs what the commands actually emit.
 #    Pinned to live output, not to a doc — a doc can rot in lockstep with help.
-if command -v jq >/dev/null 2>&1 && [ -x "$ROOT/bin/xtmux-obs" ] && tmux info >/dev/null 2>&1; then
+if command -v jq >/dev/null 2>&1 && [ -x "$ROOT/bin/xtmux-obs" ] && command -v tmux >/dev/null 2>&1; then
   _hstate="$WORK/helpstate"; mkdir -p "$_hstate"
   _hs="xt-help-fields-$$"
-  tmux new-session -d -s "$_hs" 'sleep 30' 2>/dev/null
-  _hp="$(tmux list-panes -t "$_hs" -F '#{pane_id}' 2>/dev/null | head -1)"
-  # each: <label> <live json keys>
-  _live_keys() { # _live_keys <jq-filter> <cmd...>
-    local filter="$1"; shift
-    XDG_STATE_HOME="$_hstate" XTMUX_OBS_V2=1 "$PICKER" "$@" 2>/dev/null | jq -r "$filter" 2>/dev/null
-  }
-  # The field must be documented in THAT command's own `json output:` block —
-  # grepping the whole help would let a field survive in a neighbouring block and
-  # mask its removal here (a false pass this test was written to catch).
-  _help_block() { # _help_block <label> -> that label's field block
-    awk -v L="$1" '
-      $0 ~ "^    " L "([[:space:]]|$)" { inb=1; print; next }
-      inb && /^    [a-z]/ { exit }   # next label at the same indent
-      inb && /^[A-Z]/     { exit }   # next section
-      inb && /^$/         { exit }   # end of the json output block
-      inb                 { print }
-    ' "$WORK/help.out"
-  }
-  _assert_fields() { # _assert_fields <label> <live-keys> [doc-label]
-    local label="$1" keys="$2" doclabel="${3:-$1}" block missing=''
-    block="$(_help_block "$doclabel")"
-    if [ -z "$block" ]; then
-      nok "help: json fields match live output ($label)"
-      printf '      no `json output:` block documents %s\n' "$doclabel"
-      return
-    fi
-    for _k in $keys; do
-      printf '%s' "$block" | grep -q "\b$_k\b" || missing="$missing $_k"
-    done
-    if [ -z "$missing" ]; then
-      ok "help: json fields match live output ($label)"
-    else
-      nok "help: json fields match live output ($label)"
-      printf '      emitted but undocumented under `%s`:%s\n' "$doclabel" "$missing"
-    fi
-  }
-  _k_send="$(_live_keys 'keys|join(" ")' message-send --to "$_hp" --from "$_hp" --text 'help-field-probe' --json)"
-  _assert_fields "message-send" "$_k_send"
-  # message-list rows are the `message` model — that is the block agents misread
-  _k_list="$(_live_keys '.[0]|keys|join(" ")' message-list --for "$_hp" --json)"
-  _assert_fields "message-list" "$_k_list" "message"
-  _k_unread="$(_live_keys 'keys|join(" ")' unread-count --for "$_hp" --json)"
-  _assert_fields "unread-count" "$_k_unread"
-  _k_dash="$(_live_keys 'keys|join(" ")' dashboard sessions-only --json)"
-  _assert_fields "dashboard" "$_k_dash"
-  tmux kill-session -t "$_hs" 2>/dev/null || true
+  tmux_private new-session -d -s "$_hs" 'sleep 30' 2>/dev/null
+  _hp="$(tmux_private list-panes -t "$_hs" -F '#{pane_id}' 2>/dev/null | head -1)"
+  if ! tmux_guard_target "$_hp"; then
+    printf '  \033[33mskip\033[0m help json-field drift guard (no pane on the private server)\n'
+  else
+    # each: <label> <live json keys>
+    _live_keys() { # _live_keys <jq-filter> <cmd...>
+      local filter="$1"; shift
+      XDG_STATE_HOME="$_hstate" XTMUX_OBS_V2=1 "$PICKER" "$@" 2>/dev/null | jq -r "$filter" 2>/dev/null
+    }
+    # The field must be documented in THAT command's own `json output:` block —
+    # grepping the whole help would let a field survive in a neighbouring block and
+    # mask its removal here (a false pass this test was written to catch).
+    _help_block() { # _help_block <label> -> that label's field block
+      awk -v L="$1" '
+        $0 ~ "^    " L "([[:space:]]|$)" { inb=1; print; next }
+        inb && /^    [a-z]/ { exit }   # next label at the same indent
+        inb && /^[A-Z]/     { exit }   # next section
+        inb && /^$/         { exit }   # end of the json output block
+        inb                 { print }
+      ' "$WORK/help.out"
+    }
+    _assert_fields() { # _assert_fields <label> <live-keys> [doc-label]
+      local label="$1" keys="$2" doclabel="${3:-$1}" block missing=''
+      block="$(_help_block "$doclabel")"
+      if [ -z "$block" ]; then
+        nok "help: json fields match live output ($label)"
+        printf '      no `json output:` block documents %s\n' "$doclabel"
+        return
+      fi
+      for _k in $keys; do
+        printf '%s' "$block" | grep -q "\b$_k\b" || missing="$missing $_k"
+      done
+      if [ -z "$missing" ]; then
+        ok "help: json fields match live output ($label)"
+      else
+        nok "help: json fields match live output ($label)"
+        printf '      emitted but undocumented under `%s`:%s\n' "$doclabel" "$missing"
+      fi
+    }
+    _k_send="$(_live_keys 'keys|join(" ")' message-send --to "$_hp" --from "$_hp" --text 'help-field-probe' --json)"
+    _assert_fields "message-send" "$_k_send"
+    # message-list rows are the `message` model — that is the block agents misread
+    _k_list="$(_live_keys '.[0]|keys|join(" ")' message-list --for "$_hp" --json)"
+    _assert_fields "message-list" "$_k_list" "message"
+    _k_unread="$(_live_keys 'keys|join(" ")' unread-count --for "$_hp" --json)"
+    _assert_fields "unread-count" "$_k_unread"
+    _k_dash="$(_live_keys 'keys|join(" ")' dashboard sessions-only --json)"
+    _assert_fields "dashboard" "$_k_dash"
+    tmux_private kill-session -t "$_hs" 2>/dev/null || true
+  fi
 else
-  printf '  \033[33mskip\033[0m help json-field drift guard (needs jq + built xtmux-obs + live tmux)\n'
+  printf '  \033[33mskip\033[0m help json-field drift guard (needs jq + built xtmux-obs + tmux)\n'
 fi
 
 # 5. help and docs/json-command-api.md cannot fork: every field the doc calls stable

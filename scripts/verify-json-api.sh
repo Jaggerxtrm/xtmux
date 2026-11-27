@@ -2,10 +2,15 @@
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+# Hermetic tmux (XTMUX-492). Every check below inherits this shell's environment,
+# so an inherited TMUX/TMUX_PANE would hand the suites the operator's live server.
+. "$root/test/lib/tmux-isolation.sh"
+tmux_isolation_begin xtmux-json-gate
 artifact_dir="${XTMUX_JSON_GATE_ARTIFACT_DIR:-/tmp/xtmux-json-gate-$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$artifact_dir"
 summary="$artifact_dir/results.tsv"
 printf 'check\tmode\texit_code\tduration_ms\tcommand\tlog\n' > "$summary"
+trap 'tmux_isolation_end' EXIT
 
 run_check() {
   local name="$1" start end rc log command
@@ -40,6 +45,10 @@ run_check typecheck bun run typecheck
 # printed failures (xtmux-d0a.19). A green contract run means nothing unless the
 # harness underneath it can go red.
 run_check harness-selftest bash test/harness-selftest.sh
+# Proves the suite cannot reach an inherited tmux server: it runs contract.sh with
+# TMUX and TMUX_PANE aimed at a decoy server and asserts the decoy is untouched.
+run_check tmux-isolation bash test/tmux-isolation-selftest.sh
+run_check tmux-guard bash test/tmux-guard.test.sh
 run_check shell-contracts bash test/contract.sh
 run_check nav-contracts bash test/nav-contract.sh
 run_check v1-fixtures bash scripts/capture-v1-fixtures.sh --check

@@ -241,7 +241,8 @@ function main() {
 
   const sessionId = tmuxValue(["display-message", "-p", "#{session_id}"], pane);
   const sessionName = tmuxValue(["display-message", "-p", "#S"], pane);
-  const bead = tmuxValue(["show-options", "-p", "-qv", "@agent_bead"], pane);
+  // @agent_bead is the read-only legacy fallback for a pane launched before the rename.
+  const bead = tmuxValue(["show-options", "-p", "-qv", "@agent_issue"], pane) || tmuxValue(["show-options", "-p", "-qv", "@agent_bead"], pane);
   const parent = tmuxValue(["show-options", "-p", "-qv", "@agent_parent_session"], pane);
   // Immutable candidate identity: the assistant record's own provider id. A
   // replay of the same Stop resolves the same record → same key → one row; a

@@ -17,9 +17,17 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 PICKER="$ROOT/bin/tmux-session-picker"
 . "$HERE/lib/harness.sh"
+# Hermetic tmux (XTMUX-492): this suite drives picker functions under its own
+# tmux() override and a fake tmux shim for subprocesses, and the preamble below
+# keeps any straggler client off an inherited live server.
+. "$HERE/lib/tmux-isolation.sh"
+tmux_isolation_begin xtmux-nav-contract || {
+  printf '\033[31mFAIL\033[0m cannot create a private tmux directory; refusing to run against an inherited tmux server\n'
+  exit 1
+}
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/xtmux-nav-contract.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+trap 'tmux_isolation_end; rm -rf "$WORK"' EXIT
 harness_init "$WORK/results.tsv"
 
 # Same extraction as test/contract.sh: source everything before the top-level
@@ -618,7 +626,10 @@ else
 fi
 assert_eq "nav filter: initial list uses persisted filter state" list-active-nav "$(cat "$WORK/nav-stub-command")"
 assert_eq "nav width: fzf border and selection chrome are reserved" 32 "$(cat "$WORK/nav-stub-width")"
-_width_narrow="$(XTMUX_NAV_WIDTH=32 nav_reserve_fzf_width; printf '%s' "$XTMUX_NAV_WIDTH")"
+# Assign in the subshell, not as a command prefix: a prefix assignment on a shell
+# function is scoped to the call in bash 5.3 (ubuntu-26.04), so the function's
+# export never reached the printf and the result was empty.
+_width_narrow="$(XTMUX_NAV_WIDTH=32; nav_reserve_fzf_width; printf '%s' "$XTMUX_NAV_WIDTH")"
 assert_eq "nav width: narrow physical drawers reserve chrome without widening" 24 "$_width_narrow"
 _width_default="$(unset XTMUX_NAV_WIDTH; COLUMNS=52 nav_reserve_fzf_width; printf '%s' "$XTMUX_NAV_WIDTH")"
 assert_eq "nav width: unset override reserves chrome from terminal columns" 44 "$_width_default"

@@ -68,7 +68,7 @@ function setupPane(): Env {
   mkdirSync(bin, { recursive: true });
   const stateFile = join(home, "pane-state");
   const optionsFile = join(home, "pane-options.json");
-  writeFileSync(optionsFile, JSON.stringify({ "@agent_bead": BEAD, "@agent_parent_session": PARENT }));
+  writeFileSync(optionsFile, JSON.stringify({ "@agent_issue": BEAD, "@agent_parent_session": PARENT }));
   const eventLog = join(home, "events.jsonl");
   const dbPath = join(home, "state", "xtmux", "observability.db");
 
@@ -150,7 +150,7 @@ exec bun "$cli" "$@"
   // capture reads them back. Ambient XTMUX_AGENT_* leaks (e.g. an empty
   // XTMUX_AGENT_PARENT_SESSION) would legitimately overwrite the binding, so
   // the suite controls every one of them.
-  env.XTMUX_AGENT_BEAD = BEAD;
+  env.XTMUX_AGENT_ISSUE = BEAD;
   env.XTMUX_AGENT_PARENT_SESSION = PARENT;
   delete env.XTMUX_AGENT_TASK;
   delete env.XTMUX_AGENT_ROLE;

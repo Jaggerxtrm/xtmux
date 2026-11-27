@@ -220,6 +220,23 @@ describe("xtmux-dvs defect 1: monitor-agent must arm a real poller", () => {
     } finally { ctx.cleanup(); }
   }, 60_000);
 
+  // CORE-2801: a pane that still reports a live @agent_state but runs a login shell lost its agent.
+  // That is target_gone, never a finished turn (`done`).
+  test("a monitor on a pane whose agent exited concludes target_gone, not done", async () => {
+    const ctx = scratch();
+    try {
+      tmux(["respawn-pane", "-k", "-t", ctx.target, "sh"]);
+      await Bun.sleep(300);
+      expect(cli(ctx.env, ["monitor", "register", "--id", "m-exited", "--target", ctx.target,
+        "--pane", ctx.target, "--state", "running", "--timeout", "1800", "--interval", "1"]).status).toBe(0);
+      const poller = Bun.spawn(["bun", "run", CLI, "monitor-run", "m-exited", "--timeout", "30s", "--interval", "1s"],
+        { cwd: ROOT, env: ctx.env, stdout: "pipe", stderr: "pipe" });
+      await poller.exited;
+      const row = monitorRows(ctx.env).find((r) => r.monitorId === "m-exited");
+      expect(row!.terminalStatus).toBe("target_gone");
+    } finally { ctx.cleanup(); }
+  }, 60_000);
+
   test("--wait-for-transition reaches the poller instead of being parsed and dropped", () => {
     const ctx = scratch();
     try {

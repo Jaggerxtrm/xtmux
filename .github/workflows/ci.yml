@@ -26,6 +26,8 @@ jobs:
         working-directory: packages/xtmux-view
       - run: bun test tests/ test/
       - run: node --test packages/xtmux-view/test/*.test.mjs
+      # The guard matrix needs no tmux server: the real binary is a recording fake.
+      - run: bash test/tmux-guard.test.sh
       - run: bun run test:installer
       - run: bun run typecheck
 
