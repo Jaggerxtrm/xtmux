@@ -13,6 +13,7 @@
 #   tmux kill-server                        (no explicit target)
 #   tmux kill-ser ...                       (any unique abbreviation)
 #   TMUX=.../tmux-<uid>/default,... tmux kill-server    (the incident)
+#   tmux new -d \; kill-server              (a command chained with ;)
 #
 # ALLOWED, unchanged:
 #   any command other than kill-server
@@ -34,12 +35,6 @@
 set -u
 
 prog=tmux-guard
-# What the tmux client resolves when neither -L nor -S is given: TMUX_TMPDIR or
-# /tmp, then tmux-<uid>/default.
-default_socket="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/default"
-# What this guard protects: the per-user default server, which lives under /tmp
-# regardless of TMUX_TMPDIR, unless XTMUX_GUARD_SOCKET names another socket.
-protected_socket="${XTMUX_GUARD_SOCKET:-/tmp/tmux-$(id -u)/default}"
 
 guard_fail() {
   printf '%s: %s\n' "$prog" "$*" >&2
@@ -127,10 +122,16 @@ find_real_tmux() {
   return 1
 }
 
-# Split the global options from the command word. tmux accepts its global flags
-# before the command only; -c/-f/-T/-L/-S take a value, the rest do not.
+# Global options come before the first command. The value-taking list below
+# mirrors tmux 3.8 (tmux 2.6 and later agree): -L <name>, -S <path>, -c <dir>,
+# -f <file> and -T <table> take a separate value; every other flag is a switch.
+# option-table: -L -S -c -f -T -- the test suite reads this line and asserts that
+# the tmux it runs accepts every option named on it.
+# A tmux release that adds a value-taking global option must extend this list,
+# or its value would be scanned as the command word and a chained kill-server
+# would slip past the check. The suite asserts that the tmux it runs accepts
+# every option named here.
 args=("$@")
-command_word=
 explicit_socket=0
 index=0
 count=${#args[@]}
@@ -139,7 +140,6 @@ while [ "$index" -lt "$count" ]; do
   case $arg in
     --)
       index=$((index + 1))
-      [ "$index" -lt "$count" ] && command_word=${args[$index]}
       break
       ;;
     -L|-S)
@@ -161,18 +161,51 @@ while [ "$index" -lt "$count" ]; do
       continue
       ;;
     *)
-      command_word=$arg
       break
       ;;
   esac
 done
 
+# Every command in a `;`-separated chain reaches the socket the global options
+# selected, so each command's first word is checked, not only the first one:
+# `tmux new -d \; kill-server` stops the same server the bare form is refused
+# on. tmux splits a chain on a token that is exactly `;` and on a token that
+# ends with `;`, so this scan splits the same way.
+#
 # The operator's rule set: `kill-server` and the abbreviations that stop a whole
-# server. `kill-session` and the other commands are not guarded (XTMUX-493 scope).
+# server. `kill-session` and the other commands are not guarded (XTMUX-493
+# scope); `kill-s` is ambiguous in tmux and tmux itself refuses it.
 guarded=0
-case $command_word in
-  kill-ser|kill-serv|kill-serve|kill-server) guarded=1 ;;
-esac
+while [ "$index" -lt "$count" ]; do
+  arg=${args[$index]}
+  index=$((index + 1))
+  case $arg in
+    '\;'|';')
+      # An empty command between separators.
+      continue
+      ;;
+    *'\;'|*';')
+      # The word both names a command and ends it, so the next word starts a
+      # new command: `new-session; kill-server` is two commands.
+      command_word=${arg%\\;}
+      command_word=${command_word%;}
+      ;;
+    *)
+      command_word=$arg
+      # Skip this command's arguments, up to the next separator.
+      while [ "$index" -lt "$count" ]; do
+        arg=${args[$index]}
+        case $arg in
+          '\;'|';'|*'\;'|*';') break ;;
+        esac
+        index=$((index + 1))
+      done
+      ;;
+  esac
+  case $command_word in
+    kill-ser|kill-serv|kill-serve|kill-server) guarded=1 ;;
+  esac
+done
 
 if [ "$guarded" = 1 ]; then
   if [ "$explicit_socket" = 1 ]; then
@@ -184,16 +217,36 @@ if [ "$guarded" = 1 ]; then
 fi
 
 if [ "$guarded" = 1 ]; then
+  # Computed only here: a passthrough invocation must not pay for `id -u` or a
+  # pair of canonical-path calls.
+  uid=$(id -u)
   if [ -n "${TMUX:-}" ]; then
     # TMUX is "<socket-path>,<server-pid>,<session-index>".
     target=${TMUX%%,*}
   else
-    target=$default_socket
+    # What tmux resolves when neither -L nor -S is given.
+    target=${TMUX_TMPDIR:-/tmp}/tmux-$uid/default
   fi
-  if [ "$(canonical_socket "$target")" = "$(canonical_socket "$protected_socket")" ]; then
+  # The per-user default server lives under /tmp regardless of TMUX_TMPDIR,
+  # unless XTMUX_GUARD_SOCKET names another socket.
+  protected_socket=${XTMUX_GUARD_SOCKET:-/tmp/tmux-$uid/default}
+  # Literal comparison first; the canonical comparison runs only when the paths
+  # differ, and the protected path is canonicalised once.
+  same_target=0
+  target_canonical=
+  if [ "$target" = "$protected_socket" ]; then
+    same_target=1
+  else
+    target_canonical=$(canonical_socket "$target")
+    if [ "$target_canonical" = "$(canonical_socket "$protected_socket")" ]; then
+      same_target=1
+    fi
+  fi
+  if [ "$same_target" = 1 ]; then
+    [ -n "$target_canonical" ] || target_canonical=$(canonical_socket "$target")
     cat >&2 <<EOF
 $prog: refusing \`tmux kill-server\` on the per-user default socket
-  socket: $(canonical_socket "$target")
+  socket: $target_canonical
   That server hosts every session on this machine, including the one that ran this command.
   Name another server with -L <name> or -S <path>, or allow it explicitly:
     TMUX_ALLOW_KILL_SERVER=1 tmux kill-server

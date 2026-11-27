@@ -2,9 +2,9 @@
 # Guard matrix for bin/tmux-guard (XTMUX-493).
 #
 # CLAIM UNDER TEST: the installed `tmux` refuses `kill-server` when it targets the
-# protected socket, on every spelling of that command, and changes nothing else:
-# every other command, every argument and the exit status pass through to the real
-# tmux.
+# protected socket, on every spelling of that command including a command chained
+# with `;`, and passes through what the cases below name: other commands, argv with
+# spaces and quotes, stdin, and the child exit status.
 #
 # METHOD. The real tmux is a recording fake on PATH, so no assertion depends on a
 # live server and both the exit status and the argv are observable directly. Every
@@ -45,7 +45,10 @@ ln -s "$GUARD" "$GUARD_BIN/tmux"
 cat >"$REAL_BIN/tmux" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${FAKE_TMUX_RECORD:?}"
-case ${1:-} in exit7) exit 7 ;; esac
+case ${1:-} in
+  exit7) exit 7 ;;
+  cat-stdin) cat; exit 0 ;;
+esac
 exit 0
 FAKE
 chmod +x "$REAL_BIN/tmux"
@@ -112,6 +115,24 @@ guard_run - - new-session -d -s demo
 assert_passed "multi-argument command" "new-session -d -s demo"
 guard_run - - kill-session -t keep
 assert_passed "kill-session is not guarded" "kill-session -t keep"
+guard_run - - send-keys -t keep "two words" 'a b'
+assert_passed "argv with spaces and quotes" "send-keys -t keep two words a b"
+# A function in a pipeline runs in a subshell, so its CASE_* would be lost; the
+# stdin case invokes the guard directly and captures stdout.
+: >"$RECORD"
+CASE_OUT=$(
+  printf 'from stdin\n' | (
+    unset TMUX TMUX_PANE TMUX_ALLOW_KILL_SERVER XTMUX_GUARD_REAL XTMUX_REAL_TMUX
+    export TMUX_TMPDIR="$PROTECTED_DIR" XTMUX_GUARD_SOCKET="$PROTECTED_SOCKET" \
+      FAKE_TMUX_RECORD="$RECORD" PATH="$GUARD_BIN:$REAL_BIN:/usr/bin:/bin"
+    "$GUARD_BIN/tmux" cat-stdin
+  )
+)
+CASE_RC=$?
+CASE_ARGS="$(cat "$RECORD")"
+assert_eq "stdin passthrough: exit status" 0 "$CASE_RC"
+assert_eq "stdin passthrough: bytes" "from stdin" "$CASE_OUT"
+assert_eq "stdin passthrough: argv" "cat-stdin" "$CASE_ARGS"
 guard_run - - exit7
 assert_eq "child exit status passes through" 7 "$CASE_RC"
 
@@ -147,6 +168,20 @@ guard_run "$PROTECTED_SOCKET,4242,0" yes kill-server
 assert_refused "TMUX_ALLOW_KILL_SERVER=yes does not allow it: only 1 does"
 guard_run "$PROTECTED_SOCKET,4242,0" 1 kill-server
 assert_passed "TMUX_ALLOW_KILL_SERVER=1" "kill-server"
+guard_run - - kill-server -L "$WORK/other.sock"
+assert_refused "kill-server with -L after the command word (tmux does not permute it)"
+guard_run - - kill-server -S "$WORK/other.sock"
+assert_refused "kill-server with -S after the command word"
+guard_run - - new-session -d ';' kill-server
+assert_refused "chained with a separate ; token"
+guard_run - - send-keys -t keep 'a;' kill-server
+assert_refused "chained with a trailing ; on a word"
+guard_run - - new-session -d ';' kill-session -t keep ';' kill-server
+assert_refused "chained after two other commands"
+guard_run "$PROTECTED_SOCKET,4242,0" - 'kill-server;' new-session -d
+assert_refused "a kill-server that ends with ;"
+guard_run - - 'new-session;' kill-server
+assert_refused "a trailing ; on the command word does not hide the next command"
 
 echo "== explicit target and other servers =="
 guard_run - - -L other kill-server
@@ -155,6 +190,8 @@ guard_run - - -S "$WORK/private.sock" kill-server
 assert_passed "-S <path>" "-S $WORK/private.sock kill-server"
 guard_run - - -Lsock kill-server
 assert_passed "attached -L<name>" "-Lsock kill-server"
+guard_run - - -L chained new-session -d ';' kill-server
+assert_passed "a global -L before the chain covers every command in it" "-L chained new-session -d ; kill-server"
 guard_run "$PROTECTED_DIR/tmux-$(id -u)/private,4242,0" - kill-server
 assert_passed "inherited TMUX naming another server" "kill-server"
 guard_run - - kill-s
@@ -205,6 +242,34 @@ CASE_RC=$(
 )
 assert_eq "recursion depth guard fails closed" 127 "$CASE_RC"
 
+echo "== mirrored option table =="
+# The guard lists the tmux global options that take a value on the
+# `# option-table:` line of bin/tmux-guard. If tmux ever adds one, the list must
+# grow too, or the value would be scanned as the command word. This checks the
+# list against the tmux installed here, not against a copy of its manual.
+SYSTEM_TMUX="$(PATH=/usr/bin:/bin command -v tmux || true)"
+if [ -n "$SYSTEM_TMUX" ]; then
+  OPTION_TABLE="$(sed -n 's/^# option-table: \(.*\) --.*/\1/p' "$GUARD")"
+  if [ -n "$OPTION_TABLE" ]; then ok "the guard names its option table"; else nok "the guard names its option table"; fi
+  for opt in $OPTION_TABLE; do
+    case $opt in
+      -L) value=xtmux-guard-option-probe ;;
+      -S) value="$WORK/option-probe.sock" ;;
+      -c) value="$WORK" ;;
+      -f) value=/dev/null ;;
+      -T) value=root ;;
+      *) value=probe ;;
+    esac
+    if "$SYSTEM_TMUX" "$opt" "$value" -V >/dev/null 2>&1; then
+      ok "tmux $("$SYSTEM_TMUX" -V 2>/dev/null) accepts the mirrored option $opt"
+    else
+      nok "tmux rejects the mirrored option $opt, so the guard list is stale"
+    fi
+  done
+else
+  printf '  \033[33mskip\033[0m no system tmux for the option-table check\n'
+fi
+
 # The real server, when one is available to start privately. This block is the one
 # place a real tmux runs, and it is named and stopped with -L.
 echo "== private server =="
@@ -222,6 +287,14 @@ if [ -x /usr/bin/tmux ]; then
   ) >"$WORK/out" 2>"$WORK/err"
   assert_eq "bare kill-server against the private default socket" 1 "$?"
   if tmux_private_running; then ok "refused kill-server leaves the server alive"; else nok "refused kill-server leaves the server alive"; fi
+  # The chain the reviewer used to reach the same server in one argv.
+  (
+    unset TMUX TMUX_PANE TMUX_ALLOW_KILL_SERVER
+    TMUX_TMPDIR="$PROTECTED_DIR" XTMUX_GUARD_SOCKET="$PROTECTED_SOCKET" \
+      PATH="$GUARD_BIN:/usr/bin:/bin" "$GUARD_BIN/tmux" new-session -d ';' kill-server
+  ) >"$WORK/out" 2>"$WORK/err"
+  assert_eq "chained new-session ; kill-server against the private default socket" 1 "$?"
+  if tmux_private_running; then ok "a refused chain leaves the server alive"; else nok "a refused chain leaves the server alive"; fi
   # The prescribed recipe against a real private server: TMUX unset, TMUX_TMPDIR
   # private, no protected-socket override. The guard must let this through.
   (

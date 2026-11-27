@@ -301,17 +301,22 @@ function firstExecutableOnPath(name) {
   return null;
 }
 
-// The installer cannot reorder PATH, so it states whether the placement it just
-// wrote is effective instead of claiming protection it did not install. Silence
-// means the guard is the first tmux on PATH.
+// The installer cannot reorder PATH, so it always states what this process
+// resolves tmux to instead of claiming protection it did not install. The
+// installer's PATH is not the operator's login shell, so the line names the
+// observation and the command that verifies it in the shell that runs tmux.
 function reportGuardPlacement(dst) {
+  const verify = "your shell may differ; check it with: command -v tmux";
   const first = firstExecutableOnPath("tmux");
   if (!first) {
-    console.log(`    note: no tmux found on PATH; the guard at ${dst} takes effect once the real tmux is installed`);
+    console.log(`    note: this process finds no tmux on PATH; the guard at ${dst} takes effect once the real tmux is installed (${verify})`);
     return;
   }
-  if (canonicalPath(first) === canonicalPath(dst)) return;
-  console.log(`    note: the guard acts only when ${join(home, ".local", "bin")} precedes the real tmux on PATH; first tmux on PATH is ${first}`);
+  if (canonicalPath(first) === canonicalPath(dst)) {
+    console.log(`    note: this process resolves tmux to the guard at ${first}, so the guard is first on this PATH (${verify})`);
+    return;
+  }
+  console.log(`    note: this process resolves tmux to ${first}, not the guard; the guard acts only when ${join(home, ".local", "bin")} precedes it on PATH (${verify})`);
 }
 
 function preflightInstall() {

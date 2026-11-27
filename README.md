@@ -211,7 +211,9 @@ The installer places a guard at `~/.local/bin/tmux`, ahead of the real binary on
 `/tmp/tmux-<uid>/default`: tmux resolves its socket from an inherited `TMUX`
 variable first, so an agent pane's `tmux kill-server` kills every session on the
 machine. A private `TMUX_TMPDIR` is not protected, so the usual safe recipe
-(`unset TMUX TMUX_PANE; TMUX_TMPDIR=$(mktemp -d)`) keeps working. Every other command, every argument and the exit status
+(`unset TMUX TMUX_PANE; TMUX_TMPDIR=$(mktemp -d)`) keeps working. The check
+covers every command in a `;`-separated chain, so `tmux new -d \; kill-server`
+is refused too. Every other command, every argument, stdin and the exit status
 pass through unchanged, and the guard resolves the real tmux from `PATH` (the
 first `tmux` that is not the guard) instead of hard-coding a location.
 
@@ -225,7 +227,8 @@ TMUX_ALLOW_KILL_SERVER=1 tmux kill-server  # the default server, on purpose
 
 Only the literal `TMUX_ALLOW_KILL_SERVER=1` overrides the refusal; an empty or any
 other value does not. `~/.local/bin` must precede the real tmux on `PATH`; the
-installer prints a note when it does not. `xtmux-install --uninstall` removes the guard. A hand-installed
+installer prints which tmux its own `PATH` resolves, and `command -v tmux` in the
+shell that runs tmux is the check that the guard wins there. `xtmux-install --uninstall` removes the guard. A hand-installed
 guard is adopted and its previous copy is kept as `~/.local/bin/tmux.pre-xtmux`;
 a `tmux` file that is neither an xtmux link nor a recognisable guard is left
 untouched and the install refuses rather than shadow it.
