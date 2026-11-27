@@ -14,12 +14,25 @@
 #   tmux kill-ser ...                       (any unique abbreviation)
 #   TMUX=.../tmux-<uid>/default,... tmux kill-server    (the incident)
 #   tmux new -d \; kill-server              (a command chained with ;)
+#   tmux if-shell true kill-server          (a command carried in an argument:
+#                                            if-shell, if-shell -F, confirm-before,
+#                                            command-prompt -I, run-shell -C, and
+#                                            any argument that splits into such a
+#                                            word on whitespace or ;)
 #
 # ALLOWED, unchanged:
 #   any command other than kill-server
 #   tmux -L <name> kill-server              explicit server name
 #   tmux -S <path> kill-server              explicit socket path
 #   TMUX_ALLOW_KILL_SERVER=1 tmux kill-server
+#
+# OUT OF REACH, by design: a command that never appears in the argv this guard
+# sees. A `source-file` or any tmux config file it loads can start `kill-server`
+# in the server process, a `bind-key` binding runs later on a key press, and a
+# socket path the guard cannot derive from TMUX/TMUX_TMPDIR/-L/-S is just the
+# real tmux's own. The carried-command check below is deliberately over-eager: on
+# the protected socket an argument that merely contains the word is refused, and
+# -L, -S and TMUX_ALLOW_KILL_SERVER=1 remain the escapes.
 #
 # The protected socket is the per-user default one, /tmp/tmux-<uid>/default.
 # TMUX_TMPDIR is deliberately NOT part of it: a private TMUX_TMPDIR is how every
@@ -122,6 +135,23 @@ find_real_tmux() {
   return 1
 }
 
+# has_carried_kill_server <argument>
+# tmux runs a command that a later argv slot carries: if-shell, confirm-before,
+# command-prompt -I and run-shell -C all take a tmux command or a shell command
+# string. Such a command never appears in a command position, so it is matched
+# as a word after splitting the argument on whitespace and `;`. Over-eager on
+# purpose: a false refusal on the protected socket costs one flag, a missed
+# kill-server costs every session.
+has_carried_kill_server() {
+  local arg=${1//;/ } word
+  for word in $arg; do
+    case $word in
+      kill-ser|kill-serv|kill-serve|kill-server) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 # Global options come before the first command. The value-taking list below
 # mirrors tmux 3.8 (tmux 2.6 and later agree): -L <name>, -S <path>, -c <dir>,
 # -f <file> and -T <table> take a separate value; every other flag is a switch.
@@ -216,7 +246,20 @@ if [ "$guarded" = 1 ]; then
   fi
 fi
 
-if [ "$guarded" = 1 ]; then
+# A command carried in an argument is only dangerous when the invocation would
+# reach the protected socket, so the scan runs after the explicit-socket and
+# override escapes made the decision they always make.
+carried=
+if [ "$guarded" = 0 ] && [ "$explicit_socket" = 0 ] && [ "${TMUX_ALLOW_KILL_SERVER:-}" != 1 ]; then
+  for arg in "${args[@]}"; do
+    if has_carried_kill_server "$arg"; then
+      carried=$arg
+      break
+    fi
+  done
+fi
+
+if [ "$guarded" = 1 ] || [ -n "$carried" ]; then
   # Computed only here: a passthrough invocation must not pay for `id -u` or a
   # pair of canonical-path calls.
   uid=$(id -u)
@@ -244,13 +287,24 @@ if [ "$guarded" = 1 ]; then
   fi
   if [ "$same_target" = 1 ]; then
     [ -n "$target_canonical" ] || target_canonical=$(canonical_socket "$target")
-    cat >&2 <<EOF
+    if [ -n "$carried" ] && [ "$guarded" = 0 ]; then
+      cat >&2 <<EOF
+$prog: refusing an argument that carries \`kill-server\` on the per-user default socket
+  socket: $target_canonical
+  argument: $carried
+  That server hosts every session on this machine, including the one that ran this command.
+  Name another server with -L <name> or -S <path>, or allow it explicitly:
+    TMUX_ALLOW_KILL_SERVER=1 tmux kill-server
+EOF
+    else
+      cat >&2 <<EOF
 $prog: refusing \`tmux kill-server\` on the per-user default socket
   socket: $target_canonical
   That server hosts every session on this machine, including the one that ran this command.
   Name another server with -L <name> or -S <path>, or allow it explicitly:
     TMUX_ALLOW_KILL_SERVER=1 tmux kill-server
 EOF
+    fi
     exit 1
   fi
 fi

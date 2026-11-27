@@ -752,7 +752,7 @@ function planGuards() {
   const first = firstExecutableOnPath("tmux");
   const bar = join(home, ".local", "bin", "tmux");
   const effective = first !== null && canonicalPath(first) === canonicalPath(bar);
-  console.log(`  path    first tmux on PATH is ${first || "(none)"}${effective ? " (the guard)" : `; ${join(home, ".local", "bin")} must precede it`}`);
+  console.log(`  path    this process resolves tmux to ${first || "(none)"}${effective ? " (the guard)" : `; ${join(home, ".local", "bin")} must precede it in the shell that runs tmux`}; check with: command -v tmux`);
 }
 
 // A dry run previously planned links only, so the one file where a mistake is

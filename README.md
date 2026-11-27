@@ -213,9 +213,21 @@ variable first, so an agent pane's `tmux kill-server` kills every session on the
 machine. A private `TMUX_TMPDIR` is not protected, so the usual safe recipe
 (`unset TMUX TMUX_PANE; TMUX_TMPDIR=$(mktemp -d)`) keeps working. The check
 covers every command in a `;`-separated chain, so `tmux new -d \; kill-server`
-is refused too. Every other command, every argument, stdin and the exit status
-pass through unchanged, and the guard resolves the real tmux from `PATH` (the
-first `tmux` that is not the guard) instead of hard-coding a location.
+is refused too, and it covers a command carried in an argument: `if-shell`,
+`if-shell -F`, `confirm-before`, `command-prompt -I` and `run-shell -C` pass the
+command they will run, so on the protected socket any argument that splits
+(on whitespace or `;`) into a `kill-server` spelling is refused. That check is
+deliberately over-eager: `tmux send-keys kill-server` is refused too. The escapes
+below remain the way through. Every other command, every argument, stdin and the
+exit status pass through unchanged, and the guard resolves the real tmux from
+`PATH` (the first `tmux` that is not the guard) instead of hard-coding a location.
+
+Out of reach, by design: a command that never appears in the guarded argv. A
+`source-file` or any tmux configuration file it loads can run `kill-server` in
+the server process, a `bind-key` binding runs later on a key press, and a socket
+path the guard cannot derive from `TMUX`, `TMUX_TMPDIR`, `-L` or `-S` is simply
+the real tmux's own resolution. A tmux server started outside the guard's `PATH`
+is likewise unguarded.
 
 A deliberate kill of the default server still works, explicitly:
 

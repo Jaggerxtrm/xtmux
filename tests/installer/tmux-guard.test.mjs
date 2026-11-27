@@ -49,7 +49,7 @@ test("a clean install places the guard as tmux, idempotently, and uninstall remo
   assert.equal(dry.status, 0, dry.stderr);
   assert.match(dry.stdout, /dry-run: tmux guard plan/);
   assert.match(dry.stdout, new RegExp(`link\\s+${dst.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} -> `));
-  assert.match(dry.stdout, /path\s+first tmux on PATH is/);
+  assert.match(dry.stdout, /path\s+this process resolves tmux to .*command -v tmux/);
   assert.match(dry.stdout, /dry-run: no changes were made/);
   assert.equal(existsSync(dst), false, "a dry run writes nothing");
 
