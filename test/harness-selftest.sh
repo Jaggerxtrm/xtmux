@@ -17,10 +17,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Hermetic tmux (XTMUX-492): the suites this script generates inherit this
 # shell's environment, so an inherited TMUX/TMUX_PANE must not survive here.
 . "$HERE/lib/tmux-isolation.sh"
-tmux_isolation_begin xtmux-harness-selftest || {
-  printf '\033[31mFAIL\033[0m cannot create a private tmux directory; refusing to run against an inherited tmux server\n'
-  exit 1
-}
+tmux_isolation_begin xtmux-harness-selftest
 WORK="$(mktemp -d)"
 trap 'tmux_isolation_end; rm -rf "$WORK"' EXIT
 

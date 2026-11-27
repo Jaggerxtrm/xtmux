@@ -732,6 +732,19 @@ make test-regen
 bash test/tmux-isolation-selftest.sh
 ```
 
+`make test` and `bun run test` run the suites that can fail for documented reasons
+LAST: a suite that stops the chain must not hide the ones after it. `contract.sh` keeps
+its four known failures on `main`, so both chains run it last - after the harness
+self-test, the isolation self-test, the nav contract, the tmux guard and the installer
+tests (`bun run test` runs those too; `make test` runs the four shell suites).
+
+A SKIP in `test/tmux-isolation-selftest.sh` is never silent: it prints a `SKIP
+tmux-isolation:` line and appends to the GitHub job summary when one is available.
+Under `XTMUX_SELFTEST_REQUIRE_TMUX=1`, which `scripts/verify-json-api.sh` sets for CI,
+the condition is a FAILURE instead: it prints `FAIL` and exits 1, with no `SKIP` line
+for a triage grep to mistake for a benign host skip. A skipped run used to exit 0 with
+its log uploaded only on failure, so a host that could not build the decoy looked green.
+
 `test/tmux-isolation-selftest.sh` runs the whole of `test/contract.sh` twice, once per
 way a live server could leak in, so it takes about two to three minutes:
 
@@ -759,9 +772,13 @@ environment:
 - `bead derive: from path convention`
 - `handoff: dry-run writes prompt file and prints safe command`
 
-On a host with `bd` and `jq` present, two assertions added by #130 fail on both heads as
-well: `agent-state: legacy XTMUX_AGENT_BEAD seeds @agent_issue and never @agent_bead`
-and `context: carries agent_instance_id, bead_id and the persisted host_id`.
+Those four are the whole documented set. A host with `bd` and `jq` used to fail two more
+assertions added by #130: the launch-only agent environment (`XTMUX_AGENT_*`) was
+inherited from the caller's session, so `agent-state` seeded the caller's issue instead
+of the one under test and `context` reported that issue's bead too. `test/contract.sh`
+now clears the inherited variables at startup and states the precondition at the
+assertion (`env -u XTMUX_AGENT_ISSUE`), so a worker can run the suite from inside its
+own session (XTMUX-494).
 
 `test/contract.sh` covers:
 

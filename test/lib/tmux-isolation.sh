@@ -28,13 +28,20 @@
 
 # tmux_isolation_begin <name-prefix> [socket-name]
 #   Isolate this shell and everything it spawns from any live tmux server.
-#   Sets TMUX_ISO_DIR and TMUX_ISO_SOCKET, and exports TMUX_TMPDIR. Returns
-#   non-zero when a private directory cannot be created (the caller should skip
-#   its tmux-dependent assertions rather than fall back to the live server).
+#   Sets TMUX_ISO_DIR and TMUX_ISO_SOCKET, and exports TMUX_TMPDIR.
+#
+#   The failure guard lives HERE, not at each call site: this helper is the one
+#   choke point (three suites and two scripts call it), and a call site that
+#   forgot the guard would fall through to the caller's live server. A private
+#   directory that cannot be created is fatal, never a skip — skipping would
+#   silently drop the isolation claim the whole suite rests on.
 tmux_isolation_begin() {
   local prefix="${1:?tmux_isolation_begin: name prefix required}"
   TMUX_ISO_SOCKET="${2:-default}"
-  TMUX_ISO_DIR="$(mktemp -d "${TMPDIR:-/tmp}/${prefix}-tmux.XXXXXX")" || return 1
+  TMUX_ISO_DIR="$(mktemp -d "${TMPDIR:-/tmp}/${prefix}-tmux.XXXXXX")" || {
+    printf '\033[31mFAIL\033[0m cannot create a private tmux directory; refusing to run against an inherited tmux server\n' >&2
+    exit 1
+  }
   unset TMUX TMUX_PANE
   export TMUX_TMPDIR="$TMUX_ISO_DIR"
 }

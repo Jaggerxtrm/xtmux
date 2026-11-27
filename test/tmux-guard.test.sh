@@ -57,10 +57,7 @@ exit 0
 FAKE
 chmod +x "$REAL_BIN/tmux"
 
-tmux_isolation_begin xtmux-guard-isolation || {
-  printf '\033[31mFAIL\033[0m cannot create a private tmux directory; refusing to run against an inherited tmux server\n'
-  exit 1
-}
+tmux_isolation_begin xtmux-guard-isolation
 
 cleanup() {
   tmux_isolation_end
