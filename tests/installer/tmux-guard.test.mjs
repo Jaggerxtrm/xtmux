@@ -55,6 +55,9 @@ test("a clean install places the guard as tmux, idempotently, and uninstall remo
 
   const first = run(home);
   assert.equal(first.status, 0, first.stderr);
+  // The live install states what it observed and how to check it in the shell
+  // that runs tmux; an unasserted note would rot silently.
+  assert.match(first.stdout, /note: this process .*command -v tmux/);
   // readlinkSync succeeds only on a symlink, and names the guard: one read, no
   // stat-then-read pair (CodeQL js/file-system-race).
   assert.equal(readlinkSync(dst), guardSource);

@@ -4,7 +4,8 @@
 # CLAIM UNDER TEST: the installed `tmux` refuses `kill-server` when it targets the
 # protected socket, on every spelling of that command, for a command chained with
 # `;` and for one carried in an argument (if-shell, confirm-before, command-prompt
-# -I, run-shell -C), and passes through what the cases below name: other commands,
+# -I, run-shell -C; quoted, escaped or in any case), and passes through what the
+# cases below name: other commands,
 # argv with spaces and quotes, stdin, and the child exit status. `source-file` and
 # other out-of-reach forms pass through and are pinned at the end of the guarded
 # block.
@@ -197,6 +198,16 @@ guard_run - - command-prompt -I kill-server
 assert_refused "an initial command carried by command-prompt -I"
 guard_run - - if-shell true 'new-window; kill-server'
 assert_refused "a quoted multi-command string is split and caught"
+guard_run - - if-shell true "'kill-server'"
+assert_refused "a single-quoted carried command is normalised and caught"
+guard_run - - if-shell true '"kill-server"'
+assert_refused "a double-quoted carried command is normalised and caught"
+guard_run - - if-shell true 'kill\-server'
+assert_refused "a backslash-escaped carried command is normalised and caught"
+guard_run - - if-shell true KILL-SERVER
+assert_refused "a carried command in upper case is caught"
+guard_run - - if-shell true 'echo kill-server-now'
+assert_refused "the word inside a longer string is caught"
 guard_run - - send-keys -t keep kill-server
 assert_refused "over-eager by design: a plain argument naming the command is refused"
 guard_run "$PROTECTED_DIR/tmux-$(id -u)/private,4242,0" - if-shell true kill-server
@@ -320,10 +331,16 @@ else
 fi
 
 # The real server, when one is available to start privately. This block is the one
-# place a real tmux runs, and it is named and stopped with -L.
+# place a real tmux runs, and it is named and stopped with -L. The protected socket
+# is that very server's default socket, so a guard that does nothing lets tmux kill
+# the server the alive check watches and the case fails; a protected socket with no
+# server behind it would pass on a broken guard.
 echo "== private server =="
 if [ -x /usr/bin/tmux ]; then
   unset TMUX TMUX_PANE
+  # tmux_private starts `tmux -L default` under TMUX_TMPDIR=$TMUX_ISO_DIR, so this
+  # is the socket of the server the block starts and checks.
+  LIVE_PROTECTED="$TMUX_ISO_DIR/tmux-$(id -u)/default"
   if tmux_private new-session -d -s guard-probe; then
     ok "private server started with -L"
   else
@@ -331,7 +348,7 @@ if [ -x /usr/bin/tmux ]; then
   fi
   (
     unset TMUX TMUX_PANE TMUX_ALLOW_KILL_SERVER
-    TMUX_TMPDIR="$PROTECTED_DIR" XTMUX_GUARD_SOCKET="$PROTECTED_SOCKET" \
+    TMUX_TMPDIR="$TMUX_ISO_DIR" XTMUX_GUARD_SOCKET="$LIVE_PROTECTED" \
       PATH="$GUARD_BIN:/usr/bin:/bin" "$GUARD_BIN/tmux" kill-server
   ) >"$WORK/out" 2>"$WORK/err"
   assert_eq "bare kill-server against the private default socket" 1 "$?"
@@ -339,7 +356,7 @@ if [ -x /usr/bin/tmux ]; then
   # The chain the reviewer used to reach the same server in one argv.
   (
     unset TMUX TMUX_PANE TMUX_ALLOW_KILL_SERVER
-    TMUX_TMPDIR="$PROTECTED_DIR" XTMUX_GUARD_SOCKET="$PROTECTED_SOCKET" \
+    TMUX_TMPDIR="$TMUX_ISO_DIR" XTMUX_GUARD_SOCKET="$LIVE_PROTECTED" \
       PATH="$GUARD_BIN:/usr/bin:/bin" "$GUARD_BIN/tmux" new-session -d ';' kill-server
   ) >"$WORK/out" 2>"$WORK/err"
   assert_eq "chained new-session ; kill-server against the private default socket" 1 "$?"
@@ -348,11 +365,20 @@ if [ -x /usr/bin/tmux ]; then
   # second tmux process takes part.
   (
     unset TMUX TMUX_PANE TMUX_ALLOW_KILL_SERVER
-    TMUX_TMPDIR="$PROTECTED_DIR" XTMUX_GUARD_SOCKET="$PROTECTED_SOCKET" \
+    TMUX_TMPDIR="$TMUX_ISO_DIR" XTMUX_GUARD_SOCKET="$LIVE_PROTECTED" \
       PATH="$GUARD_BIN:/usr/bin:/bin" "$GUARD_BIN/tmux" if-shell true kill-server
   ) >"$WORK/out" 2>"$WORK/err"
   assert_eq "carried if-shell kill-server against the private default socket" 1 "$?"
   if tmux_private_running; then ok "a refused carried command leaves the server alive"; else nok "a refused carried command leaves the server alive"; fi
+  # The quoted form the reviewer reproduced: tmux strips the quotes, so a guard
+  # that matches spellings passes it and the server dies.
+  (
+    unset TMUX TMUX_PANE TMUX_ALLOW_KILL_SERVER
+    TMUX_TMPDIR="$TMUX_ISO_DIR" XTMUX_GUARD_SOCKET="$LIVE_PROTECTED" \
+      PATH="$GUARD_BIN:/usr/bin:/bin" "$GUARD_BIN/tmux" if-shell true "'kill-server'"
+  ) >"$WORK/out" 2>"$WORK/err"
+  assert_eq "quoted carried kill-server against the private default socket" 1 "$?"
+  if tmux_private_running; then ok "a refused quoted carried command leaves the server alive"; else nok "a refused quoted carried command leaves the server alive"; fi
   # The prescribed recipe against a real private server: TMUX unset, TMUX_TMPDIR
   # private, no protected-socket override. The guard must let this through.
   (

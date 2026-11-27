@@ -17,8 +17,9 @@
 #   tmux if-shell true kill-server          (a command carried in an argument:
 #                                            if-shell, if-shell -F, confirm-before,
 #                                            command-prompt -I, run-shell -C, and
-#                                            any argument that splits into such a
-#                                            word on whitespace or ;)
+#                                            any argument whose quotes and
+#                                            backslashes removed text contains
+#                                            kill-ser, in any case)
 #
 # ALLOWED, unchanged:
 #   any command other than kill-server
@@ -28,11 +29,13 @@
 #
 # OUT OF REACH, by design: a command that never appears in the argv this guard
 # sees. A `source-file` or any tmux config file it loads can start `kill-server`
-# in the server process, a `bind-key` binding runs later on a key press, and a
-# socket path the guard cannot derive from TMUX/TMUX_TMPDIR/-L/-S is just the
-# real tmux's own. The carried-command check below is deliberately over-eager: on
-# the protected socket an argument that merely contains the word is refused, and
-# -L, -S and TMUX_ALLOW_KILL_SERVER=1 remain the escapes.
+# in the server process, a `bind-key` binding already loaded from a config file
+# runs later on a key press, and a socket path the guard cannot derive from
+# TMUX/TMUX_TMPDIR/-L/-S is just the real tmux's own. A binding passed as
+# arguments is refused, because its command is in the argv. The carried-command
+# check below is deliberately over-eager: on the protected socket an argument
+# that merely contains the word is refused, and -L, -S and
+# TMUX_ALLOW_KILL_SERVER=1 remain the escapes.
 #
 # The protected socket is the per-user default one, /tmp/tmux-<uid>/default.
 # TMUX_TMPDIR is deliberately NOT part of it: a private TMUX_TMPDIR is how every
@@ -135,20 +138,22 @@ find_real_tmux() {
   return 1
 }
 
-# has_carried_kill_server <argument>
+# carries_kill_server <argument>
 # tmux runs a command that a later argv slot carries: if-shell, confirm-before,
 # command-prompt -I and run-shell -C all take a tmux command or a shell command
-# string. Such a command never appears in a command position, so it is matched
-# as a word after splitting the argument on whitespace and `;`. Over-eager on
-# purpose: a false refusal on the protected socket costs one flag, a missed
-# kill-server costs every session.
-has_carried_kill_server() {
-  local arg=${1//;/ } word
-  for word in $arg; do
-    case $word in
-      kill-ser|kill-serv|kill-serve|kill-server) return 0 ;;
-    esac
-  done
+# string, and tmux's own parser strips quotes and backslashes before it runs the
+# words. Chasing spellings is a losing race (a quoted 'kill-server' is the same
+# command), so the check normalises instead: remove ' " and \, then look for
+# kill-ser anywhere in the argument, in any case. One rule, no word splitting.
+# Over-eager on purpose: a false refusal on the protected socket costs one flag,
+# a missed kill-server costs every session.
+carries_kill_server() {
+  local arg=${1//\'/}
+  arg=${arg//\"/}
+  arg=${arg//\\/}
+  case $arg in
+    *[Kk][Ii][Ll][Ll]-[Ss][Ee][Rr]*) return 0 ;;
+  esac
   return 1
 }
 
@@ -252,7 +257,7 @@ fi
 carried=
 if [ "$guarded" = 0 ] && [ "$explicit_socket" = 0 ] && [ "${TMUX_ALLOW_KILL_SERVER:-}" != 1 ]; then
   for arg in "${args[@]}"; do
-    if has_carried_kill_server "$arg"; then
+    if carries_kill_server "$arg"; then
       carried=$arg
       break
     fi
