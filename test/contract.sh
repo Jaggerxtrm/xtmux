@@ -37,9 +37,18 @@ tmux_isolation_begin xtmux-contract
 # a host with bd and jq (XTMUX-494). Every assertion below that exercises these
 # variables sets its own values, so clear the inherited ones once, the same way
 # tmux_isolation_begin clears TMUX.
+#
+# The same reasoning covers the two audit sinks: XTMUX_AGENT_STATE_LOG=1 plus
+# XTMUX_AGENT_STATE_LOG_FILE make every agent-state call append a transition to
+# the caller's log (scripts/agent-state.sh:355-356), and XTMUX_EVENT_LOG_FILE
+# redirects the event log reader (scripts/agent-state.sh:78). Inherited, a test
+# run writes phantom transitions into the operator's audit trail while the suite
+# reports green. scripts/capture-v1-fixtures.sh:27 unsets the event log for the
+# same reason. Each assertion that needs a log path sets its own inline.
 unset XTMUX_AGENT_ISSUE XTMUX_AGENT_BEAD XTMUX_AGENT_TASK XTMUX_AGENT_ROLE \
   XTMUX_AGENT_HOLDER XTMUX_AGENT_DISPATCHER XTMUX_AGENT_PARENT_SESSION \
-  XTMUX_AGENT_PARENT_PANE XTMUX_AGENT_RUNTIME XTMUX_HOST_ID_FILE
+  XTMUX_AGENT_PARENT_PANE XTMUX_AGENT_RUNTIME XTMUX_HOST_ID_FILE \
+  XTMUX_AGENT_STATE_LOG XTMUX_AGENT_STATE_LOG_FILE XTMUX_EVENT_LOG_FILE
 snapshot() { cp "$2" "$GOLDEN/$1.golden"; printf '  \033[36msnap\033[0m %s\n' "$1"; }
 
 REGEN=0

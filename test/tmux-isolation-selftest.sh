@@ -42,18 +42,21 @@ nok() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 
 # A SKIP is neither a pass nor a silent no-op. CI reads a green job as "the claim
 # held", and its log is uploaded only on failure, so a skip that exits 0 would
-# vanish. Every skip therefore prints a line the gate can grep, lands in the job
-# summary when GitHub provides one, and becomes a FAILURE under
-# XTMUX_SELFTEST_REQUIRE_TMUX=1 — the CI gate sets that, because on a hosted
-# runner tmux is installed and a skip can only mean the decoy was not proven.
+# vanish. On the non-fatal path a skip therefore prints a line the gate can grep
+# and lands in the job summary when GitHub provides one. Under
+# XTMUX_SELFTEST_REQUIRE_TMUX=1 - the CI gate sets it, because on a hosted runner
+# tmux is installed and a skip can only mean the decoy was not proven - the same
+# condition is a FAILURE that prints FAIL and exits 1, with no SKIP line.
 skip() {
-  printf 'SKIP tmux-isolation: %s\n' "$1"
-  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-    printf 'xtmux-isolation-selftest: SKIP - %s\n' "$1" >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
-  fi
+  # Fatal path prints FAIL alone: a run that greps the log for the benign
+  # "SKIP tmux-isolation:" line must not find one on a run that failed the gate.
   if [ "${XTMUX_SELFTEST_REQUIRE_TMUX:-0}" = 1 ]; then
     printf '\033[31mFAIL\033[0m tmux-isolation: skipping is not allowed here (%s)\n' "$1" >&2
     exit 1
+  fi
+  printf 'SKIP tmux-isolation: %s\n' "$1"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    printf 'xtmux-isolation-selftest: SKIP - %s\n' "$1" >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
   fi
   exit 0
 }
@@ -66,13 +69,28 @@ decoy_dir="$(mktemp -d "${TMPDIR:-/tmp}/xtmux-isolation-decoy.XXXXXX")"
 decoy_sock="$decoy_dir/decoy"
 # Mode 2's decoy IS the default socket of a directory the suite does not own.
 default_dir="$(mktemp -d "${TMPDIR:-/tmp}/xtmux-isolation-default.XXXXXX")"
+# Mode 2's decoy socket, named by full path. Never reach it as
+# `TMUX_TMPDIR="$default_dir" tmux -L default`: when that directory is gone, tmux
+# silently falls back to /tmp/tmux-<uid>/default, the operator's live server.
+# XTMUX-495: on 2026-11-27 a SIGTERM ran the old cleanup (which deleted
+# $default_dir) without exiting; the script went on, and the final cleanup's
+# `tmux -L default kill-server` killed the live server. Twice.
+default_sock="$default_dir/tmux-$(id -u)/default"
+mkdir -m 700 "$default_dir/tmux-$(id -u)"
 cleanup() {
-  # Explicit -S / -L: never resolved from an inherited TMUX.
+  # Explicit -S with full paths only: never resolved from TMUX or TMUX_TMPDIR.
   tmux -S "$decoy_sock" kill-server >/dev/null 2>&1 || true
-  env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$default_dir" tmux -L default kill-server >/dev/null 2>&1 || true
+  tmux -S "$default_sock" kill-server >/dev/null 2>&1 || true
   rm -rf "$decoy_dir" "$default_dir"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+# A signal must END the run. A trap that cleans up and returns lets the script
+# continue with its private directories deleted.
+trap 'trap - EXIT; cleanup; exit 143' INT TERM HUP
+# Abort before any call that relies on $default_dir existing.
+require_default_dir() {
+  [ -d "$default_dir" ] || { printf '\033[31mFAIL\033[0m tmux-isolation: %s is gone; refusing to call tmux\n' "$default_dir" >&2; exit 1; }
+}
 
 echo "== tmux isolation self-test (XTMUX-492) =="
 
@@ -151,7 +169,7 @@ else
 fi
 
 # --- mode 2: a decoy that IS the default socket of an inherited TMUX_TMPDIR ---
-dtmux() { env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$default_dir" tmux -L default "$@"; }
+dtmux() { require_default_dir; env -u TMUX -u TMUX_PANE tmux -S "$default_sock" "$@"; }
 
 if ! dtmux -f /dev/null new-session -d -s ddecoy-keep 'sleep 3600' 2>/dev/null; then
   skip 'cannot start the default-socket decoy server'
@@ -175,7 +193,7 @@ if [ -z "$ddecoy_sock" ] || [ -z "$dbefore" ]; then
 fi
 
 # --- mode 2 control: an inherited TMUX_TMPDIR must be visible too -------------
-env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$default_dir" tmux new-session -d -s isolation-probe2 'sleep 30' 2>/dev/null
+require_default_dir; env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$default_dir" tmux new-session -d -s isolation-probe2 'sleep 30' 2>/dev/null
 dcontrol="$(ddecoy_snapshot)"
 dtmux kill-session -t isolation-probe2 >/dev/null 2>&1 || true
 drestored="$(ddecoy_snapshot)"
@@ -188,7 +206,7 @@ fi
 # --- mode 2: the suite under test --------------------------------------------
 suite2_log="$default_dir/contract.log"
 started="$(date +%s)"
-env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$default_dir" bash "$HERE/contract.sh" >"$suite2_log" 2>&1
+require_default_dir; env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$default_dir" bash "$HERE/contract.sh" >"$suite2_log" 2>&1
 suite2_rc=$?
 elapsed2=$(( $(date +%s) - started ))
 
@@ -215,7 +233,9 @@ else
   tail -20 "$suite2_log" >&2
 fi
 
-# Zero assertions is a skip, not a green run.
-[ "$pass" -gt 0 ] || skip 'no assertion ran'
+# Zero assertions is a skip, not a green run - but a run in which every
+# assertion failed is a failure, never a skip. Test the failure exit first, or
+# pass=0 with fail>0 takes the skip path and exits 0 under a log full of FAIL.
 printf '== %s pass, %s fail ==\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
+[ "$pass" -gt 0 ] || skip 'no assertion ran'

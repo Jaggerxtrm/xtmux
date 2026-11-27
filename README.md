@@ -734,14 +734,16 @@ bash test/tmux-isolation-selftest.sh
 
 `make test` and `bun run test` run the suites that can fail for documented reasons
 LAST: a suite that stops the chain must not hide the ones after it. `contract.sh` keeps
-its four known failures on `main`, so it runs at the end, after the harness self-test,
-the isolation self-test and the nav contract.
+its four known failures on `main`, so both chains run it last - after the harness
+self-test, the isolation self-test, the nav contract, the tmux guard and the installer
+tests (`bun run test` runs those too; `make test` runs the four shell suites).
 
 A SKIP in `test/tmux-isolation-selftest.sh` is never silent: it prints a `SKIP
-tmux-isolation:` line, appends to the GitHub job summary when one is available, and
-becomes a FAILURE under `XTMUX_SELFTEST_REQUIRE_TMUX=1`, which `scripts/verify-json-api.sh`
-sets for CI. A skipped run used to exit 0 with its log uploaded only on failure, so a
-host that could not build the decoy looked green.
+tmux-isolation:` line and appends to the GitHub job summary when one is available.
+Under `XTMUX_SELFTEST_REQUIRE_TMUX=1`, which `scripts/verify-json-api.sh` sets for CI,
+the condition is a FAILURE instead: it prints `FAIL` and exits 1, with no `SKIP` line
+for a triage grep to mistake for a benign host skip. A skipped run used to exit 0 with
+its log uploaded only on failure, so a host that could not build the decoy looked green.
 
 `test/tmux-isolation-selftest.sh` runs the whole of `test/contract.sh` twice, once per
 way a live server could leak in, so it takes about two to three minutes:
