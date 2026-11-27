@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -55,7 +55,8 @@ test("a clean install places the guard as tmux, idempotently, and uninstall remo
 
   const first = run(home);
   assert.equal(first.status, 0, first.stderr);
-  assert.equal(lstatSync(dst).isSymbolicLink(), true);
+  // readlinkSync succeeds only on a symlink, and names the guard: one read, no
+  // stat-then-read pair (CodeQL js/file-system-race).
   assert.equal(readlinkSync(dst), guardSource);
   assert.notEqual(statSync(guardSource).mode & 0o111, 0, "the guard is executable");
   assert.equal(existsSync(`${dst}.pre-xtmux`), false, "nothing to preserve on a clean install");
@@ -87,7 +88,6 @@ test("a hand-installed interim guard is adopted and preserved beside the link", 
   const installed = run(home);
   assert.equal(installed.status, 0, installed.stderr);
   assert.match(installed.stdout, /adopted hand-installed tmux guard/);
-  assert.equal(lstatSync(dst).isSymbolicLink(), true);
   assert.equal(readlinkSync(dst), guardSource);
   assert.equal(readFileSync(`${dst}.pre-xtmux`, "utf8"), original);
 
@@ -118,7 +118,7 @@ test("a foreign tmux on PATH is refused and left untouched", () => {
   const refused = run(home);
   assert.notEqual(refused.status, 0);
   assert.match(refused.stderr, /refusing to replace existing file/);
-  assert.equal(lstatSync(dst).isSymbolicLink(), false, "the foreign file is not replaced");
+  // Read once: content equality proves the file was neither replaced nor linked.
   assert.equal(readFileSync(dst, "utf8"), foreign);
   assert.equal(existsSync(join(home, ".local", "bin", "xtmux")), false, "preflight writes nothing before it refuses");
 

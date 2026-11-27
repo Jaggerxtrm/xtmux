@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -238,13 +238,22 @@ function link(src, dst) {
 const TMUX_GUARD_MARKERS = ["TMUX_ALLOW_KILL_SERVER", "kill-server"];
 
 function looksLikeHandInstalledTmuxGuard(path) {
-  let stat;
-  try { stat = statSync(path); } catch { return false; }
-  if (!stat.isFile() || stat.size > 8192) return false;
-  let text;
-  try { text = readFileSync(path, "utf8"); } catch { return false; }
-  if (!/^#![^\n]*\b(?:ba|da|k|z)?sh\b/.test(text)) return false;
-  return TMUX_GUARD_MARKERS.every((marker) => text.includes(marker));
+  // One descriptor for the stat and the read: a separate stat followed by a
+  // read of the path is a file-system race (CodeQL js/file-system-race), and the
+  // file it inspects decides whether the installer may replace another file.
+  let fd;
+  try { fd = openSync(path, "r"); } catch { return false; }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > 8192) return false;
+    const text = readFileSync(fd, "utf8");
+    if (!/^#![^\n]*\b(?:ba|da|k|z)?sh\b/.test(text)) return false;
+    return TMUX_GUARD_MARKERS.every((marker) => text.includes(marker));
+  } catch {
+    return false;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function guardAction(dst) {
