@@ -208,6 +208,12 @@ guard_run - - if-shell true KILL-SERVER
 assert_refused "a carried command in upper case is caught"
 guard_run - - if-shell true 'echo kill-server-now'
 assert_refused "the word inside a longer string is caught"
+guard_run - - if-shell true "$(printf 'kill-\\\nserver')"
+assert_refused "a backslash-newline continuation inside the word is refused"
+guard_run - - if-shell true "$(printf 'kill-\tserver')"
+assert_refused "a tab inside the word is refused"
+guard_run - - if-shell true "$(printf 'kill-\rserver')"
+assert_refused "a CR inside the word is refused"
 guard_run - - send-keys -t keep kill-server
 assert_refused "over-eager by design: a plain argument naming the command is refused"
 guard_run "$PROTECTED_DIR/tmux-$(id -u)/private,4242,0" - if-shell true kill-server
@@ -379,6 +385,21 @@ if [ -x /usr/bin/tmux ]; then
   ) >"$WORK/out" 2>"$WORK/err"
   assert_eq "quoted carried kill-server against the private default socket" 1 "$?"
   if tmux_private_running; then ok "a refused quoted carried command leaves the server alive"; else nok "a refused quoted carried command leaves the server alive"; fi
+  # tmux drops backslash-newline, tabs and CR inside a carried word, so the
+  # normalisation deletes whitespace before the substring match. Each shape is
+  # checked against the server this block starts, not against a path.
+  carried_live() {
+    (
+      unset TMUX TMUX_PANE TMUX_ALLOW_KILL_SERVER
+      TMUX_TMPDIR="$TMUX_ISO_DIR" XTMUX_GUARD_SOCKET="$LIVE_PROTECTED" \
+        PATH="$GUARD_BIN:/usr/bin:/bin" "$GUARD_BIN/tmux" if-shell true "$1"
+    ) >"$WORK/out" 2>"$WORK/err"
+    assert_eq "carried $2 exits 1" 1 "$?"
+    if tmux_private_running; then ok "the server survives $2"; else nok "the server survives $2"; fi
+  }
+  carried_live "$(printf 'kill-\\\nserver')" "a backslash-newline continuation"
+  carried_live "$(printf 'kill-\tserver')" "a tab inside the word"
+  carried_live "$(printf 'kill-\rserver')" "a CR inside the word"
   # The prescribed recipe against a real private server: TMUX unset, TMUX_TMPDIR
   # private, no protected-socket override. The guard must let this through.
   (

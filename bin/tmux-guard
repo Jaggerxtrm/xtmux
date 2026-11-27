@@ -17,9 +17,9 @@
 #   tmux if-shell true kill-server          (a command carried in an argument:
 #                                            if-shell, if-shell -F, confirm-before,
 #                                            command-prompt -I, run-shell -C, and
-#                                            any argument whose quotes and
-#                                            backslashes removed text contains
-#                                            kill-ser, in any case)
+#                                            any argument that contains kill-ser
+#                                            once whitespace, quotes and
+#                                            backslashes are removed)
 #
 # ALLOWED, unchanged:
 #   any command other than kill-server
@@ -33,9 +33,9 @@
 # runs later on a key press, and a socket path the guard cannot derive from
 # TMUX/TMUX_TMPDIR/-L/-S is just the real tmux's own. A binding passed as
 # arguments is refused, because its command is in the argv. The carried-command
-# check below is deliberately over-eager: on the protected socket an argument
-# that merely contains the word is refused, and -L, -S and
-# TMUX_ALLOW_KILL_SERVER=1 remain the escapes.
+# check below is a substring test on normalised text, deliberately over-eager:
+# on the protected socket an argument that merely contains kill-ser is refused,
+# and -L, -S and TMUX_ALLOW_KILL_SERVER=1 remain the escapes.
 #
 # The protected socket is the per-user default one, /tmp/tmux-<uid>/default.
 # TMUX_TMPDIR is deliberately NOT part of it: a private TMUX_TMPDIR is how every
@@ -141,14 +141,16 @@ find_real_tmux() {
 # carries_kill_server <argument>
 # tmux runs a command that a later argv slot carries: if-shell, confirm-before,
 # command-prompt -I and run-shell -C all take a tmux command or a shell command
-# string, and tmux's own parser strips quotes and backslashes before it runs the
-# words. Chasing spellings is a losing race (a quoted 'kill-server' is the same
-# command), so the check normalises instead: remove ' " and \, then look for
-# kill-ser anywhere in the argument, in any case. One rule, no word splitting.
-# Over-eager on purpose: a false refusal on the protected socket costs one flag,
-# a missed kill-server costs every session.
+# string, and tmux's own parser drops quoting, backslash escapes and line
+# continuations before it runs the words. Chasing spellings is a losing race, so
+# the check normalises instead: delete every whitespace character (space, tab,
+# CR, LF) and every ' " \, then look for kill-ser anywhere in what is left, in
+# any case. One rule, no word splitting. Over-eager on purpose: a false refusal
+# on the protected socket costs one flag, a missed kill-server costs every
+# session.
 carries_kill_server() {
-  local arg=${1//\'/}
+  local arg=${1//[[:space:]]/}
+  arg=${arg//\'/}
   arg=${arg//\"/}
   arg=${arg//\\/}
   case $arg in

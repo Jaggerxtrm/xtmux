@@ -215,11 +215,14 @@ machine. A private `TMUX_TMPDIR` is not protected, so the usual safe recipe
 covers every command in a `;`-separated chain, so `tmux new -d \; kill-server`
 is refused too, and it covers a command carried in an argument: `if-shell`,
 `if-shell -F`, `confirm-before`, `command-prompt -I` and `run-shell -C` pass the
-command they will run, so on the protected socket every argument is normalised
-(single quotes, double quotes and backslashes removed, any case) and refused when
-it contains `kill-ser` anywhere. That check is deliberately over-eager: the
-reviewer's `tmux if-shell true "'kill-server'"`, `tmux send-keys kill-server` and
-any other argument that merely names the command are refused too. The escapes
+command they will run, so on the protected socket each argument is normalised:
+whitespace (space, tab, CR, LF), single quotes, double quotes and backslashes are
+removed, and the rest is matched case-insensitively for `kill-ser`. Any argument
+that still contains it is refused. That rule is a substring test on normalised
+text, not a list of spellings, which is what makes it cover the shapes tmux
+itself accepts: `tmux if-shell true "'kill-server'"`,
+`tmux if-shell true $'kill-\\<newline>server'`, `tmux send-keys kill-server`, and
+any other argument that merely names the command. The escapes
 below remain the way through. Every other command, every argument, stdin and the
 exit status pass through unchanged, and the guard resolves the real tmux from
 `PATH` (the first `tmux` that is not the guard) instead of hard-coding a location.
