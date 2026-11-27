@@ -10,7 +10,9 @@ npm install --global @jaggerxtrm/xtmux
 
 The installer prints five plain progress lines and does not open Chrome or any browser. It installs:
 
-- commands in `~/.local/bin`
+- commands in `~/.local/bin`, including a `tmux` guard that refuses
+  `kill-server` on the per-user default socket (see
+  [the README](../README.md#the-tmux-kill-server-guard))
 - one grouped Pi package in `~/.pi/agent/packages/xtmux`, registered in `~/.pi/agent/settings.json`
 - Claude hooks in `~/.claude/hooks/xtmux`, registered in `~/.claude/settings.json`
 - agent-state hooks in `~/.codex/hooks/xtmux` only when an existing `~/.codex` installation is detected; xtmux never installs Codex CLI
@@ -76,7 +78,7 @@ xtmux-install --uninstall
 npm uninstall --global @jaggerxtrm/xtmux
 ```
 
-Run `xtmux-install --uninstall` first so npm has not yet removed the cleanup command. It removes only xtmux-owned links, the grouped Pi package, Claude/Codex hook files, and owned settings entries. Installed directory snapshots prevent update or uninstall from deleting files added or modified by the user; when such a directory is preserved, installer state is retained so a later install cannot mistake it for an unowned clean directory. Pre-snapshot installs are adopted only when every managed file still matches the packaged payload.
+Run `xtmux-install --uninstall` first so npm has not yet removed the cleanup command. It removes only xtmux-owned links (including the `tmux` guard), the grouped Pi package, Claude/Codex hook files, and owned settings entries. A guard the installer adopted stays available as `~/.local/bin/tmux.pre-xtmux`; uninstall never restores it automatically. Installed directory snapshots prevent update or uninstall from deleting files added or modified by the user; when such a directory is preserved, installer state is retained so a later install cannot mistake it for an unowned clean directory. Pre-snapshot installs are adopted only when every managed file still matches the packaged payload.
 
 ## Conflict avoidance and xtrm coexistence
 

@@ -48,6 +48,7 @@ run_check harness-selftest bash test/harness-selftest.sh
 # Proves the suite cannot reach an inherited tmux server: it runs contract.sh with
 # TMUX and TMUX_PANE aimed at a decoy server and asserts the decoy is untouched.
 run_check tmux-isolation bash test/tmux-isolation-selftest.sh
+run_check tmux-guard bash test/tmux-guard.test.sh
 run_check shell-contracts bash test/contract.sh
 run_check nav-contracts bash test/nav-contract.sh
 run_check v1-fixtures bash scripts/capture-v1-fixtures.sh --check

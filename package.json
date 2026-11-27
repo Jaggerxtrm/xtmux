@@ -41,6 +41,7 @@
   },
   "files": [
     "bin/tmux-session-picker",
+    "bin/tmux-guard",
     "bin/xtmux-classic",
     "changelog/",
     "docs/INSTALL.md",
@@ -71,7 +72,7 @@
     "install:global": "bash install.sh",
     "uninstall:global": "bash install.sh --uninstall",
     "postinstall": "node scripts/install.mjs --from-npm",
-    "test": "bun test tests/ test/ && bash test/nav-contract.sh && bash test/contract.sh && bash test/tmux-isolation-selftest.sh && node --test tests/installer/*.test.mjs && bash scripts/verify-codex-distribution.sh",
+    "test": "bun test tests/ test/ && bash test/nav-contract.sh && bash test/contract.sh && bash test/tmux-isolation-selftest.sh && bash test/tmux-guard.test.sh && node --test tests/installer/*.test.mjs && bash scripts/verify-codex-distribution.sh",
     "test:installer": "node --test tests/installer/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "test:codex-distribution": "bash scripts/verify-codex-distribution.sh"

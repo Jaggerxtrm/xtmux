@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# xtmux tmux guard (XTMUX-493). scripts/install.mjs installs this file as
+# ~/.local/bin/tmux, so it sits ahead of the real tmux binary on PATH.
+#
+# WHY. tmux resolves its socket from $TMUX before it looks at TMUX_TMPDIR, so a
+# process that inherited TMUX from an agent pane reaches the operator's server.
+# On 2026-11-26 three `tmux kill-server` calls from agents killed the operator's
+# live server (XTMUX-492). This wrapper refuses that one command when it targets
+# the per-user default socket, and passes every other invocation through to the
+# real tmux unchanged.
+#
+# REFUSED:
+#   tmux kill-server                        (no explicit target)
+#   tmux kill-ser ...                       (any unique abbreviation)
+#   TMUX=.../tmux-<uid>/default,... tmux kill-server    (the incident)
+#
+# ALLOWED, unchanged:
+#   any command other than kill-server
+#   tmux -L <name> kill-server              explicit server name
+#   tmux -S <path> kill-server              explicit socket path
+#   TMUX_ALLOW_KILL_SERVER=1 tmux kill-server
+#
+# The real tmux is resolved from PATH: the first executable `tmux` whose
+# canonical path is not this script. No path is hard-coded. XTMUX_REAL_TMUX
+# overrides the search for tests, debugging and unusual layouts.
+set -u
+
+prog=tmux-guard
+default_socket="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/default"
+
+guard_fail() {
+  printf '%s: %s\n' "$prog" "$*" >&2
+  exit 127
+}
+
+# canonical_file <path> — print an absolute, symlink-resolved path.
+canonical_file() {
+  local target=$1 next dir hops=0
+  if command -v readlink >/dev/null 2>&1 && readlink -f / >/dev/null 2>&1; then
+    readlink -f -- "$target"
+    return
+  fi
+  # BSD readlink has no -f: resolve the final component by hand.
+  while [ -L "$target" ]; do
+    hops=$((hops + 1))
+    [ "$hops" -le 32 ] || return 1
+    next=$(readlink -- "$target") || return 1
+    case $next in
+      /*) target=$next ;;
+      *) target=$(dirname -- "$target")/$next ;;
+    esac
+  done
+  dir=$(cd -P -- "$(dirname -- "$target")" 2>/dev/null && pwd -P) || return 1
+  printf '%s/%s\n' "${dir%/}" "$(basename -- "$target")"
+}
+
+# canonical_socket <path> — resolve the DIRECTORY of a socket path and keep the
+# basename. A socket that a dead server left behind may not exist, so the path
+# itself cannot be canonicalised the way a regular file can.
+canonical_socket() {
+  local path=$1 dir base
+  case $path in
+    */*) ;;
+    *) path=$PWD/$path ;;
+  esac
+  dir=${path%/*}
+  base=${path##*/}
+  [ -n "$dir" ] || dir=/
+  dir=$(cd -P -- "$dir" 2>/dev/null && pwd -P) || dir=${path%/*}
+  printf '%s/%s\n' "${dir%/}" "$base"
+}
+
+# A guard that re-enters itself would loop forever. The depth marker turns that
+# into one clear error (a PATH whose every `tmux` resolves to this script).
+depth=${XTMUX_TMUX_GUARD_DEPTH:-0}
+case $depth in ''|*[!0-9]*) depth=0 ;; esac
+[ "$depth" -lt 3 ] || guard_fail "refusing to recurse: no real tmux found on PATH (set XTMUX_REAL_TMUX)"
+
+self_path=$0
+case $self_path in
+  */*) ;;
+  *)
+    resolved=$(command -v -- "$self_path" 2>/dev/null || true)
+    [ -n "$resolved" ] && self_path=$resolved
+    ;;
+esac
+self_canonical=$(canonical_file "$self_path" 2>/dev/null || printf '%s\n' "$self_path")
+
+find_real_tmux() {
+  local dir candidate resolved
+  if [ -n "${XTMUX_REAL_TMUX:-}" ]; then
+    candidate=$XTMUX_REAL_TMUX
+    if [ -x "$candidate" ] && [ ! -d "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+    printf '%s: XTMUX_REAL_TMUX=%s is not an executable file\n' "$prog" "$candidate" >&2
+    return 1
+  fi
+  local old_ifs=$IFS
+  IFS=:
+  for dir in ${PATH:-}; do
+    [ -n "$dir" ] || dir=.
+    candidate=$dir/tmux
+    [ -x "$candidate" ] && [ ! -d "$candidate" ] || continue
+    resolved=$(canonical_file "$candidate" 2>/dev/null || printf '%s\n' "$candidate")
+    [ "$resolved" = "$self_canonical" ] && continue
+    IFS=$old_ifs
+    printf '%s\n' "$candidate"
+    return 0
+  done
+  IFS=$old_ifs
+  return 1
+}
+
+# Split the global options from the command word. tmux accepts its global flags
+# before the command only; -c/-f/-T/-L/-S take a value, the rest do not.
+args=("$@")
+command_word=
+explicit_socket=0
+index=0
+count=${#args[@]}
+while [ "$index" -lt "$count" ]; do
+  arg=${args[$index]}
+  case $arg in
+    --)
+      index=$((index + 1))
+      [ "$index" -lt "$count" ] && command_word=${args[$index]}
+      break
+      ;;
+    -L|-S)
+      explicit_socket=1
+      index=$((index + 2))
+      continue
+      ;;
+    -L*|-S*)
+      explicit_socket=1
+      index=$((index + 1))
+      continue
+      ;;
+    -c|-f|-T)
+      index=$((index + 2))
+      continue
+      ;;
+    -?*)
+      index=$((index + 1))
+      continue
+      ;;
+    *)
+      command_word=$arg
+      break
+      ;;
+  esac
+done
+
+# `kill-server` and every unique abbreviation of it (`kill-ser` is the shortest;
+# `kill-session` diverges before the final "r" and is not guarded).
+guarded=0
+case $command_word in
+  kill-ser*) guarded=1 ;;
+esac
+
+if [ "$guarded" = 1 ]; then
+  if [ "$explicit_socket" = 1 ]; then
+    guarded=0
+  else
+    case ${TMUX_ALLOW_KILL_SERVER:-} in
+      ''|0) ;;
+      *) guarded=0 ;;
+    esac
+  fi
+fi
+
+if [ "$guarded" = 1 ]; then
+  if [ -n "${TMUX:-}" ]; then
+    # TMUX is "<socket-path>,<server-pid>,<session-index>"; the path itself may
+    # contain commas, so strip the two trailing fields.
+    target=${TMUX%,*}
+    target=${target%,*}
+  else
+    target=$default_socket
+  fi
+  if [ "$(canonical_socket "$target")" = "$(canonical_socket "$default_socket")" ]; then
+    cat >&2 <<EOF
+$prog: refusing \`tmux kill-server\` on the per-user default socket
+  socket: $(canonical_socket "$target")
+  That server hosts every session on this machine, including the one that ran this command.
+  Name another server with -L <name> or -S <path>, or allow it explicitly:
+    TMUX_ALLOW_KILL_SERVER=1 tmux kill-server
+EOF
+    exit 1
+  fi
+fi
+
+real_tmux=$(find_real_tmux) || guard_fail "no real tmux on PATH (the guard must not shadow it); set XTMUX_REAL_TMUX=<path>"
+export XTMUX_TMUX_GUARD_DEPTH=$((depth + 1))
+exec "$real_tmux" "${args[@]}"

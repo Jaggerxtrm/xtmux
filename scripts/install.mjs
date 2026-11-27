@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -43,6 +43,13 @@ const bins = {
   "xtmux-monitor": join(root, "scripts", "xtmux-monitor.sh"),
   "xtmux-events": join(root, "scripts", "test-session-events.sh"),
   "xtmux-changelog": join(root, "scripts", "changelog.mjs"),
+};
+// XTMUX-493: the tmux kill-server guard is a PATH shadow, not a command entry:
+// it must be named `tmux` so it runs before the real binary. It therefore gets
+// its own install path (a hand-installed copy has to be adopted by content, a
+// foreign `tmux` must never be silently replaced) instead of joining `bins`.
+const guards = {
+  tmux: join(root, "bin", "tmux-guard"),
 };
 const compatibilityLinks = {
   [join(home, ".tmux", "scripts", "git-pane-status.sh")]: join(root, "scripts", "git-pane-status.sh"),
@@ -223,6 +230,81 @@ function link(src, dst) {
   symlinkSync(src, dst);
 }
 
+// The tmux guard (XTMUX-493) is the one installed name that can shadow a
+// command the user depends on, so it is adopted only from evidence. A hand
+// install of the same idea is a small shell wrapper that mentions both the
+// override variable and the guarded command; anything else -- the real tmux, a
+// user alias, a different wrapper -- is left alone and the install refuses.
+const TMUX_GUARD_MARKERS = ["TMUX_ALLOW_KILL_SERVER", "kill-server"];
+
+function looksLikeHandInstalledTmuxGuard(path) {
+  let stat;
+  try { stat = statSync(path); } catch { return false; }
+  if (!stat.isFile() || stat.size > 8192) return false;
+  let text;
+  try { text = readFileSync(path, "utf8"); } catch { return false; }
+  if (!/^#![^\n]*\b(?:ba|da|k|z)?sh\b/.test(text)) return false;
+  return TMUX_GUARD_MARKERS.every((marker) => text.includes(marker));
+}
+
+function guardAction(dst) {
+  const current = lstatSafe(dst);
+  if (!current) return "link";
+  if (current.isSymbolicLink()) return ownedLink(dst) ? "relink" : looksLikeHandInstalledTmuxGuard(dst) ? "adopt" : "refuse";
+  return looksLikeHandInstalledTmuxGuard(dst) ? "adopt" : "refuse";
+}
+
+function guardRefusal(dst, src) {
+  return [
+    `refusing to replace existing file: ${dst}`,
+    `  reason: not an xtmux link and not a recognisable hand-installed kill-server guard`,
+    `  packaged guard: ${src}`,
+    "  xtmux shadows the real tmux with this name, so it replaces only a link it owns",
+    "  or a small shell guard that mentions TMUX_ALLOW_KILL_SERVER and kill-server.",
+    "  If this file is yours, leave it and xtmux will keep refusing.",
+    `  If it is a stale guard, move it aside and re-run: mv ${dst} ${dst}.pre-xtmux`,
+  ].join("\n");
+}
+
+// Adoption is recoverable: the displaced guard is preserved as <dst>.pre-xtmux,
+// the same convention the other adoptions use.
+function installGuard(src, dst) {
+  const action = guardAction(dst);
+  if (action === "refuse") throw new Error(guardRefusal(dst, src));
+  if (action === "adopt" && !existsSync(`${dst}.pre-xtmux`)) copyFileSync(dst, `${dst}.pre-xtmux`);
+  if (action !== "link") rmSync(dst, { force: true });
+  mkdirSync(dirname(dst), { recursive: true });
+  symlinkSync(src, dst);
+  return action;
+}
+
+function canonicalPath(path) {
+  try { return realpathSync(path); } catch { return resolve(path); }
+}
+
+function firstExecutableOnPath(name) {
+  for (const dir of (process.env.PATH || "").split(":")) {
+    const candidate = join(dir || ".", name);
+    let stat;
+    try { stat = statSync(candidate); } catch { continue; }
+    if (stat.isFile() && (stat.mode & 0o111) !== 0) return candidate;
+  }
+  return null;
+}
+
+// The installer cannot reorder PATH, so it states whether the placement it just
+// wrote is effective instead of claiming protection it did not install. Silence
+// means the guard is the first tmux on PATH.
+function reportGuardPlacement(dst) {
+  const first = firstExecutableOnPath("tmux");
+  if (!first) {
+    console.log(`    note: no tmux found on PATH; the guard at ${dst} takes effect once the real tmux is installed`);
+    return;
+  }
+  if (canonicalPath(first) === canonicalPath(dst)) return;
+  console.log(`    note: the guard acts only when ${join(home, ".local", "bin")} precedes the real tmux on PATH; first tmux on PATH is ${first}`);
+}
+
 function preflightInstall() {
   for (const dst of Object.keys(bins).map((name) => join(home, ".local", "bin", name))) {
     const current = lstatSafe(dst);
@@ -232,6 +314,12 @@ function preflightInstall() {
   // because a bin is an entry point a user may legitimately have shadowed.
   for (const [dst, src] of Object.entries(compatibilityLinks)) {
     if (compatibilityAction(dst, src) === "refuse") throw new Error(compatibilityRefusal(dst, src));
+  }
+  // A PATH shadow is checked before anything is written, exactly like a bin: a
+  // refusal half-way through an install would leave the rest half-applied.
+  for (const [name, src] of Object.entries(guards)) {
+    const dst = join(home, ".local", "bin", name);
+    if (guardAction(dst) === "refuse") throw new Error(guardRefusal(dst, src));
   }
   for (const path of [claudeSettings, piSettings, ...(existsSync(codexRoot) ? [codexSettings] : [])]) {
     if (existsSync(path)) readJson(path);
@@ -535,6 +623,12 @@ function install() {
 
   console.log("1/5 Installing command links");
   for (const [name, src] of Object.entries(bins)) link(src, join(home, ".local", "bin", name));
+  for (const [name, src] of Object.entries(guards)) {
+    const dst = join(home, ".local", "bin", name);
+    const action = installGuard(src, dst);
+    if (action === "adopt") console.log(`    adopted hand-installed ${name} guard ${dst} (previous copy kept at ${dst}.pre-xtmux)`);
+    reportGuardPlacement(dst);
+  }
   for (const [dst, src] of Object.entries(compatibilityLinks)) {
     const action = linkCompatibility(src, dst);
     if (action === "adopt") console.log(`    adopted byte-identical ${dst} (previous copy kept at ${dst}.pre-xtmux)`);
@@ -600,6 +694,13 @@ function remove() {
     const dst = join(home, ".local", "bin", name);
     if (ownedLink(dst)) rmSync(dst, { force: true });
   }
+  for (const name of Object.keys(guards)) {
+    const dst = join(home, ".local", "bin", name);
+    if (ownedLink(dst)) rmSync(dst, { force: true });
+    // The pre-install guard is kept, not restored: uninstall removes the guard,
+    // and the displaced file stays available for the operator to inspect.
+    if (existsSync(`${dst}.pre-xtmux`)) console.log(`    kept pre-install ${name} at ${dst}.pre-xtmux`);
+  }
   for (const dst of Object.keys(compatibilityLinks)) if (ownedLink(dst)) rmSync(dst, { force: true });
   console.log("2/4 Removing grouped Pi extensions");
   mergePi(true);
@@ -623,6 +724,23 @@ function planCompatibilityLinks() {
   }
 }
 
+// The guard is the only planned action that shadows a system command, so the
+// dry run states both the link decision and whether the placement actually wins
+// on this PATH.
+function planGuards() {
+  console.log("dry-run: tmux guard plan");
+  for (const [name, src] of Object.entries(guards)) {
+    const dst = join(home, ".local", "bin", name);
+    const action = guardAction(dst);
+    console.log(`  ${action.padEnd(7)} ${dst} -> ${src}`);
+    if (action === "refuse") console.log(guardRefusal(dst, src).split("\n").slice(1).join("\n"));
+  }
+  const first = firstExecutableOnPath("tmux");
+  const bar = join(home, ".local", "bin", "tmux");
+  const effective = first !== null && canonicalPath(first) === canonicalPath(bar);
+  console.log(`  path    first tmux on PATH is ${first || "(none)"}${effective ? " (the guard)" : `; ${join(home, ".local", "bin")} must precede it`}`);
+}
+
 // A dry run previously planned links only, so the one file where a mistake is
 // least recoverable — a Codex hooks.json holding the operator's unowned,
 // individually trusted entries — was the one part nobody could preview. Every
@@ -643,6 +761,7 @@ function planCodexHooksDryRun() {
 }
 
 if (dryRun) {
+  planGuards();
   planCompatibilityLinks();
   planCodexHooksDryRun();
   console.log("dry-run: no changes were made");
