@@ -1,0 +1,321 @@
+#!/usr/bin/env bash
+# xtmux tmux guard (XTMUX-493). scripts/install.mjs installs this file as
+# ~/.local/bin/tmux, so it sits ahead of the real tmux binary on PATH.
+#
+# WHY. tmux resolves its socket from $TMUX before it looks at TMUX_TMPDIR, so a
+# process that inherited TMUX from an agent pane reaches the operator's server.
+# On 2026-11-26 three `tmux kill-server` calls from agents killed the operator's
+# live server (XTMUX-492). This wrapper refuses that one command when it targets
+# the per-user default socket, and passes every other invocation through to the
+# real tmux unchanged.
+#
+# REFUSED:
+#   tmux kill-server                        (no explicit target)
+#   tmux kill-ser ...                       (any unique abbreviation)
+#   TMUX=.../tmux-<uid>/default,... tmux kill-server    (the incident)
+#   tmux new -d \; kill-server              (a command chained with ;)
+#   tmux if-shell true kill-server          (a command carried in an argument:
+#                                            if-shell, if-shell -F, confirm-before,
+#                                            command-prompt -I, run-shell -C, and
+#                                            any argument that contains kill-ser
+#                                            once whitespace, quotes and
+#                                            backslashes are removed)
+#
+# ALLOWED, unchanged:
+#   any command other than kill-server
+#   tmux -L <name> kill-server              explicit server name
+#   tmux -S <path> kill-server              explicit socket path
+#   TMUX_ALLOW_KILL_SERVER=1 tmux kill-server
+#
+# OUT OF REACH, by design: a command that never appears in the argv this guard
+# sees. A `source-file` or any tmux config file it loads can start `kill-server`
+# in the server process, a `bind-key` binding already loaded from a config file
+# runs later on a key press, and a socket path the guard cannot derive from
+# TMUX/TMUX_TMPDIR/-L/-S is just the real tmux's own. A binding passed as
+# arguments is refused, because its command is in the argv. The carried-command
+# check below is a substring test on normalised text, deliberately over-eager:
+# on the protected socket an argument that merely contains kill-ser is refused,
+# and -L, -S and TMUX_ALLOW_KILL_SERVER=1 remain the escapes.
+#
+# The protected socket is the per-user default one, /tmp/tmux-<uid>/default.
+# TMUX_TMPDIR is deliberately NOT part of it: a private TMUX_TMPDIR is how every
+# suite and every careful shell keeps tmux away from the real server, and refusing
+# kill-server there would break that recipe and push people to the override.
+# XTMUX_GUARD_SOCKET replaces the protected path (tests use it so no case names
+# the live socket).
+#
+# The real tmux is resolved from PATH: the first executable `tmux` whose
+# canonical path is not this script, so the guard's own directory cannot resolve
+# to the guard. No path is hard-coded. XTMUX_GUARD_REAL (alias XTMUX_REAL_TMUX)
+# overrides the search for tests, debugging and unusual layouts.
+set -u
+
+prog=tmux-guard
+
+guard_fail() {
+  printf '%s: %s\n' "$prog" "$*" >&2
+  exit 127
+}
+
+# canonical_file <path> — print an absolute, symlink-resolved path.
+canonical_file() {
+  local target=$1 next dir hops=0
+  if command -v readlink >/dev/null 2>&1 && readlink -f / >/dev/null 2>&1; then
+    readlink -f -- "$target"
+    return
+  fi
+  # BSD readlink has no -f: resolve the final component by hand.
+  while [ -L "$target" ]; do
+    hops=$((hops + 1))
+    [ "$hops" -le 32 ] || return 1
+    next=$(readlink -- "$target") || return 1
+    case $next in
+      /*) target=$next ;;
+      *) target=$(dirname -- "$target")/$next ;;
+    esac
+  done
+  dir=$(cd -P -- "$(dirname -- "$target")" 2>/dev/null && pwd -P) || return 1
+  printf '%s/%s\n' "${dir%/}" "$(basename -- "$target")"
+}
+
+# canonical_socket <path> — resolve the DIRECTORY of a socket path and keep the
+# basename. A socket that a dead server left behind may not exist, so the path
+# itself cannot be canonicalised the way a regular file can.
+canonical_socket() {
+  local path=$1 dir base
+  case $path in
+    */*) ;;
+    *) path=$PWD/$path ;;
+  esac
+  dir=${path%/*}
+  base=${path##*/}
+  [ -n "$dir" ] || dir=/
+  dir=$(cd -P -- "$dir" 2>/dev/null && pwd -P) || dir=${path%/*}
+  printf '%s/%s\n' "${dir%/}" "$base"
+}
+
+# A guard that re-enters itself would loop forever. The depth marker turns that
+# into one clear error (a PATH whose every `tmux` resolves to this script).
+depth=${XTMUX_TMUX_GUARD_DEPTH:-0}
+case $depth in ''|*[!0-9]*) depth=0 ;; esac
+[ "$depth" -lt 3 ] || guard_fail "refusing to recurse: no real tmux found on PATH (set XTMUX_GUARD_REAL)"
+
+self_path=$0
+case $self_path in
+  */*) ;;
+  *)
+    resolved=$(command -v -- "$self_path" 2>/dev/null || true)
+    [ -n "$resolved" ] && self_path=$resolved
+    ;;
+esac
+self_canonical=$(canonical_file "$self_path" 2>/dev/null || printf '%s\n' "$self_path")
+
+find_real_tmux() {
+  local dir candidate resolved
+  local override=${XTMUX_GUARD_REAL:-${XTMUX_REAL_TMUX:-}}
+  if [ -n "$override" ]; then
+    candidate=$override
+    if [ -x "$candidate" ] && [ ! -d "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+    printf '%s: XTMUX_GUARD_REAL=%s is not an executable file\n' "$prog" "$candidate" >&2
+    return 1
+  fi
+  local old_ifs=$IFS
+  IFS=:
+  for dir in ${PATH:-}; do
+    [ -n "$dir" ] || dir=.
+    candidate=$dir/tmux
+    [ -x "$candidate" ] && [ ! -d "$candidate" ] || continue
+    resolved=$(canonical_file "$candidate" 2>/dev/null || printf '%s\n' "$candidate")
+    [ "$resolved" = "$self_canonical" ] && continue
+    IFS=$old_ifs
+    printf '%s\n' "$candidate"
+    return 0
+  done
+  IFS=$old_ifs
+  return 1
+}
+
+# carries_kill_server <argument>
+# tmux runs a command that a later argv slot carries: if-shell, confirm-before,
+# command-prompt -I and run-shell -C all take a tmux command or a shell command
+# string, and tmux's own parser drops quoting, backslash escapes and line
+# continuations before it runs the words. Chasing spellings is a losing race, so
+# the check normalises instead: delete every whitespace character (space, tab,
+# CR, LF) and every ' " \, then look for kill-ser anywhere in what is left, in
+# any case. One rule, no word splitting. Over-eager on purpose: a false refusal
+# on the protected socket costs one flag, a missed kill-server costs every
+# session.
+carries_kill_server() {
+  local arg=${1//[[:space:]]/}
+  arg=${arg//\'/}
+  arg=${arg//\"/}
+  arg=${arg//\\/}
+  case $arg in
+    *[Kk][Ii][Ll][Ll]-[Ss][Ee][Rr]*) return 0 ;;
+  esac
+  return 1
+}
+
+# Global options come before the first command. The value-taking list below
+# mirrors tmux 3.8 (tmux 2.6 and later agree): -L <name>, -S <path>, -c <dir>,
+# -f <file> and -T <table> take a separate value; every other flag is a switch.
+# option-table: -L -S -c -f -T -- the test suite reads this line and asserts that
+# the tmux it runs accepts every option named on it.
+# A tmux release that adds a value-taking global option must extend this list,
+# or its value would be scanned as the command word and a chained kill-server
+# would slip past the check. The suite asserts that the tmux it runs accepts
+# every option named here.
+args=("$@")
+explicit_socket=0
+index=0
+count=${#args[@]}
+while [ "$index" -lt "$count" ]; do
+  arg=${args[$index]}
+  case $arg in
+    --)
+      index=$((index + 1))
+      break
+      ;;
+    -L|-S)
+      explicit_socket=1
+      index=$((index + 2))
+      continue
+      ;;
+    -L*|-S*)
+      explicit_socket=1
+      index=$((index + 1))
+      continue
+      ;;
+    -c|-f|-T)
+      index=$((index + 2))
+      continue
+      ;;
+    -?*)
+      index=$((index + 1))
+      continue
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+# Every command in a `;`-separated chain reaches the socket the global options
+# selected, so each command's first word is checked, not only the first one:
+# `tmux new -d \; kill-server` stops the same server the bare form is refused
+# on. tmux splits a chain on a token that is exactly `;` and on a token that
+# ends with `;`, so this scan splits the same way.
+#
+# The operator's rule set: `kill-server` and the abbreviations that stop a whole
+# server. `kill-session` and the other commands are not guarded (XTMUX-493
+# scope); `kill-s` is ambiguous in tmux and tmux itself refuses it.
+guarded=0
+while [ "$index" -lt "$count" ]; do
+  arg=${args[$index]}
+  index=$((index + 1))
+  case $arg in
+    '\;'|';')
+      # An empty command between separators.
+      continue
+      ;;
+    *'\;'|*';')
+      # The word both names a command and ends it, so the next word starts a
+      # new command: `new-session; kill-server` is two commands.
+      command_word=${arg%\\;}
+      command_word=${command_word%;}
+      ;;
+    *)
+      command_word=$arg
+      # Skip this command's arguments, up to the next separator.
+      while [ "$index" -lt "$count" ]; do
+        arg=${args[$index]}
+        case $arg in
+          '\;'|';'|*'\;'|*';') break ;;
+        esac
+        index=$((index + 1))
+      done
+      ;;
+  esac
+  case $command_word in
+    kill-ser|kill-serv|kill-serve|kill-server) guarded=1 ;;
+  esac
+done
+
+if [ "$guarded" = 1 ]; then
+  if [ "$explicit_socket" = 1 ]; then
+    guarded=0
+  else
+    # Only the literal 1 overrides; an empty or any other value does not.
+    [ "${TMUX_ALLOW_KILL_SERVER:-}" = 1 ] && guarded=0
+  fi
+fi
+
+# A command carried in an argument is only dangerous when the invocation would
+# reach the protected socket, so the scan runs after the explicit-socket and
+# override escapes made the decision they always make.
+carried=
+if [ "$guarded" = 0 ] && [ "$explicit_socket" = 0 ] && [ "${TMUX_ALLOW_KILL_SERVER:-}" != 1 ]; then
+  for arg in "${args[@]}"; do
+    if carries_kill_server "$arg"; then
+      carried=$arg
+      break
+    fi
+  done
+fi
+
+if [ "$guarded" = 1 ] || [ -n "$carried" ]; then
+  # Computed only here: a passthrough invocation must not pay for `id -u` or a
+  # pair of canonical-path calls.
+  uid=$(id -u)
+  if [ -n "${TMUX:-}" ]; then
+    # TMUX is "<socket-path>,<server-pid>,<session-index>".
+    target=${TMUX%%,*}
+  else
+    # What tmux resolves when neither -L nor -S is given.
+    target=${TMUX_TMPDIR:-/tmp}/tmux-$uid/default
+  fi
+  # The per-user default server lives under /tmp regardless of TMUX_TMPDIR,
+  # unless XTMUX_GUARD_SOCKET names another socket.
+  protected_socket=${XTMUX_GUARD_SOCKET:-/tmp/tmux-$uid/default}
+  # Literal comparison first; the canonical comparison runs only when the paths
+  # differ, and the protected path is canonicalised once.
+  same_target=0
+  target_canonical=
+  if [ "$target" = "$protected_socket" ]; then
+    same_target=1
+  else
+    target_canonical=$(canonical_socket "$target")
+    if [ "$target_canonical" = "$(canonical_socket "$protected_socket")" ]; then
+      same_target=1
+    fi
+  fi
+  if [ "$same_target" = 1 ]; then
+    [ -n "$target_canonical" ] || target_canonical=$(canonical_socket "$target")
+    if [ -n "$carried" ] && [ "$guarded" = 0 ]; then
+      cat >&2 <<EOF
+$prog: refusing an argument that carries \`kill-server\` on the per-user default socket
+  socket: $target_canonical
+  argument: $carried
+  That server hosts every session on this machine, including the one that ran this command.
+  Name another server with -L <name> or -S <path>, or allow it explicitly:
+    TMUX_ALLOW_KILL_SERVER=1 tmux kill-server
+EOF
+    else
+      cat >&2 <<EOF
+$prog: refusing \`tmux kill-server\` on the per-user default socket
+  socket: $target_canonical
+  That server hosts every session on this machine, including the one that ran this command.
+  Name another server with -L <name> or -S <path>, or allow it explicitly:
+    TMUX_ALLOW_KILL_SERVER=1 tmux kill-server
+EOF
+    fi
+    exit 1
+  fi
+fi
+
+real_tmux=$(find_real_tmux) || guard_fail "no real tmux on PATH (the guard must not shadow it); set XTMUX_GUARD_REAL=<path>"
+export XTMUX_TMUX_GUARD_DEPTH=$((depth + 1))
+exec "$real_tmux" "${args[@]}"
